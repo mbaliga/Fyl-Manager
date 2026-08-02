@@ -38,6 +38,7 @@ class RecycleBinService(
         val container = recycleRoot.createDirectory(itemId)
             ?: error("Unable to create a recycle transaction folder.")
         val displayName = source.name ?: "untitled"
+        val sourceSize = source.length().takeIf { it >= 0L }
 
         try {
             val recycled = copyDocument(source, container, displayName)
@@ -53,7 +54,7 @@ class RecycleBinService(
                 originalParentUri = originalParentUri,
                 originalDisplayName = displayName,
                 providerAuthority = sourceUri.authority,
-                sizeBytes = source.length().takeIf { it >= 0L },
+                sizeBytes = sourceSize,
                 recycledAtMillis = System.currentTimeMillis(),
             ).also(store::put)
         } catch (failure: Throwable) {
