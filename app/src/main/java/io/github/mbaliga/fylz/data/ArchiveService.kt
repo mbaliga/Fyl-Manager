@@ -45,8 +45,9 @@ class ArchiveService(private val context: Context) {
                 }
             }
 
+            val encrypted = password != null && password.isNotEmpty()
             val archive = File(workspace, "fylz.zip")
-            val zipFile = if (password.isNullOrEmpty()) ZipFile(archive) else ZipFile(archive, password)
+            val zipFile = if (encrypted) ZipFile(archive, password) else ZipFile(archive)
             sourceFiles.forEach { file ->
                 zipFile.addFile(
                     file,
@@ -54,7 +55,7 @@ class ArchiveService(private val context: Context) {
                         fileNameInZip = file.name
                         compressionMethod = CompressionMethod.DEFLATE
                         compressionLevel = CompressionLevel.NORMAL
-                        if (!password.isNullOrEmpty()) {
+                        if (encrypted) {
                             isEncryptFiles = true
                             encryptionMethod = EncryptionMethod.AES
                             aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
@@ -67,6 +68,7 @@ class ArchiveService(private val context: Context) {
                 archive.inputStream().use { it.copyTo(output) }
             } ?: error("Unable to write the destination archive.")
         } finally {
+            password?.fill('\u0000')
             workspace.deleteRecursively()
         }
     }
@@ -86,7 +88,9 @@ class ArchiveService(private val context: Context) {
             val extracted = File(workspace, "extracted").apply { mkdirs() }
             val zipFile = ZipFile(archive)
             if (zipFile.isEncrypted) {
-                require(!password.isNullOrEmpty()) { "This archive requires a password." }
+                require(password != null && password.isNotEmpty()) {
+                    "This archive requires a password."
+                }
                 zipFile.setPassword(password)
             }
 
@@ -104,6 +108,7 @@ class ArchiveService(private val context: Context) {
                 ?: error("Unable to open the destination folder.")
             canonicalRoot.listFiles().orEmpty().forEach { copyIntoProvider(it, destination) }
         } finally {
+            password?.fill('\u0000')
             workspace.deleteRecursively()
         }
     }
