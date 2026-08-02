@@ -27,6 +27,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          printf '%s  %s\n' \
+            'f5130631059d4a2a5a13606cc0d71c03f50a45e78fc1f081f98b567f01b087af' '.bootstrap/payload.00' \
+            '588b0fea661eff6870892ebf4561fe00824a3644d0f781cbad7a69ff014164c4' '.bootstrap/payload.01' \
+            'c8662acbd47aeb521891c80be9dc1ea3391e1cd3b8a5838f783575e7dbfc7ac0' '.bootstrap/payload.02' \
+            '4154b9311a9e1b7eb73048faf440cae437e32339a824f1a101b4369854f23172' '.bootstrap/payload.03' \
+            '8bb317cad979179894184b54a3f22718f98fb8ac5ef24d508d3117e7a093c129' '.bootstrap/payload.04' \
+            '4a9ccbb564039b7b6a573417e7b661573bba6c27214c77f3438df501165216e1' '.bootstrap/payload.05' \
+            'fb3943405a46e30f8be0a578d7745f03318ec8fcf57de64b0cbb9043f1419337' '.bootstrap/payload.06' \
+            | sha256sum -c -
           cat .bootstrap/payload.* > /tmp/fylz-source.b64
           printf '%s  %s\n' '74a0c3120e36adfb097e7fec02db55b1345e6d863f2fdc6ff8f646a24431dac5' '/tmp/fylz-source.b64' | sha256sum -c -
           base64 --decode /tmp/fylz-source.b64 > /tmp/fylz-source.tar.gz
