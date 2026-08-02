@@ -2,10 +2,12 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="fylz_recycle_manifest.xml" />
+        <exclude domain="sharedpref" path="fylz_byok_vault.xml" />
         <exclude domain="file" path="archive-work/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="fylz_recycle_manifest.xml" />
+        <exclude domain="sharedpref" path="fylz_byok_vault.xml" />
         <exclude domain="file" path="archive-work/" />
     </device-transfer>
 </data-extraction-rules>
