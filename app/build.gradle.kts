@@ -70,7 +70,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("net.lingala.zip4j:zip4j:2.11.5")
-    implementation("com.caverock:androidsvg-aar:1.4")
+    implementation("io.coil-kt.coil3:coil-compose:3.5.0")
+    implementation("io.coil-kt.coil3:coil-gif:3.5.0")
+    implementation("io.coil-kt.coil3:coil-svg:3.5.0")
 
     testImplementation("junit:junit:4.13.2")
 
