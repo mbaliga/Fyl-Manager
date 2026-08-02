@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <exclude domain="sharedpref" path="fylz_recycle_manifest.xml" />
+    <exclude domain="sharedpref" path="fylz_byok_vault.xml" />
     <exclude domain="file" path="archive-work/" />
 </full-backup-content>
