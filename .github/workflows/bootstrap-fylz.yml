@@ -1,0 +1,35 @@
+name: Bootstrap Fylz source
+
+on:
+  push:
+    branches:
+      - agent/fylz-v0.1-foundation
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore committed source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/payload.* > /tmp/fylz-source.b64
+          printf '%s  %s\n' '74a0c3120e36adfb097e7fec02db55b1345e6d863f2fdc6ff8f646a24431dac5' '/tmp/fylz-source.b64' | sha256sum -c -
+          base64 --decode /tmp/fylz-source.b64 > /tmp/fylz-source.tar.gz
+          printf '%s  %s\n' '016680c30f2e7c982430bbc50067cbccea0807b98b2369a1edc2cf9482f574c7' '/tmp/fylz-source.tar.gz' | sha256sum -c -
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xzf /tmp/fylz-source.tar.gz -C .
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Build Fylz Android foundation'
+          git push origin HEAD:${GITHUB_REF_NAME}
