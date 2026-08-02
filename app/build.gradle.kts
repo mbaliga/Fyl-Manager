@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "io.github.mbaliga.fylz"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "io.github.mbaliga.fylz"
