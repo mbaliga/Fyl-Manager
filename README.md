@@ -44,13 +44,13 @@ See [the roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [secur
 
 ## Build
 
-Requirements: JDK 17, Android SDK 36 and Gradle 8.11.1.
+Requirements: JDK 17 and Android SDK 36.
 
 ```bash
-gradle --no-daemon testDebugUnitTest lintDebug assembleDebug
+./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 ```
 
-GitHub Actions installs the pinned Gradle 8.11.1 distribution, validates the manifest permission boundary, runs tests and lint, assembles the app, and uploads a debug APK artifact. A repository-local Gradle wrapper is a release-readiness task and must be generated from a trusted Gradle 8.11.1 installation before the first release tag.
+The repository includes a pinned Gradle 8.11.1 wrapper. GitHub Actions validates the manifest permission boundary, runs tests and lint, assembles the app, and uploads a debug APK artifact.
 
 ## Design lineage
 
