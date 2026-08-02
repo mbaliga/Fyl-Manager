@@ -29,6 +29,7 @@ class RecycleBinService(
         require(source.exists()) { "The selected item no longer exists." }
 
         val recycleRoot = DocumentFile.fromTreeUri(context, recycleRootUri)
+            ?: DocumentFile.fromSingleUri(context, recycleRootUri)
             ?: error("Unable to open the recycle location.")
         require(recycleRoot.canWrite() && recycleRoot.isDirectory) {
             "The selected provider cannot write to its Fylz recycle location."
