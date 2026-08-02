@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -49,6 +50,8 @@ fun FloatingPreviewPane(
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
         val density = LocalDensity.current
+        val containerWidthPx = constraints.maxWidth
+        val containerHeightPx = constraints.maxHeight
         val minWidthPx = with(density) { 280.dp.roundToPx() }
         val minHeightPx = with(density) { 280.dp.roundToPx() }
         val initialWidthPx = with(density) { 430.dp.roundToPx() }
@@ -61,9 +64,9 @@ fun FloatingPreviewPane(
             mutableStateOf(Offset(72f, 110f))
         }
 
-        LaunchedEffect(constraints.maxWidth, constraints.maxHeight) {
-            val maxWidthPx = constraints.maxWidth.coerceAtLeast(minWidthPx)
-            val maxHeightPx = constraints.maxHeight.coerceAtLeast(minHeightPx)
+        LaunchedEffect(containerWidthPx, containerHeightPx) {
+            val maxWidthPx = containerWidthPx.coerceAtLeast(minWidthPx)
+            val maxHeightPx = containerHeightPx.coerceAtLeast(minHeightPx)
             paneSize = IntSize(
                 paneSize.width.coerceIn(minWidthPx, maxWidthPx),
                 paneSize.height.coerceIn(minHeightPx, maxHeightPx),
@@ -93,13 +96,13 @@ fun FloatingPreviewPane(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(46.dp)
-                            .pointerInput(paneSize, constraints.maxWidth, constraints.maxHeight) {
+                            .pointerInput(paneSize, containerWidthPx, containerHeightPx) {
                                 detectDragGestures { change, dragAmount ->
                                     change.consume()
-                                    val maxX = (constraints.maxWidth - paneSize.width)
+                                    val maxX = (containerWidthPx - paneSize.width)
                                         .coerceAtLeast(0)
                                         .toFloat()
-                                    val maxY = (constraints.maxHeight - paneSize.height)
+                                    val maxY = (containerHeightPx - paneSize.height)
                                         .coerceAtLeast(0)
                                         .toFloat()
                                     paneOffset = Offset(
@@ -138,12 +141,12 @@ fun FloatingPreviewPane(
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                             MaterialTheme.shapes.small,
                         )
-                        .pointerInput(constraints.maxWidth, constraints.maxHeight) {
+                        .pointerInput(containerWidthPx, containerHeightPx) {
                             detectDragGestures { change, dragAmount ->
                                 change.consume()
-                                val maxWidthPx = (constraints.maxWidth - paneOffset.x.roundToInt())
+                                val maxWidthPx = (containerWidthPx - paneOffset.x.roundToInt())
                                     .coerceAtLeast(minWidthPx)
-                                val maxHeightPx = (constraints.maxHeight - paneOffset.y.roundToInt())
+                                val maxHeightPx = (containerHeightPx - paneOffset.y.roundToInt())
                                     .coerceAtLeast(minHeightPx)
                                 paneSize = IntSize(
                                     (paneSize.width + dragAmount.x.roundToInt())
