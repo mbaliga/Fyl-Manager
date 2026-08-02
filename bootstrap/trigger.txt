@@ -1,1 +1,2 @@
 Trigger the one-time source expansion workflow after default-branch registration.
+Triggered: 2026-08-02T11:40:00Z
