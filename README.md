@@ -1,8 +1,10 @@
 # Fylz
 
-**Fylz** is an open-source, local-first file workspace for Android. The repository is named `Fyl-Manager`; the app name is **Fylz**.
+**Fylz** is an open-source, local-first file workspace for Android. The repository is named `Fyl-Manager`; **Fylz** is the current working product name.
 
 The goal is not another cleaning utility. Fylz is intended to become the smallest credible Android equivalent of the best parts of Finder, Windows File Explorer, iOS Files and power-user Android file managers, with a calm interface that can switch between a conventional file browser and an immersive workspace.
+
+> **Naming risk:** `fylz.in` currently operates a phone-to-PC file transfer service and `fylz.ai` operates an AI document-management platform. Treat **Fylz** as provisional until trademark, Play listing and app-identifier clearance is completed. See [`docs/research/naming-risk.md`](docs/research/naming-risk.md).
 
 ## What works in the foundation
 
@@ -45,10 +47,10 @@ See [the roadmap](docs/ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [secur
 Requirements: JDK 17, Android SDK 36 and Gradle 8.11.1.
 
 ```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug
+gradle --no-daemon testDebugUnitTest lintDebug assembleDebug
 ```
 
-The committed Gradle wrapper pins Gradle 8.11.1. GitHub Actions validates the wrapper, runs tests and lint, assembles the app, and uploads a debug APK artifact.
+GitHub Actions installs the pinned Gradle 8.11.1 distribution, validates the manifest permission boundary, runs tests and lint, assembles the app, and uploads a debug APK artifact. A repository-local Gradle wrapper is a release-readiness task and must be generated from a trusted Gradle 8.11.1 installation before the first release tag.
 
 ## Design lineage
 
