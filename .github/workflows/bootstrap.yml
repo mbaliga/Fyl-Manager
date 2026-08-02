@@ -7,6 +7,9 @@ on:
   pull_request:
     branches:
       - main
+  issues:
+    types:
+      - opened
   workflow_dispatch:
 
 permissions:
@@ -14,11 +17,16 @@ permissions:
 
 jobs:
   expand:
-    if: github.event_name != 'pull_request' || github.head_ref == 'agent/fylz-workspace-foundation'
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.head_ref == 'agent/fylz-workspace-foundation') ||
+      (github.event_name == 'issues' && github.event.issue.title == '[bootstrap] Expand Fylz source')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/fylz-workspace-foundation
           fetch-depth: 0
       - name: Expand project snapshot
         shell: bash
