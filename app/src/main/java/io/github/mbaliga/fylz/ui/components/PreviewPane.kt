@@ -3,7 +3,6 @@ package io.github.mbaliga.fylz.ui.components
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
-import android.widget.ImageView
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -36,7 +35,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -50,7 +48,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.util.FileType
@@ -128,7 +125,7 @@ fun PreviewPane(
                     if (textTruncated) TruncationNotice()
                     MonospaceTextPreview(textContent, Modifier.fillMaxSize())
                 }
-                entry.kind == EntryKind.IMAGE -> ImagePreview(entry, Modifier.fillMaxSize())
+                entry.kind == EntryKind.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
                 entry.kind == EntryKind.PDF -> PdfPreview(entry, Modifier.fillMaxSize())
                 else -> GenericPreview(entry, Modifier.fillMaxSize())
             }
@@ -164,23 +161,6 @@ private fun TruncationNotice() {
         modifier = Modifier
             .fillMaxWidth()
             .padding(8.dp),
-    )
-}
-
-@Composable
-private fun ImagePreview(entry: FileEntry, modifier: Modifier = Modifier) {
-    AndroidView(
-        factory = { context ->
-            ImageView(context).apply {
-                adjustViewBounds = true
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            }
-        },
-        update = { imageView ->
-            imageView.setImageDrawable(null)
-            imageView.setImageURI(entry.uri)
-        },
-        modifier = modifier.padding(12.dp),
     )
 }
 
