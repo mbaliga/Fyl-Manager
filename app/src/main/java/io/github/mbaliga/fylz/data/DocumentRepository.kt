@@ -9,8 +9,10 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
+import kotlin.coroutines.coroutineContext
 
 class DocumentRepository(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
@@ -82,6 +84,61 @@ class DocumentRepository(context: Context) {
                 compareByDescending<FileEntry> { it.isDirectory }
                     .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
             )
+        }
+
+    suspend fun createDirectory(parentUri: Uri, name: String): Uri = withContext(Dispatchers.IO) {
+        require(name.isNotBlank()) { "Folder name is required." }
+        DocumentsContract.createDocument(
+            resolver,
+            parentUri,
+            DocumentsContract.Document.MIME_TYPE_DIR,
+            name.trim(),
+        ) ?: error("The provider could not create the folder.")
+    }
+
+    suspend fun createFile(parentUri: Uri, name: String, mimeType: String): Uri =
+        withContext(Dispatchers.IO) {
+            require(name.isNotBlank()) { "File name is required." }
+            DocumentsContract.createDocument(resolver, parentUri, mimeType, name.trim())
+                ?: error("The provider could not create the file.")
+        }
+
+    suspend fun rename(uri: Uri, newName: String): Uri = withContext(Dispatchers.IO) {
+        require(newName.isNotBlank()) { "A new name is required." }
+        DocumentsContract.renameDocument(resolver, uri, newName.trim())
+            ?: error("The provider could not rename the item.")
+    }
+
+    suspend fun copyStream(sourceUri: Uri, destinationUri: Uri): Long = withContext(Dispatchers.IO) {
+        val input = resolver.openInputStream(sourceUri) ?: error("Unable to read the source.")
+        val output = resolver.openOutputStream(destinationUri, "w")
+            ?: error("Unable to write the destination.")
+        var total = 0L
+        input.use { source ->
+            output.use { destination ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    coroutineContext.ensureActive()
+                    val count = source.read(buffer)
+                    if (count < 0) break
+                    destination.write(buffer, 0, count)
+                    total += count
+                }
+                destination.flush()
+            }
+        }
+        total
+    }
+
+    suspend fun readSignature(uri: Uri, maxBytes: Int = 64): ByteArray =
+        withContext(Dispatchers.IO) {
+            require(maxBytes in 1..4_096)
+            val input = resolver.openInputStream(uri) ?: return@withContext byteArrayOf()
+            input.use { stream ->
+                val buffer = ByteArray(maxBytes)
+                val count = stream.read(buffer)
+                if (count <= 0) byteArrayOf() else buffer.copyOf(count)
+            }
         }
 
     suspend fun readText(uri: Uri, maxChars: Int = 524_288): TextContent =
