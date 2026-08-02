@@ -4,18 +4,23 @@ on:
   push:
     branches:
       - agent/fylz-v0.1-foundation
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   bootstrap:
+    if: github.event_name == 'push' || github.head_ref == 'agent/fylz-v0.1-foundation'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out bootstrap branch
         uses: actions/checkout@v4
         with:
+          ref: agent/fylz-v0.1-foundation
           fetch-depth: 0
 
       - name: Restore committed source tree
@@ -32,4 +37,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'Build Fylz Android foundation'
-          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin HEAD:agent/fylz-v0.1-foundation
