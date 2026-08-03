@@ -24,7 +24,6 @@ import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
 enum class OcrScript {
@@ -69,15 +68,16 @@ class SearchablePdfService(private val context: Context) {
         val output = context.contentResolver.openOutputStream(destinationUri, "w")
             ?: error("The destination is not writable.")
         val renderer = PdfRenderer(descriptor)
-        require(renderer.pageCount in 1..options.maximumPages) {
-            "The PDF has ${renderer.pageCount} pages; the configured OCR limit is ${options.maximumPages}."
+        val pageCount = renderer.pageCount
+        require(pageCount in 1..options.maximumPages) {
+            "The PDF has $pageCount pages; the configured OCR limit is ${options.maximumPages}."
         }
         val document = PdfDocument()
         val recognizer = recognizer(options.script)
         var pagesWithText = 0
         var recognizedCharacters = 0L
         try {
-            repeat(renderer.pageCount) { pageIndex ->
+            repeat(pageCount) { pageIndex ->
                 coroutineContext.ensureActive()
                 renderer.openPage(pageIndex).use { sourcePage ->
                     val dimensions = renderDimensions(sourcePage.width, sourcePage.height, options)
@@ -94,7 +94,12 @@ class SearchablePdfService(private val context: Context) {
                         val target = document.startPage(pageInfo)
                         try {
                             val pageRect = RectF(0f, 0f, pageInfo.pageWidth.toFloat(), pageInfo.pageHeight.toFloat())
-                            target.canvas.drawBitmap(bitmap, null, pageRect, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+                            target.canvas.drawBitmap(
+                                bitmap,
+                                null,
+                                pageRect,
+                                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
+                            )
                             val stats = drawTextLayer(
                                 canvas = target.canvas,
                                 text = recognized,
@@ -112,9 +117,10 @@ class SearchablePdfService(private val context: Context) {
                         bitmap.recycle()
                     }
                 }
-                onProgress(pageIndex + 1, renderer.pageCount)
+                onProgress(pageIndex + 1, pageCount)
             }
-            output.use(document::writeTo)
+            document.writeTo(output)
+            output.flush()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } finally {
@@ -124,7 +130,7 @@ class SearchablePdfService(private val context: Context) {
             runCatching(descriptor::close)
             runCatching(output::close)
         }
-        SearchablePdfResult(renderer.pageCount, pagesWithText, recognizedCharacters)
+        SearchablePdfResult(pageCount, pagesWithText, recognizedCharacters)
     }
 
     private fun recognizer(script: OcrScript): TextRecognizer = when (script) {
@@ -153,9 +159,9 @@ class SearchablePdfService(private val context: Context) {
         var characters = 0L
         text.textBlocks.forEach { block ->
             block.lines.forEach { line ->
-                line.elements.forEach { element ->
-                    val box = element.boundingBox ?: return@forEach
-                    val value = element.text.takeIf(String::isNotBlank) ?: return@forEach
+                line.elements.forEach elementLoop@{ element ->
+                    val box = element.boundingBox ?: return@elementLoop
+                    val value = element.text.takeIf(String::isNotBlank) ?: return@elementLoop
                     paint.textSize = max(1f, box.height() * scaleY * 0.82f)
                     val desiredWidth = max(1f, box.width() * scaleX)
                     val measured = max(1f, paint.measureText(value))
