@@ -27,6 +27,8 @@ class DuplicateCleanupService(
     context: Context,
     private val recycleBin: RecycleBinService = RecycleBinService(context.applicationContext),
 ) {
+    private val appContext = context.applicationContext
+
     suspend fun execute(
         selection: DuplicateCleanupSelection,
         recycleRootUri: Uri,
@@ -34,32 +36,31 @@ class DuplicateCleanupService(
     ): DuplicateCleanupResult = withContext(Dispatchers.IO) {
         val validation = DuplicateCleanupPolicy.validate(selection)
         require(validation.valid) { validation.reason ?: "Invalid duplicate cleanup plan." }
-        require(DocumentFile.fromSingleUri(context, selection.keep)?.exists() == true) {
+        require(DocumentFile.fromSingleUri(appContext, selection.keep)?.exists() == true) {
             "The retained copy is no longer available. Cleanup was not started."
         }
 
         val recycled = mutableListOf<RecycleRecord>()
         val failed = mutableListOf<DuplicateCleanupFailure>()
-        selection.recycle.sortedBy(Uri::toString).forEach { uri ->
+        for (uri in selection.recycle.sortedBy(Uri::toString)) {
             coroutineContext.ensureActive()
             try {
-                val document = DocumentFile.fromSingleUri(context, uri)
+                val document = DocumentFile.fromSingleUri(appContext, uri)
                     ?: error("The duplicate is unavailable.")
                 require(document.exists() && document.isFile) { "The duplicate is no longer a readable file." }
                 require(document.length() == selection.group.sizeBytes) {
                     "The duplicate size changed after verification; rescan before cleanup."
                 }
-                val record = recycleBin.recycle(
+                recycled += recycleBin.recycle(
                     sourceUri = uri,
                     originalParentUri = document.parentFile?.uri,
                     recycleRootUri = recycleRootUri,
                 )
-                recycled += record
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Throwable) {
                 failed += DuplicateCleanupFailure(uri, failure.message ?: "Unable to recycle this duplicate.")
-                if (stopOnFailure) return@forEach
+                if (stopOnFailure) break
             }
         }
         DuplicateCleanupResult(
