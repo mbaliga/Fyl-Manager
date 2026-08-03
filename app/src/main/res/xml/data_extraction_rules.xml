@@ -6,6 +6,7 @@
         <exclude domain="sharedpref" path="fylz_file_history_settings.xml" />
         <exclude domain="file" path="archive-work/" />
         <exclude domain="file" path="file-history/" />
+        <exclude domain="file" path="backup-state/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="fylz_recycle_manifest.xml" />
@@ -13,5 +14,6 @@
         <exclude domain="sharedpref" path="fylz_file_history_settings.xml" />
         <exclude domain="file" path="archive-work/" />
         <exclude domain="file" path="file-history/" />
+        <exclude domain="file" path="backup-state/" />
     </device-transfer>
 </data-extraction-rules>
