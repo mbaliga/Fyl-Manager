@@ -2,6 +2,8 @@ package io.github.mbaliga.fylz.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.StatFs
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import io.github.mbaliga.fylz.operations.FileOperation
@@ -11,8 +13,11 @@ import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile
+import net.lingala.zip4j.exception.ZipException
+import net.lingala.zip4j.model.FileHeader
 import net.lingala.zip4j.model.ZipParameters
 import net.lingala.zip4j.model.enums.AesKeyStrength
 import net.lingala.zip4j.model.enums.CompressionLevel
@@ -23,6 +28,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Files
 import java.util.UUID
+import kotlin.coroutines.coroutineContext
 
 data class ArchiveInspection(
     val encrypted: Boolean,
@@ -34,6 +40,8 @@ data class ArchiveInspection(
     val visibleEntries: List<ArchiveEntryMetadata>,
     val entriesTruncated: Boolean,
     val extractionDecision: ArchiveExtractionDecision,
+    val temporarySpaceRequiredBytes: Long? = null,
+    val temporarySpaceAvailableBytes: Long? = null,
 )
 
 /** Provider-neutral, bounded ZIP creation, inspection, and extraction. */
@@ -48,6 +56,9 @@ class ArchiveService(
         password: CharArray? = null,
     ) = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one file." }
+        require(password == null || password.size in MIN_PASSWORD_LENGTH..MAX_PASSWORD_LENGTH) {
+            "Archive passwords must contain between $MIN_PASSWORD_LENGTH and $MAX_PASSWORD_LENGTH characters."
+        }
         var operation = FileOperation(
             type = FileOperationType.ARCHIVE,
             items = sourceUris.mapIndexed { index, uri ->
@@ -68,13 +79,25 @@ class ArchiveService(
 
             val staged = File(workspace, "input").apply { mkdirs() }
             val usedNames = mutableSetOf<String>()
+            var stagedTotal = 0L
             val sourceFiles = sourceUris.mapIndexed { index, uri ->
-                val requestedName = queryName(uri) ?: "file-${index + 1}"
+                coroutineContext.ensureActive()
+                val source = DocumentFile.fromSingleUri(context, uri)
+                    ?: error("Unable to open a selected source.")
+                require(source.isFile) { "Folders cannot be added to an archive yet." }
+                val requestedName = source.name ?: queryName(uri) ?: "file-${index + 1}"
                 val safeName = uniqueName(sanitizeName(requestedName), usedNames)
                 File(staged, safeName).also { target ->
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        target.outputStream().use(input::copyTo)
+                    val copied = context.contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output ->
+                            copyBounded(input, output, extractionLimits.maxFileBytes)
+                        }
                     } ?: error("Unable to read $requestedName")
+                    if (Long.MAX_VALUE - stagedTotal < copied) error("Archive input size overflowed.")
+                    stagedTotal += copied
+                    require(stagedTotal <= extractionLimits.maxTotalUncompressedBytes) {
+                        "Selected files exceed the total archive input limit."
+                    }
                 }
             }
 
@@ -82,6 +105,7 @@ class ArchiveService(
             val archive = File(workspace, "fylz.zip")
             val zipFile = if (encrypted) ZipFile(archive, password) else ZipFile(archive)
             sourceFiles.forEach { file ->
+                coroutineContext.ensureActive()
                 zipFile.addFile(
                     file,
                     ZipParameters().apply {
@@ -95,10 +119,13 @@ class ArchiveService(
                         }
                     },
                 )
+                require(archive.length() <= extractionLimits.maxArchiveBytes) {
+                    "The generated archive exceeds the output safety limit."
+                }
             }
 
             context.contentResolver.openOutputStream(destinationUri, "w")?.use { output ->
-                archive.inputStream().use { it.copyTo(output) }
+                archive.inputStream().use { input -> copyBounded(input, output, extractionLimits.maxArchiveBytes) }
             } ?: error("Unable to write the destination archive.")
 
             journal.put(operation.succeeded(destinationUri))
@@ -132,16 +159,20 @@ class ArchiveService(
                 limits = extractionLimits,
             )
             val files = metadata.filterNot(ArchiveEntryMetadata::directory)
+            val uncompressed = metadata.sumKnownUncompressedBytes()
+            val requirements = uncompressed?.let { ArchiveSpacePolicy.requirements(archive.length(), it) }
             ArchiveInspection(
                 encrypted = zipFile.isEncrypted,
                 archiveBytes = archive.length(),
                 entryCount = metadata.size,
                 fileCount = files.size,
                 directoryCount = metadata.size - files.size,
-                totalUncompressedBytes = metadata.sumKnownUncompressedBytes(),
+                totalUncompressedBytes = uncompressed,
                 visibleEntries = metadata.take(maxVisibleEntries),
                 entriesTruncated = metadata.size > maxVisibleEntries,
                 extractionDecision = decision,
+                temporarySpaceRequiredBytes = requirements?.temporaryBytes,
+                temporarySpaceAvailableBytes = availableCacheBytes(),
             )
         } finally {
             workspace.deleteRecursively()
@@ -180,7 +211,6 @@ class ArchiveService(
                 "The destination folder is not writable."
             }
 
-            val extracted = File(workspace, "extracted").apply { mkdirs() }
             val zipFile = ZipFile(archive)
             if (zipFile.isEncrypted) {
                 require(!password.isNullOrEmpty()) { "This archive requires a password." }
@@ -194,22 +224,32 @@ class ArchiveService(
                 limits = extractionLimits,
             )
             require(decision.allowed) { decision.reason ?: "Archive extraction was refused." }
+            val totalUncompressed = metadata.sumKnownUncompressedBytes()
+                ?: error("Archive size metadata is incomplete or overflowed.")
+            val requirements = ArchiveSpacePolicy.requirements(archive.length(), totalUncompressed)
+                ?: error("Archive storage requirements overflowed.")
+            val cacheDecision = ArchiveSpacePolicy.evaluate(
+                requirements.temporaryBytes,
+                availableCacheBytes(),
+                "temporary",
+            )
+            require(cacheDecision.allowed) { cacheDecision.reason ?: "Insufficient temporary storage." }
+            val destinationDecision = ArchiveSpacePolicy.evaluate(
+                requirements.destinationBytes,
+                queryProviderAvailableBytes(destinationTreeUri),
+                "destination",
+            )
+            require(destinationDecision.allowed) { destinationDecision.reason ?: "Insufficient destination storage." }
 
-            val canonicalRoot = extracted.canonicalFile
-            zipFile.fileHeaders.forEach { header ->
-                val target = File(canonicalRoot, header.fileName).canonicalFile
-                check(
-                    target.path == canonicalRoot.path ||
-                        target.path.startsWith(canonicalRoot.path + File.separator),
-                ) { "Unsafe archive path: ${header.fileName}" }
-            }
-            zipFile.extractAll(canonicalRoot.path)
+            val extracted = File(workspace, "extracted").apply { mkdirs() }
+            extractBounded(zipFile, extracted)
 
             val requestedFolderName = extractionFolderBaseName(archiveDisplayName)
             val extractionFolderName = uniqueDirectoryName(destination, requestedFolderName)
             providerExtractionRoot = destination.createDirectory(extractionFolderName)
                 ?: error("Unable to create the extraction folder.")
-            canonicalRoot.listFiles().orEmpty().forEach { source ->
+            extracted.listFiles().orEmpty().forEach { source ->
+                coroutineContext.ensureActive()
                 copyIntoProvider(source, requireNotNull(providerExtractionRoot))
             }
 
@@ -234,6 +274,53 @@ class ArchiveService(
         }
     }
 
+    private suspend fun extractBounded(zipFile: ZipFile, destination: File) {
+        val root = destination.canonicalFile
+        var extractedEntries = 0
+        var extractedBytes = 0L
+        zipFile.fileHeaders.forEach { header ->
+            coroutineContext.ensureActive()
+            extractedEntries += 1
+            require(extractedEntries <= extractionLimits.maxEntries) {
+                "Archive contains too many extracted entries."
+            }
+            val target = safeExtractionTarget(root, header)
+            if (header.isDirectory) {
+                check(target.mkdirs() || target.isDirectory) { "Unable to create ${header.fileName}." }
+                return@forEach
+            }
+            check(target.parentFile?.mkdirs() != false) { "Unable to create extraction folders." }
+            val expected = header.uncompressedSize
+            require(expected in 0L..extractionLimits.maxFileBytes) {
+                "Archive contains a file larger than the extraction limit."
+            }
+            val copied = zipFile.getInputStream(header).use { input ->
+                target.outputStream().use { output ->
+                    copyBounded(input, output, extractionLimits.maxFileBytes)
+                }
+            }
+            require(copied == expected) {
+                "Extracted size did not match archive metadata for ${header.fileName}."
+            }
+            if (Long.MAX_VALUE - extractedBytes < copied) error("Extracted size overflowed.")
+            extractedBytes += copied
+            require(extractedBytes <= extractionLimits.maxTotalUncompressedBytes) {
+                "Archive expands beyond the total extraction limit."
+            }
+        }
+    }
+
+    private fun safeExtractionTarget(root: File, header: FileHeader): File {
+        val normalized = header.fileName.replace('\\', '/').trimEnd('/')
+        val depth = normalized.split('/').count { it.isNotEmpty() }
+        require(depth in 1..extractionLimits.maxPathDepth) { "Archive path nesting is too deep." }
+        val target = File(root, normalized).canonicalFile
+        check(target.path == root.path || target.path.startsWith(root.path + File.separator)) {
+            "Unsafe archive path: ${header.fileName}"
+        }
+        return target
+    }
+
     private fun rollbackExtraction(root: DocumentFile?): Boolean {
         if (root == null) return true
         return runCatching { root.delete() }.getOrDefault(false)
@@ -247,11 +334,12 @@ class ArchiveService(
     private fun uniqueDirectoryName(destination: DocumentFile, requestedName: String): String {
         if (destination.findFile(requestedName) == null) return requestedName
         var index = 2
-        while (true) {
+        while (index <= 9_999) {
             val candidate = "$requestedName ($index)"
             if (destination.findFile(candidate) == null) return candidate
             index += 1
         }
+        error("Unable to find an available extraction folder name.")
     }
 
     private fun stageArchive(archiveUri: Uri, workspace: File): File {
@@ -301,23 +389,56 @@ class ArchiveService(
             ?: "application/octet-stream"
         val target = destination.createFile(mimeType, source.name)
             ?: error("Unable to create ${source.name}")
-        context.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
-            source.inputStream().use { it.copyTo(output) }
-        } ?: error("Unable to write ${source.name}")
+        try {
+            context.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
+                source.inputStream().use { input -> copyBounded(input, output, extractionLimits.maxFileBytes) }
+            } ?: error("Unable to write ${source.name}")
+        } catch (failure: Throwable) {
+            target.delete()
+            throw failure
+        }
     }
 
-    private fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long) {
+    private fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long): Long {
         var total = 0L
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         while (true) {
             val count = input.read(buffer)
             if (count < 0) break
+            if (Long.MAX_VALUE - total < count) error("Byte count overflowed.")
             total += count
-            require(total <= maxBytes) { "Archive exceeds the allowed input size." }
+            require(total <= maxBytes) { "Data exceeds the allowed size." }
             output.write(buffer, 0, count)
         }
         output.flush()
+        return total
     }
+
+    private fun availableCacheBytes(): Long? = runCatching {
+        StatFs(context.cacheDir.absolutePath).availableBytes
+    }.getOrNull()
+
+    private fun queryProviderAvailableBytes(treeUri: Uri): Long? = runCatching {
+        val authority = treeUri.authority ?: return@runCatching null
+        val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+        val expectedRootId = documentId.substringBefore(':')
+        val rootsUri = DocumentsContract.buildRootsUri(authority)
+        val projection = arrayOf(
+            DocumentsContract.Root.COLUMN_ROOT_ID,
+            DocumentsContract.Root.COLUMN_AVAILABLE_BYTES,
+        )
+        context.contentResolver.query(rootsUri, projection, null, null, null)?.use { cursor ->
+            val rootIndex = cursor.getColumnIndex(DocumentsContract.Root.COLUMN_ROOT_ID)
+            val bytesIndex = cursor.getColumnIndex(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES)
+            while (cursor.moveToNext()) {
+                if (rootIndex < 0 || bytesIndex < 0 || cursor.isNull(bytesIndex)) continue
+                if (cursor.getString(rootIndex) == expectedRootId) {
+                    return@use cursor.getLong(bytesIndex).takeIf { it >= 0L }
+                }
+            }
+            null
+        }
+    }.getOrNull()
 
     private fun FileOperation.running(): FileOperation = copy(
         state = OperationState.RUNNING,
@@ -353,6 +474,7 @@ class ArchiveService(
 
     private fun Throwable.errorCode(): String = when (this) {
         is SecurityException -> "PERMISSION_DENIED"
+        is ZipException -> "INVALID_PASSWORD_OR_ARCHIVE"
         is IllegalArgumentException -> "INVALID_ARCHIVE"
         is IllegalStateException -> "ARCHIVE_OPERATION_FAILED"
         else -> "UNEXPECTED_ERROR"
@@ -373,14 +495,17 @@ class ArchiveService(
         val base = requested.substringBeforeLast('.', requested)
         val extension = requested.substringAfterLast('.', "")
         var index = 2
-        while (true) {
+        while (index <= 9_999) {
             val candidate = if (extension.isBlank()) "$base ($index)" else "$base ($index).$extension"
             if (used.add(candidate.lowercase())) return candidate
             index += 1
         }
+        error("Unable to generate a unique archive entry name.")
     }
 
     private companion object {
         const val DEFAULT_VISIBLE_ENTRY_LIMIT = 500
+        const val MIN_PASSWORD_LENGTH = 8
+        const val MAX_PASSWORD_LENGTH = 256
     }
 }
