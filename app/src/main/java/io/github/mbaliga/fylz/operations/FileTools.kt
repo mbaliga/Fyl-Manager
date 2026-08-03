@@ -54,6 +54,14 @@ class FileTools(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
 ) {
+    private data class RenameStep(
+        val plan: BatchRenamePlan,
+        val document: DocumentFile,
+        val temporaryName: String,
+        var staged: Boolean = false,
+        var finalized: Boolean = false,
+    )
+
     suspend fun findDuplicates(
         uris: List<Uri>,
         maxBytesPerFile: Long = 2L * 1024L * 1024L * 1024L,
@@ -125,14 +133,6 @@ class FileTools(
                 updatedAtMillis = createdAt,
             )
             journal.put(operation)
-
-            data class RenameStep(
-                val plan: BatchRenamePlan,
-                val document: DocumentFile,
-                val temporaryName: String,
-                var staged: Boolean = false,
-                var finalized: Boolean = false,
-            )
 
             val steps = mutableListOf<RenameStep>()
             try {
@@ -239,14 +239,16 @@ class FileTools(
             }
         }
 
-    private fun rollbackRenames(steps: List<Any>): Boolean {
-        @Suppress("UNCHECKED_CAST")
-        val typedSteps = steps as List<dynamicRenameStep>
-        return typedSteps.asReversed().all { step ->
-            if (!step.staged) true else runCatching {
-                step.document.renameTo(step.plan.oldName)
-            }.getOrDefault(false)
+    private fun rollbackRenames(steps: List<RenameStep>): Boolean {
+        var complete = true
+        steps.asReversed().forEach { step ->
+            if (step.staged) {
+                val restored = runCatching { step.document.renameTo(step.plan.oldName) }
+                    .getOrDefault(false)
+                if (!restored) complete = false
+            }
         }
+        return complete
     }
 
     private suspend fun sha256(uri: Uri): String {
@@ -271,13 +273,4 @@ class FileTools(
         is IllegalStateException -> "OPERATION_FAILED"
         else -> "UNEXPECTED_ERROR"
     }
-
-    /** Private structural type kept outside executeBatchRename for rollback helper access. */
-    private data class dynamicRenameStep(
-        val plan: BatchRenamePlan,
-        val document: DocumentFile,
-        val temporaryName: String,
-        var staged: Boolean,
-        var finalized: Boolean,
-    )
 }
