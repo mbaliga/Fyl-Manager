@@ -38,7 +38,7 @@ class FileHistoryStore(private val context: Context) {
             .putLong(KEY_FILE_BYTES, value.maxFileBytes)
             .putLong(KEY_STORAGE_BYTES, value.maxStorageBytes)
             .apply()
-        synchronized(this) { prune(readManifest(), value) }
+        synchronized(GLOBAL_LOCK) { prune(readManifest(), value) }
     }
 
     suspend fun capture(uri: Uri, reason: FileHistoryReason): FileHistoryCaptureResult =
@@ -79,7 +79,7 @@ class FileHistoryStore(private val context: Context) {
                 } ?: return@withContext FileHistoryCaptureResult(FileHistoryCaptureStatus.UNREADABLE)
 
                 val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                synchronized(this@FileHistoryStore) {
+                synchronized(GLOBAL_LOCK) {
                     val versions = readManifest().toMutableList()
                     val sourceKey = uri.toString()
                     versions.firstOrNull { it.sourceKey == sourceKey && it.sha256 == hash }?.let { duplicate ->
@@ -114,16 +114,16 @@ class FileHistoryStore(private val context: Context) {
             }
         }
 
-    fun versions(uri: Uri): List<FileHistoryVersion> = synchronized(this) {
+    fun versions(uri: Uri): List<FileHistoryVersion> = synchronized(GLOBAL_LOCK) {
         readManifest().filter { it.sourceKey == uri.toString() }
             .sortedByDescending(FileHistoryVersion::capturedAtMillis)
     }
 
-    fun allVersions(): List<FileHistoryVersion> = synchronized(this) {
+    fun allVersions(): List<FileHistoryVersion> = synchronized(GLOBAL_LOCK) {
         readManifest().sortedByDescending(FileHistoryVersion::capturedAtMillis)
     }
 
-    fun usage(): FileHistoryUsage = synchronized(this) {
+    fun usage(): FileHistoryUsage = synchronized(GLOBAL_LOCK) {
         val versions = readManifest()
         FileHistoryUsage(
             totalBytes = versions.sumOf(FileHistoryVersion::sizeBytes),
@@ -133,9 +133,30 @@ class FileHistoryStore(private val context: Context) {
         )
     }
 
+    /** Preserves version identity after a provider returns a new URI for rename or move. */
+    fun migrateSource(oldUri: Uri, newUri: Uri): Int = synchronized(GLOBAL_LOCK) {
+        val oldKey = oldUri.toString()
+        val newKey = newUri.toString()
+        if (oldKey == newKey) return@synchronized 0
+        val metadata = queryMetadata(newUri)
+        var changed = 0
+        val versions = readManifest().map { version ->
+            if (version.sourceKey != oldKey) return@map version
+            changed += 1
+            version.copy(
+                sourceKey = newKey,
+                sourceUri = newKey,
+                displayName = metadata?.displayName ?: version.displayName,
+                mimeType = metadata?.mimeType ?: version.mimeType,
+            )
+        }
+        if (changed > 0) writeManifest(versions)
+        changed
+    }
+
     suspend fun restore(versionId: String, targetUri: Uri): FileHistoryRestoreResult =
         withContext(Dispatchers.IO) {
-            val version = synchronized(this@FileHistoryStore) {
+            val version = synchronized(GLOBAL_LOCK) {
                 readManifest().firstOrNull { it.id == versionId }
             } ?: return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.VERSION_NOT_FOUND)
             val blob = File(blobs, version.blobName)
@@ -181,19 +202,19 @@ class FileHistoryStore(private val context: Context) {
             )
         }
 
-    fun delete(versionId: String): Boolean = synchronized(this) {
+    fun delete(versionId: String): Boolean = synchronized(GLOBAL_LOCK) {
         val versions = readManifest().toMutableList()
         val version = versions.firstOrNull { it.id == versionId } ?: return@synchronized false
-        versions.remove(version)
+        val next = versions.filterNot { it.id == versionId }
+        writeManifest(next)
         File(blobs, version.blobName).delete()
-        writeManifest(versions)
         true
     }
 
-    fun clear(): Int = synchronized(this) {
+    fun clear(): Int = synchronized(GLOBAL_LOCK) {
         val versions = readManifest()
-        versions.forEach { File(blobs, it.blobName).delete() }
         writeManifest(emptyList())
+        versions.forEach { File(blobs, it.blobName).delete() }
         versions.size
     }
 
@@ -201,22 +222,27 @@ class FileHistoryStore(private val context: Context) {
         val retained = input.groupBy(FileHistoryVersion::sourceKey).values.flatMap { group ->
             group.sortedByDescending(FileHistoryVersion::capturedAtMillis).take(settings.maxVersionsPerFile)
         }.toMutableList()
-        input.filterNot { it in retained }.forEach { File(blobs, it.blobName).delete() }
+        val removed = input.filterNot { it in retained }.toMutableList()
         retained.sortBy(FileHistoryVersion::capturedAtMillis)
         var total = retained.sumOf(FileHistoryVersion::sizeBytes)
         while (total > settings.maxStorageBytes && retained.isNotEmpty()) {
-            val removed = retained.removeAt(0)
-            total -= removed.sizeBytes
-            File(blobs, removed.blobName).delete()
+            val evicted = retained.removeAt(0)
+            total -= evicted.sizeBytes
+            removed += evicted
         }
         retained.sortByDescending(FileHistoryVersion::capturedAtMillis)
         writeManifest(retained)
+        removed.forEach { File(blobs, it.blobName).delete() }
         return retained
     }
 
     private fun readManifest(): List<FileHistoryVersion> = runCatching {
-        if (!manifest.isFile) return emptyList()
-        val array = JSONArray(manifest.readText())
+        val source = when {
+            manifest.isFile -> manifest
+            File(root, "manifest.bak").isFile -> File(root, "manifest.bak")
+            else -> return emptyList()
+        }
+        val array = JSONArray(source.readText())
         List(array.length()) { index ->
             val value = array.getJSONObject(index)
             FileHistoryVersion(
@@ -315,5 +341,6 @@ class FileHistoryStore(private val context: Context) {
         const val KEY_VERSIONS = "versions"
         const val KEY_FILE_BYTES = "file_bytes"
         const val KEY_STORAGE_BYTES = "storage_bytes"
+        val GLOBAL_LOCK = Any()
     }
 }
