@@ -9,19 +9,26 @@ object SmartCollectionEngine {
             if (rule.negate) !matched else matched
         }
         return when (collection.join) {
-            RuleJoin.ALL -> outcomes.all { it }
-            RuleJoin.ANY -> outcomes.any { it }
+            RuleJoin.ALL -> outcomes.all(Boolean::booleanValue)
+            RuleJoin.ANY -> outcomes.any(Boolean::booleanValue)
         }
     }
 
-    fun filter(files: Iterable<IndexedFile>, collection: SmartCollection): List<IndexedFile> =
-        files.filter { matches(it, collection) }
+    fun filter(
+        files: Iterable<IndexedFile>,
+        collection: SmartCollection,
+        limit: Int = 5_000,
+    ): List<IndexedFile> {
+        require(limit in 1..50_000)
+        return files.asSequence().filter { matches(it, collection) }.take(limit).toList()
+    }
 
     fun matches(file: IndexedFile, rule: SmartRule): Boolean = when (rule.field) {
-        RuleField.NAME -> compareText(file.name, rule.operator, rule.value)
+        RuleField.NAME -> compareText(file.displayName, rule.operator, rule.value)
+        RuleField.PATH -> compareText(file.relativePath, rule.operator, rule.value)
         RuleField.EXTENSION -> compareText(file.extension, rule.operator, rule.value.trimStart('.'))
         RuleField.MIME -> compareText(file.mimeType, rule.operator, rule.value)
-        RuleField.TAG -> file.tags.any { compareText(it, rule.operator, rule.value) }
+        RuleField.TEXT_CONTENT -> compareText(file.textSnippet.orEmpty(), rule.operator, rule.value)
         RuleField.SIZE -> compareLong(file.sizeBytes, rule.operator, parseSize(rule.value))
         RuleField.MODIFIED -> compareLong(file.modifiedAtMillis, rule.operator, rule.value.toLongOrNull())
         RuleField.DIRECTORY -> compareBoolean(file.directory, rule.operator, parseBoolean(rule.value))
