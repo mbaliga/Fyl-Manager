@@ -18,7 +18,7 @@ data class AiTransmissionRequest(
     val localOnly: Boolean = false,
     val includeFileName: Boolean = true,
     val includeMimeType: Boolean = true,
-    val redactionRules: List<RedactionRule> = defaultRedactionRules(),
+    val redactionRules: List<RedactionRule> = AiTransmissionPolicy.defaultRedactionRules(),
     val estimatedInputUsdPerMillionTokens: Double? = null,
     val estimatedOutputUsdPerMillionTokens: Double? = null,
     val expectedOutputTokens: Int = 500,

@@ -9,8 +9,8 @@ object SmartCollectionEngine {
             if (rule.negate) !matched else matched
         }
         return when (collection.join) {
-            RuleJoin.ALL -> outcomes.all(Boolean::booleanValue)
-            RuleJoin.ANY -> outcomes.any(Boolean::booleanValue)
+            RuleJoin.ALL -> outcomes.all { it }
+            RuleJoin.ANY -> outcomes.any { it }
         }
     }
 

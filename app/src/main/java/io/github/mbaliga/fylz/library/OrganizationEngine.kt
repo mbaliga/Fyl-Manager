@@ -79,8 +79,8 @@ object OrganizationEngine {
     fun matches(record: IndexedFileRecord, collection: SmartCollection): Boolean {
         val results = collection.predicates.map { matches(record, it) }
         return when (collection.combination) {
-            RuleCombination.ALL -> results.all(Boolean::booleanValue)
-            RuleCombination.ANY -> results.any(Boolean::booleanValue)
+            RuleCombination.ALL -> results.all { it }
+            RuleCombination.ANY -> results.any { it }
         }
     }
 

@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.ArchiveEntry
+import org.apache.commons.compress.archivers.ArchiveInputStream
 import org.apache.commons.compress.archivers.ArchiveStreamFactory
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import org.apache.commons.compress.compressors.CompressorStreamFactory
@@ -107,8 +108,13 @@ class ExtendedArchiveBrowserService(private val context: Context) {
         source.use { raw ->
             BufferedInputStream(raw).use { buffered ->
                 val format = archiveFormat(extension)
+                // createArchiveInputStream's raw generic return type left Kotlin unable to infer
+                // the entry type (cascading into "Cannot infer type" / "Unresolved reference
+                // 'nextEntry'" across this whole block); the explicit cast below is what the
+                // stray @Suppress was originally guarding and had been dropped.
                 @Suppress("UNCHECKED_CAST")
                 val archive = ArchiveStreamFactory().createArchiveInputStream(format, buffered)
+                    as ArchiveInputStream<ArchiveEntry>
                 archive.use { input ->
                     val entries = mutableListOf<Entry>()
                     var total = 0L

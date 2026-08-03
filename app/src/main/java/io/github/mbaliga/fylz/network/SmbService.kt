@@ -16,7 +16,12 @@ import java.io.File
 import java.util.EnumSet
 import kotlin.coroutines.coroutineContext
 
-data class SmbConfig(
+// Named SmbConnectionConfig, not SmbConfig, because com.hierynomus.smbj.SmbConfig (imported
+// above for the low-level builder at withShare()) is a distinct class with the same simple
+// name -- both being called "SmbConfig" in one file made Kotlin resolve `config.host` /
+// `config.port` / `config.username` against the wrong one (an "Unresolved reference" pointing
+// at the SMBJ library's protocol-config class instead of this app-level connection record).
+data class SmbConnectionConfig(
     val id: String,
     val displayName: String,
     val host: String,
@@ -45,7 +50,7 @@ data class SmbEntry(
 
 /** SMB2/3 adapter. SMB1 is not supported; packet signing is always required. */
 class SmbService {
-    suspend fun list(config: SmbConfig, path: String, password: CharArray): List<SmbEntry> =
+    suspend fun list(config: SmbConnectionConfig, path: String, password: CharArray): List<SmbEntry> =
         withShare(config, password) { share ->
             val normalized = validatePath(path)
             val values = share.list(normalized).filterNot { it.fileName == "." || it.fileName == ".." }
@@ -63,7 +68,7 @@ class SmbService {
         }
 
     suspend fun download(
-        config: SmbConfig,
+        config: SmbConnectionConfig,
         remotePath: String,
         password: CharArray,
         destination: File,
@@ -108,7 +113,7 @@ class SmbService {
     }
 
     suspend fun upload(
-        config: SmbConfig,
+        config: SmbConnectionConfig,
         remotePath: String,
         password: CharArray,
         source: File,
@@ -138,11 +143,11 @@ class SmbService {
         }
     }
 
-    suspend fun createDirectory(config: SmbConfig, path: String, password: CharArray) =
+    suspend fun createDirectory(config: SmbConnectionConfig, path: String, password: CharArray) =
         withShare(config, password) { share -> share.mkdir(validatePath(path)) }
 
     suspend fun delete(
-        config: SmbConfig,
+        config: SmbConnectionConfig,
         path: String,
         directory: Boolean,
         password: CharArray,
@@ -153,7 +158,7 @@ class SmbService {
     }
 
     private suspend fun <T> withShare(
-        config: SmbConfig,
+        config: SmbConnectionConfig,
         password: CharArray,
         operation: suspend (DiskShare) -> T,
     ): T = withContext(Dispatchers.IO) {
