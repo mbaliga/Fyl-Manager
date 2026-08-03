@@ -2,7 +2,7 @@
 
 Fylz is licensed under Apache License 2.0. The application depends on third-party software and platform services with their own licences or terms.
 
-This notice was reconciled against the generated `releaseRuntimeClasspath` graph produced by Release readiness run #6 for commit `dddabda4080719842eb7eaaf1bcc3c957e016903`. The graph remains the authoritative inventory for a specific build because Gradle may resolve or upgrade transitive modules over time.
+This notice was reconciled against the generated `releaseRuntimeClasspath` graph produced by Release readiness run #7 for commit `63d5363e7e145ac26436b0f3ce9ca45cf54bd8d9`. The graph remains the authoritative inventory for a specific build because Gradle may resolve or upgrade transitive modules over time.
 
 ## Apache License 2.0 families
 
