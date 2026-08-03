@@ -159,8 +159,7 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
             ssh.addHostKeyVerifier(PinnedHostKeyVerifier(config.pinnedHostKeySha256))
             ssh.connect(config.host, config.port)
             ssh.authPassword(config.username, passwordString)
-            ssh.newSFTPClient().use(block)
-            error("SFTP operation returned unexpectedly.")
+            return ssh.newSFTPClient().use(block)
         } finally {
             runCatching { ssh.disconnect() }
             runCatching { ssh.close() }
