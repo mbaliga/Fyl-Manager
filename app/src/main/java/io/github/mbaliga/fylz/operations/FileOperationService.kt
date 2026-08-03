@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -10,7 +11,10 @@ import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
 /** Provider-neutral, cancellable copy and move implementation for SAF documents. */
-class FileOperationService(private val context: Context) {
+class FileOperationService(
+    private val context: Context,
+    private val journal: OperationJournal = OperationJournal(context),
+) {
     data class Progress(
         val itemIndex: Int,
         val itemCount: Int,
@@ -51,6 +55,8 @@ class FileOperationService(private val context: Context) {
         onProgress = onProgress,
     )
 
+    fun operations(): List<FileOperation> = journal.list()
+
     private suspend fun transfer(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
@@ -65,41 +71,131 @@ class FileOperationService(private val context: Context) {
             "The destination folder is not writable."
         }
 
-        buildList {
-            sourceUris.forEachIndexed { index, sourceUri ->
-                coroutineContext.ensureActive()
-                val source = DocumentFile.fromSingleUri(context, sourceUri)
-                    ?: error("Unable to open a selected item.")
-                require(source.exists()) { "A selected item no longer exists." }
-                val sourceName = source.name ?: "untitled"
-                val plan = resolveTargetPlan(destination, sourceName, conflictPolicy)
-                    ?: return@forEachIndexed
-
-                val total = source.length().takeIf { source.isFile && it >= 0L }
-                val staged = copyDocument(
-                    source = source,
-                    destinationDirectory = destination,
-                    requestedName = plan.stagingName,
-                    progressName = plan.requestedName,
-                    itemIndex = index,
-                    itemCount = sourceUris.size,
-                    totalBytes = total,
-                    onProgress = onProgress,
+        val operation = FileOperation(
+            type = if (move) FileOperationType.MOVE else FileOperationType.COPY,
+            items = sourceUris.map { uri ->
+                val source = DocumentFile.fromSingleUri(context, uri)
+                OperationItem(
+                    source = uri,
+                    destination = destinationTreeUri,
+                    displayName = source?.name ?: "untitled",
+                    expectedBytes = source?.length()?.takeIf { source.isFile && it >= 0L },
+                    state = OperationState.QUEUED,
                 )
-                verifyCopy(source, staged)
-                val copied = finalizeTarget(plan, staged)
+            },
+            conflictPolicy = conflictPolicy,
+            state = OperationState.PREFLIGHT,
+        )
+        journal.put(operation)
+        var current = operation.copy(
+            state = OperationState.RUNNING,
+            items = operation.items.map { it.copy(state = OperationState.RUNNING) },
+            updatedAtMillis = System.currentTimeMillis(),
+        )
+        journal.put(current)
 
-                // A move is intentionally copy -> verify -> finalize destination -> remove source.
-                // The source is never deleted when any earlier step fails.
-                if (move) {
-                    check(source.delete()) {
-                        "The item was copied, but the provider refused to remove the original."
+        try {
+            val result = buildList {
+                sourceUris.forEachIndexed { index, sourceUri ->
+                    coroutineContext.ensureActive()
+                    val source = DocumentFile.fromSingleUri(context, sourceUri)
+                        ?: error("Unable to open a selected item.")
+                    require(source.exists()) { "A selected item no longer exists." }
+                    val sourceName = source.name ?: "untitled"
+                    val plan = resolveTargetPlan(destination, sourceName, conflictPolicy)
+                    if (plan == null) {
+                        current = updateItem(current, index) {
+                            it.copy(state = OperationState.SUCCEEDED, errorCode = "SKIPPED_CONFLICT")
+                        }
+                        journal.put(current)
+                        return@forEachIndexed
                     }
+
+                    val total = source.length().takeIf { source.isFile && it >= 0L }
+                    val staged = copyDocument(
+                        source = source,
+                        destinationDirectory = destination,
+                        requestedName = plan.stagingName,
+                        progressName = plan.requestedName,
+                        itemIndex = index,
+                        itemCount = sourceUris.size,
+                        totalBytes = total,
+                    ) { progress ->
+                        current = updateItem(current, index) { item ->
+                            item.copy(
+                                completedBytes = progress.completedBytes,
+                                expectedBytes = progress.totalBytes ?: item.expectedBytes,
+                                state = OperationState.RUNNING,
+                            )
+                        }
+                        journal.put(current)
+                        onProgress(progress)
+                    }
+                    verifyCopy(source, staged)
+                    val copied = finalizeTarget(plan, staged)
+
+                    // A move is intentionally copy -> verify -> finalize destination -> remove source.
+                    // The source is never deleted when any earlier step fails.
+                    if (move) {
+                        check(source.delete()) {
+                            "The item was copied, but the provider refused to remove the original."
+                        }
+                    }
+                    current = updateItem(current, index) { item ->
+                        item.copy(
+                            destination = copied.uri,
+                            completedBytes = item.expectedBytes ?: item.completedBytes,
+                            state = OperationState.SUCCEEDED,
+                            errorCode = null,
+                        )
+                    }
+                    journal.put(current)
+                    add(copied.uri)
                 }
-                add(copied.uri)
             }
+            current = current.copy(
+                state = OperationState.SUCCEEDED,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(current)
+            result
+        } catch (cancelled: CancellationException) {
+            current = current.copy(
+                state = OperationState.CANCELLED,
+                items = current.items.map {
+                    if (it.state == OperationState.RUNNING || it.state == OperationState.QUEUED) {
+                        it.copy(state = OperationState.CANCELLED, errorCode = "USER_CANCELLED")
+                    } else it
+                },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(current)
+            throw cancelled
+        } catch (failure: Throwable) {
+            current = current.copy(
+                state = OperationState.FAILED,
+                items = current.items.map {
+                    if (it.state == OperationState.RUNNING || it.state == OperationState.QUEUED) {
+                        it.copy(state = OperationState.FAILED, errorCode = failure::class.java.simpleName)
+                    } else it
+                },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(current)
+            throw failure
         }
     }
+
+    private fun updateItem(
+        operation: FileOperation,
+        index: Int,
+        transform: (OperationItem) -> OperationItem,
+    ): FileOperation = operation.copy(
+        items = operation.items.mapIndexed { itemIndex, item ->
+            if (itemIndex == index) transform(item) else item
+        },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
 
     private suspend fun copyDocument(
         source: DocumentFile,
