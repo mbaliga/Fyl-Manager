@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.backup.BackupScheduler
+import io.github.mbaliga.fylz.ui.BackupOverlay
 import io.github.mbaliga.fylz.ui.FileHistoryOverlay
 import io.github.mbaliga.fylz.ui.FylzAppShell
 
@@ -28,6 +29,11 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(end = 20.dp, bottom = 152.dp),
+                    )
+                    BackupOverlay(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 20.dp, bottom = 216.dp),
                     )
                 }
             }
