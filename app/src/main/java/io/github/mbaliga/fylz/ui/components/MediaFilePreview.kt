@@ -22,8 +22,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.github.mbaliga.fylz.model.FileEntry
+import androidx.annotation.OptIn as AndroidOptIn
+import androidx.media3.common.util.UnstableApi
 import io.github.mbaliga.fylz.preview.FileFormatDescriptor
 
+// AspectRatioFrameLayout.RESIZE_MODE_FIT is one of Media3's UnstableApi-annotated surfaces --
+// stable in practice (it's been part of ExoPlayer/Media3's UI module for years) but formally
+// opt-in, so its usage must be explicitly acknowledged rather than silently allowed.
+@AndroidOptIn(UnstableApi::class)
 @Composable
 fun MediaFilePreview(
     entry: FileEntry,
