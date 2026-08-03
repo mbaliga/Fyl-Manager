@@ -51,6 +51,29 @@ data class FileHistoryCaptureResult(
         get() = status == FileHistoryCaptureStatus.CAPTURED ||
             status == FileHistoryCaptureStatus.DUPLICATE ||
             status == FileHistoryCaptureStatus.DISABLED
+
+    val hasRestorableSnapshot: Boolean
+        get() = (status == FileHistoryCaptureStatus.CAPTURED ||
+            status == FileHistoryCaptureStatus.DUPLICATE) && version != null
+}
+
+enum class FileHistoryRestoreStatus {
+    RESTORED,
+    VERSION_NOT_FOUND,
+    SNAPSHOT_MISSING,
+    TARGET_UNREADABLE,
+    CURRENT_VERSION_NOT_PRESERVED,
+    WRITE_FAILED,
+    VERIFICATION_FAILED_ROLLED_BACK,
+    VERIFICATION_FAILED_ROLLBACK_FAILED,
+}
+
+data class FileHistoryRestoreResult(
+    val status: FileHistoryRestoreStatus,
+    val message: String? = null,
+) {
+    val restored: Boolean
+        get() = status == FileHistoryRestoreStatus.RESTORED
 }
 
 data class FileHistoryUsage(
