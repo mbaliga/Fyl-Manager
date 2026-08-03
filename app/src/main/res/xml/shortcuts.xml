@@ -11,4 +11,15 @@
             android:targetPackage="io.github.mbaliga.fylz"
             android:targetClass="io.github.mbaliga.fylz.OperationHistoryActivity" />
     </shortcut>
+    <shortcut
+        android:shortcutId="advanced_tools"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:shortcutShortLabel="@string/post_v1_tools_title"
+        android:shortcutLongLabel="@string/post_v1_tools_shortcut_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.PostV1ToolsActivity" />
+    </shortcut>
 </shortcuts>
