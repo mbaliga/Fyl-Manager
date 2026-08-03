@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 /**
  * Small durable journal for user-visible file operations.
@@ -14,14 +15,13 @@ import org.json.JSONObject
 class OperationJournal(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
-    @Synchronized
-    fun list(): List<FileOperation> {
-        val decoded = decode(preferences.getString(RECORDS_KEY, null))
-        val recoveredAt = System.currentTimeMillis()
-        val recovered = decoded.map { OperationRecoveryPolicy.recoverAfterProcessDeath(it, recoveredAt) }
-        if (recovered != decoded) persist(recovered)
-        return recovered.sortedByDescending(FileOperation::updatedAtMillis)
+    init {
+        recoverFromPriorProcessIfNeeded()
     }
+
+    @Synchronized
+    fun list(): List<FileOperation> = decode(preferences.getString(RECORDS_KEY, null))
+        .sortedByDescending(FileOperation::updatedAtMillis)
 
     @Synchronized
     fun find(id: String): FileOperation? = list().firstOrNull { it.id == id }
@@ -39,9 +39,43 @@ class OperationJournal(context: Context) {
         persist(list().filterNot { it.id == id })
     }
 
+    /** Keeps interrupted records visible until the user explicitly resolves or dismisses them. */
     @Synchronized
     fun clearFinished() {
-        persist(list().filterNot { OperationRecoveryPolicy.isTerminal(it.state) })
+        persist(
+            list().filterNot {
+                it.state == OperationState.SUCCEEDED ||
+                    it.state == OperationState.FAILED ||
+                    it.state == OperationState.CANCELLED
+            },
+        )
+    }
+
+    /**
+     * Marks in-flight records as interrupted once per real app-process session.
+     *
+     * Multiple services may construct their own [OperationJournal] in the same process. A static
+     * process session identifier prevents the second instance from misclassifying live work as an
+     * interrupted operation merely because it read the same preferences file.
+     */
+    private fun recoverFromPriorProcessIfNeeded() {
+        synchronized(PROCESS_SESSION_LOCK) {
+            val previousSession = preferences.getString(PROCESS_SESSION_KEY, null)
+            if (previousSession == PROCESS_SESSION_ID) return
+
+            val decoded = decode(preferences.getString(RECORDS_KEY, null))
+            val recoveredAt = System.currentTimeMillis()
+            val recovered = decoded.map {
+                OperationRecoveryPolicy.recoverAfterProcessDeath(it, recoveredAt)
+            }
+            if (recovered != decoded) persist(recovered)
+
+            check(
+                preferences.edit()
+                    .putString(PROCESS_SESSION_KEY, PROCESS_SESSION_ID)
+                    .commit(),
+            ) { "Unable to initialise the operation journal session." }
+        }
     }
 
     private fun persist(records: List<FileOperation>) {
@@ -92,7 +126,9 @@ class OperationJournal(context: Context) {
                                 OperationItem(
                                     id = item.getString("id"),
                                     source = Uri.parse(item.getString("source")),
-                                    destination = item.optString("destination").takeIf(String::isNotBlank)?.let(Uri::parse),
+                                    destination = item.optString("destination")
+                                        .takeIf(String::isNotBlank)
+                                        ?.let(Uri::parse),
                                     displayName = item.getString("displayName"),
                                     expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE)
                                         .takeUnless { it == Long.MIN_VALUE },
@@ -122,6 +158,10 @@ class OperationJournal(context: Context) {
     private companion object {
         const val PREFERENCES_NAME = "fylz_operation_journal"
         const val RECORDS_KEY = "operations"
+        const val PROCESS_SESSION_KEY = "process_session"
         const val MAX_RECORDS = 200
+
+        val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
+        val PROCESS_SESSION_LOCK = Any()
     }
 }
