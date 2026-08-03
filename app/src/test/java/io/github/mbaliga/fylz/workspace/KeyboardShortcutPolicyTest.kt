@@ -8,17 +8,17 @@ class KeyboardShortcutPolicyTest {
     @Test
     fun resolvesDesktopShortcuts() {
         assertEquals(
-            WorkspaceCommand.COPY_TO_OTHER_PANE,
+            KeyboardCommand.COPY_TO_OTHER_PANE,
             KeyboardShortcutPolicy.resolve(ShortcutGesture(ShortcutKey.C, ctrl = true, shift = true)),
         )
         assertEquals(
-            WorkspaceCommand.PERMANENT_DELETE,
+            KeyboardCommand.PERMANENT_DELETE,
             KeyboardShortcutPolicy.resolve(ShortcutGesture(ShortcutKey.DELETE, shift = true)),
         )
         assertEquals(
-            WorkspaceCommand.BACK,
+            KeyboardCommand.BACK,
             KeyboardShortcutPolicy.resolve(ShortcutGesture(ShortcutKey.ARROW_LEFT, alt = true)),
         )
-        assertTrue(KeyboardShortcutPolicy.label(WorkspaceCommand.TOGGLE_SECONDARY_PANE).contains("Ctrl"))
+        assertTrue(KeyboardShortcutPolicy.label(KeyboardCommand.TOGGLE_SECONDARY_PANE).contains("Ctrl"))
     }
 }
