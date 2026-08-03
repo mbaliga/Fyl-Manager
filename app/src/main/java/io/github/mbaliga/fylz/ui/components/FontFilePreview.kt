@@ -6,7 +6,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
@@ -18,6 +17,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.FileEntry
@@ -54,17 +54,17 @@ fun FontFilePreview(
 
 @Composable
 private fun FontSpecimen(typeface: Typeface, name: String, modifier: Modifier) {
-    val foreground = MaterialTheme.colorScheme.onSurface
+    val foreground = MaterialTheme.colorScheme.onSurface.toArgb()
     Column(
         modifier = modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(name, style = MaterialTheme.typography.titleMedium)
-        Text("Font specimen · pinch/zoom is not required; samples use fixed readable sizes.")
+        Text("Font specimen · samples use fixed readable sizes.")
         Canvas(Modifier.fillMaxWidth().weight(1f)) {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 this.typeface = typeface
-                color = foreground.hashCode()
+                color = foreground
             }
             val lines = listOf(
                 54f to "Aa Bb Cc 123",
