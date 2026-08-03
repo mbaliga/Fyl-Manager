@@ -1,5 +1,14 @@
 package io.github.mbaliga.fylz.operations
 
+import android.net.Uri
+
+data class OperationRetryPlan(
+    val type: FileOperationType,
+    val sourceUris: List<Uri>,
+    val destinationTreeUri: Uri,
+    val conflictPolicy: ConflictPolicy = ConflictPolicy.KEEP_BOTH,
+)
+
 /**
  * Conservative retry rules for durable operation records.
  *
@@ -22,29 +31,47 @@ object OperationRetryPolicy {
     internal fun canRetry(
         type: FileOperationType,
         state: OperationState,
-        itemCount: Int,
-        allItemsHaveSourceAndDestination: Boolean,
+        incompleteItemCount: Int,
+        allIncompleteItemsHaveSourceAndDestination: Boolean,
+        incompleteItemsShareDestination: Boolean,
     ): Boolean =
         state in retryableStates &&
             type in retryableTypes &&
-            itemCount > 0 &&
-            allItemsHaveSourceAndDestination
-
-    fun canRetry(operation: FileOperation): Boolean = canRetry(
-        type = operation.type,
-        state = operation.state,
-        itemCount = operation.items.size,
-        allItemsHaveSourceAndDestination = operation.items.all { item ->
-            item.source.toString().isNotBlank() && item.destination != null
-        },
-    )
+            incompleteItemCount > 0 &&
+            allIncompleteItemsHaveSourceAndDestination &&
+            incompleteItemsShareDestination
 
     /**
-     * Retries always use KEEP_BOTH, regardless of the original conflict policy.
+     * Builds a retry from only unfinished items.
      *
-     * A prior attempt may already have produced a complete or partial destination. KEEP_BOTH avoids
-     * deleting or replacing that evidence while the user resolves the interrupted operation.
+     * Successfully completed items may contain their final file URI rather than the destination
+     * folder URI. They are deliberately excluded so a partial transfer is never duplicated and a
+     * final file URI is never mistaken for a writable destination tree.
      */
+    fun plan(operation: FileOperation): OperationRetryPlan? {
+        val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
+        val destinationKeys = incomplete.mapNotNull { it.destination?.toString() }.distinct()
+        val eligible = canRetry(
+            type = operation.type,
+            state = operation.state,
+            incompleteItemCount = incomplete.size,
+            allIncompleteItemsHaveSourceAndDestination = incomplete.all { item ->
+                item.source.toString().isNotBlank() && item.destination != null
+            },
+            incompleteItemsShareDestination = destinationKeys.size == 1,
+        )
+        if (!eligible) return null
+
+        return OperationRetryPlan(
+            type = operation.type,
+            sourceUris = incomplete.map(OperationItem::source),
+            destinationTreeUri = requireNotNull(incomplete.first().destination),
+        )
+    }
+
+    fun canRetry(operation: FileOperation): Boolean = plan(operation) != null
+
+    /** Retries always keep both because an earlier attempt may have produced recoverable output. */
     fun retryConflictPolicy(operation: FileOperation): ConflictPolicy {
         require(canRetry(operation)) { "This operation cannot be retried safely." }
         return ConflictPolicy.KEEP_BOTH
