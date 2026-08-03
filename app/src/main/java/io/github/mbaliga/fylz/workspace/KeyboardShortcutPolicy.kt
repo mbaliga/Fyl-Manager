@@ -49,8 +49,8 @@ object KeyboardShortcutPolicy {
         val command = gesture.ctrl || gesture.meta
         return when {
             command && gesture.key == ShortcutKey.A -> KeyboardCommand.SELECT_ALL
-            command && gesture.key == ShortcutKey.C -> KeyboardCommand.COPY
-            command && gesture.key == ShortcutKey.X -> KeyboardCommand.CUT
+            command && !gesture.shift && gesture.key == ShortcutKey.C -> KeyboardCommand.COPY
+            command && !gesture.shift && gesture.key == ShortcutKey.X -> KeyboardCommand.CUT
             command && gesture.key == ShortcutKey.V -> KeyboardCommand.PASTE
             command && gesture.key == ShortcutKey.F -> KeyboardCommand.FIND
             command && gesture.key == ShortcutKey.L -> KeyboardCommand.FOCUS_LOCATION

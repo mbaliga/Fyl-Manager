@@ -109,6 +109,19 @@ dependencies {
     implementation("dev.aarso:crash-recovery:1.1.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*
+    // method bodies all throw "not mocked" RuntimeExceptions -- several tests construct real
+    // org.json.JSONObject/JSONArray content (ModelPackManifestCodec, SignedModelCatalogVerifier,
+    // OrganizationEngine's portable-metadata codec). org.json:json is the real, pure-Java
+    // reference implementation of the same API; on the test classpath it takes precedence over
+    // the stub and those calls behave for real, with zero test-code changes required.
+    testImplementation("org.json:json:20260719")
+    // PdfPagePlanPolicyTest constructs real android.net.Uri instances via Uri.parse(), which the
+    // stub jar cannot provide a working implementation of (unlike org.json, there is no small
+    // pure-Java substitute for Uri). Robolectric supplies real framework shadows for exactly this
+    // class of test; only PdfPagePlanPolicyTest opts in via @RunWith(RobolectricTestRunner::class)
+    // -- every other test class keeps running as a fast plain-JVM test.
+    testImplementation("org.robolectric:robolectric:4.16.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

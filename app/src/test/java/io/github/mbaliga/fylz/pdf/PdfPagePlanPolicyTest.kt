@@ -4,7 +4,16 @@ import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+// Uri.parse() below needs a real android.net.Uri implementation, which the plain-JVM unit-test
+// stub jar cannot provide (every stub method throws "not mocked"). Robolectric supplies real
+// framework shadows; sdk is pinned to this module's targetSdk rather than left to Robolectric's
+// default so this doesn't silently start testing against a different API level on a bump.
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class PdfPagePlanPolicyTest {
     @Test
     fun acceptsBoundedPagePlan() {
