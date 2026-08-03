@@ -15,7 +15,7 @@ data class ShortcutGesture(
     val meta: Boolean = false,
 )
 
-enum class WorkspaceCommand {
+enum class KeyboardCommand {
     SELECT_ALL,
     COPY,
     CUT,
@@ -45,68 +45,68 @@ enum class WorkspaceCommand {
 }
 
 object KeyboardShortcutPolicy {
-    fun resolve(gesture: ShortcutGesture): WorkspaceCommand? {
+    fun resolve(gesture: ShortcutGesture): KeyboardCommand? {
         val command = gesture.ctrl || gesture.meta
         return when {
-            command && gesture.key == ShortcutKey.A -> WorkspaceCommand.SELECT_ALL
-            command && gesture.key == ShortcutKey.C -> WorkspaceCommand.COPY
-            command && gesture.key == ShortcutKey.X -> WorkspaceCommand.CUT
-            command && gesture.key == ShortcutKey.V -> WorkspaceCommand.PASTE
-            command && gesture.key == ShortcutKey.F -> WorkspaceCommand.FIND
-            command && gesture.key == ShortcutKey.L -> WorkspaceCommand.FOCUS_LOCATION
-            command && gesture.shift && gesture.key == ShortcutKey.N -> WorkspaceCommand.NEW_FOLDER
-            command && gesture.key == ShortcutKey.N -> WorkspaceCommand.NEW_FILE
-            command && gesture.key == ShortcutKey.T -> WorkspaceCommand.NEW_TAB
-            command && gesture.key == ShortcutKey.W -> WorkspaceCommand.CLOSE_TAB
-            command && !gesture.shift && gesture.key == ShortcutKey.Z -> WorkspaceCommand.UNDO
-            command && gesture.shift && gesture.key == ShortcutKey.Z -> WorkspaceCommand.REDO
-            command && gesture.key == ShortcutKey.H -> WorkspaceCommand.TOGGLE_HIDDEN
-            command && gesture.key == ShortcutKey.P -> WorkspaceCommand.TOGGLE_SECONDARY_PANE
-            command && gesture.shift && gesture.key == ShortcutKey.C -> WorkspaceCommand.COPY_TO_OTHER_PANE
-            command && gesture.shift && gesture.key == ShortcutKey.X -> WorkspaceCommand.MOVE_TO_OTHER_PANE
-            gesture.alt && gesture.key == ShortcutKey.ARROW_LEFT -> WorkspaceCommand.BACK
-            gesture.alt && gesture.key == ShortcutKey.ARROW_RIGHT -> WorkspaceCommand.FORWARD
-            gesture.key == ShortcutKey.F2 -> WorkspaceCommand.RENAME
-            gesture.key == ShortcutKey.F5 -> WorkspaceCommand.REFRESH
-            gesture.key == ShortcutKey.DELETE && gesture.shift -> WorkspaceCommand.PERMANENT_DELETE
-            gesture.key == ShortcutKey.DELETE -> WorkspaceCommand.RECYCLE
-            gesture.key == ShortcutKey.ENTER -> WorkspaceCommand.OPEN
-            gesture.key == ShortcutKey.SPACE -> WorkspaceCommand.PREVIEW
-            gesture.key == ShortcutKey.TAB && command -> WorkspaceCommand.FOCUS_NEXT_PANE
-            gesture.key == ShortcutKey.ESCAPE -> WorkspaceCommand.CLEAR_SELECTION
+            command && gesture.key == ShortcutKey.A -> KeyboardCommand.SELECT_ALL
+            command && gesture.key == ShortcutKey.C -> KeyboardCommand.COPY
+            command && gesture.key == ShortcutKey.X -> KeyboardCommand.CUT
+            command && gesture.key == ShortcutKey.V -> KeyboardCommand.PASTE
+            command && gesture.key == ShortcutKey.F -> KeyboardCommand.FIND
+            command && gesture.key == ShortcutKey.L -> KeyboardCommand.FOCUS_LOCATION
+            command && gesture.shift && gesture.key == ShortcutKey.N -> KeyboardCommand.NEW_FOLDER
+            command && gesture.key == ShortcutKey.N -> KeyboardCommand.NEW_FILE
+            command && gesture.key == ShortcutKey.T -> KeyboardCommand.NEW_TAB
+            command && gesture.key == ShortcutKey.W -> KeyboardCommand.CLOSE_TAB
+            command && !gesture.shift && gesture.key == ShortcutKey.Z -> KeyboardCommand.UNDO
+            command && gesture.shift && gesture.key == ShortcutKey.Z -> KeyboardCommand.REDO
+            command && gesture.key == ShortcutKey.H -> KeyboardCommand.TOGGLE_HIDDEN
+            command && gesture.key == ShortcutKey.P -> KeyboardCommand.TOGGLE_SECONDARY_PANE
+            command && gesture.shift && gesture.key == ShortcutKey.C -> KeyboardCommand.COPY_TO_OTHER_PANE
+            command && gesture.shift && gesture.key == ShortcutKey.X -> KeyboardCommand.MOVE_TO_OTHER_PANE
+            gesture.alt && gesture.key == ShortcutKey.ARROW_LEFT -> KeyboardCommand.BACK
+            gesture.alt && gesture.key == ShortcutKey.ARROW_RIGHT -> KeyboardCommand.FORWARD
+            gesture.key == ShortcutKey.F2 -> KeyboardCommand.RENAME
+            gesture.key == ShortcutKey.F5 -> KeyboardCommand.REFRESH
+            gesture.key == ShortcutKey.DELETE && gesture.shift -> KeyboardCommand.PERMANENT_DELETE
+            gesture.key == ShortcutKey.DELETE -> KeyboardCommand.RECYCLE
+            gesture.key == ShortcutKey.ENTER -> KeyboardCommand.OPEN
+            gesture.key == ShortcutKey.SPACE -> KeyboardCommand.PREVIEW
+            gesture.key == ShortcutKey.TAB && command -> KeyboardCommand.FOCUS_NEXT_PANE
+            gesture.key == ShortcutKey.ESCAPE -> KeyboardCommand.CLEAR_SELECTION
             else -> null
         }
     }
 
-    fun label(command: WorkspaceCommand, platformUsesMeta: Boolean = false): String {
+    fun label(command: KeyboardCommand, platformUsesMeta: Boolean = false): String {
         val modifier = if (platformUsesMeta) "Meta" else "Ctrl"
         return when (command) {
-            WorkspaceCommand.SELECT_ALL -> "$modifier+A"
-            WorkspaceCommand.COPY -> "$modifier+C"
-            WorkspaceCommand.CUT -> "$modifier+X"
-            WorkspaceCommand.PASTE -> "$modifier+V"
-            WorkspaceCommand.FIND -> "$modifier+F"
-            WorkspaceCommand.FOCUS_LOCATION -> "$modifier+L"
-            WorkspaceCommand.NEW_FOLDER -> "$modifier+Shift+N"
-            WorkspaceCommand.NEW_FILE -> "$modifier+N"
-            WorkspaceCommand.NEW_TAB -> "$modifier+T"
-            WorkspaceCommand.CLOSE_TAB -> "$modifier+W"
-            WorkspaceCommand.UNDO -> "$modifier+Z"
-            WorkspaceCommand.REDO -> "$modifier+Shift+Z"
-            WorkspaceCommand.TOGGLE_HIDDEN -> "$modifier+H"
-            WorkspaceCommand.TOGGLE_SECONDARY_PANE -> "$modifier+P"
-            WorkspaceCommand.COPY_TO_OTHER_PANE -> "$modifier+Shift+C"
-            WorkspaceCommand.MOVE_TO_OTHER_PANE -> "$modifier+Shift+X"
-            WorkspaceCommand.BACK -> "Alt+Left"
-            WorkspaceCommand.FORWARD -> "Alt+Right"
-            WorkspaceCommand.RENAME -> "F2"
-            WorkspaceCommand.REFRESH -> "F5"
-            WorkspaceCommand.PERMANENT_DELETE -> "Shift+Delete"
-            WorkspaceCommand.RECYCLE -> "Delete"
-            WorkspaceCommand.OPEN -> "Enter"
-            WorkspaceCommand.PREVIEW -> "Space"
-            WorkspaceCommand.FOCUS_NEXT_PANE -> "$modifier+Tab"
-            WorkspaceCommand.CLEAR_SELECTION -> "Esc"
+            KeyboardCommand.SELECT_ALL -> "$modifier+A"
+            KeyboardCommand.COPY -> "$modifier+C"
+            KeyboardCommand.CUT -> "$modifier+X"
+            KeyboardCommand.PASTE -> "$modifier+V"
+            KeyboardCommand.FIND -> "$modifier+F"
+            KeyboardCommand.FOCUS_LOCATION -> "$modifier+L"
+            KeyboardCommand.NEW_FOLDER -> "$modifier+Shift+N"
+            KeyboardCommand.NEW_FILE -> "$modifier+N"
+            KeyboardCommand.NEW_TAB -> "$modifier+T"
+            KeyboardCommand.CLOSE_TAB -> "$modifier+W"
+            KeyboardCommand.UNDO -> "$modifier+Z"
+            KeyboardCommand.REDO -> "$modifier+Shift+Z"
+            KeyboardCommand.TOGGLE_HIDDEN -> "$modifier+H"
+            KeyboardCommand.TOGGLE_SECONDARY_PANE -> "$modifier+P"
+            KeyboardCommand.COPY_TO_OTHER_PANE -> "$modifier+Shift+C"
+            KeyboardCommand.MOVE_TO_OTHER_PANE -> "$modifier+Shift+X"
+            KeyboardCommand.BACK -> "Alt+Left"
+            KeyboardCommand.FORWARD -> "Alt+Right"
+            KeyboardCommand.RENAME -> "F2"
+            KeyboardCommand.REFRESH -> "F5"
+            KeyboardCommand.PERMANENT_DELETE -> "Shift+Delete"
+            KeyboardCommand.RECYCLE -> "Delete"
+            KeyboardCommand.OPEN -> "Enter"
+            KeyboardCommand.PREVIEW -> "Space"
+            KeyboardCommand.FOCUS_NEXT_PANE -> "$modifier+Tab"
+            KeyboardCommand.CLEAR_SELECTION -> "Esc"
         }
     }
 }
