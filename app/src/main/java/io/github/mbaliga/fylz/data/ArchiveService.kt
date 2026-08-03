@@ -4,6 +4,12 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.operations.FileOperation
+import io.github.mbaliga.fylz.operations.FileOperationType
+import io.github.mbaliga.fylz.operations.OperationItem
+import io.github.mbaliga.fylz.operations.OperationJournal
+import io.github.mbaliga.fylz.operations.OperationState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.lingala.zip4j.ZipFile
@@ -30,26 +36,36 @@ data class ArchiveInspection(
     val extractionDecision: ArchiveExtractionDecision,
 )
 
-/**
- * Provider-neutral ZIP engine.
- *
- * Files are staged only inside app-private cache storage. Password-protected archives use AES-256.
- * Inspection and extraction share the same bounded metadata preflight so the preview cannot claim
- * an archive is safe when extraction would reject it.
- */
+/** Provider-neutral, bounded ZIP creation, inspection, and extraction. */
 class ArchiveService(
     private val context: Context,
     private val extractionLimits: ArchiveExtractionLimits = ArchiveExtractionLimits(),
+    private val journal: OperationJournal = OperationJournal(context),
 ) {
-
     suspend fun createZip(
         sourceUris: List<Uri>,
         destinationUri: Uri,
         password: CharArray? = null,
     ) = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one file." }
+        var operation = FileOperation(
+            type = FileOperationType.ARCHIVE,
+            items = sourceUris.mapIndexed { index, uri ->
+                OperationItem(
+                    source = uri,
+                    destination = destinationUri,
+                    displayName = queryName(uri) ?: "file-${index + 1}",
+                    state = OperationState.PREFLIGHT,
+                )
+            },
+            state = OperationState.PREFLIGHT,
+        )
+        journal.put(operation)
         val workspace = newWorkspace()
         try {
+            operation = operation.running()
+            journal.put(operation)
+
             val staged = File(workspace, "input").apply { mkdirs() }
             val usedNames = mutableSetOf<String>()
             val sourceFiles = sourceUris.mapIndexed { index, uri ->
@@ -62,7 +78,7 @@ class ArchiveService(
                 }
             }
 
-            val encrypted = password != null && password.isNotEmpty()
+            val encrypted = !password.isNullOrEmpty()
             val archive = File(workspace, "fylz.zip")
             val zipFile = if (encrypted) ZipFile(archive, password) else ZipFile(archive)
             sourceFiles.forEach { file ->
@@ -84,6 +100,14 @@ class ArchiveService(
             context.contentResolver.openOutputStream(destinationUri, "w")?.use { output ->
                 archive.inputStream().use { it.copyTo(output) }
             } ?: error("Unable to write the destination archive.")
+
+            journal.put(operation.succeeded(destinationUri))
+        } catch (cancelled: CancellationException) {
+            journal.put(operation.cancelled())
+            throw cancelled
+        } catch (failure: Throwable) {
+            journal.put(operation.failed(failure.errorCode()))
+            throw failure
         } finally {
             password?.fill('\u0000')
             workspace.deleteRecursively()
@@ -107,13 +131,13 @@ class ArchiveService(
                 entries = metadata,
                 limits = extractionLimits,
             )
-            val fileEntries = metadata.filterNot(ArchiveEntryMetadata::directory)
+            val files = metadata.filterNot(ArchiveEntryMetadata::directory)
             ArchiveInspection(
                 encrypted = zipFile.isEncrypted,
                 archiveBytes = archive.length(),
                 entryCount = metadata.size,
-                fileCount = fileEntries.size,
-                directoryCount = metadata.size - fileEntries.size,
+                fileCount = files.size,
+                directoryCount = metadata.size - files.size,
                 totalUncompressedBytes = metadata.sumKnownUncompressedBytes(),
                 visibleEntries = metadata.take(maxVisibleEntries),
                 entriesTruncated = metadata.size > maxVisibleEntries,
@@ -129,10 +153,25 @@ class ArchiveService(
         destinationTreeUri: Uri,
         password: CharArray? = null,
     ) = withContext(Dispatchers.IO) {
+        var operation = FileOperation(
+            type = FileOperationType.EXTRACT,
+            items = listOf(
+                OperationItem(
+                    source = archiveUri,
+                    destination = destinationTreeUri,
+                    displayName = queryName(archiveUri) ?: "archive.zip",
+                    state = OperationState.PREFLIGHT,
+                ),
+            ),
+            state = OperationState.PREFLIGHT,
+        )
+        journal.put(operation)
         val workspace = newWorkspace()
         try {
-            val archive = stageArchive(archiveUri, workspace)
+            operation = operation.running()
+            journal.put(operation)
 
+            val archive = stageArchive(archiveUri, workspace)
             val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
                 ?: error("Unable to open the destination folder.")
             require(destination.isDirectory && destination.canWrite()) {
@@ -142,9 +181,7 @@ class ArchiveService(
             val extracted = File(workspace, "extracted").apply { mkdirs() }
             val zipFile = ZipFile(archive)
             if (zipFile.isEncrypted) {
-                require(password != null && password.isNotEmpty()) {
-                    "This archive requires a password."
-                }
+                require(!password.isNullOrEmpty()) { "This archive requires a password." }
                 zipFile.setPassword(password)
             }
 
@@ -165,8 +202,15 @@ class ArchiveService(
                 ) { "Unsafe archive path: ${header.fileName}" }
             }
             zipFile.extractAll(canonicalRoot.path)
-
             canonicalRoot.listFiles().orEmpty().forEach { copyIntoProvider(it, destination) }
+
+            journal.put(operation.succeeded(destinationTreeUri))
+        } catch (cancelled: CancellationException) {
+            journal.put(operation.cancelled())
+            throw cancelled
+        } catch (failure: Throwable) {
+            journal.put(operation.failed(failure.errorCode()))
+            throw failure
         } finally {
             password?.fill('\u0000')
             workspace.deleteRecursively()
@@ -196,9 +240,7 @@ class ArchiveService(
     private fun List<ArchiveEntryMetadata>.sumKnownUncompressedBytes(): Long? {
         var total = 0L
         for (entry in this) {
-            if (entry.uncompressedBytes < 0L || Long.MAX_VALUE - total < entry.uncompressedBytes) {
-                return null
-            }
+            if (entry.uncompressedBytes < 0L || Long.MAX_VALUE - total < entry.uncompressedBytes) return null
             total += entry.uncompressedBytes
         }
         return total
@@ -214,7 +256,6 @@ class ArchiveService(
             source.listFiles().orEmpty().forEach { copyIntoProvider(it, child) }
             return
         }
-
         val mimeType = java.net.URLConnection.guessContentTypeFromName(source.name)
             ?: "application/octet-stream"
         val target = destination.findFile(source.name)
@@ -236,6 +277,39 @@ class ArchiveService(
             output.write(buffer, 0, count)
         }
         output.flush()
+    }
+
+    private fun FileOperation.running(): FileOperation = copy(
+        state = OperationState.RUNNING,
+        items = items.map { it.copy(state = OperationState.RUNNING) },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
+
+    private fun FileOperation.succeeded(destination: Uri): FileOperation = copy(
+        state = OperationState.SUCCEEDED,
+        items = items.map {
+            it.copy(destination = destination, state = OperationState.SUCCEEDED, errorCode = null)
+        },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
+
+    private fun FileOperation.cancelled(): FileOperation = copy(
+        state = OperationState.CANCELLED,
+        items = items.map { it.copy(state = OperationState.CANCELLED, errorCode = "USER_CANCELLED") },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
+
+    private fun FileOperation.failed(code: String): FileOperation = copy(
+        state = OperationState.FAILED,
+        items = items.map { it.copy(state = OperationState.FAILED, errorCode = code) },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
+
+    private fun Throwable.errorCode(): String = when (this) {
+        is SecurityException -> "PERMISSION_DENIED"
+        is IllegalArgumentException -> "INVALID_ARCHIVE"
+        is IllegalStateException -> "ARCHIVE_OPERATION_FAILED"
+        else -> "UNEXPECTED_ERROR"
     }
 
     private fun queryName(uri: Uri): String? =
