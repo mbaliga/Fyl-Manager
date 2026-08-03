@@ -70,6 +70,7 @@ enum class BackupRunStatus {
     RUNNING,
     SUCCEEDED,
     SKIPPED_THRESHOLD,
+    SKIPPED_BUSY,
     FAILED,
     CANCELLED,
     NEEDS_ATTENTION,
@@ -137,6 +138,17 @@ data class BackupMediaScanResult(
     val thresholdReached: Boolean,
     val initialized: Boolean,
 )
+
+data class BackupImportResult(
+    val importedSnapshots: Int,
+    val existingSnapshots: Int,
+    val invalidFolders: Int,
+    val importedPlans: Int,
+    val messages: List<String> = emptyList(),
+) {
+    val changed: Boolean
+        get() = importedSnapshots > 0 || importedPlans > 0
+}
 
 enum class BackupRestoreStatus {
     RESTORED,
