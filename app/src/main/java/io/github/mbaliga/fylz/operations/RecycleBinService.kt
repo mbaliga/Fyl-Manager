@@ -99,9 +99,11 @@ class RecycleBinService(
         val plan = resolveRestorePlan(destination, record.originalDisplayName, conflictPolicy)
             ?: return@withContext record.recycledUri
         val staged = copyDocument(recycled, destination, plan.stagingName)
+        var destinationFinalized = false
         try {
             verifyCopy(recycled, staged)
             val restored = finalizeRestore(plan, staged)
+            destinationFinalized = true
             check(recycled.delete()) {
                 "The item was restored, but the provider refused to remove the recycle copy."
             }
@@ -109,7 +111,9 @@ class RecycleBinService(
             store.remove(itemId)
             restored.uri
         } catch (failure: Throwable) {
-            if (staged.exists()) staged.delete()
+            // Once the destination has been finalized it is a verified user copy. Never remove it
+            // merely because cleanup of the recycle copy or metadata failed.
+            if (!destinationFinalized && staged.exists()) staged.delete()
             throw failure
         }
     }
@@ -205,10 +209,10 @@ class RecycleBinService(
             "Unable to replace ${plan.requestedName}; the existing item was left untouched."
         }
         if (plan.stagingName == plan.requestedName) return staged
-        check(staged.renameTo(plan.requestedName)) {
-            "The restored data is safe, but the provider could not restore the requested name. " +
-                "It remains as ${staged.name ?: plan.stagingName}."
-        }
+
+        // Some providers can create and delete documents but cannot rename them. Once the previous
+        // item is gone, retaining the verified staged copy is safer than throwing and deleting it.
+        staged.renameTo(plan.requestedName)
         return staged
     }
 
