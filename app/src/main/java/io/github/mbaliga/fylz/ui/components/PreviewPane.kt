@@ -108,6 +108,8 @@ fun PreviewPane(
                 }
                 descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
+                    MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.ARCHIVE && descriptor.extension in setOf("zip", "zipx", "apk", "jar", "epub", "docx", "xlsx", "pptx", "odt", "ods", "odp") ->
                     ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
