@@ -15,21 +15,21 @@ data class IndexedFileFacts(
 
 enum class MatchMode { ALL, ANY }
 enum class TextField { NAME, EXTENSION, MIME, TAG }
-enum class TextOperator { CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH, REGEX }
+enum class PolicyTextOperator { CONTAINS, EQUALS, STARTS_WITH, ENDS_WITH, REGEX }
 enum class NumberField { SIZE_BYTES, MODIFIED_AT_MILLIS }
-enum class NumberOperator { LESS_THAN, LESS_OR_EQUAL, EQUAL, GREATER_OR_EQUAL, GREATER_THAN, BETWEEN }
+enum class PolicyNumberOperator { LESS_THAN, LESS_OR_EQUAL, EQUAL, GREATER_OR_EQUAL, GREATER_THAN, BETWEEN }
 
 sealed interface CollectionPredicate {
     data class Text(
         val field: TextField,
-        val operator: TextOperator,
+        val operator: PolicyTextOperator,
         val value: String,
         val caseSensitive: Boolean = false,
     ) : CollectionPredicate
 
     data class Number(
         val field: NumberField,
-        val operator: NumberOperator,
+        val operator: PolicyNumberOperator,
         val first: Long,
         val second: Long? = null,
     ) : CollectionPredicate
@@ -74,11 +74,11 @@ data class SmartCollectionRule(
         return candidates.any { candidateRaw ->
             val candidate = if (caseSensitive) candidateRaw else candidateRaw.lowercase(Locale.ROOT)
             when (operator) {
-                TextOperator.CONTAINS -> candidate.contains(expected)
-                TextOperator.EQUALS -> candidate == expected
-                TextOperator.STARTS_WITH -> candidate.startsWith(expected)
-                TextOperator.ENDS_WITH -> candidate.endsWith(expected)
-                TextOperator.REGEX -> runCatching {
+                PolicyTextOperator.CONTAINS -> candidate.contains(expected)
+                PolicyTextOperator.EQUALS -> candidate == expected
+                PolicyTextOperator.STARTS_WITH -> candidate.startsWith(expected)
+                PolicyTextOperator.ENDS_WITH -> candidate.endsWith(expected)
+                PolicyTextOperator.REGEX -> runCatching {
                     Regex(value, if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)).containsMatchIn(candidateRaw)
                 }.getOrDefault(false)
             }
@@ -91,12 +91,12 @@ data class SmartCollectionRule(
             NumberField.MODIFIED_AT_MILLIS -> file.modifiedAtMillis
         } ?: return false
         return when (operator) {
-            NumberOperator.LESS_THAN -> actual < first
-            NumberOperator.LESS_OR_EQUAL -> actual <= first
-            NumberOperator.EQUAL -> actual == first
-            NumberOperator.GREATER_OR_EQUAL -> actual >= first
-            NumberOperator.GREATER_THAN -> actual > first
-            NumberOperator.BETWEEN -> second?.let { actual in minOf(first, it)..maxOf(first, it) } ?: false
+            PolicyNumberOperator.LESS_THAN -> actual < first
+            PolicyNumberOperator.LESS_OR_EQUAL -> actual <= first
+            PolicyNumberOperator.EQUAL -> actual == first
+            PolicyNumberOperator.GREATER_OR_EQUAL -> actual >= first
+            PolicyNumberOperator.GREATER_THAN -> actual > first
+            PolicyNumberOperator.BETWEEN -> second?.let { actual in minOf(first, it)..maxOf(first, it) } ?: false
         }
     }
 

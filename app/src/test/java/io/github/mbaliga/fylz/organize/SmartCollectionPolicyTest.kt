@@ -20,9 +20,9 @@ class SmartCollectionPolicyTest {
         val rule = SmartCollectionRule(
             name = "Finance PDFs",
             predicates = listOf(
-                CollectionPredicate.Text(TextField.EXTENSION, TextOperator.EQUALS, "pdf"),
+                CollectionPredicate.Text(TextField.EXTENSION, PolicyTextOperator.EQUALS, "pdf"),
                 CollectionPredicate.HasTag("Finance"),
-                CollectionPredicate.Number(NumberField.SIZE_BYTES, NumberOperator.GREATER_THAN, 1_000_000),
+                CollectionPredicate.Number(NumberField.SIZE_BYTES, PolicyNumberOperator.GREATER_THAN, 1_000_000),
             ),
         )
         assertTrue(rule.matches(file))
@@ -33,7 +33,7 @@ class SmartCollectionPolicyTest {
             name = "Interesting",
             mode = MatchMode.ANY,
             predicates = listOf(
-                CollectionPredicate.Text(TextField.NAME, TextOperator.CONTAINS, "missing"),
+                CollectionPredicate.Text(TextField.NAME, PolicyTextOperator.CONTAINS, "missing"),
                 CollectionPredicate.IsDuplicate,
             ),
         )
@@ -43,7 +43,7 @@ class SmartCollectionPolicyTest {
     @Test fun malformedRegexFailsClosed() {
         val rule = SmartCollectionRule(
             name = "Bad regex",
-            predicates = listOf(CollectionPredicate.Text(TextField.NAME, TextOperator.REGEX, "[")),
+            predicates = listOf(CollectionPredicate.Text(TextField.NAME, PolicyTextOperator.REGEX, "[")),
         )
         assertFalse(rule.matches(file))
     }
