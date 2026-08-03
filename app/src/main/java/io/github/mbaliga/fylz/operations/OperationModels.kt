@@ -56,5 +56,41 @@ data class FileOperation(
 ) {
     val totalBytes: Long? = items.mapNotNull { it.expectedBytes }.takeIf { it.size == items.size }?.sum()
     val completedBytes: Long = items.sumOf { it.completedBytes }
-    val progress: Float? = totalBytes?.takeIf { it > 0 }?.let { completedBytes.toFloat() / it.toFloat() }
+    val progress: Float? = totalBytes?.takeIf { it > 0 }?.let {
+        (completedBytes.toFloat() / it.toFloat()).coerceIn(0f, 1f)
+    }
+}
+
+/** Pure state rules shared by the Android journal and JVM tests. */
+object OperationRecoveryPolicy {
+    private val interruptedStates = setOf(
+        OperationState.PREFLIGHT,
+        OperationState.RUNNING,
+        OperationState.PAUSED,
+    )
+
+    fun recoverAfterProcessDeath(
+        operation: FileOperation,
+        recoveredAtMillis: Long,
+    ): FileOperation {
+        if (operation.state !in interruptedStates) return operation
+        return operation.copy(
+            state = OperationState.NEEDS_ATTENTION,
+            items = operation.items.map { item ->
+                if (item.state in interruptedStates) {
+                    item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = "PROCESS_INTERRUPTED")
+                } else {
+                    item
+                }
+            },
+            updatedAtMillis = recoveredAtMillis,
+        )
+    }
+
+    fun isTerminal(state: OperationState): Boolean = state in setOf(
+        OperationState.SUCCEEDED,
+        OperationState.FAILED,
+        OperationState.CANCELLED,
+        OperationState.NEEDS_ATTENTION,
+    )
 }
