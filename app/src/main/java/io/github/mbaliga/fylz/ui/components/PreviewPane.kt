@@ -22,9 +22,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,7 +107,7 @@ fun PreviewPane(
                     MonospaceTextPreview(textContent, Modifier.fillMaxSize())
                 }
                 descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
-                descriptor.family == PreviewFamily.PDF -> PdfDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.ARCHIVE && descriptor.extension in setOf("zip", "zipx", "apk", "jar", "epub", "docx", "xlsx", "pptx", "odt", "ods", "odp") ->
                     ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
