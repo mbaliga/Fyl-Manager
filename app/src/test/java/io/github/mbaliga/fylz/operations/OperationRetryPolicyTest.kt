@@ -1,65 +1,55 @@
 package io.github.mbaliga.fylz.operations
 
-import android.net.Uri
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationRetryPolicyTest {
-    private val source = Uri.parse("content://example/source")
-    private val destination = Uri.parse("content://example/destination")
-
     @Test
-    fun `failed copy with destination can retry`() {
-        val operation = FileOperation(
-            type = FileOperationType.COPY,
-            items = listOf(
-                OperationItem(
-                    source = source,
-                    destination = destination,
-                    displayName = "example.txt",
-                    state = OperationState.FAILED,
-                ),
+    fun `failed copy with complete metadata can retry`() {
+        assertTrue(
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.COPY,
+                state = OperationState.FAILED,
+                itemCount = 1,
+                allItemsHaveSourceAndDestination = true,
             ),
-            state = OperationState.FAILED,
         )
-
-        assertTrue(OperationRetryPolicy.canRetry(operation))
-        assertEquals(ConflictPolicy.KEEP_BOTH, OperationRetryPolicy.retryConflictPolicy(operation))
     }
 
     @Test
     fun `destructive operation cannot retry`() {
-        val operation = FileOperation(
-            type = FileOperationType.PERMANENT_DELETE,
-            items = listOf(
-                OperationItem(
-                    source = source,
-                    displayName = "example.txt",
-                    state = OperationState.FAILED,
-                ),
+        assertFalse(
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.PERMANENT_DELETE,
+                state = OperationState.FAILED,
+                itemCount = 1,
+                allItemsHaveSourceAndDestination = true,
             ),
-            state = OperationState.FAILED,
         )
-
-        assertFalse(OperationRetryPolicy.canRetry(operation))
     }
 
     @Test
     fun `copy without destination cannot retry`() {
-        val operation = FileOperation(
-            type = FileOperationType.COPY,
-            items = listOf(
-                OperationItem(
-                    source = source,
-                    displayName = "example.txt",
-                    state = OperationState.NEEDS_ATTENTION,
-                ),
+        assertFalse(
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.COPY,
+                state = OperationState.NEEDS_ATTENTION,
+                itemCount = 1,
+                allItemsHaveSourceAndDestination = false,
             ),
-            state = OperationState.NEEDS_ATTENTION,
         )
+    }
 
-        assertFalse(OperationRetryPolicy.canRetry(operation))
+    @Test
+    fun `successful operation cannot retry`() {
+        assertFalse(
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.MOVE,
+                state = OperationState.SUCCEEDED,
+                itemCount = 1,
+                allItemsHaveSourceAndDestination = true,
+            ),
+        )
     }
 }
