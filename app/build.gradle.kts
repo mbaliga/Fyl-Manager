@@ -54,6 +54,11 @@ android {
             "/META-INF/LGPL2.1",
             "/META-INF/LICENSE*",
             "/META-INF/NOTICE*",
+            // jspecify and all three org.bouncycastle:*-jdk18on artifacts (pulled in
+            // transitively by sshj for the SMB/SFTP remote provider) each ship an identical
+            // multi-release-jar OSGi manifest at this exact path -- not needed at runtime by
+            // a non-OSGi Android app, so it's excluded rather than arbitrarily picking one.
+            "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
         )
     }
 }
