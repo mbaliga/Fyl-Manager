@@ -18,12 +18,24 @@ import java.io.OutputStream
 import java.nio.file.Files
 import java.util.UUID
 
+data class ArchiveInspection(
+    val encrypted: Boolean,
+    val archiveBytes: Long,
+    val entryCount: Int,
+    val fileCount: Int,
+    val directoryCount: Int,
+    val totalUncompressedBytes: Long?,
+    val visibleEntries: List<ArchiveEntryMetadata>,
+    val entriesTruncated: Boolean,
+    val extractionDecision: ArchiveExtractionDecision,
+)
+
 /**
  * Provider-neutral ZIP engine.
  *
  * Files are staged only inside app-private cache storage. Password-protected archives use AES-256.
- * Extraction performs bounded metadata preflight before Zip4j writes anything, validates every path,
- * and copies only ordinary files and directories into the user-selected SAF destination.
+ * Inspection and extraction share the same bounded metadata preflight so the preview cannot claim
+ * an archive is safe when extraction would reject it.
  */
 class ArchiveService(
     private val context: Context,
@@ -78,6 +90,40 @@ class ArchiveService(
         }
     }
 
+    suspend fun inspectZip(
+        archiveUri: Uri,
+        maxVisibleEntries: Int = DEFAULT_VISIBLE_ENTRY_LIMIT,
+    ): ArchiveInspection = withContext(Dispatchers.IO) {
+        require(maxVisibleEntries in 1..extractionLimits.maxEntries) {
+            "Invalid archive preview entry limit."
+        }
+        val workspace = newWorkspace()
+        try {
+            val archive = stageArchive(archiveUri, workspace)
+            val zipFile = ZipFile(archive)
+            val metadata = readMetadata(zipFile)
+            val decision = ArchiveExtractionPolicy.evaluate(
+                archiveBytes = archive.length(),
+                entries = metadata,
+                limits = extractionLimits,
+            )
+            val fileEntries = metadata.filterNot(ArchiveEntryMetadata::directory)
+            ArchiveInspection(
+                encrypted = zipFile.isEncrypted,
+                archiveBytes = archive.length(),
+                entryCount = metadata.size,
+                fileCount = fileEntries.size,
+                directoryCount = metadata.size - fileEntries.size,
+                totalUncompressedBytes = metadata.sumKnownUncompressedBytes(),
+                visibleEntries = metadata.take(maxVisibleEntries),
+                entriesTruncated = metadata.size > maxVisibleEntries,
+                extractionDecision = decision,
+            )
+        } finally {
+            workspace.deleteRecursively()
+        }
+    }
+
     suspend fun extractZip(
         archiveUri: Uri,
         destinationTreeUri: Uri,
@@ -85,12 +131,7 @@ class ArchiveService(
     ) = withContext(Dispatchers.IO) {
         val workspace = newWorkspace()
         try {
-            val archive = File(workspace, "input.zip")
-            context.contentResolver.openInputStream(archiveUri)?.use { input ->
-                archive.outputStream().use { output ->
-                    copyBounded(input, output, extractionLimits.maxArchiveBytes)
-                }
-            } ?: error("Unable to read the archive.")
+            val archive = stageArchive(archiveUri, workspace)
 
             val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
                 ?: error("Unable to open the destination folder.")
@@ -107,14 +148,7 @@ class ArchiveService(
                 zipFile.setPassword(password)
             }
 
-            val metadata = zipFile.fileHeaders.map { header ->
-                ArchiveEntryMetadata(
-                    name = header.fileName,
-                    directory = header.isDirectory,
-                    compressedBytes = header.compressedSize,
-                    uncompressedBytes = header.uncompressedSize,
-                )
-            }
+            val metadata = readMetadata(zipFile)
             val decision = ArchiveExtractionPolicy.evaluate(
                 archiveBytes = archive.length(),
                 entries = metadata,
@@ -137,6 +171,37 @@ class ArchiveService(
             password?.fill('\u0000')
             workspace.deleteRecursively()
         }
+    }
+
+    private fun stageArchive(archiveUri: Uri, workspace: File): File {
+        val archive = File(workspace, "input.zip")
+        context.contentResolver.openInputStream(archiveUri)?.use { input ->
+            archive.outputStream().use { output ->
+                copyBounded(input, output, extractionLimits.maxArchiveBytes)
+            }
+        } ?: error("Unable to read the archive.")
+        return archive
+    }
+
+    private fun readMetadata(zipFile: ZipFile): List<ArchiveEntryMetadata> =
+        zipFile.fileHeaders.map { header ->
+            ArchiveEntryMetadata(
+                name = header.fileName,
+                directory = header.isDirectory,
+                compressedBytes = header.compressedSize,
+                uncompressedBytes = header.uncompressedSize,
+            )
+        }
+
+    private fun List<ArchiveEntryMetadata>.sumKnownUncompressedBytes(): Long? {
+        var total = 0L
+        for (entry in this) {
+            if (entry.uncompressedBytes < 0L || Long.MAX_VALUE - total < entry.uncompressedBytes) {
+                return null
+            }
+            total += entry.uncompressedBytes
+        }
+        return total
     }
 
     private fun copyIntoProvider(source: File, destination: DocumentFile) {
@@ -193,5 +258,9 @@ class ArchiveService(
             if (used.add(candidate.lowercase())) return candidate
             index += 1
         }
+    }
+
+    private companion object {
+        const val DEFAULT_VISIBLE_ENTRY_LIMIT = 500
     }
 }
