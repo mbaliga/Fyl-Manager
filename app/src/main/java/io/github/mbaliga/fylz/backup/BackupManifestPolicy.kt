@@ -7,6 +7,8 @@ object BackupManifestPolicy {
     const val MAX_DEPTH = 128
     const val MAX_ENTRIES = 1_000_000
 
+    private val reservedManifestKey = MANIFEST_FILE.lowercase(Locale.ROOT)
+
     data class Validation(
         val allowed: Boolean,
         val reason: String? = null,
@@ -22,6 +24,9 @@ object BackupManifestPolicy {
         if (value.any { it.code in 0..31 || it.code == 127 }) {
             return Validation(false, "Backup entry names cannot contain control characters.")
         }
+        if (value.lowercase(Locale.ROOT) == reservedManifestKey) {
+            return Validation(false, "Backup source conflicts with the reserved manifest name.")
+        }
         return Validation(true)
     }
 
@@ -36,9 +41,6 @@ object BackupManifestPolicy {
         for (entry in manifest.entries) {
             val path = validatePath(entry.relativePath)
             if (!path.allowed) return path
-            if (entry.relativePath == MANIFEST_FILE) {
-                return Validation(false, "Backup source conflicts with the reserved manifest name.")
-            }
             if (entry.directory) {
                 if (entry.sizeBytes != 0L || entry.sha256 != null) {
                     return Validation(false, "Directory metadata is invalid for ${entry.relativePath}.")
@@ -54,7 +56,7 @@ object BackupManifestPolicy {
             }
         }
 
-        normalized.forEach { (path, entry) ->
+        normalized.forEach { (path, _) ->
             var ancestor = path.substringBeforeLast('/', "")
             while (ancestor.isNotBlank()) {
                 val parent = normalized[ancestor]
@@ -62,9 +64,6 @@ object BackupManifestPolicy {
                     return Validation(false, "A file conflicts with a child path in the backup.")
                 }
                 ancestor = ancestor.substringBeforeLast('/', "")
-            }
-            if (entry.directory && path == MANIFEST_FILE.lowercase(Locale.ROOT)) {
-                return Validation(false, "Backup source conflicts with the reserved manifest name.")
             }
         }
         return Validation(true)
