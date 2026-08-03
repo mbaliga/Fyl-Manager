@@ -11,12 +11,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.backup.BackupScheduler
 import io.github.mbaliga.fylz.ui.FileHistoryOverlay
 import io.github.mbaliga.fylz.ui.FylzAppShell
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BackupScheduler(applicationContext).reconcile()
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
