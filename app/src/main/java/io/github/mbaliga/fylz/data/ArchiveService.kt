@@ -153,13 +153,14 @@ class ArchiveService(
         destinationTreeUri: Uri,
         password: CharArray? = null,
     ) = withContext(Dispatchers.IO) {
+        val archiveDisplayName = queryName(archiveUri) ?: "archive.zip"
         var operation = FileOperation(
             type = FileOperationType.EXTRACT,
             items = listOf(
                 OperationItem(
                     source = archiveUri,
                     destination = destinationTreeUri,
-                    displayName = queryName(archiveUri) ?: "archive.zip",
+                    displayName = archiveDisplayName,
                     state = OperationState.PREFLIGHT,
                 ),
             ),
@@ -167,6 +168,7 @@ class ArchiveService(
         )
         journal.put(operation)
         val workspace = newWorkspace()
+        var providerExtractionRoot: DocumentFile? = null
         try {
             operation = operation.running()
             journal.put(operation)
@@ -202,18 +204,53 @@ class ArchiveService(
                 ) { "Unsafe archive path: ${header.fileName}" }
             }
             zipFile.extractAll(canonicalRoot.path)
-            canonicalRoot.listFiles().orEmpty().forEach { copyIntoProvider(it, destination) }
 
-            journal.put(operation.succeeded(destinationTreeUri))
+            val requestedFolderName = extractionFolderBaseName(archiveDisplayName)
+            val extractionFolderName = uniqueDirectoryName(destination, requestedFolderName)
+            providerExtractionRoot = destination.createDirectory(extractionFolderName)
+                ?: error("Unable to create the extraction folder.")
+            canonicalRoot.listFiles().orEmpty().forEach { source ->
+                copyIntoProvider(source, requireNotNull(providerExtractionRoot))
+            }
+
+            journal.put(operation.succeeded(requireNotNull(providerExtractionRoot).uri))
         } catch (cancelled: CancellationException) {
-            journal.put(operation.cancelled())
+            val rollbackComplete = rollbackExtraction(providerExtractionRoot)
+            journal.put(
+                if (rollbackComplete) operation.cancelled()
+                else operation.needsAttention("ROLLBACK_INCOMPLETE"),
+            )
             throw cancelled
         } catch (failure: Throwable) {
-            journal.put(operation.failed(failure.errorCode()))
+            val rollbackComplete = rollbackExtraction(providerExtractionRoot)
+            journal.put(
+                if (rollbackComplete) operation.failed(failure.errorCode())
+                else operation.needsAttention("ROLLBACK_INCOMPLETE"),
+            )
             throw failure
         } finally {
             password?.fill('\u0000')
             workspace.deleteRecursively()
+        }
+    }
+
+    private fun rollbackExtraction(root: DocumentFile?): Boolean {
+        if (root == null) return true
+        return runCatching { root.delete() }.getOrDefault(false)
+    }
+
+    private fun extractionFolderBaseName(archiveName: String): String {
+        val withoutExtension = archiveName.substringBeforeLast('.', archiveName)
+        return sanitizeName(withoutExtension).ifBlank { "Extracted archive" }
+    }
+
+    private fun uniqueDirectoryName(destination: DocumentFile, requestedName: String): String {
+        if (destination.findFile(requestedName) == null) return requestedName
+        var index = 2
+        while (true) {
+            val candidate = "$requestedName ($index)"
+            if (destination.findFile(candidate) == null) return candidate
+            index += 1
         }
     }
 
@@ -249,17 +286,20 @@ class ArchiveService(
     private fun copyIntoProvider(source: File, destination: DocumentFile) {
         check(!Files.isSymbolicLink(source.toPath())) { "Symbolic links are not extracted." }
         if (source.isDirectory) {
-            val child = destination.findFile(source.name)
-                ?.takeIf(DocumentFile::isDirectory)
-                ?: destination.createDirectory(source.name)
+            check(destination.findFile(source.name) == null) {
+                "Archive contains colliding paths: ${source.name}"
+            }
+            val child = destination.createDirectory(source.name)
                 ?: error("Unable to create ${source.name}")
             source.listFiles().orEmpty().forEach { copyIntoProvider(it, child) }
             return
         }
+        check(destination.findFile(source.name) == null) {
+            "Archive contains colliding paths: ${source.name}"
+        }
         val mimeType = java.net.URLConnection.guessContentTypeFromName(source.name)
             ?: "application/octet-stream"
-        val target = destination.findFile(source.name)
-            ?: destination.createFile(mimeType, source.name)
+        val target = destination.createFile(mimeType, source.name)
             ?: error("Unable to create ${source.name}")
         context.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
             source.inputStream().use { it.copyTo(output) }
@@ -302,6 +342,12 @@ class ArchiveService(
     private fun FileOperation.failed(code: String): FileOperation = copy(
         state = OperationState.FAILED,
         items = items.map { it.copy(state = OperationState.FAILED, errorCode = code) },
+        updatedAtMillis = System.currentTimeMillis(),
+    )
+
+    private fun FileOperation.needsAttention(code: String): FileOperation = copy(
+        state = OperationState.NEEDS_ATTENTION,
+        items = items.map { it.copy(state = OperationState.NEEDS_ATTENTION, errorCode = code) },
         updatedAtMillis = System.currentTimeMillis(),
     )
 
