@@ -4,6 +4,7 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.UUID
 
 class BackupStore(context: Context) {
     private val root = File(context.filesDir, "backup-state")
@@ -11,6 +12,7 @@ class BackupStore(context: Context) {
     private val runsFile = File(root, "runs.json")
     private val snapshotsFile = File(root, "snapshots.json")
     private val mediaFile = File(root, "media-state.json")
+    private val leasesFile = File(root, "leases.json")
 
     fun plans(): List<BackupPlan> = synchronized(GLOBAL_LOCK) {
         readArray(plansFile).mapNotNull(::decodePlan).sortedBy(BackupPlan::name)
@@ -24,13 +26,14 @@ class BackupStore(context: Context) {
         writeArray(plansFile, plans.sortedBy(BackupPlan::name).map(::encodePlan))
     }
 
-    /** A plan with retained snapshots must be handled explicitly by the UI before removal. */
     fun removePlan(id: String): Boolean = synchronized(GLOBAL_LOCK) {
         if (snapshots(id).isNotEmpty()) return@synchronized false
         writeArray(plansFile, plans().filterNot { it.id == id }.map(::encodePlan))
         writeArray(runsFile, runs().filterNot { it.planId == id }.map(::encodeRun))
         val allMedia = readMediaStates().toMutableMap().apply { remove(id) }
         writeMediaStates(allMedia)
+        val leases = readLeases().toMutableMap().apply { remove(id) }
+        writeLeases(leases)
         true
     }
 
@@ -72,6 +75,32 @@ class BackupStore(context: Context) {
         writeMediaStates(states)
     }
 
+    fun acquireLease(planId: String, ownerId: String = UUID.randomUUID().toString()): String? = synchronized(GLOBAL_LOCK) {
+        val now = System.currentTimeMillis()
+        val leases = readLeases().filterValues { now - it.acquiredAtMillis < LEASE_TIMEOUT_MILLIS }.toMutableMap()
+        if (leases.containsKey(planId)) return@synchronized null
+        leases[planId] = BackupLease(ownerId, now)
+        writeLeases(leases)
+        ownerId
+    }
+
+    fun refreshLease(planId: String, ownerId: String): Boolean = synchronized(GLOBAL_LOCK) {
+        val leases = readLeases().toMutableMap()
+        val current = leases[planId] ?: return@synchronized false
+        if (current.ownerId != ownerId) return@synchronized false
+        leases[planId] = current.copy(acquiredAtMillis = System.currentTimeMillis())
+        writeLeases(leases)
+        true
+    }
+
+    fun releaseLease(planId: String, ownerId: String) = synchronized(GLOBAL_LOCK) {
+        val leases = readLeases().toMutableMap()
+        if (leases[planId]?.ownerId == ownerId) {
+            leases.remove(planId)
+            writeLeases(leases)
+        }
+    }
+
     private fun readMediaStates(): Map<String, BackupMediaState> = runCatching {
         if (!mediaFile.isFile) return emptyMap()
         val root = JSONObject(mediaFile.readText())
@@ -97,6 +126,26 @@ class BackupStore(context: Context) {
             })
         }
         atomicWrite(mediaFile, root.toString())
+    }
+
+    private fun readLeases(): Map<String, BackupLease> = runCatching {
+        if (!leasesFile.isFile) return emptyMap()
+        val root = JSONObject(leasesFile.readText())
+        root.keys().asSequence().associateWith { key ->
+            val value = root.getJSONObject(key)
+            BackupLease(value.getString("ownerId"), value.getLong("acquiredAtMillis"))
+        }
+    }.getOrElse { emptyMap() }
+
+    private fun writeLeases(leases: Map<String, BackupLease>) {
+        val root = JSONObject()
+        leases.forEach { (planId, lease) ->
+            root.put(planId, JSONObject().apply {
+                put("ownerId", lease.ownerId)
+                put("acquiredAtMillis", lease.acquiredAtMillis)
+            })
+        }
+        atomicWrite(leasesFile, root.toString())
     }
 
     private fun encodePlan(value: BackupPlan) = JSONObject().apply {
@@ -243,7 +292,10 @@ class BackupStore(context: Context) {
     private fun JSONObject.optLongOrNull(key: String): Long? =
         if (!has(key) || isNull(key)) null else getLong(key)
 
+    private data class BackupLease(val ownerId: String, val acquiredAtMillis: Long)
+
     private companion object {
         val GLOBAL_LOCK = Any()
+        const val LEASE_TIMEOUT_MILLIS = 6L * 60L * 60L * 1000L
     }
 }
