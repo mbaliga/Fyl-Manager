@@ -9,7 +9,6 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
-import okio.BufferedSink
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
 import java.io.File
@@ -67,13 +66,16 @@ class S3CompatibleService(
         secretAccessKey: CharArray,
     ): ObjectListPage = withContext(Dispatchers.IO) {
         require(prefix.length <= MAX_KEY_CHARS)
-        val builder = objectUrl(config, null).newBuilder()
+        val url = objectUrl(config, null).newBuilder()
             .addQueryParameter("list-type", "2")
             .addQueryParameter("max-keys", MAX_LIST_RESULTS.toString())
-        if (prefix.isNotEmpty()) builder.addQueryParameter("prefix", prefix)
-        if (!delimiter.isNullOrEmpty()) builder.addQueryParameter("delimiter", delimiter)
-        if (!continuationToken.isNullOrEmpty()) builder.addQueryParameter("continuation-token", continuationToken)
-        val request = signedRequest(config, builder.build(), "GET", EMPTY_SHA256, secretAccessKey).build()
+            .apply {
+                if (prefix.isNotEmpty()) addQueryParameter("prefix", prefix)
+                if (!delimiter.isNullOrEmpty()) addQueryParameter("delimiter", delimiter)
+                if (!continuationToken.isNullOrEmpty()) addQueryParameter("continuation-token", continuationToken)
+            }
+            .build()
+        val request = signedRequest(config, url, "GET", EMPTY_SHA256, secretAccessKey).build()
         client.newCall(request).execute().use { response ->
             val body = response.body.string().take(MAX_XML_CHARS)
             check(response.isSuccessful) { "Object listing failed with HTTP ${response.code}. ${safeError(body)}" }
@@ -93,7 +95,9 @@ class S3CompatibleService(
         client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "Object download failed with HTTP ${response.code}." }
             val expected = response.body.contentLength().takeIf { it >= 0L }
-            val partial = File(destination.parentFile, ".${destination.name}.${System.nanoTime()}.part")
+            val parent = destination.parentFile ?: error("Destination has no parent folder.")
+            parent.mkdirs()
+            val partial = File(parent, ".${destination.name}.${System.nanoTime()}.part")
             try {
                 var completed = 0L
                 response.body.byteStream().use { input ->
@@ -128,10 +132,9 @@ class S3CompatibleService(
     ) = withContext(Dispatchers.IO) {
         validateKey(key)
         require(source.isFile && source.canRead())
-        val payloadHash = sha256(source)
-        val body = source.asRequestBody(contentType.toMediaTypeOrNull())
+        val payloadHash = sha256File(source)
         val request = signedRequest(config, objectUrl(config, key), "PUT", payloadHash, secretAccessKey)
-            .put(body)
+            .put(source.asRequestBody(contentType.toMediaTypeOrNull()))
             .build()
         client.newCall(request).execute().use { response ->
             val error = response.body.string().take(2_000)
@@ -164,29 +167,33 @@ class S3CompatibleService(
     ): Request.Builder {
         validate(config)
         val now = Date(nowMillis())
-        val date = DATE.format(now)
-        val timestamp = TIMESTAMP.format(now)
+        val date = utcFormat("yyyyMMdd", now)
+        val timestamp = utcFormat("yyyyMMdd'T'HHmmss'Z'", now)
         val canonicalHeaders = "host:${url.host}${portSuffix(url)}\n" +
             "x-amz-content-sha256:$payloadHash\n" +
             "x-amz-date:$timestamp\n"
         val signedHeaders = "host;x-amz-content-sha256;x-amz-date"
         val canonicalRequest = listOf(
             method,
-            canonicalUri(url),
+            url.encodedPath.ifEmpty { "/" },
             canonicalQuery(url),
             canonicalHeaders,
             signedHeaders,
             payloadHash,
         ).joinToString("\n")
         val scope = "$date/${config.region}/s3/aws4_request"
-        val stringToSign = "AWS4-HMAC-SHA256\n$timestamp\n$scope\n${sha256(canonicalRequest.toByteArray())}"
+        val stringToSign = "AWS4-HMAC-SHA256\n$timestamp\n$scope\n${sha256Bytes(canonicalRequest.toByteArray())}"
         val secretBytes = secretAccessKey.concatToString().toByteArray(Charsets.UTF_8)
         return try {
-            val dateKey = hmac(("AWS4".toByteArray() + secretBytes), date)
+            val dateKey = hmac("AWS4".toByteArray() + secretBytes, date)
             val regionKey = hmac(dateKey, config.region)
             val serviceKey = hmac(regionKey, "s3")
             val signingKey = hmac(serviceKey, "aws4_request")
             val signature = hmac(signingKey, stringToSign).toHex()
+            dateKey.fill(0)
+            regionKey.fill(0)
+            serviceKey.fill(0)
+            signingKey.fill(0)
             Request.Builder()
                 .url(url)
                 .header("x-amz-date", timestamp)
@@ -212,8 +219,6 @@ class S3CompatibleService(
         return builder.build()
     }
 
-    private fun canonicalUri(url: HttpUrl): String = url.encodedPath.ifEmpty { "/" }
-
     private fun canonicalQuery(url: HttpUrl): String = buildList {
         for (index in 0 until url.querySize) {
             add(url.queryParameterName(index) to (url.queryParameterValue(index) ?: ""))
@@ -227,7 +232,6 @@ class S3CompatibleService(
             setInput(xml.reader())
         }
         val entries = mutableListOf<ObjectEntry>()
-        var event = parser.eventType
         var inContents = false
         var inPrefix = false
         var key: String? = null
@@ -236,6 +240,7 @@ class S3CompatibleService(
         var etag: String? = null
         var nextToken: String? = null
         var truncated = false
+        var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT && entries.size < MAX_LIST_RESULTS * 2) {
             if (event == XmlPullParser.START_TAG) {
                 when (parser.name) {
@@ -286,7 +291,7 @@ class S3CompatibleService(
         else -> ":${url.port}"
     }
 
-    private fun sha256(file: File): String {
+    private fun sha256File(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -299,22 +304,29 @@ class S3CompatibleService(
         return digest.digest().toHex()
     }
 
-    private fun sha256(value: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(value).toHex()
     private fun hmac(key: ByteArray, value: String): ByteArray = Mac.getInstance("HmacSHA256").run {
         init(SecretKeySpec(key, "HmacSHA256"))
         doFinal(value.toByteArray(Charsets.UTF_8))
     }
+
+    private fun utcFormat(pattern: String, date: Date): String = SimpleDateFormat(pattern, Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }.format(date)
+
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it.toInt() and 0xff) }
     private fun awsEncode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8.name())
         .replace("+", "%20").replace("%7E", "~")
-    private fun safeError(value: String): String = value.replace(Regex("<[^>]+>"), " ").replace(Regex("\\s+"), " ").trim().take(300)
+    private fun safeError(value: String): String = value.replace(Regex("<[^>]+>"), " ")
+        .replace(Regex("\\s+"), " ").trim().take(300)
 
     private companion object {
-        val DATE = SimpleDateFormat("yyyyMMdd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-        val TIMESTAMP = SimpleDateFormat("yyyyMMdd'T'HHmmss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-        val EMPTY_SHA256 = sha256(ByteArray(0))
+        const val EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         const val MAX_KEY_CHARS = 1_024
         const val MAX_LIST_RESULTS = 1_000
         const val MAX_XML_CHARS = 4_000_000
+
+        fun sha256Bytes(value: ByteArray): String = MessageDigest.getInstance("SHA-256")
+            .digest(value)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 }
