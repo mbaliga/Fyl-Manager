@@ -3,4 +3,6 @@
     <string name="app_name">Fylz</string>
     <string name="operation_history_title">Activity</string>
     <string name="operation_history_shortcut_long">Open file operation activity</string>
+    <string name="post_v1_tools_title">Tools</string>
+    <string name="post_v1_tools_shortcut_long">Open indexing and advanced file tools</string>
 </resources>
