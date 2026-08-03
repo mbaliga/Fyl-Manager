@@ -69,4 +69,43 @@ class OperationRetryPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `verified move copy uses cleanup retry instead of transfer replay`() {
+        assertTrue(
+            OperationRetryPolicy.isMoveCleanupRetry(
+                type = FileOperationType.MOVE,
+                state = OperationState.NEEDS_ATTENTION,
+                incompleteErrorCodes = listOf(OperationRetryPolicy.MOVE_SOURCE_DELETE_PENDING),
+                allIncompleteItemsHaveDestination = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `mixed move errors cannot be treated as cleanup only`() {
+        assertFalse(
+            OperationRetryPolicy.isMoveCleanupRetry(
+                type = FileOperationType.MOVE,
+                state = OperationState.NEEDS_ATTENTION,
+                incompleteErrorCodes = listOf(
+                    OperationRetryPolicy.MOVE_SOURCE_DELETE_PENDING,
+                    "COPY_FAILED",
+                ),
+                allIncompleteItemsHaveDestination = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `cleanup retry requires a verified destination URI`() {
+        assertFalse(
+            OperationRetryPolicy.isMoveCleanupRetry(
+                type = FileOperationType.MOVE,
+                state = OperationState.NEEDS_ATTENTION,
+                incompleteErrorCodes = listOf(OperationRetryPolicy.MOVE_SOURCE_DELETE_PENDING),
+                allIncompleteItemsHaveDestination = false,
+            ),
+        )
+    }
 }
