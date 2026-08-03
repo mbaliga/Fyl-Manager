@@ -18,13 +18,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.AudioFile
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.VideoFile
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -47,7 +50,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.data.ArchiveInspection
+import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.util.FileType
@@ -127,6 +133,7 @@ fun PreviewPane(
                 }
                 entry.kind == EntryKind.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
                 entry.kind == EntryKind.PDF -> PdfPreview(entry, Modifier.fillMaxSize())
+                entry.kind == EntryKind.ARCHIVE -> ArchivePreview(entry, Modifier.fillMaxSize())
                 else -> GenericPreview(entry, Modifier.fillMaxSize())
             }
         }
@@ -162,6 +169,149 @@ private fun TruncationNotice() {
             .fillMaxWidth()
             .padding(8.dp),
     )
+}
+
+@Composable
+private fun ArchivePreview(entry: FileEntry, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val inspection by produceState<Result<ArchiveInspection>?>(initialValue = null, entry.uri) {
+        value = runCatching { ArchiveService(context.applicationContext).inspectZip(entry.uri) }
+    }
+
+    when (val result = inspection) {
+        null -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        else -> result.fold(
+            onSuccess = { details -> ArchiveInspectionContent(details, modifier) },
+            onFailure = { failure ->
+                Box(modifier.padding(24.dp), contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(Icons.Outlined.WarningAmber, contentDescription = null, modifier = Modifier.size(42.dp))
+                        Text("Unable to inspect archive", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            failure.message ?: "The archive may be damaged or unsupported.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ArchiveInspectionContent(details: ArchiveInspection, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(36.dp))
+            Column {
+                Text("ZIP archive", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "${details.entryCount} entries · ${formatBytes(details.archiveBytes)} compressed",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        if (details.encrypted) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Lock, contentDescription = null)
+                Text("Password protected")
+            }
+        }
+
+        val decision = details.extractionDecision
+        Surface(
+            color = if (decision.allowed) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.errorContainer
+            },
+            shape = MaterialTheme.shapes.medium,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    if (decision.allowed) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber,
+                    contentDescription = null,
+                )
+                Column {
+                    Text(
+                        if (decision.allowed) "Extraction preflight passed" else "Extraction blocked",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        decision.reason ?: "Paths and expansion metadata are within configured limits.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+            ArchiveMetric("Files", details.fileCount.toString())
+            ArchiveMetric("Folders", details.directoryCount.toString())
+            ArchiveMetric(
+                "Expanded",
+                details.totalUncompressedBytes?.let(::formatBytes) ?: "Unknown",
+            )
+        }
+
+        HorizontalDivider()
+        Text("Contents", style = MaterialTheme.typography.titleSmall)
+        details.visibleEntries.forEach { archiveEntry ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (archiveEntry.directory) Icons.Outlined.Archive else Icons.Outlined.InsertDriveFile,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    archiveEntry.name,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!archiveEntry.directory && archiveEntry.uncompressedBytes >= 0L) {
+                    Text(
+                        formatBytes(archiveEntry.uncompressedBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        if (details.entriesTruncated) {
+            Text(
+                "Only the first ${details.visibleEntries.size} entries are shown.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ArchiveMetric(label: String, value: String) {
+    Column {
+        Text(value, style = MaterialTheme.typography.titleSmall)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable
