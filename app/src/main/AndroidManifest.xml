@@ -23,6 +23,12 @@
             tools:node="merge" />
 
         <activity
+            android:name=".PostV1ToolsActivity"
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".OperationHistoryActivity"
             android:exported="true"
             android:resizeableActivity="true"
