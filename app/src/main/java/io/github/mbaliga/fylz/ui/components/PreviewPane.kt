@@ -36,10 +36,13 @@ import io.github.mbaliga.fylz.preview.FileFormatRegistry
 import io.github.mbaliga.fylz.preview.PreviewFamily
 import io.github.mbaliga.fylz.util.FileType
 
+private val SEMANTIC_ZIP_DOCUMENTS = setOf(
+    "docx", "docm", "dotx", "pptx", "pptm", "ppsx", "xlsx", "xlsm",
+    "odt", "ods", "odp", "odg", "epub",
+)
 private val ZIP_CONTAINER_EXTENSIONS = setOf(
     "zip", "zipx", "apk", "aab", "apks", "xapk", "apkm", "jar", "war", "ear",
-    "epub", "cbz", "docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm",
-    "odt", "ods", "odp", "odg", "3mf", "kmz", "usdz", "vsdx", "nupkg", "whl",
+    "cbz", "3mf", "kmz", "usdz", "vsdx", "nupkg", "whl",
 )
 
 @Composable
@@ -116,6 +119,8 @@ fun PreviewPane(
                 descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
                     MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
+                    ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
                     ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
