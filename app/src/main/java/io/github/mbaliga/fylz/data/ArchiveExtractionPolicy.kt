@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.data
 
+import java.util.Locale
+
 data class ArchiveEntryMetadata(
     val name: String,
     val directory: Boolean,
@@ -37,9 +39,13 @@ object ArchiveExtractionPolicy {
         }
 
         var totalUncompressed = 0L
+        val normalizedPaths = mutableSetOf<String>()
         for (entry in entries) {
             val pathReason = validatePath(entry.name, limits)
             if (pathReason != null) return ArchiveExtractionDecision(false, pathReason)
+            if (!normalizedPaths.add(normalizedPathKey(entry.name))) {
+                return ArchiveExtractionDecision(false, "Archive contains duplicate or colliding paths.")
+            }
             if (entry.compressedBytes < 0L || entry.uncompressedBytes < 0L) {
                 return ArchiveExtractionDecision(false, "Archive contains an entry with unknown size.")
             }
@@ -67,6 +73,11 @@ object ArchiveExtractionPolicy {
         return ArchiveExtractionDecision(true)
     }
 
+    private fun normalizedPathKey(name: String): String = name
+        .replace('\\', '/')
+        .trimEnd('/')
+        .lowercase(Locale.ROOT)
+
     private fun validatePath(name: String, limits: ArchiveExtractionLimits): String? {
         if (name.isBlank() || name.length > limits.maxNameLength * limits.maxPathDepth) {
             return "Archive contains an invalid path."
@@ -76,11 +87,12 @@ object ArchiveExtractionPolicy {
         }
         val normalized = name.replace('\\', '/')
         val segments = normalized.split('/').filter(String::isNotEmpty)
+        if (segments.isEmpty()) return "Archive contains an invalid path."
         if (segments.size > limits.maxPathDepth) return "Archive path nesting is too deep."
         if (segments.any { it == "." || it == ".." || it.length > limits.maxNameLength }) {
             return "Archive contains an unsafe path segment."
         }
-        if (segments.firstOrNull()?.matches(Regex("^[A-Za-z]:$")) == true) {
+        if (segments.first().matches(Regex("^[A-Za-z]:$"))) {
             return "Archive contains a drive-qualified path."
         }
         return null
