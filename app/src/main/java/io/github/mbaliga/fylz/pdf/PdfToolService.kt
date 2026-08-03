@@ -38,12 +38,12 @@ data class PdfPageRef(
 
 data class PdfInspection(
     val pageCount: Int,
-    val pages: List<PdfPageInfo>,
+    val pages: List<PdfToolPageInfo>,
 )
 
-data class PdfPageInfo(val index: Int, val widthPoints: Int, val heightPoints: Int)
+data class PdfToolPageInfo(val index: Int, val widthPoints: Int, val heightPoints: Int)
 
-data class PdfExportResult(
+data class PdfToolExportResult(
     val pageCount: Int,
     val outputBytes: Long,
     val rasterized: Boolean = true,
@@ -57,7 +57,7 @@ class PdfToolService(private val context: Context) {
             PdfInspection(
                 pageCount = renderer.pageCount,
                 pages = List(renderer.pageCount) { index ->
-                    renderer.openPage(index).use { page -> PdfPageInfo(index, page.width, page.height) }
+                    renderer.openPage(index).use { page -> PdfToolPageInfo(index, page.width, page.height) }
                 },
             )
         }
@@ -68,7 +68,7 @@ class PdfToolService(private val context: Context) {
         outputUri: Uri,
         searchableOcr: Boolean = false,
         onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
-    ): PdfExportResult = withContext(Dispatchers.IO) {
+    ): PdfToolExportResult = withContext(Dispatchers.IO) {
         require(pages.isNotEmpty()) { "At least one page is required." }
         require(pages.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
         val temp = File(context.cacheDir, "pdf-tools-${UUID.randomUUID()}.pdf")
@@ -98,7 +98,7 @@ class PdfToolService(private val context: Context) {
             val output = context.contentResolver.openOutputStream(outputUri, "w")
                 ?: error("The selected provider did not return a writable stream.")
             output.use { target -> temp.inputStream().use { source -> source.copyTo(target); target.flush() } }
-            PdfExportResult(pages.size, temp.length(), searchableTextAdded = searchableOcr)
+            PdfToolExportResult(pages.size, temp.length(), searchableTextAdded = searchableOcr)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } finally {
@@ -113,7 +113,7 @@ class PdfToolService(private val context: Context) {
         outputUri: Uri,
         searchableOcr: Boolean = false,
         onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
-    ): PdfExportResult {
+    ): PdfToolExportResult {
         require(sources.isNotEmpty())
         val pages = mutableListOf<PdfPageRef>()
         for (source in sources) {
@@ -129,7 +129,7 @@ class PdfToolService(private val context: Context) {
         destinationUris: List<Uri>,
         searchableOcr: Boolean = false,
         onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
-    ): List<PdfExportResult> {
+    ): List<PdfToolExportResult> {
         val inspection = inspect(source)
         require(destinationUris.size == inspection.pageCount) { "One destination is required for each source page." }
         return destinationUris.mapIndexed { index, target ->
