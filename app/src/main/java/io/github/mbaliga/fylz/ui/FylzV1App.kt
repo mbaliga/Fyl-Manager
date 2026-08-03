@@ -117,6 +117,7 @@ import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
+import io.github.mbaliga.fylz.ui.hyle.HyleFolderTabSwitcher
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.launch
@@ -532,7 +533,7 @@ private fun FylzV1Workspace(
             },
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                FolderTabStrip(
+                HyleFolderTabSwitcher(
                     tabs = tabs,
                     activeTabId = activeTabId,
                     onSelect = { activeTabId = it.id },
@@ -781,36 +782,6 @@ private fun FylzV1Workspace(
                 }
             },
         )
-    }
-}
-
-@Composable
-private fun FolderTabStrip(
-    tabs: List<FolderTab>,
-    activeTabId: String?,
-    onSelect: (FolderTab) -> Unit,
-    onClose: (FolderTab) -> Unit,
-    onAdd: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(44.dp).horizontalScroll(rememberScrollState()),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        tabs.forEach { tab ->
-            Surface(
-                onClick = { onSelect(tab) },
-                color = if (tab.id == activeTabId) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier.padding(horizontal = 3.dp),
-            ) {
-                Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Folder, null, Modifier.size(16.dp))
-                    Text(tab.title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.width(120.dp).padding(start = 6.dp))
-                    IconButton(onClick = { onClose(tab) }, modifier = Modifier.size(30.dp)) { Text("×") }
-                }
-            }
-        }
-        IconButton(onClick = onAdd) { Icon(Icons.Outlined.Add, "Open another root") }
     }
 }
 
