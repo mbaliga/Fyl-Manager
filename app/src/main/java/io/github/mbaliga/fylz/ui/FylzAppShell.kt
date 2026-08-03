@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -113,7 +115,11 @@ fun FylzAppShell() {
             },
         ) { padding ->
             when (destination) {
-                RootDestination.FILES -> FylzV1App()
+                RootDestination.FILES -> Box(
+                    modifier = Modifier.fillMaxSize().padding(padding),
+                ) {
+                    FylzV1App()
+                }
                 RootDestination.RECOVERY -> RecoveryHome(
                     operations = operations,
                     onOpenOperations = {
@@ -195,7 +201,7 @@ private fun RecoveryHome(
     ) {
         Text("Storage & recovery", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Review file operations, restore earlier file versions, manage backup plans, and rediscover existing backups.",
+            "Review file operations, restore earlier file versions, manage backups, and safely work with ZIP archives.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -232,9 +238,15 @@ private fun RecoveryHome(
             description = "Rediscover verified manifest-bearing backup folders after reinstall or app-data loss.",
             action = { BackupImportOverlay() },
         )
+        RecoveryActionCard(
+            icon = Icons.Outlined.Archive,
+            title = "Archive tools",
+            description = "Create standard or AES-256 protected ZIP files, inspect archives, and extract through safety limits.",
+            action = { ArchiveToolsOverlay() },
+        )
 
         Text(
-            "Recovery metadata stays private to this app and is excluded from Android cloud backup. External backup snapshots remain in the destinations you selected.",
+            "Recovery metadata stays private to this app and is excluded from Android cloud backup. External backup snapshots and archives remain in the destinations you selected.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp, bottom = 24.dp),
