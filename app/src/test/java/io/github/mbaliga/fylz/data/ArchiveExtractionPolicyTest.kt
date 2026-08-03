@@ -41,6 +41,36 @@ class ArchiveExtractionPolicyTest {
     }
 
     @Test
+    fun `rejects duplicate and provider-colliding paths`() {
+        val exactDuplicate = ArchiveExtractionPolicy.evaluate(
+            archiveBytes = 100,
+            entries = listOf(
+                ArchiveEntryMetadata("docs/readme.md", false, 10, 20),
+                ArchiveEntryMetadata("docs/readme.md", false, 10, 20),
+            ),
+        )
+        assertFalse(exactDuplicate.allowed)
+
+        val slashAndCaseCollision = ArchiveExtractionPolicy.evaluate(
+            archiveBytes = 100,
+            entries = listOf(
+                ArchiveEntryMetadata("Docs\\Readme.md", false, 10, 20),
+                ArchiveEntryMetadata("docs/readme.md", false, 10, 20),
+            ),
+        )
+        assertFalse(slashAndCaseCollision.allowed)
+
+        val directoryFileCollision = ArchiveExtractionPolicy.evaluate(
+            archiveBytes = 100,
+            entries = listOf(
+                ArchiveEntryMetadata("assets/", true, 0, 0),
+                ArchiveEntryMetadata("assets", false, 10, 20),
+            ),
+        )
+        assertFalse(directoryFileCollision.allowed)
+    }
+
+    @Test
     fun `rejects archive input beyond staging limit`() {
         val decision = ArchiveExtractionPolicy.evaluate(
             archiveBytes = 101,
