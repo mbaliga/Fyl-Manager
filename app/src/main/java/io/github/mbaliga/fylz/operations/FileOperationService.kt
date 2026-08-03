@@ -34,28 +34,66 @@ class FileOperationService(
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(
-        sourceUris = sourceUris,
-        destinationTreeUri = destinationTreeUri,
-        move = false,
-        conflictPolicy = conflictPolicy,
-        onProgress = onProgress,
-    )
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(
-        sourceUris = sourceUris,
-        destinationTreeUri = destinationTreeUri,
-        move = true,
-        conflictPolicy = conflictPolicy,
-        onProgress = onProgress,
-    )
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
+
+    /**
+     * Completes a move whose verified destination was committed but whose original could not be
+     * removed. This never copies again, so retry cannot create another destination duplicate.
+     */
+    suspend fun finishMoveCleanup(operationId: String): FileOperation = withContext(Dispatchers.IO) {
+        val operation = journal.find(operationId) ?: error("Move operation not found.")
+        require(operation.type == FileOperationType.MOVE) { "Only move operations support source cleanup." }
+        var changed = false
+        val items = operation.items.map { item ->
+            if (item.errorCode != MOVE_SOURCE_DELETE_PENDING) return@map item
+            coroutineContext.ensureActive()
+            val destinationUri = item.destination
+                ?: return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
+            val destination = DocumentFile.fromSingleUri(context, destinationUri)
+            if (destination?.exists() != true) {
+                return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
+            }
+            val source = DocumentFile.fromSingleUri(context, item.source)
+            if (source?.exists() != true) {
+                changed = true
+                return@map item.copy(state = OperationState.SUCCEEDED, errorCode = null)
+            }
+            if (source.isFile && destination.isFile) {
+                val expected = source.length()
+                val actual = destination.length()
+                if (expected >= 0L && actual >= 0L && expected != actual) {
+                    return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_UNVERIFIED)
+                }
+            }
+            if (source.delete()) {
+                changed = true
+                item.copy(state = OperationState.SUCCEEDED, errorCode = null)
+            } else {
+                item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_SOURCE_DELETE_PENDING)
+            }
+        }
+        val state = if (items.all { it.state == OperationState.SUCCEEDED }) {
+            OperationState.SUCCEEDED
+        } else {
+            OperationState.NEEDS_ATTENTION
+        }
+        val updated = operation.copy(
+            items = items,
+            state = state,
+            updatedAtMillis = if (changed) System.currentTimeMillis() else operation.updatedAtMillis,
+        )
+        journal.put(updated)
+        updated
+    }
 
     private suspend fun transfer(
         sourceUris: List<Uri>,
@@ -134,13 +172,20 @@ class FileOperationService(
                     verifyCopy(source, staged)
                     val copied = finalizeTarget(plan, staged)
 
-                    // A move is intentionally copy -> verify -> finalize destination -> remove source.
-                    // The source is never deleted when any earlier step fails.
-                    if (move) {
-                        check(source.delete()) {
-                            "The item was copied, but the provider refused to remove the original."
+                    if (move && !source.delete()) {
+                        current = updateItem(current, index) { item ->
+                            item.copy(
+                                destination = copied.uri,
+                                completedBytes = item.expectedBytes ?: item.completedBytes,
+                                state = OperationState.NEEDS_ATTENTION,
+                                errorCode = MOVE_SOURCE_DELETE_PENDING,
+                            )
                         }
+                        journal.put(current)
+                        add(copied.uri)
+                        return@forEachIndexed
                     }
+
                     current = updateItem(current, index) { item ->
                         item.copy(
                             destination = copied.uri,
@@ -153,10 +198,12 @@ class FileOperationService(
                     add(copied.uri)
                 }
             }
-            current = current.copy(
-                state = OperationState.SUCCEEDED,
-                updatedAtMillis = System.currentTimeMillis(),
-            )
+            val finalState = if (current.items.any { it.state == OperationState.NEEDS_ATTENTION }) {
+                OperationState.NEEDS_ATTENTION
+            } else {
+                OperationState.SUCCEEDED
+            }
+            current = current.copy(state = finalState, updatedAtMillis = System.currentTimeMillis())
             journal.put(current)
             result
         } catch (cancelled: CancellationException) {
@@ -173,7 +220,11 @@ class FileOperationService(
             throw cancelled
         } catch (failure: Throwable) {
             current = current.copy(
-                state = OperationState.FAILED,
+                state = if (current.items.any { it.state == OperationState.NEEDS_ATTENTION }) {
+                    OperationState.NEEDS_ATTENTION
+                } else {
+                    OperationState.FAILED
+                },
                 items = current.items.map {
                     if (it.state == OperationState.RUNNING || it.state == OperationState.QUEUED) {
                         it.copy(state = OperationState.FAILED, errorCode = failure::class.java.simpleName)
@@ -281,10 +332,6 @@ class FileOperationService(
         }
     }
 
-    /**
-     * Completes a replacement only after the new item has been fully copied and verified.
-     * The old item is never removed during preflight or while bytes are still being written.
-     */
     private fun finalizeTarget(plan: TargetPlan, staged: DocumentFile): DocumentFile {
         val existing = plan.existing ?: return staged
         check(existing.delete()) {
@@ -339,5 +386,11 @@ class FileOperationService(
             if (destination.findFile(candidate) == null) return candidate
             index += 1
         }
+    }
+
+    private companion object {
+        const val MOVE_SOURCE_DELETE_PENDING = "MOVE_SOURCE_DELETE_PENDING"
+        const val MOVE_DESTINATION_MISSING = "MOVE_DESTINATION_MISSING"
+        const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
     }
 }
