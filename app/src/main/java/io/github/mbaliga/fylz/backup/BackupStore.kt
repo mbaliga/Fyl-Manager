@@ -12,59 +12,61 @@ class BackupStore(context: Context) {
     private val snapshotsFile = File(root, "snapshots.json")
     private val mediaFile = File(root, "media-state.json")
 
-    fun plans(): List<BackupPlan> = synchronized(this) {
+    fun plans(): List<BackupPlan> = synchronized(GLOBAL_LOCK) {
         readArray(plansFile).mapNotNull(::decodePlan).sortedBy(BackupPlan::name)
     }
 
     fun plan(id: String): BackupPlan? = plans().firstOrNull { it.id == id }
 
-    fun putPlan(plan: BackupPlan) = synchronized(this) {
+    fun putPlan(plan: BackupPlan) = synchronized(GLOBAL_LOCK) {
         val plans = plans().filterNot { it.id == plan.id }.toMutableList()
         plans += plan.copy(updatedAtMillis = System.currentTimeMillis())
         writeArray(plansFile, plans.sortedBy(BackupPlan::name).map(::encodePlan))
     }
 
-    fun removePlan(id: String) = synchronized(this) {
+    /** A plan with retained snapshots must be handled explicitly by the UI before removal. */
+    fun removePlan(id: String): Boolean = synchronized(GLOBAL_LOCK) {
+        if (snapshots(id).isNotEmpty()) return@synchronized false
         writeArray(plansFile, plans().filterNot { it.id == id }.map(::encodePlan))
         writeArray(runsFile, runs().filterNot { it.planId == id }.map(::encodeRun))
-        writeArray(snapshotsFile, snapshots().filterNot { it.planId == id }.map(::encodeSnapshot))
         val allMedia = readMediaStates().toMutableMap().apply { remove(id) }
         writeMediaStates(allMedia)
+        true
     }
 
-    fun runs(planId: String? = null): List<BackupRunRecord> = synchronized(this) {
+    fun runs(planId: String? = null): List<BackupRunRecord> = synchronized(GLOBAL_LOCK) {
         readArray(runsFile).mapNotNull(::decodeRun)
             .filter { planId == null || it.planId == planId }
             .sortedByDescending(BackupRunRecord::startedAtMillis)
     }
 
-    fun putRun(run: BackupRunRecord) = synchronized(this) {
+    fun putRun(run: BackupRunRecord) = synchronized(GLOBAL_LOCK) {
         val runs = runs().filterNot { it.id == run.id }.toMutableList()
         runs += run
         writeArray(runsFile, runs.sortedByDescending(BackupRunRecord::startedAtMillis).take(500).map(::encodeRun))
     }
 
-    fun snapshots(planId: String? = null): List<BackupSnapshotRecord> = synchronized(this) {
+    fun snapshots(planId: String? = null): List<BackupSnapshotRecord> = synchronized(GLOBAL_LOCK) {
         readArray(snapshotsFile).mapNotNull(::decodeSnapshot)
             .filter { planId == null || it.planId == planId }
             .sortedByDescending(BackupSnapshotRecord::createdAtMillis)
     }
 
-    fun putSnapshot(snapshot: BackupSnapshotRecord) = synchronized(this) {
+    fun putSnapshot(snapshot: BackupSnapshotRecord) = synchronized(GLOBAL_LOCK) {
         val snapshots = snapshots().filterNot { it.id == snapshot.id }.toMutableList()
         snapshots += snapshot
         writeArray(snapshotsFile, snapshots.sortedByDescending(BackupSnapshotRecord::createdAtMillis).map(::encodeSnapshot))
     }
 
-    fun removeSnapshot(id: String) = synchronized(this) {
+    fun removeSnapshot(id: String) = synchronized(GLOBAL_LOCK) {
         writeArray(snapshotsFile, snapshots().filterNot { it.id == id }.map(::encodeSnapshot))
     }
 
-    fun mediaState(planId: String): BackupMediaState = synchronized(this) {
+    fun mediaState(planId: String): BackupMediaState = synchronized(GLOBAL_LOCK) {
         readMediaStates()[planId] ?: BackupMediaState()
     }
 
-    fun putMediaState(planId: String, state: BackupMediaState) = synchronized(this) {
+    fun putMediaState(planId: String, state: BackupMediaState) = synchronized(GLOBAL_LOCK) {
         val states = readMediaStates().toMutableMap()
         states[planId] = state
         writeMediaStates(states)
@@ -240,4 +242,8 @@ class BackupStore(context: Context) {
 
     private fun JSONObject.optLongOrNull(key: String): Long? =
         if (!has(key) || isNull(key)) null else getLong(key)
+
+    private companion object {
+        val GLOBAL_LOCK = Any()
+    }
 }
