@@ -52,7 +52,7 @@ data class SmartCollectionRule(
 
     fun matches(file: IndexedFileFacts): Boolean {
         val values = predicates.map { it.matches(file) }
-        return if (mode == MatchMode.ALL) values.all(Boolean::identity) else values.any(Boolean::identity)
+        return if (mode == MatchMode.ALL) values.all { it } else values.any { it }
     }
 
     private fun CollectionPredicate.matches(file: IndexedFileFacts): Boolean = when (this) {
