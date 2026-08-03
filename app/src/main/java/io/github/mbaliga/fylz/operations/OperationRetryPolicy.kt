@@ -19,14 +19,25 @@ object OperationRetryPolicy {
         FileOperationType.MOVE,
     )
 
-    fun canRetry(operation: FileOperation): Boolean {
-        if (operation.state !in retryableStates) return false
-        if (operation.type !in retryableTypes) return false
-        if (operation.items.isEmpty()) return false
-        return operation.items.all { item ->
+    internal fun canRetry(
+        type: FileOperationType,
+        state: OperationState,
+        itemCount: Int,
+        allItemsHaveSourceAndDestination: Boolean,
+    ): Boolean =
+        state in retryableStates &&
+            type in retryableTypes &&
+            itemCount > 0 &&
+            allItemsHaveSourceAndDestination
+
+    fun canRetry(operation: FileOperation): Boolean = canRetry(
+        type = operation.type,
+        state = operation.state,
+        itemCount = operation.items.size,
+        allItemsHaveSourceAndDestination = operation.items.all { item ->
             item.source.toString().isNotBlank() && item.destination != null
-        }
-    }
+        },
+    )
 
     /**
      * Retries always use KEEP_BOTH, regardless of the original conflict policy.
