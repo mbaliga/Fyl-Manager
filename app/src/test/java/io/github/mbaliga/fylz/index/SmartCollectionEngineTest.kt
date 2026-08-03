@@ -1,52 +1,63 @@
 package io.github.mbaliga.fylz.index
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SmartCollectionEngineTest {
     private val file = IndexedFile(
-        uri = "content://file",
-        rootUri = "content://root",
-        name = "Architecture Model.obj",
-        mimeType = "model/obj",
-        extension = "obj",
-        sizeBytes = 5L * 1024L * 1024L,
-        modifiedAtMillis = 1_700_000_000_000L,
+        uri = "content://docs/report",
+        scopeTreeUri = "content://docs/root",
+        relativePath = "Work/Reports/Quarterly Report.pdf",
+        displayName = "Quarterly Report.pdf",
+        mimeType = "application/pdf",
+        extension = "pdf",
+        sizeBytes = 12L * 1024L * 1024L,
+        modifiedAtMillis = 1_800_000_000_000L,
         directory = false,
-        tags = setOf("3D", "Project Atlas"),
+        textSnippet = "Revenue grew while operating costs fell.",
     )
 
     @Test
-    fun combinesRulesWithAll() {
+    fun combinesPathSizeAndContentRules() {
         val collection = SmartCollection(
-            name = "Large models",
+            name = "Large revenue reports",
             rules = listOf(
-                SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, "obj"),
-                SmartRule(RuleField.SIZE, RuleOperator.GREATER_THAN, "4 MiB"),
-                SmartRule(RuleField.TAG, RuleOperator.CONTAINS, "atlas"),
+                SmartRule(RuleField.PATH, RuleOperator.CONTAINS, "reports"),
+                SmartRule(RuleField.SIZE, RuleOperator.GREATER_THAN, "10 MiB"),
+                SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue"),
             ),
         )
         assertTrue(SmartCollectionEngine.matches(file, collection))
     }
 
     @Test
-    fun supportsNegationAndAny() {
+    fun supportsNegationAndAnyJoin() {
         val collection = SmartCollection(
-            name = "Not drawings",
+            name = "Documents except drafts",
             join = RuleJoin.ANY,
             rules = listOf(
-                SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, "dwg", negate = true),
-                SmartRule(RuleField.DIRECTORY, RuleOperator.IS, "folder"),
+                SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, "docx"),
+                SmartRule(RuleField.NAME, RuleOperator.CONTAINS, "draft", negate = true),
             ),
         )
         assertTrue(SmartCollectionEngine.matches(file, collection))
+    }
+
+    @Test
+    fun directoryRuleDoesNotMatchFile() {
+        val collection = SmartCollection(
+            name = "Folders",
+            rules = listOf(SmartRule(RuleField.DIRECTORY, RuleOperator.IS, "true")),
+        )
+        assertFalse(SmartCollectionEngine.matches(file, collection))
     }
 
     @Test
     fun parsesBinaryAndDecimalSizes() {
-        assertTrue(SmartCollectionEngine.parseSize("1 MiB") == 1_048_576L)
-        assertTrue(SmartCollectionEngine.parseSize("1.5 GB") == 1_500_000_000L)
-        assertFalse(SmartCollectionEngine.parseSize("many") != null)
+        assertTrue(SmartCollectionEngine.parseSize("1.5 MiB") == 1_572_864L)
+        assertTrue(SmartCollectionEngine.parseSize("2 MB") == 2_000_000L)
+        assertNull(SmartCollectionEngine.parseSize("many"))
     }
 }
