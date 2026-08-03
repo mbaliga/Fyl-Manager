@@ -5,4 +5,5 @@
     <exclude domain="sharedpref" path="fylz_file_history_settings.xml" />
     <exclude domain="file" path="archive-work/" />
     <exclude domain="file" path="file-history/" />
+    <exclude domain="file" path="backup-state/" />
 </full-backup-content>
