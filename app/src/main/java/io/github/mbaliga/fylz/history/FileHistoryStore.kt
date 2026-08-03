@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.history
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -81,8 +82,11 @@ class FileHistoryStore(private val context: Context) {
                 synchronized(this@FileHistoryStore) {
                     val versions = readManifest().toMutableList()
                     val sourceKey = uri.toString()
-                    if (versions.any { it.sourceKey == sourceKey && it.sha256 == hash }) {
-                        return@synchronized FileHistoryCaptureResult(FileHistoryCaptureStatus.DUPLICATE)
+                    versions.firstOrNull { it.sourceKey == sourceKey && it.sha256 == hash }?.let { duplicate ->
+                        return@synchronized FileHistoryCaptureResult(
+                            FileHistoryCaptureStatus.DUPLICATE,
+                            version = duplicate,
+                        )
                     }
                     val blobName = "${UUID.randomUUID()}.blob"
                     val blob = File(blobs, blobName)
@@ -101,6 +105,8 @@ class FileHistoryStore(private val context: Context) {
                     prune(versions, settings)
                     FileHistoryCaptureResult(FileHistoryCaptureStatus.CAPTURED, version)
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (failure: Throwable) {
                 FileHistoryCaptureResult(FileHistoryCaptureStatus.ERROR, message = failure.message)
             } finally {
@@ -113,6 +119,10 @@ class FileHistoryStore(private val context: Context) {
             .sortedByDescending(FileHistoryVersion::capturedAtMillis)
     }
 
+    fun allVersions(): List<FileHistoryVersion> = synchronized(this) {
+        readManifest().sortedByDescending(FileHistoryVersion::capturedAtMillis)
+    }
+
     fun usage(): FileHistoryUsage = synchronized(this) {
         val versions = readManifest()
         FileHistoryUsage(
@@ -123,19 +133,53 @@ class FileHistoryStore(private val context: Context) {
         )
     }
 
-    suspend fun restore(versionId: String, targetUri: Uri): Boolean = withContext(Dispatchers.IO) {
-        val version = synchronized(this@FileHistoryStore) { readManifest().firstOrNull { it.id == versionId } }
-            ?: return@withContext false
-        val blob = File(blobs, version.blobName)
-        if (!blob.isFile) return@withContext false
-        val safety = capture(targetUri, FileHistoryReason.BEFORE_RESTORE)
-        if (!safety.preserved) return@withContext false
-        context.contentResolver.openOutputStream(targetUri, "w")?.use { output ->
-            blob.inputStream().use { it.copyTo(output) }
-            output.flush()
-            true
-        } ?: false
-    }
+    suspend fun restore(versionId: String, targetUri: Uri): FileHistoryRestoreResult =
+        withContext(Dispatchers.IO) {
+            val version = synchronized(this@FileHistoryStore) {
+                readManifest().firstOrNull { it.id == versionId }
+            } ?: return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.VERSION_NOT_FOUND)
+            val blob = File(blobs, version.blobName)
+            if (!blob.isFile) {
+                return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.SNAPSHOT_MISSING)
+            }
+            if (queryMetadata(targetUri) == null) {
+                return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.TARGET_UNREADABLE)
+            }
+
+            val safety = capture(targetUri, FileHistoryReason.BEFORE_RESTORE)
+            if (!safety.hasRestorableSnapshot) {
+                return@withContext FileHistoryRestoreResult(
+                    FileHistoryRestoreStatus.CURRENT_VERSION_NOT_PRESERVED,
+                    "The current file could not be preserved, so restore was not attempted.",
+                )
+            }
+            val rollback = safety.version ?: return@withContext FileHistoryRestoreResult(
+                FileHistoryRestoreStatus.CURRENT_VERSION_NOT_PRESERVED,
+            )
+
+            if (!writeBlob(blob, targetUri)) {
+                return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.WRITE_FAILED)
+            }
+            if (sha256(targetUri) == version.sha256) {
+                return@withContext FileHistoryRestoreResult(FileHistoryRestoreStatus.RESTORED)
+            }
+
+            val rollbackBlob = File(blobs, rollback.blobName)
+            val rolledBack = rollbackBlob.isFile && writeBlob(rollbackBlob, targetUri) &&
+                sha256(targetUri) == rollback.sha256
+            FileHistoryRestoreResult(
+                if (rolledBack) {
+                    FileHistoryRestoreStatus.VERIFICATION_FAILED_ROLLED_BACK
+                } else {
+                    FileHistoryRestoreStatus.VERIFICATION_FAILED_ROLLBACK_FAILED
+                },
+                if (rolledBack) {
+                    "The restored bytes did not verify. The previous file was restored."
+                } else {
+                    "The restored bytes did not verify and automatic rollback also failed."
+                },
+            )
+        }
 
     fun delete(versionId: String): Boolean = synchronized(this) {
         val versions = readManifest().toMutableList()
@@ -144,6 +188,13 @@ class FileHistoryStore(private val context: Context) {
         File(blobs, version.blobName).delete()
         writeManifest(versions)
         true
+    }
+
+    fun clear(): Int = synchronized(this) {
+        val versions = readManifest()
+        versions.forEach { File(blobs, it.blobName).delete() }
+        writeManifest(emptyList())
+        versions.size
     }
 
     private fun prune(input: List<FileHistoryVersion>, settings: FileHistorySettings): List<FileHistoryVersion> {
@@ -200,15 +251,51 @@ class FileHistoryStore(private val context: Context) {
                 put("reason", version.reason.name)
             })
         }
-        val temp = File(root, "manifest.tmp")
-        temp.writeText(array.toString())
-        if (manifest.exists()) manifest.delete()
-        check(temp.renameTo(manifest)) { "Unable to commit file history metadata." }
+        val temp = File(root, "manifest-${UUID.randomUUID()}.tmp")
+        val backup = File(root, "manifest.bak")
+        FileOutputStream(temp).use { output ->
+            output.write(array.toString().toByteArray(Charsets.UTF_8))
+            output.fd.sync()
+        }
+        backup.delete()
+        if (manifest.exists() && !manifest.renameTo(backup)) {
+            temp.delete()
+            error("Unable to preserve existing file history metadata.")
+        }
+        if (!temp.renameTo(manifest)) {
+            if (backup.exists()) backup.renameTo(manifest)
+            temp.delete()
+            error("Unable to commit file history metadata.")
+        }
+        backup.delete()
     }
+
+    private fun writeBlob(blob: File, targetUri: Uri): Boolean = runCatching {
+        val output = context.contentResolver.openOutputStream(targetUri, "w") ?: return false
+        output.use { destination ->
+            blob.inputStream().use { source -> source.copyTo(destination) }
+            destination.flush()
+        }
+        true
+    }.getOrDefault(false)
+
+    private fun sha256(uri: Uri): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val input = context.contentResolver.openInputStream(uri) ?: return null
+        input.use { source ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            while (true) {
+                val count = source.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }.getOrNull()
 
     private fun queryMetadata(uri: Uri): Metadata? {
         val projection = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
-        val values = context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+        return context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -218,7 +305,6 @@ class FileHistoryStore(private val context: Context) {
                 mimeType = context.contentResolver.getType(uri),
             )
         }
-        return values
     }
 
     private data class Metadata(val displayName: String, val sizeBytes: Long, val mimeType: String?)
