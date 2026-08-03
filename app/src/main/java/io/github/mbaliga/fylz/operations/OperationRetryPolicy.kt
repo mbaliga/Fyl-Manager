@@ -2,21 +2,29 @@ package io.github.mbaliga.fylz.operations
 
 import android.net.Uri
 
-data class OperationRetryPlan(
-    val type: FileOperationType,
-    val sourceUris: List<Uri>,
-    val destinationTreeUri: Uri,
-    val conflictPolicy: ConflictPolicy = ConflictPolicy.KEEP_BOTH,
-)
+sealed interface OperationRetryPlan {
+    data class Transfer(
+        val type: FileOperationType,
+        val sourceUris: List<Uri>,
+        val destinationTreeUri: Uri,
+        val conflictPolicy: ConflictPolicy = ConflictPolicy.KEEP_BOTH,
+    ) : OperationRetryPlan
+
+    data class FinishMoveCleanup(
+        val operationId: String,
+    ) : OperationRetryPlan
+}
 
 /**
  * Conservative retry rules for durable operation records.
  *
- * Only copy and move can be replayed from journal metadata. Recycle, restore, permanent delete,
- * rename, archive, and extraction require fresh user review because their environment may have
- * changed and replaying them could destroy or duplicate data.
+ * A transfer retry may replay only unfinished copy/move items whose destination is still the
+ * original destination tree. A move whose verified destination already exists uses a separate
+ * cleanup action that attempts only to remove the original source and can never copy again.
  */
 object OperationRetryPolicy {
+    const val MOVE_SOURCE_DELETE_PENDING = "MOVE_SOURCE_DELETE_PENDING"
+
     private val retryableStates = setOf(
         OperationState.FAILED,
         OperationState.CANCELLED,
@@ -41,15 +49,23 @@ object OperationRetryPolicy {
             allIncompleteItemsHaveSourceAndDestination &&
             incompleteItemsShareDestination
 
-    /**
-     * Builds a retry from only unfinished items.
-     *
-     * Successfully completed items may contain their final file URI rather than the destination
-     * folder URI. They are deliberately excluded so a partial transfer is never duplicated and a
-     * final file URI is never mistaken for a writable destination tree.
-     */
     fun plan(operation: FileOperation): OperationRetryPlan? {
+        if (operation.state !in retryableStates) return null
         val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
+        if (incomplete.isEmpty()) return null
+
+        if (
+            operation.type == FileOperationType.MOVE &&
+            incomplete.all { it.errorCode == MOVE_SOURCE_DELETE_PENDING && it.destination != null }
+        ) {
+            return OperationRetryPlan.FinishMoveCleanup(operation.id)
+        }
+
+        // A partially completed move may contain final file URIs for cleanup items. Mixing those
+        // with replayable destination-tree URIs would risk treating a file as a folder or copying
+        // a source twice, so the operation is not replayable as one batch.
+        if (incomplete.any { it.errorCode == MOVE_SOURCE_DELETE_PENDING }) return null
+
         val destinationKeys = incomplete.mapNotNull { it.destination?.toString() }.distinct()
         val eligible = canRetry(
             type = operation.type,
@@ -62,7 +78,7 @@ object OperationRetryPolicy {
         )
         if (!eligible) return null
 
-        return OperationRetryPlan(
+        return OperationRetryPlan.Transfer(
             type = operation.type,
             sourceUris = incomplete.map(OperationItem::source),
             destinationTreeUri = requireNotNull(incomplete.first().destination),
@@ -71,9 +87,9 @@ object OperationRetryPolicy {
 
     fun canRetry(operation: FileOperation): Boolean = plan(operation) != null
 
-    /** Retries always keep both because an earlier attempt may have produced recoverable output. */
-    fun retryConflictPolicy(operation: FileOperation): ConflictPolicy {
-        require(canRetry(operation)) { "This operation cannot be retried safely." }
-        return ConflictPolicy.KEEP_BOTH
+    fun actionLabel(operation: FileOperation): String = when (plan(operation)) {
+        is OperationRetryPlan.FinishMoveCleanup -> "Finish move"
+        is OperationRetryPlan.Transfer -> "Retry unfinished"
+        null -> "Retry unavailable"
     }
 }
