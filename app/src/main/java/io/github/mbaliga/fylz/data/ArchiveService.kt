@@ -13,17 +13,22 @@ import net.lingala.zip4j.model.enums.CompressionLevel
 import net.lingala.zip4j.model.enums.CompressionMethod
 import net.lingala.zip4j.model.enums.EncryptionMethod
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.file.Files
 import java.util.UUID
 
 /**
- * Provider-neutral ZIP engine used by the forthcoming selection/action UI.
+ * Provider-neutral ZIP engine.
  *
  * Files are staged only inside app-private cache storage. Password-protected archives use AES-256.
- * Extraction validates every archive path before Zip4j is allowed to write it, then copies only
- * ordinary files and directories into the user-selected Storage Access Framework destination.
+ * Extraction performs bounded metadata preflight before Zip4j writes anything, validates every path,
+ * and copies only ordinary files and directories into the user-selected SAF destination.
  */
-class ArchiveService(private val context: Context) {
+class ArchiveService(
+    private val context: Context,
+    private val extractionLimits: ArchiveExtractionLimits = ArchiveExtractionLimits(),
+) {
 
     suspend fun createZip(
         sourceUris: List<Uri>,
@@ -82,8 +87,16 @@ class ArchiveService(private val context: Context) {
         try {
             val archive = File(workspace, "input.zip")
             context.contentResolver.openInputStream(archiveUri)?.use { input ->
-                archive.outputStream().use(input::copyTo)
+                archive.outputStream().use { output ->
+                    copyBounded(input, output, extractionLimits.maxArchiveBytes)
+                }
             } ?: error("Unable to read the archive.")
+
+            val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
+                ?: error("Unable to open the destination folder.")
+            require(destination.isDirectory && destination.canWrite()) {
+                "The destination folder is not writable."
+            }
 
             val extracted = File(workspace, "extracted").apply { mkdirs() }
             val zipFile = ZipFile(archive)
@@ -93,6 +106,21 @@ class ArchiveService(private val context: Context) {
                 }
                 zipFile.setPassword(password)
             }
+
+            val metadata = zipFile.fileHeaders.map { header ->
+                ArchiveEntryMetadata(
+                    name = header.fileName,
+                    directory = header.isDirectory,
+                    compressedBytes = header.compressedSize,
+                    uncompressedBytes = header.uncompressedSize,
+                )
+            }
+            val decision = ArchiveExtractionPolicy.evaluate(
+                archiveBytes = archive.length(),
+                entries = metadata,
+                limits = extractionLimits,
+            )
+            require(decision.allowed) { decision.reason ?: "Archive extraction was refused." }
 
             val canonicalRoot = extracted.canonicalFile
             zipFile.fileHeaders.forEach { header ->
@@ -104,8 +132,6 @@ class ArchiveService(private val context: Context) {
             }
             zipFile.extractAll(canonicalRoot.path)
 
-            val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
-                ?: error("Unable to open the destination folder.")
             canonicalRoot.listFiles().orEmpty().forEach { copyIntoProvider(it, destination) }
         } finally {
             password?.fill('\u0000')
@@ -132,6 +158,19 @@ class ArchiveService(private val context: Context) {
         context.contentResolver.openOutputStream(target.uri, "w")?.use { output ->
             source.inputStream().use { it.copyTo(output) }
         } ?: error("Unable to write ${source.name}")
+    }
+
+    private fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long) {
+        var total = 0L
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            require(total <= maxBytes) { "Archive exceeds the allowed input size." }
+            output.write(buffer, 0, count)
+        }
+        output.flush()
     }
 
     private fun queryName(uri: Uri): String? =
