@@ -49,14 +49,30 @@ object OperationRetryPolicy {
             allIncompleteItemsHaveSourceAndDestination &&
             incompleteItemsShareDestination
 
+    internal fun isMoveCleanupRetry(
+        type: FileOperationType,
+        state: OperationState,
+        incompleteErrorCodes: List<String?>,
+        allIncompleteItemsHaveDestination: Boolean,
+    ): Boolean =
+        type == FileOperationType.MOVE &&
+            state in retryableStates &&
+            incompleteErrorCodes.isNotEmpty() &&
+            allIncompleteItemsHaveDestination &&
+            incompleteErrorCodes.all { it == MOVE_SOURCE_DELETE_PENDING }
+
     fun plan(operation: FileOperation): OperationRetryPlan? {
         if (operation.state !in retryableStates) return null
         val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
         if (incomplete.isEmpty()) return null
 
         if (
-            operation.type == FileOperationType.MOVE &&
-            incomplete.all { it.errorCode == MOVE_SOURCE_DELETE_PENDING && it.destination != null }
+            isMoveCleanupRetry(
+                type = operation.type,
+                state = operation.state,
+                incompleteErrorCodes = incomplete.map(OperationItem::errorCode),
+                allIncompleteItemsHaveDestination = incomplete.all { it.destination != null },
+            )
         ) {
             return OperationRetryPlan.FinishMoveCleanup(operation.id)
         }
