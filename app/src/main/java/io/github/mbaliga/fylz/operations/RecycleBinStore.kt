@@ -15,7 +15,11 @@ class RecycleBinStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     @Synchronized
-    fun list(): List<RecycleRecord> = decode(preferences.getString(RECORDS_KEY, null))
+    fun list(): List<RecycleRecord> {
+        val current = decode(preferences.getString(RECORDS_KEY, null))
+        if (current != null) return current
+        return decode(preferences.getString(BACKUP_RECORDS_KEY, null)).orEmpty()
+    }
 
     @Synchronized
     fun put(record: RecycleRecord) {
@@ -32,6 +36,20 @@ class RecycleBinStore(context: Context) {
     fun find(itemId: String): RecycleRecord? = list().firstOrNull { it.itemId == itemId }
 
     private fun persist(records: List<RecycleRecord>) {
+        val encoded = encode(records)
+        val currentRaw = preferences.getString(RECORDS_KEY, null)
+        val editor = preferences.edit().putString(RECORDS_KEY, encoded)
+
+        // Retain the last parseable manifest. A partially written or externally corrupted current
+        // value must never replace the only known-good restore index.
+        if (!currentRaw.isNullOrBlank() && decode(currentRaw) != null) {
+            editor.putString(BACKUP_RECORDS_KEY, currentRaw)
+        }
+
+        check(editor.commit()) { "Unable to persist the recycle manifest." }
+    }
+
+    private fun encode(records: List<RecycleRecord>): String {
         val array = JSONArray()
         records.forEach { record ->
             array.put(
@@ -46,10 +64,11 @@ class RecycleBinStore(context: Context) {
                     .put("recycledAtMillis", record.recycledAtMillis),
             )
         }
-        preferences.edit().putString(RECORDS_KEY, array.toString()).commit()
+        return array.toString()
     }
 
-    private fun decode(raw: String?): List<RecycleRecord> {
+    /** Returns null only when a non-empty payload is malformed. */
+    private fun decode(raw: String?): List<RecycleRecord>? {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
             val array = JSONArray(raw)
@@ -74,11 +93,12 @@ class RecycleBinStore(context: Context) {
                     )
                 }
             }
-        }.getOrElse { emptyList() }
+        }.getOrNull()
     }
 
     private companion object {
         const val PREFERENCES_NAME = "fylz_recycle_manifest"
         const val RECORDS_KEY = "records"
+        const val BACKUP_RECORDS_KEY = "records_backup"
     }
 }
