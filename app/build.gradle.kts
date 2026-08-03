@@ -10,7 +10,10 @@ android {
 
     defaultConfig {
         applicationId = "io.github.mbaliga.fylz"
-        minSdk = 26
+        // Hyle's :hyle module (wired below via includeBuild) declares minSdk = 31; a
+        // dependency's minSdk can never be lower than its consumer's, so adopting the
+        // shared design system means dropping Android 8.0-11 (API 26-30) support.
+        minSdk = 31
         targetSdk = 35
         versionCode = 1_000_001
         versionName = "1.0.0-alpha01"
@@ -98,6 +101,12 @@ dependencies {
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
+
+    // Hyle Design System, via the hyle-design-system submodule + includeBuild (see
+    // settings.gradle.kts). Gradle's composite-build dependency substitution resolves
+    // these to the :hyle and :crash-recovery projects, not a remote registry.
+    implementation("dev.aarso:hyle:0.2.0")
+    implementation("dev.aarso:crash-recovery:1.1.0")
 
     testImplementation("junit:junit:4.13.2")
 

@@ -36,10 +36,10 @@ jobs:
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
 
-      - name: Set up Gradle 8.11.1
+      - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '8.14.3'
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       - name: Unit test, lint, and assemble
