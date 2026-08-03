@@ -6,6 +6,7 @@ import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
 /** Provider-neutral, cancellable copy and move implementation for SAF documents. */
@@ -16,6 +17,12 @@ class FileOperationService(private val context: Context) {
         val displayName: String,
         val completedBytes: Long,
         val totalBytes: Long?,
+    )
+
+    private data class TargetPlan(
+        val requestedName: String,
+        val stagingName: String,
+        val existing: DocumentFile? = null,
     )
 
     suspend fun copy(
@@ -65,20 +72,25 @@ class FileOperationService(private val context: Context) {
                     ?: error("Unable to open a selected item.")
                 require(source.exists()) { "A selected item no longer exists." }
                 val sourceName = source.name ?: "untitled"
-                val requestedName = resolveTargetName(destination, sourceName, conflictPolicy)
-                if (requestedName == null) return@forEachIndexed
+                val plan = resolveTargetPlan(destination, sourceName, conflictPolicy)
+                    ?: return@forEachIndexed
 
                 val total = source.length().takeIf { source.isFile && it >= 0L }
-                val copied = copyDocument(
+                val staged = copyDocument(
                     source = source,
                     destinationDirectory = destination,
-                    requestedName = requestedName,
+                    requestedName = plan.stagingName,
+                    progressName = plan.requestedName,
                     itemIndex = index,
                     itemCount = sourceUris.size,
                     totalBytes = total,
                     onProgress = onProgress,
                 )
-                verifyCopy(source, copied)
+                verifyCopy(source, staged)
+                val copied = finalizeTarget(plan, staged)
+
+                // A move is intentionally copy -> verify -> finalize destination -> remove source.
+                // The source is never deleted when any earlier step fails.
                 if (move) {
                     check(source.delete()) {
                         "The item was copied, but the provider refused to remove the original."
@@ -93,6 +105,7 @@ class FileOperationService(private val context: Context) {
         source: DocumentFile,
         destinationDirectory: DocumentFile,
         requestedName: String,
+        progressName: String,
         itemIndex: Int,
         itemCount: Int,
         totalBytes: Long?,
@@ -101,31 +114,37 @@ class FileOperationService(private val context: Context) {
         coroutineContext.ensureActive()
         if (source.isDirectory) {
             val directory = destinationDirectory.createDirectory(requestedName)
-                ?: error("Unable to create $requestedName.")
-            source.listFiles().forEach { child ->
-                copyDocument(
-                    source = child,
-                    destinationDirectory = directory,
-                    requestedName = child.name ?: "untitled",
-                    itemIndex = itemIndex,
-                    itemCount = itemCount,
-                    totalBytes = null,
-                    onProgress = onProgress,
-                )
+                ?: error("Unable to create $progressName.")
+            try {
+                source.listFiles().forEach { child ->
+                    copyDocument(
+                        source = child,
+                        destinationDirectory = directory,
+                        requestedName = child.name ?: "untitled",
+                        progressName = child.name ?: progressName,
+                        itemIndex = itemIndex,
+                        itemCount = itemCount,
+                        totalBytes = null,
+                        onProgress = onProgress,
+                    )
+                }
+                return directory
+            } catch (failure: Throwable) {
+                directory.delete()
+                throw failure
             }
-            return directory
         }
 
         val target = destinationDirectory.createFile(
             source.type ?: "application/octet-stream",
             requestedName,
-        ) ?: error("Unable to create $requestedName.")
+        ) ?: error("Unable to create $progressName.")
 
         try {
             val input = context.contentResolver.openInputStream(source.uri)
-                ?: error("Unable to read $requestedName.")
+                ?: error("Unable to read $progressName.")
             val output = context.contentResolver.openOutputStream(target.uri, "w")
-                ?: error("Unable to write $requestedName.")
+                ?: error("Unable to write $progressName.")
             var completed = 0L
             input.use { sourceStream ->
                 output.use { targetStream ->
@@ -140,7 +159,7 @@ class FileOperationService(private val context: Context) {
                             Progress(
                                 itemIndex = itemIndex,
                                 itemCount = itemCount,
-                                displayName = requestedName,
+                                displayName = progressName,
                                 completedBytes = completed,
                                 totalBytes = totalBytes,
                             ),
@@ -166,20 +185,51 @@ class FileOperationService(private val context: Context) {
         }
     }
 
-    private fun resolveTargetName(
+    /**
+     * Completes a replacement only after the new item has been fully copied and verified.
+     * The old item is never removed during preflight or while bytes are still being written.
+     */
+    private fun finalizeTarget(plan: TargetPlan, staged: DocumentFile): DocumentFile {
+        val existing = plan.existing ?: return staged
+        check(existing.delete()) {
+            staged.delete()
+            "Unable to replace ${plan.requestedName}; the original was left untouched."
+        }
+        if (plan.stagingName == plan.requestedName) return staged
+        check(staged.renameTo(plan.requestedName)) {
+            "The replacement data is safe, but the provider could not restore the requested name. " +
+                "It remains as ${staged.name ?: plan.stagingName}."
+        }
+        return staged
+    }
+
+    private fun resolveTargetPlan(
         destination: DocumentFile,
         requestedName: String,
         policy: ConflictPolicy,
-    ): String? {
-        val existing = destination.findFile(requestedName) ?: return requestedName
+    ): TargetPlan? {
+        val existing = destination.findFile(requestedName)
+            ?: return TargetPlan(requestedName = requestedName, stagingName = requestedName)
         return when (policy) {
             ConflictPolicy.ASK -> error("A file named $requestedName already exists.")
             ConflictPolicy.SKIP -> null
-            ConflictPolicy.REPLACE -> {
-                check(existing.delete()) { "Unable to replace $requestedName." }
-                requestedName
+            ConflictPolicy.KEEP_BOTH -> {
+                val unique = uniqueName(destination, requestedName)
+                TargetPlan(requestedName = unique, stagingName = unique)
             }
-            ConflictPolicy.KEEP_BOTH -> uniqueName(destination, requestedName)
+            ConflictPolicy.REPLACE -> TargetPlan(
+                requestedName = requestedName,
+                stagingName = uniqueStagingName(destination, requestedName),
+                existing = existing,
+            )
+        }
+    }
+
+    private fun uniqueStagingName(destination: DocumentFile, requestedName: String): String {
+        val safeName = requestedName.replace('/', '_')
+        while (true) {
+            val candidate = ".fylz-replace-${UUID.randomUUID()}-$safeName"
+            if (destination.findFile(candidate) == null) return candidate
         }
     }
 
