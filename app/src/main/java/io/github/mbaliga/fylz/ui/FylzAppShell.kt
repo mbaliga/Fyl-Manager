@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.Button
@@ -30,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,10 +52,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import io.github.mbaliga.fylz.operations.FileOperation
+import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationJournal
+import io.github.mbaliga.fylz.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.operations.OperationState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
@@ -59,9 +66,18 @@ import java.util.Date
 @Composable
 fun FylzAppShell() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
+    val fileOperations = remember { FileOperationService(context.applicationContext) }
     var showHistory by remember { mutableStateOf(false) }
     var operations by remember { mutableStateOf(journal.list()) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            operations = journal.list()
+            delay(1_000)
+        }
+    }
 
     MaterialTheme {
         Box(Modifier.fillMaxSize()) {
@@ -80,12 +96,6 @@ fun FylzAppShell() {
         }
 
         if (showHistory) {
-            LaunchedEffect(Unit) {
-                while (true) {
-                    operations = journal.list()
-                    delay(1_000)
-                }
-            }
             OperationHistoryDialog(
                 operations = operations,
                 onDismiss = { showHistory = false },
@@ -96,6 +106,39 @@ fun FylzAppShell() {
                 onDismissOperation = { id ->
                     journal.remove(id)
                     operations = journal.list()
+                },
+                onRetry = { operation ->
+                    val plan = OperationRetryPolicy.plan(operation)
+                    if (plan == null) {
+                        Toast.makeText(context, "This operation cannot be retried safely.", Toast.LENGTH_LONG).show()
+                    } else {
+                        scope.launch {
+                            runCatching {
+                                when (plan.type) {
+                                    FileOperationType.COPY -> fileOperations.copy(
+                                        sourceUris = plan.sourceUris,
+                                        destinationTreeUri = plan.destinationTreeUri,
+                                        conflictPolicy = plan.conflictPolicy,
+                                    )
+                                    FileOperationType.MOVE -> fileOperations.move(
+                                        sourceUris = plan.sourceUris,
+                                        destinationTreeUri = plan.destinationTreeUri,
+                                        conflictPolicy = plan.conflictPolicy,
+                                    )
+                                    else -> error("Unsupported retry type.")
+                                }
+                            }.onSuccess {
+                                Toast.makeText(context, "Retry completed.", Toast.LENGTH_LONG).show()
+                            }.onFailure { failure ->
+                                Toast.makeText(
+                                    context,
+                                    failure.message ?: "Retry failed.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                            operations = journal.list()
+                        }
+                    }
                 },
             )
         }
@@ -136,6 +179,7 @@ private fun OperationHistoryDialog(
     onDismiss: () -> Unit,
     onClearFinished: () -> Unit,
     onDismissOperation: (String) -> Unit,
+    onRetry: (FileOperation) -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -190,6 +234,7 @@ private fun OperationHistoryDialog(
                             OperationHistoryCard(
                                 operation = operation,
                                 onDismiss = { onDismissOperation(operation.id) },
+                                onRetry = { onRetry(operation) },
                             )
                         }
                     }
@@ -225,6 +270,7 @@ private fun OperationHistoryDialog(
 private fun OperationHistoryCard(
     operation: FileOperation,
     onDismiss: () -> Unit,
+    onRetry: () -> Unit,
 ) {
     val presentation = operation.state.presentation()
     Surface(
@@ -287,6 +333,13 @@ private fun OperationHistoryCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                if (OperationRetryPolicy.canRetry(operation)) {
+                    OutlinedButton(onClick = onRetry) {
+                        Icon(Icons.Outlined.Replay, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Retry unfinished")
+                    }
                 }
             }
             if (operation.state in dismissibleStates) {
