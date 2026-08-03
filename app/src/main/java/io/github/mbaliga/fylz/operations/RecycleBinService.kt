@@ -13,12 +13,18 @@ import kotlin.coroutines.coroutineContext
  * Implements non-destructive deletion for Storage Access Framework providers.
  *
  * Fylz never falls back to permanent deletion. A recycle operation succeeds only after the item is
- * copied into a writable recycle root and the copy has been verified by byte count where available.
+ * copied into a writable recycle root, verified, and durably recorded before the original is removed.
  */
 class RecycleBinService(
     private val context: Context,
     private val store: RecycleBinStore = RecycleBinStore(context),
 ) {
+    private data class RestorePlan(
+        val requestedName: String,
+        val stagingName: String,
+        val existing: DocumentFile? = null,
+    )
+
     suspend fun recycle(
         sourceUri: Uri,
         originalParentUri: Uri?,
@@ -40,15 +46,12 @@ class RecycleBinService(
             ?: error("Unable to create a recycle transaction folder.")
         val displayName = source.name ?: "untitled"
         val sourceSize = source.length().takeIf { it >= 0L }
+        var recordStored = false
 
         try {
             val recycled = copyDocument(source, container, displayName)
             verifyCopy(source, recycled)
-            check(source.delete()) {
-                "The item was copied to the recycle bin, but the provider refused to remove the original."
-            }
-
-            RecycleRecord(
+            val record = RecycleRecord(
                 itemId = itemId,
                 originalUri = sourceUri,
                 recycledUri = recycled.uri,
@@ -57,8 +60,18 @@ class RecycleBinService(
                 providerAuthority = sourceUri.authority,
                 sizeBytes = sourceSize,
                 recycledAtMillis = System.currentTimeMillis(),
-            ).also(store::put)
+            )
+
+            // Persist recovery metadata before removing the original. If persistence fails, both the
+            // original and the temporary recycle copy remain recoverable and the copy is cleaned up.
+            store.put(record)
+            recordStored = true
+            check(source.delete()) {
+                "The item was copied to the recycle bin, but the provider refused to remove the original."
+            }
+            record
         } catch (failure: Throwable) {
+            if (recordStored) store.remove(itemId)
             container.delete()
             throw failure
         }
@@ -83,15 +96,22 @@ class RecycleBinService(
             "The restore destination is not writable."
         }
 
-        val targetName = resolveTargetName(destination, record.originalDisplayName, conflictPolicy)
+        val plan = resolveRestorePlan(destination, record.originalDisplayName, conflictPolicy)
             ?: return@withContext record.recycledUri
-        val restored = copyDocument(recycled, destination, targetName)
-        verifyCopy(recycled, restored)
-        check(recycled.delete()) {
-            "The item was restored, but the provider refused to remove the recycle copy."
+        val staged = copyDocument(recycled, destination, plan.stagingName)
+        try {
+            verifyCopy(recycled, staged)
+            val restored = finalizeRestore(plan, staged)
+            check(recycled.delete()) {
+                "The item was restored, but the provider refused to remove the recycle copy."
+            }
+            recycled.parentFile?.delete()
+            store.remove(itemId)
+            restored.uri
+        } catch (failure: Throwable) {
+            if (staged.exists()) staged.delete()
+            throw failure
         }
-        store.remove(itemId)
-        restored.uri
     }
 
     suspend fun permanentlyDelete(
@@ -109,9 +129,11 @@ class RecycleBinService(
         val record = store.find(itemId) ?: error("Recycle record not found.")
         val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
             ?: error("The recycled item is unavailable.")
+        val transactionFolder = recycled.parentFile
         check(!recycled.exists() || recycled.delete()) {
             "The provider refused permanent deletion."
         }
+        transactionFolder?.delete()
         store.remove(itemId)
     }
 
@@ -126,10 +148,15 @@ class RecycleBinService(
         if (source.isDirectory) {
             val directory = destinationDirectory.createDirectory(requestedName)
                 ?: error("Unable to create $requestedName.")
-            source.listFiles().forEach { child ->
-                copyDocument(child, directory, child.name ?: "untitled")
+            try {
+                source.listFiles().forEach { child ->
+                    copyDocument(child, directory, child.name ?: "untitled")
+                }
+                return directory
+            } catch (failure: Throwable) {
+                directory.delete()
+                throw failure
             }
-            return directory
         }
 
         val target = destinationDirectory.createFile(
@@ -171,20 +198,47 @@ class RecycleBinService(
         }
     }
 
-    private fun resolveTargetName(
+    private fun finalizeRestore(plan: RestorePlan, staged: DocumentFile): DocumentFile {
+        val existing = plan.existing ?: return staged
+        check(existing.delete()) {
+            staged.delete()
+            "Unable to replace ${plan.requestedName}; the existing item was left untouched."
+        }
+        if (plan.stagingName == plan.requestedName) return staged
+        check(staged.renameTo(plan.requestedName)) {
+            "The restored data is safe, but the provider could not restore the requested name. " +
+                "It remains as ${staged.name ?: plan.stagingName}."
+        }
+        return staged
+    }
+
+    private fun resolveRestorePlan(
         destination: DocumentFile,
         requestedName: String,
         policy: ConflictPolicy,
-    ): String? {
-        val existing = destination.findFile(requestedName) ?: return requestedName
+    ): RestorePlan? {
+        val existing = destination.findFile(requestedName)
+            ?: return RestorePlan(requestedName, requestedName)
         return when (policy) {
             ConflictPolicy.ASK -> error("A file named $requestedName already exists.")
             ConflictPolicy.SKIP -> null
-            ConflictPolicy.REPLACE -> {
-                check(existing.delete()) { "Unable to replace $requestedName." }
-                requestedName
+            ConflictPolicy.KEEP_BOTH -> {
+                val unique = uniqueName(destination, requestedName)
+                RestorePlan(unique, unique)
             }
-            ConflictPolicy.KEEP_BOTH -> uniqueName(destination, requestedName)
+            ConflictPolicy.REPLACE -> RestorePlan(
+                requestedName = requestedName,
+                stagingName = uniqueStagingName(destination, requestedName),
+                existing = existing,
+            )
+        }
+    }
+
+    private fun uniqueStagingName(destination: DocumentFile, requestedName: String): String {
+        val safeName = requestedName.replace('/', '_')
+        while (true) {
+            val candidate = ".fylz-restore-${UUID.randomUUID()}-$safeName"
+            if (destination.findFile(candidate) == null) return candidate
         }
     }
 
