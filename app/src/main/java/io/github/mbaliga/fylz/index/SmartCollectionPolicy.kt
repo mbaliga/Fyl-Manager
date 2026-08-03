@@ -11,8 +11,8 @@ object SmartCollectionPolicy {
             if (rule.negate) !matched else matched
         }
         return when (collection.join) {
-            RuleJoin.ALL -> results.all(Boolean::identity)
-            RuleJoin.ANY -> results.any(Boolean::identity)
+            RuleJoin.ALL -> results.all { it }
+            RuleJoin.ANY -> results.any { it }
         }
     }
 
@@ -82,6 +82,4 @@ object SmartCollectionPolicy {
             else -> false
         }
     }
-
-    private fun Boolean.Companion.identity(value: Boolean): Boolean = value
 }
