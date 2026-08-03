@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Fylz</string>
+    <string name="operation_history_title">Activity</string>
+    <string name="operation_history_shortcut_long">Open file operation activity</string>
 </resources>
