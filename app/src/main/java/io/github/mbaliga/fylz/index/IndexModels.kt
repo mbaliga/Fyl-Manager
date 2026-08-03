@@ -48,3 +48,34 @@ data class SmartCollection(
         require(rules.size <= 32)
     }
 }
+
+/** A user-selected, persisted folder root that local indexing is allowed to traverse. */
+data class IndexScope(
+    val rootUri: String,
+    val displayName: String,
+    val enabled: Boolean = true,
+)
+
+/** One indexed file or directory discovered under an [IndexScope]. */
+data class IndexedFile(
+    val uri: String,
+    val rootUri: String,
+    val name: String,
+    val mimeType: String,
+    val extension: String,
+    val sizeBytes: Long?,
+    val modifiedAtMillis: Long?,
+    val directory: Boolean,
+    val tags: Set<String> = emptySet(),
+    val indexedAtMillis: Long = System.currentTimeMillis(),
+)
+
+/** Status of the local index rebuild job, persisted so the UI survives process death. */
+data class IndexState(
+    val paused: Boolean = false,
+    val lastStartedAtMillis: Long? = null,
+    val lastCompletedAtMillis: Long? = null,
+    val lastError: String? = null,
+    val indexedFiles: Int = 0,
+    val truncated: Boolean = false,
+)

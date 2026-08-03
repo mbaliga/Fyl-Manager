@@ -8,25 +8,24 @@ import org.junit.Test
 class SmartCollectionEngineTest {
     private val file = IndexedFile(
         uri = "content://docs/report",
-        scopeTreeUri = "content://docs/root",
-        relativePath = "Work/Reports/Quarterly Report.pdf",
-        displayName = "Quarterly Report.pdf",
+        rootUri = "content://docs/root",
+        name = "Quarterly Report.pdf",
         mimeType = "application/pdf",
         extension = "pdf",
         sizeBytes = 12L * 1024L * 1024L,
         modifiedAtMillis = 1_800_000_000_000L,
         directory = false,
-        textSnippet = "Revenue grew while operating costs fell.",
+        tags = setOf("Finance", "Reviewed"),
     )
 
     @Test
-    fun combinesPathSizeAndContentRules() {
+    fun combinesNameSizeAndExtensionRules() {
         val collection = SmartCollection(
-            name = "Large revenue reports",
+            name = "Large quarterly reports",
             rules = listOf(
-                SmartRule(RuleField.PATH, RuleOperator.CONTAINS, "reports"),
+                SmartRule(RuleField.NAME, RuleOperator.CONTAINS, "quarterly"),
                 SmartRule(RuleField.SIZE, RuleOperator.GREATER_THAN, "10 MiB"),
-                SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue"),
+                SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, "pdf"),
             ),
         )
         assertTrue(SmartCollectionEngine.matches(file, collection))
@@ -43,6 +42,15 @@ class SmartCollectionEngineTest {
             ),
         )
         assertTrue(SmartCollectionEngine.matches(file, collection))
+    }
+
+    @Test
+    fun textContentRulesNeverMatchBecauseNoContentIsSampled() {
+        val collection = SmartCollection(
+            name = "Mentions revenue",
+            rules = listOf(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue")),
+        )
+        assertFalse(SmartCollectionEngine.matches(file, collection))
     }
 
     @Test

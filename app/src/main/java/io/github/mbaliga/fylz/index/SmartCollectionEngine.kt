@@ -24,11 +24,15 @@ object SmartCollectionEngine {
     }
 
     fun matches(file: IndexedFile, rule: SmartRule): Boolean = when (rule.field) {
-        RuleField.NAME -> compareText(file.displayName, rule.operator, rule.value)
-        RuleField.PATH -> compareText(file.relativePath, rule.operator, rule.value)
+        RuleField.NAME -> compareText(file.name, rule.operator, rule.value)
+        // The local index does not retain a folder-relative path, only the file name and its
+        // enclosing scope; PATH rules degrade to a name match rather than silently never matching.
+        RuleField.PATH -> compareText(file.name, rule.operator, rule.value)
         RuleField.EXTENSION -> compareText(file.extension, rule.operator, rule.value.trimStart('.'))
         RuleField.MIME -> compareText(file.mimeType, rule.operator, rule.value)
-        RuleField.TEXT_CONTENT -> compareText(file.textSnippet.orEmpty(), rule.operator, rule.value)
+        // No text-content sampling is captured by this index, so a content rule can never match.
+        // This fails closed (excludes the file) instead of pretending a sample was inspected.
+        RuleField.TEXT_CONTENT -> false
         RuleField.SIZE -> compareLong(file.sizeBytes, rule.operator, parseSize(rule.value))
         RuleField.MODIFIED -> compareLong(file.modifiedAtMillis, rule.operator, rule.value.toLongOrNull())
         RuleField.DIRECTORY -> compareBoolean(file.directory, rule.operator, parseBoolean(rule.value))
