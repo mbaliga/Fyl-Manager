@@ -119,6 +119,7 @@ fun PreviewPane(
                 descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
                     MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
                     ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
