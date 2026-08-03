@@ -19,18 +19,35 @@ sealed interface DeleteDecision {
     data object PermanentDeleteRequiresExplicitAdvancedAction : DeleteDecision
 }
 
+internal enum class DefaultDeletePolicyDecision {
+    MOVE_TO_RECYCLE_BIN,
+    REFUSE_NO_RECYCLE_ROOT,
+    REFUSE_RECYCLE_ROOT_NOT_WRITABLE,
+}
+
 object RecycleBinPolicy {
+    internal fun decideDefaultDeletePolicy(
+        hasRecycleRoot: Boolean,
+        canWriteRecycleRoot: Boolean,
+    ): DefaultDeletePolicyDecision = when {
+        !hasRecycleRoot -> DefaultDeletePolicyDecision.REFUSE_NO_RECYCLE_ROOT
+        !canWriteRecycleRoot -> DefaultDeletePolicyDecision.REFUSE_RECYCLE_ROOT_NOT_WRITABLE
+        else -> DefaultDeletePolicyDecision.MOVE_TO_RECYCLE_BIN
+    }
+
     fun decideDefaultDelete(
         recycleRoot: Uri?,
         canWriteRecycleRoot: Boolean,
-    ): DeleteDecision = when {
-        recycleRoot == null -> DeleteDecision.Refuse(
+    ): DeleteDecision = when (decideDefaultDeletePolicy(recycleRoot != null, canWriteRecycleRoot)) {
+        DefaultDeletePolicyDecision.REFUSE_NO_RECYCLE_ROOT -> DeleteDecision.Refuse(
             "No writable Fylz recycle location is available for this provider.",
         )
-        !canWriteRecycleRoot -> DeleteDecision.Refuse(
+        DefaultDeletePolicyDecision.REFUSE_RECYCLE_ROOT_NOT_WRITABLE -> DeleteDecision.Refuse(
             "The selected provider cannot write to its Fylz recycle location.",
         )
-        else -> DeleteDecision.MoveToRecycleBin(recycleRoot)
+        DefaultDeletePolicyDecision.MOVE_TO_RECYCLE_BIN -> DeleteDecision.MoveToRecycleBin(
+            requireNotNull(recycleRoot),
+        )
     }
 
     fun allowPermanentDelete(
