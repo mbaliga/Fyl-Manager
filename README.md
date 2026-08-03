@@ -2,7 +2,7 @@
 
 Fylz is an open-source, local-first Android file workspace for phones, tablets, foldables and desktop-style Android environments.
 
-> Status: **v1 alpha / pre-release**. The current branch is feature-rich enough for testing, but remains draft until real-device and provider acceptance is complete.
+> Status: **1.0.0-alpha01 / pre-release**. Code-level v1 scope is implemented and automated debug/release validation is required on every pull request. Stable release remains blocked on recorded real-device/provider, accessibility and signed-upgrade acceptance.
 
 ## Implemented
 
@@ -14,6 +14,7 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Collapsible navigation and docked or floating preview panes.
 - Phone, landscape and larger-window layouts.
 - System, light and dark themes, accent presets and optional dynamic colour.
+- Primary **Files** and **Recovery** destinations rather than independent floating recovery controls.
 
 ### Files and recovery
 
@@ -22,7 +23,7 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Recycle, restore and explicit permanent deletion.
 - Durable operation journal with progress, cancellation and process-death recovery states.
 - Conflict policies for skip, keep-both and guarded replacement.
-- Dedicated recovery when a move copied successfully but the provider refused to remove the original.
+- Dedicated cleanup-only recovery when a move copied successfully but the provider refused to remove the original; finishing the move never copies again.
 
 ### Preview and editing
 
@@ -52,22 +53,33 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Foreground WorkManager execution and progress notifications for long backups.
 - Rediscovery/import of manifest-bearing backup folders after reinstall or app-data loss.
 
+### Archives
+
+- Standard and AES-256 password-protected ZIP creation.
+- Archive inspection before extraction.
+- Limits for archive input, entries, paths, depth, per-file size, total expansion and compression ratio.
+- Temporary and destination storage preflight when the device/provider reports capacity.
+- Per-entry bounded extraction with declared-versus-actual size verification.
+- Transactional provider output and rollback after failure or cancellation.
+- Hostile metadata and randomized traversal fixtures.
+
 ### Additional foundations
 
-- Guarded ZIP creation and extraction, including password-capable engine foundations.
-- Scan-to-PDF foundation.
-- Duplicate detection, batch rename and saved-library metadata foundations.
+- Scan-to-PDF.
+- Duplicate detection, batch rename and saved-library metadata.
 - Optional WebDAV, local-model and BYOK adapter foundations kept separate from deterministic file operations.
 
-## Still required before stable v1
+## Required before stable v1
 
-- Real-device/provider testing across Android local storage, SD/USB and cloud DocumentsProviders.
-- Doze, reboot, revoked permission, low-storage, process-death and long-running backup acceptance.
-- Final archive password UX, disk-space preflight and malformed/fuzz fixtures.
-- Accessibility, keyboard/mouse, large-text, tablet and foldable visual QA.
-- Signed release/upgrade testing, dependency and licence review, screenshots and release notes.
+These gates require actual devices, providers or maintainer-controlled signing material and cannot be truthfully completed by repository code alone:
 
-See [the roadmap](docs/ROADMAP.md) for acceptance work and longer-term features.
+- Execute the [device and provider acceptance matrix](docs/DEVICE_ACCEPTANCE.md) across local storage, SD/USB and cloud DocumentsProviders.
+- Record Doze, reboot, revoked-permission, low-storage, process-death and long-running backup results.
+- Complete TalkBack, keyboard/mouse, large-text, tablet and foldable acceptance.
+- Produce and verify a maintainer-signed release candidate and in-place upgrade using the [release procedure](docs/RELEASE.md).
+- Capture final screenshots and release evidence from accepted devices.
+
+See [the roadmap](docs/ROADMAP.md) for longer-term work beyond stable v1.
 
 ## Principles
 
@@ -88,15 +100,20 @@ Requirements:
 
 ```bash
 gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+gradle --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
 ```
 
-GitHub Actions uploads the debug APK as the `fylz-debug-apk` artifact after a successful build.
+GitHub Actions uploads the debug APK after the Android CI workflow and an unsigned release candidate plus dependency graph after Release readiness. Unsigned artifacts are validation outputs, not production releases.
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [Product research and feature gaps](docs/PRODUCT_RESEARCH.md)
 - [Architecture and security boundaries](docs/ARCHITECTURE.md)
 - [Delivery roadmap](docs/ROADMAP.md)
+- [Device and provider acceptance](docs/DEVICE_ACCEPTANCE.md)
+- [Release and signing procedure](docs/RELEASE.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
