@@ -1,13 +1,17 @@
 package io.github.mbaliga.fylz.backup
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.net.Uri
+import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
@@ -115,28 +119,70 @@ class BackupWorker(
         if (trigger != BackupTrigger.MANUAL && (!plan.enabled || !plan.schedule.hasAutomaticTrigger)) {
             return Result.success()
         }
-        if (trigger == BackupTrigger.MEDIA_THRESHOLD) {
-            val scan = scanMedia(plan, store)
-            if (!scan.thresholdReached) {
-                store.putRun(
-                    BackupRunRecord(
-                        planId = plan.id,
-                        trigger = trigger,
-                        status = BackupRunStatus.SKIPPED_THRESHOLD,
-                        completedAtMillis = System.currentTimeMillis(),
-                        message = "${scan.pendingNewMedia}/${plan.schedule.mediaThreshold} new images or videos observed.",
+
+        val lease = store.acquireLease(plan.id)
+        if (lease == null) {
+            store.putRun(
+                BackupRunRecord(
+                    planId = plan.id,
+                    trigger = trigger,
+                    status = BackupRunStatus.SKIPPED_BUSY,
+                    completedAtMillis = System.currentTimeMillis(),
+                    message = "Another backup for this plan is already running.",
+                ),
+            )
+            return Result.success()
+        }
+
+        return try {
+            if (trigger == BackupTrigger.MEDIA_THRESHOLD) {
+                val scan = scanMedia(plan, store)
+                if (!scan.thresholdReached) {
+                    store.putRun(
+                        BackupRunRecord(
+                            planId = plan.id,
+                            trigger = trigger,
+                            status = BackupRunStatus.SKIPPED_THRESHOLD,
+                            completedAtMillis = System.currentTimeMillis(),
+                            message = "${scan.pendingNewMedia}/${plan.schedule.mediaThreshold} new images or videos observed.",
+                        ),
+                    )
+                    return Result.success()
+                }
+            }
+
+            setForeground(createForegroundInfo(plan.name, "Preparing backup…", 0))
+            val run = BackupService(applicationContext).runBackup(plan.id, trigger) { progress ->
+                store.refreshLease(plan.id, lease)
+                setProgressAsync(
+                    Data.Builder()
+                        .putString(KEY_PROGRESS_NAME, progress.displayName)
+                        .putInt(KEY_PROGRESS_FILES, progress.completedFiles)
+                        .putLong(KEY_PROGRESS_BYTES, progress.completedBytes)
+                        .build(),
+                )
+                setForegroundAsync(
+                    createForegroundInfo(
+                        plan.name,
+                        "${progress.completedFiles} files · ${formatBytes(progress.completedBytes)}",
+                        progress.completedFiles,
                     ),
                 )
-                return Result.success()
             }
-        }
-        val run = BackupService(applicationContext).runBackup(plan.id, trigger)
-        return when (run.status) {
-            BackupRunStatus.SUCCEEDED, BackupRunStatus.SKIPPED_THRESHOLD -> Result.success()
-            BackupRunStatus.NEEDS_ATTENTION -> Result.failure()
-            BackupRunStatus.FAILED -> if (runAttemptCount < 3) Result.retry() else Result.failure()
-            BackupRunStatus.CANCELLED -> Result.failure()
-            else -> Result.retry()
+            when (run.status) {
+                BackupRunStatus.SUCCEEDED,
+                BackupRunStatus.SKIPPED_THRESHOLD,
+                BackupRunStatus.SKIPPED_BUSY,
+                -> Result.success()
+                BackupRunStatus.NEEDS_ATTENTION -> Result.failure()
+                BackupRunStatus.FAILED -> if (runAttemptCount < 3) Result.retry() else Result.failure()
+                BackupRunStatus.CANCELLED -> Result.failure()
+                else -> Result.retry()
+            }
+        } catch (failure: Throwable) {
+            if (runAttemptCount < 3) Result.retry() else Result.failure()
+        } finally {
+            store.releaseLease(plan.id, lease)
         }
     }
 
@@ -166,17 +212,59 @@ class BackupWorker(
     }
 
     private fun collectMedia(directory: DocumentFile, output: MutableSet<String>, depth: Int) {
-        require(depth <= 64) { "Media scan nesting exceeds the safety limit." }
+        require(depth <= MAX_MEDIA_DEPTH) { "Media scan nesting exceeds the safety limit." }
         directory.listFiles().forEach { child ->
+            require(output.size <= MAX_MEDIA_ENTRIES) { "Media collection exceeds the scan safety limit." }
             if (child.isDirectory) collectMedia(child, output, depth + 1)
-            else if (child.type?.startsWith("image/") == true || child.type?.startsWith("video/") == true) {
-                output += child.uri.toString()
-            }
+            else if (isMedia(child)) output += child.uri.toString()
         }
+    }
+
+    private fun isMedia(file: DocumentFile): Boolean {
+        val mime = file.type.orEmpty()
+        if (mime.startsWith("image/") || mime.startsWith("video/")) return true
+        val extension = file.name?.substringAfterLast('.', "")?.lowercase().orEmpty()
+        return extension in MEDIA_EXTENSIONS
+    }
+
+    private fun createForegroundInfo(title: String, text: String, progress: Int): ForegroundInfo {
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Backups", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Progress for manual and scheduled Fylz backups"
+            },
+        )
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setProgress(0, progress, true)
+            .build()
+        return ForegroundInfo(NOTIFICATION_ID_BASE + title.hashCode().and(0x0fff), notification)
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes < 1024L -> "$bytes B"
+        bytes < 1024L * 1024L -> "${bytes / 1024L} KiB"
+        bytes < 1024L * 1024L * 1024L -> "${bytes / (1024L * 1024L)} MiB"
+        else -> "${bytes / (1024L * 1024L * 1024L)} GiB"
     }
 
     companion object {
         const val KEY_PLAN_ID = "plan_id"
         const val KEY_TRIGGER = "trigger"
+        const val KEY_PROGRESS_NAME = "progress_name"
+        const val KEY_PROGRESS_FILES = "progress_files"
+        const val KEY_PROGRESS_BYTES = "progress_bytes"
+        private const val CHANNEL_ID = "fylz_backups"
+        private const val NOTIFICATION_ID_BASE = 8_200
+        private const val MAX_MEDIA_DEPTH = 64
+        private const val MAX_MEDIA_ENTRIES = 250_000
+        private val MEDIA_EXTENSIONS = setOf(
+            "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif",
+            "mp4", "m4v", "mov", "mkv", "webm", "3gp", "avi",
+        )
     }
 }
