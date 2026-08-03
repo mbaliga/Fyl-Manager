@@ -51,16 +51,14 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
 
     override suspend fun list(path: String, continuationToken: String?, limit: Int): RemotePage =
         withContext(Dispatchers.IO) {
-            require(continuationToken == null) { "SFTP pagination tokens are not supported." }
+            require(continuationToken == null) { "SFTP listings are returned as one bounded page." }
             require(limit in 1..5_000)
             withClient { sftp ->
                 val entries = sftp.ls(remotePath(path))
                     .asSequence()
                     .filterNot { it.name == "." || it.name == ".." }
-                    .take(limit + 1)
-                    .toList()
-                RemotePage(
-                    entries = entries.take(limit).map { info ->
+                    .take(limit)
+                    .map { info ->
                         val directory = info.isDirectory
                         RemoteObject(
                             key = RemotePathPolicy.child(RemotePathPolicy.normalize(path), info.name),
@@ -70,9 +68,9 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
                             modifiedAtMillis = info.attributes.mtime.takeIf { it > 0L }?.times(1_000L),
                             mimeType = null,
                         )
-                    },
-                    continuationToken = if (entries.size > limit) "more" else null,
-                )
+                    }
+                    .toList()
+                RemotePage(entries = entries, continuationToken = null)
             }
         }
 
