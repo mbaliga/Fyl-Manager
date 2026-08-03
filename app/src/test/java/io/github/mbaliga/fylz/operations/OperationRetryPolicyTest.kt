@@ -6,13 +6,14 @@ import org.junit.Test
 
 class OperationRetryPolicyTest {
     @Test
-    fun `failed copy with complete metadata can retry`() {
+    fun `failed copy with one shared destination can retry`() {
         assertTrue(
             OperationRetryPolicy.canRetry(
                 type = FileOperationType.COPY,
                 state = OperationState.FAILED,
-                itemCount = 1,
-                allItemsHaveSourceAndDestination = true,
+                incompleteItemCount = 2,
+                allIncompleteItemsHaveSourceAndDestination = true,
+                incompleteItemsShareDestination = true,
             ),
         )
     }
@@ -23,8 +24,9 @@ class OperationRetryPolicyTest {
             OperationRetryPolicy.canRetry(
                 type = FileOperationType.PERMANENT_DELETE,
                 state = OperationState.FAILED,
-                itemCount = 1,
-                allItemsHaveSourceAndDestination = true,
+                incompleteItemCount = 1,
+                allIncompleteItemsHaveSourceAndDestination = true,
+                incompleteItemsShareDestination = true,
             ),
         )
     }
@@ -35,8 +37,22 @@ class OperationRetryPolicyTest {
             OperationRetryPolicy.canRetry(
                 type = FileOperationType.COPY,
                 state = OperationState.NEEDS_ATTENTION,
-                itemCount = 1,
-                allItemsHaveSourceAndDestination = false,
+                incompleteItemCount = 1,
+                allIncompleteItemsHaveSourceAndDestination = false,
+                incompleteItemsShareDestination = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `items with different destinations cannot retry together`() {
+        assertFalse(
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.MOVE,
+                state = OperationState.NEEDS_ATTENTION,
+                incompleteItemCount = 2,
+                allIncompleteItemsHaveSourceAndDestination = true,
+                incompleteItemsShareDestination = false,
             ),
         )
     }
@@ -47,8 +63,9 @@ class OperationRetryPolicyTest {
             OperationRetryPolicy.canRetry(
                 type = FileOperationType.MOVE,
                 state = OperationState.SUCCEEDED,
-                itemCount = 1,
-                allItemsHaveSourceAndDestination = true,
+                incompleteItemCount = 1,
+                allIncompleteItemsHaveSourceAndDestination = true,
+                incompleteItemsShareDestination = true,
             ),
         )
     }
