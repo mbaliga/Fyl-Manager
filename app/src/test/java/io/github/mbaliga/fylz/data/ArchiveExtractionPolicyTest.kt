@@ -19,7 +19,7 @@ class ArchiveExtractionPolicyTest {
     }
 
     @Test
-    fun `rejects traversal and absolute paths`() {
+    fun `rejects traversal absolute and drive-qualified paths`() {
         assertFalse(
             ArchiveExtractionPolicy.evaluate(
                 archiveBytes = 100,
@@ -32,6 +32,23 @@ class ArchiveExtractionPolicyTest {
                 entries = listOf(ArchiveEntryMetadata("/absolute.txt", false, 10, 20)),
             ).allowed,
         )
+        assertFalse(
+            ArchiveExtractionPolicy.evaluate(
+                archiveBytes = 100,
+                entries = listOf(ArchiveEntryMetadata("C:/windows.txt", false, 10, 20)),
+            ).allowed,
+        )
+    }
+
+    @Test
+    fun `rejects archive input beyond staging limit`() {
+        val decision = ArchiveExtractionPolicy.evaluate(
+            archiveBytes = 101,
+            entries = emptyList(),
+            limits = ArchiveExtractionLimits(maxArchiveBytes = 100),
+        )
+
+        assertFalse(decision.allowed)
     }
 
     @Test
@@ -76,5 +93,22 @@ class ArchiveExtractionPolicyTest {
         )
 
         assertFalse(decision.allowed)
+    }
+
+    @Test
+    fun `rejects unknown sizes and excessive nesting`() {
+        assertFalse(
+            ArchiveExtractionPolicy.evaluate(
+                archiveBytes = 100,
+                entries = listOf(ArchiveEntryMetadata("unknown.bin", false, -1, 20)),
+            ).allowed,
+        )
+        assertFalse(
+            ArchiveExtractionPolicy.evaluate(
+                archiveBytes = 100,
+                entries = listOf(ArchiveEntryMetadata("a/b/c/d.txt", false, 10, 20)),
+                limits = ArchiveExtractionLimits(maxPathDepth = 3),
+            ).allowed,
+        )
     }
 }
