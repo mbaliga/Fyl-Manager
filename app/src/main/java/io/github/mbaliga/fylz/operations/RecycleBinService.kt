@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -18,6 +19,7 @@ import kotlin.coroutines.coroutineContext
 class RecycleBinService(
     private val context: Context,
     private val store: RecycleBinStore = RecycleBinStore(context),
+    private val journal: OperationJournal = OperationJournal(context),
 ) {
     private data class RestorePlan(
         val requestedName: String,
@@ -34,45 +36,101 @@ class RecycleBinService(
             ?: error("Unable to open the selected item.")
         require(source.exists()) { "The selected item no longer exists." }
 
-        val recycleRoot = DocumentFile.fromTreeUri(context, recycleRootUri)
-            ?: DocumentFile.fromSingleUri(context, recycleRootUri)
-            ?: error("Unable to open the recycle location.")
-        require(recycleRoot.canWrite() && recycleRoot.isDirectory) {
-            "The selected provider cannot write to its Fylz recycle location."
-        }
-
-        val itemId = UUID.randomUUID().toString()
-        val container = recycleRoot.createDirectory(itemId)
-            ?: error("Unable to create a recycle transaction folder.")
         val displayName = source.name ?: "untitled"
         val sourceSize = source.length().takeIf { it >= 0L }
-        var recordStored = false
+        var operation = FileOperation(
+            type = FileOperationType.RECYCLE,
+            items = listOf(
+                OperationItem(
+                    source = sourceUri,
+                    destination = recycleRootUri,
+                    displayName = displayName,
+                    expectedBytes = sourceSize,
+                    state = OperationState.PREFLIGHT,
+                ),
+            ),
+            state = OperationState.PREFLIGHT,
+        )
+        journal.put(operation)
 
         try {
-            val recycled = copyDocument(source, container, displayName)
-            verifyCopy(source, recycled)
-            val record = RecycleRecord(
-                itemId = itemId,
-                originalUri = sourceUri,
-                recycledUri = recycled.uri,
-                originalParentUri = originalParentUri,
-                originalDisplayName = displayName,
-                providerAuthority = sourceUri.authority,
-                sizeBytes = sourceSize,
-                recycledAtMillis = System.currentTimeMillis(),
-            )
-
-            // Persist recovery metadata before removing the original. If persistence fails, both the
-            // original and the temporary recycle copy remain recoverable and the copy is cleaned up.
-            store.put(record)
-            recordStored = true
-            check(source.delete()) {
-                "The item was copied to the recycle bin, but the provider refused to remove the original."
+            val recycleRoot = DocumentFile.fromTreeUri(context, recycleRootUri)
+                ?: DocumentFile.fromSingleUri(context, recycleRootUri)
+                ?: error("Unable to open the recycle location.")
+            require(recycleRoot.canWrite() && recycleRoot.isDirectory) {
+                "The selected provider cannot write to its Fylz recycle location."
             }
-            record
+
+            operation = operation.copy(
+                state = OperationState.RUNNING,
+                items = operation.items.map { it.copy(state = OperationState.RUNNING) },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(operation)
+
+            val itemId = UUID.randomUUID().toString()
+            val container = recycleRoot.createDirectory(itemId)
+                ?: error("Unable to create a recycle transaction folder.")
+            var recordStored = false
+
+            try {
+                val recycled = copyDocument(source, container, displayName)
+                verifyCopy(source, recycled)
+                val record = RecycleRecord(
+                    itemId = itemId,
+                    originalUri = sourceUri,
+                    recycledUri = recycled.uri,
+                    originalParentUri = originalParentUri,
+                    originalDisplayName = displayName,
+                    providerAuthority = sourceUri.authority,
+                    sizeBytes = sourceSize,
+                    recycledAtMillis = System.currentTimeMillis(),
+                )
+
+                store.put(record)
+                recordStored = true
+                check(source.delete()) {
+                    "The item was copied to the recycle bin, but the provider refused to remove the original."
+                }
+
+                operation = operation.copy(
+                    state = OperationState.SUCCEEDED,
+                    items = operation.items.map {
+                        it.copy(
+                            destination = recycled.uri,
+                            completedBytes = sourceSize ?: it.completedBytes,
+                            state = OperationState.SUCCEEDED,
+                        )
+                    },
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+                journal.put(operation)
+                record
+            } catch (failure: Throwable) {
+                if (recordStored) store.remove(itemId)
+                container.delete()
+                throw failure
+            }
+        } catch (cancelled: CancellationException) {
+            journal.put(
+                operation.copy(
+                    state = OperationState.CANCELLED,
+                    items = operation.items.map { it.copy(state = OperationState.CANCELLED) },
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+            throw cancelled
         } catch (failure: Throwable) {
-            if (recordStored) store.remove(itemId)
-            container.delete()
+            journal.put(
+                operation.copy(
+                    state = OperationState.FAILED,
+                    items = operation.items.map {
+                        if (it.state == OperationState.SUCCEEDED) it
+                        else it.copy(state = OperationState.FAILED, errorCode = failure.errorCode())
+                    },
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
             throw failure
         }
     }
@@ -83,37 +141,105 @@ class RecycleBinService(
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
     ): Uri = withContext(Dispatchers.IO) {
         val record = store.find(itemId) ?: error("Recycle record not found.")
-        val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
-            ?: error("The recycled item is unavailable.")
-        require(recycled.exists()) { "The recycled item no longer exists." }
-
         val destinationUri = record.originalParentUri ?: fallbackDestinationTreeUri
             ?: error("The original folder is unavailable. Choose a restore destination.")
-        val destination = DocumentFile.fromTreeUri(context, destinationUri)
-            ?: DocumentFile.fromSingleUri(context, destinationUri)
-            ?: error("Unable to open the restore destination.")
-        require(destination.isDirectory && destination.canWrite()) {
-            "The restore destination is not writable."
-        }
+        var operation = FileOperation(
+            type = FileOperationType.RESTORE,
+            conflictPolicy = conflictPolicy,
+            items = listOf(
+                OperationItem(
+                    source = record.recycledUri,
+                    destination = destinationUri,
+                    displayName = record.originalDisplayName,
+                    expectedBytes = record.sizeBytes,
+                    state = OperationState.PREFLIGHT,
+                ),
+            ),
+            state = OperationState.PREFLIGHT,
+        )
+        journal.put(operation)
 
-        val plan = resolveRestorePlan(destination, record.originalDisplayName, conflictPolicy)
-            ?: return@withContext record.recycledUri
-        val staged = copyDocument(recycled, destination, plan.stagingName)
-        var destinationFinalized = false
         try {
-            verifyCopy(recycled, staged)
-            val restored = finalizeRestore(plan, staged)
-            destinationFinalized = true
-            check(recycled.delete()) {
-                "The item was restored, but the provider refused to remove the recycle copy."
+            val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
+                ?: error("The recycled item is unavailable.")
+            require(recycled.exists()) { "The recycled item no longer exists." }
+
+            val destination = DocumentFile.fromTreeUri(context, destinationUri)
+                ?: DocumentFile.fromSingleUri(context, destinationUri)
+                ?: error("Unable to open the restore destination.")
+            require(destination.isDirectory && destination.canWrite()) {
+                "The restore destination is not writable."
             }
-            recycled.parentFile?.delete()
-            store.remove(itemId)
-            restored.uri
+
+            val plan = resolveRestorePlan(destination, record.originalDisplayName, conflictPolicy)
+            if (plan == null) {
+                journal.put(
+                    operation.copy(
+                        state = OperationState.SUCCEEDED,
+                        items = operation.items.map { it.copy(state = OperationState.SUCCEEDED) },
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+                return@withContext record.recycledUri
+            }
+
+            operation = operation.copy(
+                state = OperationState.RUNNING,
+                items = operation.items.map { it.copy(state = OperationState.RUNNING) },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(operation)
+
+            val staged = copyDocument(recycled, destination, plan.stagingName)
+            var destinationFinalized = false
+            try {
+                verifyCopy(recycled, staged)
+                val restored = finalizeRestore(plan, staged)
+                destinationFinalized = true
+                check(recycled.delete()) {
+                    "The item was restored, but the provider refused to remove the recycle copy."
+                }
+                recycled.parentFile?.delete()
+                store.remove(itemId)
+
+                journal.put(
+                    operation.copy(
+                        state = OperationState.SUCCEEDED,
+                        items = operation.items.map {
+                            it.copy(
+                                destination = restored.uri,
+                                completedBytes = record.sizeBytes ?: it.completedBytes,
+                                state = OperationState.SUCCEEDED,
+                            )
+                        },
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+                restored.uri
+            } catch (failure: Throwable) {
+                if (!destinationFinalized && staged.exists()) staged.delete()
+                throw failure
+            }
+        } catch (cancelled: CancellationException) {
+            journal.put(
+                operation.copy(
+                    state = OperationState.CANCELLED,
+                    items = operation.items.map { it.copy(state = OperationState.CANCELLED) },
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+            throw cancelled
         } catch (failure: Throwable) {
-            // Once the destination has been finalized it is a verified user copy. Never remove it
-            // merely because cleanup of the recycle copy or metadata failed.
-            if (!destinationFinalized && staged.exists()) staged.delete()
+            journal.put(
+                operation.copy(
+                    state = OperationState.FAILED,
+                    items = operation.items.map {
+                        if (it.state == OperationState.SUCCEEDED) it
+                        else it.copy(state = OperationState.FAILED, errorCode = failure.errorCode())
+                    },
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
             throw failure
         }
     }
@@ -131,14 +257,47 @@ class RecycleBinService(
         ) { "Permanent deletion requires explicit confirmation from the recycle bin." }
 
         val record = store.find(itemId) ?: error("Recycle record not found.")
-        val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
-            ?: error("The recycled item is unavailable.")
-        val transactionFolder = recycled.parentFile
-        check(!recycled.exists() || recycled.delete()) {
-            "The provider refused permanent deletion."
+        var operation = FileOperation(
+            type = FileOperationType.PERMANENT_DELETE,
+            items = listOf(
+                OperationItem(
+                    source = record.recycledUri,
+                    displayName = record.originalDisplayName,
+                    expectedBytes = record.sizeBytes,
+                    state = OperationState.RUNNING,
+                ),
+            ),
+            state = OperationState.RUNNING,
+        )
+        journal.put(operation)
+
+        try {
+            val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
+                ?: error("The recycled item is unavailable.")
+            val transactionFolder = recycled.parentFile
+            check(!recycled.exists() || recycled.delete()) {
+                "The provider refused permanent deletion."
+            }
+            transactionFolder?.delete()
+            store.remove(itemId)
+            operation = operation.copy(
+                state = OperationState.SUCCEEDED,
+                items = operation.items.map { it.copy(state = OperationState.SUCCEEDED) },
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            journal.put(operation)
+        } catch (failure: Throwable) {
+            journal.put(
+                operation.copy(
+                    state = OperationState.FAILED,
+                    items = operation.items.map {
+                        it.copy(state = OperationState.FAILED, errorCode = failure.errorCode())
+                    },
+                    updatedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+            throw failure
         }
-        transactionFolder?.delete()
-        store.remove(itemId)
     }
 
     fun records(): List<RecycleRecord> = store.list()
@@ -209,9 +368,6 @@ class RecycleBinService(
             "Unable to replace ${plan.requestedName}; the existing item was left untouched."
         }
         if (plan.stagingName == plan.requestedName) return staged
-
-        // Some providers can create and delete documents but cannot rename them. Once the previous
-        // item is gone, retaining the verified staged copy is safer than throwing and deleting it.
         staged.renameTo(plan.requestedName)
         return staged
     }
@@ -256,5 +412,12 @@ class RecycleBinService(
             if (destination.findFile(candidate) == null) return candidate
             index += 1
         }
+    }
+
+    private fun Throwable.errorCode(): String = when (this) {
+        is SecurityException -> "PERMISSION_DENIED"
+        is IllegalArgumentException -> "INVALID_REQUEST"
+        is IllegalStateException -> "OPERATION_FAILED"
+        else -> "UNEXPECTED_ERROR"
     }
 }
