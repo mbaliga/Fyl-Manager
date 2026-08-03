@@ -1,6 +1,6 @@
 package io.github.mbaliga.fylz.operations
 
-import android.net.Uri
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -8,13 +8,35 @@ import org.junit.Test
 class RecycleBinPolicyTest {
     @Test
     fun `default delete refuses when recycle is unavailable`() {
-        assertTrue(RecycleBinPolicy.decideDefaultDelete(null, false) is DeleteDecision.Refuse)
+        assertEquals(
+            DefaultDeletePolicyDecision.REFUSE_NO_RECYCLE_ROOT,
+            RecycleBinPolicy.decideDefaultDeletePolicy(
+                hasRecycleRoot = false,
+                canWriteRecycleRoot = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `default delete refuses when recycle root is not writable`() {
+        assertEquals(
+            DefaultDeletePolicyDecision.REFUSE_RECYCLE_ROOT_NOT_WRITABLE,
+            RecycleBinPolicy.decideDefaultDeletePolicy(
+                hasRecycleRoot = true,
+                canWriteRecycleRoot = false,
+            ),
+        )
     }
 
     @Test
     fun `default delete moves to recycle when writable`() {
-        val decision = RecycleBinPolicy.decideDefaultDelete(Uri.parse("content://provider/root/.fylz-trash"), true)
-        assertTrue(decision is DeleteDecision.MoveToRecycleBin)
+        assertEquals(
+            DefaultDeletePolicyDecision.MOVE_TO_RECYCLE_BIN,
+            RecycleBinPolicy.decideDefaultDeletePolicy(
+                hasRecycleRoot = true,
+                canWriteRecycleRoot = true,
+            ),
+        )
     }
 
     @Test
