@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.backup
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +13,7 @@ import org.json.JSONObject
 import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
+import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -44,8 +46,15 @@ class BackupService(
         if (!destination.isDirectory || !destination.canWrite()) {
             return@withContext finish(run, BackupRunStatus.FAILED, "Backup destination is not writable.")
         }
-        if (source.uri == destination.uri) {
+        if (sameDocument(source.uri, destination.uri)) {
             return@withContext finish(run, BackupRunStatus.FAILED, "Source and backup destination must be different folders.")
+        }
+        if (containsDocument(source, destination.uri)) {
+            return@withContext finish(
+                run,
+                BackupRunStatus.FAILED,
+                "The backup destination cannot be inside the source folder.",
+            )
         }
 
         val snapshotId = UUID.randomUUID().toString()
@@ -56,13 +65,15 @@ class BackupService(
         try {
             val state = CopyState()
             source.listFiles().sortedBy { it.name.orEmpty().lowercase(Locale.ROOT) }.forEach { child ->
+                val childName = validatedSourceName(child)
                 copyIntoSnapshot(
                     source = child,
                     destination = staging,
-                    relativePath = safeSegment(child.name ?: "untitled"),
+                    relativePath = childName,
                     state = state,
                     onProgress = onProgress,
                     depth = 1,
+                    forbiddenDestinationUri = destination.uri,
                 )
             }
             val createdAt = System.currentTimeMillis()
@@ -74,9 +85,11 @@ class BackupService(
                 createdAtMillis = createdAt,
                 entries = state.entries.sortedBy(BackupManifestEntry::relativePath),
             )
+            val validation = BackupManifestPolicy.validate(manifest)
+            check(validation.allowed) { validation.reason ?: "Backup manifest validation failed." }
             val manifestBytes = encodeManifest(manifest).toByteArray(Charsets.UTF_8)
             val manifestHash = sha256(manifestBytes)
-            val manifestFile = staging.createFile("application/json", MANIFEST_FILE)
+            val manifestFile = staging.createFile("application/json", BackupManifestPolicy.MANIFEST_FILE)
                 ?: error("Unable to create backup manifest.")
             context.contentResolver.openOutputStream(manifestFile.uri, "w")?.use { output ->
                 output.write(manifestBytes)
@@ -153,7 +166,7 @@ class BackupService(
             return@withContext BackupRestoreResult(BackupRestoreStatus.DESTINATION_UNAVAILABLE, message = "Restore destination is not writable.")
         }
 
-        val manifestFile = snapshotRoot.findFile(MANIFEST_FILE)
+        val manifestFile = snapshotRoot.findFile(BackupManifestPolicy.MANIFEST_FILE)
             ?: return@withContext BackupRestoreResult(BackupRestoreStatus.INVALID_BACKUP, message = "Backup manifest is missing.")
         val manifestBytes = context.contentResolver.openInputStream(manifestFile.uri)?.use { it.readBytes() }
             ?: return@withContext BackupRestoreResult(BackupRestoreStatus.INVALID_BACKUP, message = "Backup manifest is unreadable.")
@@ -165,8 +178,15 @@ class BackupService(
         if (manifest.backupId != snapshot.id || manifest.planId != snapshot.planId) {
             return@withContext BackupRestoreResult(BackupRestoreStatus.INVALID_BACKUP, message = "Backup manifest does not match this snapshot.")
         }
+        val validation = BackupManifestPolicy.validate(manifest)
+        if (!validation.allowed) {
+            return@withContext BackupRestoreResult(
+                BackupRestoreStatus.INVALID_BACKUP,
+                message = validation.reason ?: "Backup manifest validation failed.",
+            )
+        }
 
-        val restoreName = uniqueDirectoryName(destination, "Restored ${snapshot.sourceDisplayName}")
+        val restoreName = uniqueDirectoryName(destination, "Restored ${generatedSegment(snapshot.sourceDisplayName)}")
         val restoreRoot = destination.createDirectory(restoreName)
             ?: return@withContext BackupRestoreResult(BackupRestoreStatus.DESTINATION_UNAVAILABLE, message = "Unable to create restore folder.")
         var restoredFiles = 0
@@ -178,14 +198,13 @@ class BackupService(
             )
             entries.forEach { entry ->
                 coroutineContext.ensureActive()
-                validateRelativePath(entry.relativePath)
                 val parent = ensureParent(restoreRoot, entry.relativePath.substringBeforeLast('/', ""))
                 val name = entry.relativePath.substringAfterLast('/')
                 if (entry.directory) {
-                    if (parent.findFile(name) == null) {
-                        parent.createDirectory(name) ?: error("Unable to create ${entry.relativePath}.")
-                    }
+                    check(parent.findFile(name) == null) { "Restore path collision at ${entry.relativePath}." }
+                    parent.createDirectory(name) ?: error("Unable to create ${entry.relativePath}.")
                 } else {
+                    check(parent.findFile(name) == null) { "Restore path collision at ${entry.relativePath}." }
                     val sourceFile = findRelative(snapshotRoot, entry.relativePath)
                         ?: error("Backup file ${entry.relativePath} is missing.")
                     val target = parent.createFile(entry.mimeType ?: "application/octet-stream", name)
@@ -207,6 +226,18 @@ class BackupService(
                 restoredFiles = restoredFiles,
                 restoredBytes = restoredBytes,
             )
+        } catch (cancelled: CancellationException) {
+            val removed = restoreRoot.delete()
+            if (!removed) {
+                return@withContext BackupRestoreResult(
+                    status = BackupRestoreStatus.FAILED_ROLLBACK_INCOMPLETE,
+                    restoredRootUri = restoreRoot.uri.toString(),
+                    restoredFiles = restoredFiles,
+                    restoredBytes = restoredBytes,
+                    message = "Restore cancelled; partial files could not be removed.",
+                )
+            }
+            throw cancelled
         } catch (failure: Throwable) {
             val removed = restoreRoot.delete()
             BackupRestoreResult(
@@ -237,13 +268,19 @@ class BackupService(
         state: CopyState,
         onProgress: (BackupProgress) -> Unit,
         depth: Int,
+        forbiddenDestinationUri: Uri,
     ) {
         coroutineContext.ensureActive()
-        require(depth <= MAX_DEPTH) { "Source folder nesting exceeds the backup safety limit." }
-        require(state.entries.size < MAX_ENTRIES) { "Source folder contains too many entries for one backup." }
-        validateRelativePath(relativePath)
+        require(depth <= BackupManifestPolicy.MAX_DEPTH) { "Source folder nesting exceeds the backup safety limit." }
+        require(state.entries.size < BackupManifestPolicy.MAX_ENTRIES) { "Source folder contains too many entries for one backup." }
+        check(!sameDocument(source.uri, forbiddenDestinationUri)) {
+            "The backup destination appeared inside the source while the backup was running."
+        }
+        val key = BackupManifestPolicy.normalizedKey(relativePath)
+        check(state.normalizedPaths.add(key)) { "Source contains duplicate or case-colliding paths." }
         if (source.isDirectory) {
-            val target = destination.createDirectory(source.name ?: "untitled")
+            val sourceName = validatedSourceName(source)
+            val target = destination.createDirectory(sourceName)
                 ?: error("Unable to create $relativePath.")
             state.directoryCount += 1
             state.entries += BackupManifestEntry(
@@ -255,23 +292,26 @@ class BackupService(
                 lastModifiedMillis = source.lastModified().takeIf { it > 0L },
             )
             source.listFiles().sortedBy { it.name.orEmpty().lowercase(Locale.ROOT) }.forEach { child ->
+                val childName = validatedSourceName(child)
                 copyIntoSnapshot(
                     source = child,
                     destination = target,
-                    relativePath = "$relativePath/${safeSegment(child.name ?: "untitled")}",
+                    relativePath = "$relativePath/$childName",
                     state = state,
                     onProgress = onProgress,
                     depth = depth + 1,
+                    forbiddenDestinationUri = forbiddenDestinationUri,
                 )
             }
             return
         }
         require(source.isFile) { "Unsupported source entry: $relativePath" }
-        val target = destination.createFile(source.type ?: "application/octet-stream", source.name ?: "untitled")
+        val sourceName = validatedSourceName(source)
+        val target = destination.createFile(source.type ?: "application/octet-stream", sourceName)
             ?: error("Unable to create $relativePath.")
         try {
             val result = copyAndHash(source.uri, target.uri) { bytes ->
-                onProgress(BackupProgress(source.name ?: relativePath, state.fileCount, state.totalBytes + bytes))
+                onProgress(BackupProgress(sourceName, state.fileCount, state.totalBytes + bytes))
             }
             val targetLength = target.length()
             if (targetLength >= 0L && targetLength != result.bytes) {
@@ -341,7 +381,7 @@ class BackupService(
 
     private fun uniqueSnapshotName(destination: DocumentFile, sourceName: String, createdAtMillis: Long): String {
         val stamp = SimpleDateFormat("yyyy-MM-dd HH-mm-ss", Locale.US).format(Date(createdAtMillis))
-        return uniqueDirectoryName(destination, "Fylz Backup - ${safeSegment(sourceName)} - $stamp")
+        return uniqueDirectoryName(destination, "Fylz Backup - ${generatedSegment(sourceName)} - $stamp")
     }
 
     private fun uniqueDirectoryName(destination: DocumentFile, base: String): String {
@@ -374,21 +414,60 @@ class BackupService(
         return current
     }
 
-    private fun validateRelativePath(path: String) {
-        require(path.isNotBlank())
-        require(!path.startsWith('/'))
-        require('\\' !in path)
-        val segments = path.split('/')
-        require(segments.none { it.isBlank() || it == "." || it == ".." })
-        require(segments.all { it.length <= 255 })
+    private fun validatedSourceName(source: DocumentFile): String {
+        val name = source.name ?: error("A source entry has no display name.")
+        val validation = BackupManifestPolicy.validateSourceSegment(name)
+        check(validation.allowed) { validation.reason ?: "Invalid source entry name." }
+        check(name != BackupManifestPolicy.MANIFEST_FILE) {
+            "The source contains the reserved backup manifest filename."
+        }
+        return name
     }
 
-    private fun safeSegment(value: String): String = value
+    private fun generatedSegment(value: String): String = value
         .replace('/', '_')
         .replace('\\', '_')
+        .filterNot { it.code in 0..31 || it.code == 127 }
         .trim()
-        .take(255)
-        .ifBlank { "untitled" }
+        .take(120)
+        .ifBlank { "Backup" }
+
+    private fun containsDocument(root: DocumentFile, targetUri: Uri): Boolean {
+        val queue = ArrayDeque<Pair<DocumentFile, Int>>()
+        queue.add(root to 0)
+        var visited = 0
+        while (queue.isNotEmpty()) {
+            val (current, depth) = queue.removeFirst()
+            if (sameDocument(current.uri, targetUri)) return true
+            require(depth <= BackupManifestPolicy.MAX_DEPTH) {
+                "Source folder nesting exceeds the backup safety limit."
+            }
+            if (!current.isDirectory) continue
+            current.listFiles().forEach { child ->
+                visited += 1
+                require(visited <= BackupManifestPolicy.MAX_ENTRIES) {
+                    "Source folder contains too many entries for one backup."
+                }
+                queue.add(child to depth + 1)
+            }
+        }
+        return false
+    }
+
+    private fun sameDocument(first: Uri, second: Uri): Boolean {
+        if (first == second) return true
+        return documentIdentity(first)?.let { it == documentIdentity(second) } == true
+    }
+
+    private fun documentIdentity(uri: Uri): String? = runCatching {
+        val authority = uri.authority ?: return@runCatching null
+        val documentId = if (DocumentsContract.isTreeUri(uri)) {
+            DocumentsContract.getTreeDocumentId(uri)
+        } else {
+            DocumentsContract.getDocumentId(uri)
+        }
+        "$authority:$documentId"
+    }.getOrNull()
 
     private fun encodeManifest(value: BackupManifest): String = JSONObject().apply {
         put("schemaVersion", value.schemaVersion)
@@ -450,14 +529,9 @@ class BackupService(
 
     private data class CopyState(
         val entries: MutableList<BackupManifestEntry> = mutableListOf(),
+        val normalizedPaths: MutableSet<String> = mutableSetOf(),
         var fileCount: Int = 0,
         var directoryCount: Int = 0,
         var totalBytes: Long = 0L,
     )
-
-    private companion object {
-        const val MANIFEST_FILE = ".fylz-backup-manifest.json"
-        const val MAX_DEPTH = 128
-        const val MAX_ENTRIES = 1_000_000
-    }
 }
