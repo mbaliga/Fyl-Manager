@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,7 +69,7 @@ private fun InspectorContent(
                 descriptor.notes ?: when (descriptor.depth) {
                     PreviewDepth.RENDERED -> "A semantic renderer is available for this format."
                     PreviewDepth.STRUCTURED -> "Fylz can inspect this format's structure without executing its contents."
-                    PreviewDepth.INSPECTED -> "No safe built-in semantic decoder is available; showing bounded binary inspection.",
+                    PreviewDepth.INSPECTED -> "No safe built-in semantic decoder is available; showing bounded binary inspection."
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

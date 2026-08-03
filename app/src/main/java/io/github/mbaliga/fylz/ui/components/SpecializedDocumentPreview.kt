@@ -155,8 +155,8 @@ fun PdfDocumentPreview(entry: FileEntry, descriptor: FileFormatDescriptor, modif
                 UniversalInspectorPreview(
                     entry,
                     descriptor,
-                    it.message ?: "The PDF page renderer could not open this provider stream.",
                     modifier,
+                    it.message ?: "The PDF page renderer could not open this provider stream.",
                 )
             },
         )
@@ -193,8 +193,8 @@ fun ZipArchivePreview(entry: FileEntry, descriptor: FileFormatDescriptor, modifi
                 UniversalInspectorPreview(
                     entry,
                     descriptor,
-                    it.message ?: "This archive format is not handled by the ZIP inspector.",
                     modifier,
+                    it.message ?: "This archive format is not handled by the ZIP inspector.",
                 )
             },
         )
