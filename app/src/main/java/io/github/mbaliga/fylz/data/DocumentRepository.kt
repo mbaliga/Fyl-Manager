@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import io.github.mbaliga.fylz.history.FileHistoryReason
+import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.util.FileType
@@ -16,6 +18,7 @@ import kotlin.coroutines.coroutineContext
 
 class DocumentRepository(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
+    private val history = FileHistoryStore(context.applicationContext)
 
     data class TextContent(
         val value: String,
@@ -110,6 +113,7 @@ class DocumentRepository(context: Context) {
     }
 
     suspend fun copyStream(sourceUri: Uri, destinationUri: Uri): Long = withContext(Dispatchers.IO) {
+        history.capture(destinationUri, FileHistoryReason.BEFORE_WRITE)
         val input = resolver.openInputStream(sourceUri) ?: error("Unable to read the source.")
         val output = resolver.openOutputStream(destinationUri, "w")
             ?: error("Unable to write the destination.")
@@ -171,6 +175,7 @@ class DocumentRepository(context: Context) {
         }
 
     suspend fun writeText(uri: Uri, value: String) = withContext(Dispatchers.IO) {
+        history.capture(uri, FileHistoryReason.BEFORE_WRITE)
         val output = runCatching { resolver.openOutputStream(uri, "wt") }.getOrNull()
             ?: resolver.openOutputStream(uri, "w")
             ?: error("The selected provider did not return a writable stream.")
