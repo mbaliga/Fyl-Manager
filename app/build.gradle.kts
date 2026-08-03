@@ -68,6 +68,7 @@ configurations.configureEach {
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
+    val media3Version = "1.10.1"
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -82,6 +83,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.work:work-runtime:2.11.2")
+    implementation("androidx.media3:media3-exoplayer:$media3Version")
+    implementation("androidx.media3:media3-ui:$media3Version")
     implementation("net.lingala.zip4j:zip4j:2.11.5")
     implementation("io.coil-kt.coil3:coil-compose:3.5.0")
     implementation("io.coil-kt.coil3:coil-gif:3.5.0")
