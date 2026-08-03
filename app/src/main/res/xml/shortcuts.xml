@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="operation_history"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_recent_history"
+        android:shortcutShortLabel="@string/operation_history_title"
+        android:shortcutLongLabel="@string/operation_history_shortcut_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.OperationHistoryActivity" />
+    </shortcut>
+</shortcuts>
