@@ -4,11 +4,11 @@ import android.content.Context
 import android.content.Intent
 
 /**
- * The capability adapter docs/ARCHITECTURE.md asks for: one interface behind which the
- * SAF-backed source and the `java.io.File`-backed source coexist.
+ * The capability adapter: one interface behind which the `java.io.File`-backed source and the
+ * SAF-backed source coexist.
  *
- * Implementations live in flavor source sets (`app/src/saf`, `app/src/full`) and are obtained
- * through [StorageAccess], which each flavor supplies.
+ * Which implementation leads is a *runtime* decision made by [StorageAccess] based on whether
+ * "All files access" is currently granted -- not a compile-time one.
  */
 interface StorageProvider {
     /** Stable identifier, e.g. `saf` or `file`. */

@@ -7,14 +7,15 @@ import android.os.Environment
 import android.provider.Settings
 
 /**
- * The runtime permission flow for the `full` flavor's broad-access backend.
+ * The runtime permission flow for Fylz's broad-access backend.
  *
  * `MANAGE_EXTERNAL_STORAGE` is *not* a dangerous runtime permission and cannot be requested with
  * `ActivityResultContracts.RequestPermission`. The only way to obtain it is to send the user to
  * the system's "All files access" screen and re-check `Environment.isExternalStorageManager()`
  * when they come back -- which is what [intent] and [isGranted] are for.
  *
- * This whole file exists only in `app/src/full`, so the `saf` flavor cannot even reference it.
+ * Declining is not fatal: `StorageAccess` falls back to the Storage Access Framework source, which
+ * is also the only route to cloud, USB and third-party document providers.
  */
 object FullAccessPermission {
 

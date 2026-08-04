@@ -9,6 +9,25 @@
          HyleTabHaptics.settle()'s direct VibratorManager.vibrate() call. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+        Fylz is a file manager: full filesystem access is its default posture, not an opt-in
+        extra. MANAGE_EXTERNAL_STORAGE is a special access permission and cannot be requested
+        with a runtime permission dialog; storage.FullAccessPermission sends the user to the
+        system "All files access" screen and re-checks Environment.isExternalStorageManager()
+        when they return.
+
+        Declining is survivable: StorageAccess falls back to the Storage Access Framework path,
+        which also remains the only way to reach cloud, USB and third-party DocumentsProvider
+        roots that this permission does not cover.
+
+        tools:ignore="ScopedStorage" — lint flags this permission unconditionally. Publishing on
+        Google Play with it requires the file-manager Permissions Declaration and eligibility
+        review; see docs/ARCHITECTURE.md.
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
     <application
         android:name=".FylzApplication"
         android:allowBackup="true"
@@ -20,6 +39,27 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Fylz"
         android:usesCleartextTraffic="false">
+
+        <!--
+            Fylz's own DocumentsProvider over java.io.File. Exposing broad storage as a document
+            provider keeps every existing SAF-shaped consumer (file operations, recycle bin,
+            archives, backup, history) working against ordinary content:// URIs instead of needing
+            a second, parallel File-based backend.
+
+            android:permission="android.permission.MANAGE_DOCUMENTS" is signature-level, so no
+            third-party app can read this provider; same-UID callers (Fylz itself) bypass the
+            check. android:exported must stay true for the platform DocumentsUI to enumerate it.
+        -->
+        <provider
+            android:name="io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider"
+            android:authorities="io.github.mbaliga.fylz.files"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
 
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
@@ -34,7 +74,7 @@
 
         <!--
             IndexManagerActivity was never declared, which made the whole index/ package
-            unreachable at runtime -- starting it threw ActivityNotFoundException. Declared here
+            unreachable at runtime — starting it threw ActivityNotFoundException. Declared here
             and reached from the Tools surface and a launcher shortcut.
 
             exported="false": nothing outside Fylz has any reason to launch the index manager,

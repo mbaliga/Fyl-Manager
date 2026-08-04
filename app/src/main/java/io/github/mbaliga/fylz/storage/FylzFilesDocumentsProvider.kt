@@ -20,7 +20,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 
 /**
- * A `java.io.File`-backed [DocumentsProvider] for the `full` flavor.
+ * A `java.io.File`-backed [DocumentsProvider]: Fylz's broad-access storage backend.
  *
  * ## Why a DocumentsProvider rather than a second `FileEntry` backend
  *
@@ -33,12 +33,11 @@ import java.io.IOException
  * Exposing broad storage *as a document provider owned by this app* keeps a single code path:
  * the URIs handed to the rest of the app are ordinary `content://` document URIs, so copy, move,
  * rename, recycle, archive, backup and history all keep working byte-for-byte unchanged. The
- * `java.io.File` and `StorageManager.getStorageVolumes()` backend that
- * docs/ARCHITECTURE.md calls for lives here, behind that contract, and only in this flavor's
- * source set.
+ * `java.io.File` and `StorageManager.getStorageVolumes()` backend lives here, behind that
+ * contract.
  *
- * Same-UID callers bypass the `MANAGE_DOCUMENTS` guard declared in the flavor manifest, so Fylz
- * can read its own provider while other applications cannot.
+ * Same-UID callers bypass the `MANAGE_DOCUMENTS` guard declared in the manifest, so Fylz can read
+ * its own provider while other applications cannot.
  *
  * Broad access still requires `MANAGE_EXTERNAL_STORAGE`; see [FullAccessPermission]. Without it
  * this provider simply reports the directories the app can legitimately read.

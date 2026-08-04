@@ -10,14 +10,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Storage Access Framework source. Available in every flavor; it is the *only* source in the
- * `saf` flavor, and remains available in `full` so a user can still reach cloud/third-party
- * document providers.
+ * Storage Access Framework source: Fylz's secondary storage backend.
  *
- * Least privilege, per README principle 2 and docs/ARCHITECTURE.md: this provider holds no
- * storage permission at all. It can therefore only open subtrees the user has explicitly granted,
- * and everything else it offers is a *shortcut* that opens the system picker pre-seeded with
- * `DocumentsContract.EXTRA_INITIAL_URI`.
+ * It is not merely a fallback. `MANAGE_EXTERNAL_STORAGE` covers shared local volumes and nothing
+ * else, so SAF stays the only route to cloud, USB and third-party `DocumentsProvider` roots. It is
+ * also what the app runs on entirely if the user declines "All files access".
+ *
+ * This provider itself holds no storage permission. It can only open subtrees the user has
+ * explicitly granted, and everything else it offers is a *shortcut* that opens the system picker
+ * pre-seeded with `DocumentsContract.EXTRA_INITIAL_URI`.
  */
 class SafStorageProvider : StorageProvider {
 
@@ -133,9 +134,13 @@ class SafStorageProvider : StorageProvider {
             storageManager.storageVolumes
                 .filter { !it.isPrimary && it.state == Environment.MEDIA_MOUNTED }
                 .mapNotNull { volume ->
+                    // The typed getParcelableExtra overload is API 33; minSdk here is 31, so the
+                    // deprecated one-argument form is the only version available across the
+                    // supported range.
+                    @Suppress("DEPRECATION")
                     val initial = runCatching {
                         volume.createOpenDocumentTreeIntent()
-                            .getParcelableExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri::class.java)
+                            .getParcelableExtra<Uri>(DocumentsContract.EXTRA_INITIAL_URI)
                     }.getOrNull()
                     StorageRoot(
                         id = "saf:volume:${volume.uuid ?: volume.hashCode()}",

@@ -7,7 +7,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * `java.io.File` + `StorageManager.getStorageVolumes()` launch surface for the `full` flavor.
+ * `java.io.File` + `StorageManager.getStorageVolumes()` launch surface: Fylz's primary storage
+ * source whenever "All files access" is granted.
  *
  * Everything it returns opens *directly* -- no picker, no SAF grant -- because the URIs are served
  * by [FylzFilesDocumentsProvider], which this app owns. That is what makes a fresh launch show

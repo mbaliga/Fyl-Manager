@@ -22,32 +22,6 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
-    // docs/ARCHITECTURE.md ("Known limitations and planned mitigations") prescribes exactly
-    // this split: "keep SAF as the default path; isolate broad access behind a separate build
-    // flavor and capability adapter."
-    //
-    // Both flavors keep the same applicationId: res/xml/shortcuts.xml pins
-    // android:targetPackage="io.github.mbaliga.fylz", so an applicationIdSuffix would silently
-    // break the launcher shortcuts. The trade-off is that the two flavors cannot be installed
-    // side by side.
-    flavorDimensions += "access"
-    productFlavors {
-        create("full") {
-            dimension = "access"
-            // isDefault makes this the variant the IDE preselects; it is the dogfood/sideload
-            // build that gets MANAGE_EXTERNAL_STORAGE and shows storage volumes on launch.
-            isDefault = true
-            versionNameSuffix = "-full"
-            buildConfigField("boolean", "FULL_STORAGE_ACCESS", "true")
-        }
-        create("saf") {
-            dimension = "access"
-            versionNameSuffix = "-saf"
-            // Play-safe behaviour: Storage Access Framework only, no broad-access permission.
-            buildConfigField("boolean", "FULL_STORAGE_ACCESS", "false")
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true

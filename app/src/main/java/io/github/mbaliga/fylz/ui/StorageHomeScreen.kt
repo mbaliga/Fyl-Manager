@@ -52,10 +52,11 @@ import io.github.mbaliga.fylz.storage.StorageRootKind
 /**
  * The launch surface that replaces the bare `Text("Open a folder to begin")` empty state.
  *
- * In the `full` flavor every row here opens directly -- internal storage, removable volumes and
- * the standard folders -- because the File-backed provider serves them. In the `saf` flavor the
- * rows are granted subtrees plus one-tap `ACTION_OPEN_DOCUMENT_TREE` shortcuts pre-seeded with
- * `EXTRA_INITIAL_URI`, so the user still lands somewhere useful without a blank screen.
+ * With "All files access" granted, every row here opens directly -- internal storage, removable
+ * volumes and the standard folders -- because the File-backed provider serves them, and no picker
+ * appears in the happy path. Without it, the rows are already-granted subtrees plus one-tap
+ * `ACTION_OPEN_DOCUMENT_TREE` shortcuts pre-seeded with `EXTRA_INITIAL_URI`, so the user still
+ * lands somewhere useful instead of on a blank screen.
  *
  * Rows are 56dp tall with 8dp vertical padding around a 40dp icon, clearing DESIGN.md's 48dp
  * minimum touch target, and every icon-only affordance carries a semantic label.
@@ -70,7 +71,9 @@ fun StorageHomeScreen(
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
-    val provider = StorageAccess.primary
+    // Re-evaluated on every composition and after every refresh: the user can grant or revoke
+    // "All files access" from Settings while Fylz is alive, and the home surface must follow.
+    val provider = StorageAccess.fileProvider
     val ready = provider.isReady(context)
 
     val groups by produceState(
@@ -78,9 +81,7 @@ fun StorageHomeScreen(
         key1 = refreshKey,
         key2 = ready,
     ) {
-        value = StorageAccess.all
-            .filter { it.isReady(context) }
-            .flatMap { it.rootGroups(context) }
+        value = StorageAccess.available(context).flatMap { it.rootGroups(context) }
     }
 
     val loading = groups.isEmpty() && ready
@@ -144,7 +145,7 @@ fun StorageHomeScreen(
                         Text(stringResource(R.string.storage_home_remotes))
                     }
                     Text(
-                        stringResource(R.string.storage_home_flavor_note, StorageAccess.FLAVOR_LABEL),
+                        stringResource(R.string.storage_home_access_note, StorageAccess.accessLabel(context)),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

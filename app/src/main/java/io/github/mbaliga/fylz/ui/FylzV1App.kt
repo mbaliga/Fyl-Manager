@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,6 +37,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
@@ -51,7 +54,10 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Tag
@@ -60,9 +66,11 @@ import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -84,6 +92,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -95,7 +106,14 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import io.github.mbaliga.fylz.ai.AiClient
 import io.github.mbaliga.fylz.ai.AiProviderConfig
+import io.github.mbaliga.fylz.IndexManagerActivity
+import io.github.mbaliga.fylz.PostV1ToolsActivity
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
+import io.github.mbaliga.fylz.browse.SortDirection
+import io.github.mbaliga.fylz.browse.SortField
+import io.github.mbaliga.fylz.browse.SortSpec
+import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.library.LibraryStore
@@ -109,17 +127,27 @@ import io.github.mbaliga.fylz.model.FolderTab
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
+import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.search.RecursiveSearchEngine
+import io.github.mbaliga.fylz.search.SearchHit
+import io.github.mbaliga.fylz.search.SearchMatchSource
+import io.github.mbaliga.fylz.search.SearchProgress
+import io.github.mbaliga.fylz.search.SearchQuery
+import io.github.mbaliga.fylz.storage.StorageAccess
+import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.hyle.HyleFolderTabSwitcher
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -127,6 +155,9 @@ import java.util.Locale
 import java.util.UUID
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
+
+/** How many previously granted SAF subtrees are restored as tabs on launch. */
+private const val MAX_RESTORED_TABS = 8
 
 @Composable
 fun FylzV1App() {
@@ -157,6 +188,8 @@ private fun FylzV1Workspace(
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
+    val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
+    val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
@@ -183,12 +216,33 @@ private fun FylzV1Workspace(
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
+    var remoteDialog by remember { mutableStateOf(false) }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
+    var sortSpec by remember { mutableStateOf(SortSpec.Default) }
+    var searchRecursive by remember { mutableStateOf(false) }
+    var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
+    var homeRefreshKey by remember { mutableIntStateOf(0) }
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
     val selectedEntries = entries.filter { it.uri in selectedUris }
-    val visibleEntries = remember(entries, query) {
-        if (query.isBlank()) entries else entries.filter { it.name.contains(query.trim(), true) }
+
+    // Sorting is applied after filtering so the two controls compose: the user's chosen order
+    // holds for the current folder, a folder filter, and recursive search results alike.
+    val visibleEntries = remember(entries, query, searchRecursive, sortSpec) {
+        val filtered = if (query.isBlank() || searchRecursive) {
+            entries
+        } else {
+            val parsed = SearchQuery.parse(query)
+            entries.filter { parsed.matchesMetadata(it) && parsed.matchesName(it.name) }
+        }
+        sortEntries(filtered, sortSpec)
+    }
+
+    val searchHits = remember(searchProgress, sortSpec) {
+        val hits = searchProgress?.hits.orEmpty()
+        val ordered = sortEntries(hits.map(SearchHit::entry), sortSpec)
+        val byUri = hits.associateBy { it.entry.uri }
+        ordered.mapNotNull { byUri[it.uri] }
     }
 
     fun toast(message: String) {
@@ -199,15 +253,36 @@ private fun FylzV1Workspace(
         refreshKey += 1
     }
 
+    fun openTabAt(treeUri: Uri, location: FolderLocation) {
+        val existing = tabs.indexOfFirst { it.treeUri == treeUri }
+        if (existing >= 0) {
+            tabs[existing] = tabs[existing].copy(locations = listOf(location))
+            activeTabId = tabs[existing].id
+            return
+        }
+        val tab = FolderTab(treeUri = treeUri, locations = listOf(location))
+        tabs += tab
+        activeTabId = tab.id
+    }
+
+    /**
+     * Opens a launch-surface row directly. In the full flavor this is the whole storage story:
+     * no picker, no grant round-trip, the tab just opens.
+     */
+    fun openStorageRoot(root: StorageRoot) {
+        val treeUri = root.treeUri ?: return
+        val documentUri = root.documentUri ?: return
+        openTabAt(treeUri, FolderLocation(documentUri, root.title))
+    }
+
     val rootPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             repository.persistTreePermission(uri)
             scope.launch {
                 runCatching { repository.rootLocation(uri) }
                     .onSuccess { root ->
-                        val tab = FolderTab(treeUri = uri, locations = listOf(root))
-                        tabs += tab
-                        activeTabId = tab.id
+                        openTabAt(uri, root)
+                        homeRefreshKey += 1
                     }
                     .onFailure { toast(it.message ?: "Unable to open folder") }
             }
@@ -312,17 +387,39 @@ private fun FylzV1Workspace(
             .addOnFailureListener { toast(it.message ?: "Scanner is unavailable") }
     }
 
+    // Restore previously granted subtrees as tabs. This used to be the ONLY way content ever
+    // appeared, which is why a fresh install showed nothing at all; the storage home surface below
+    // is now the real entry point and this is just tab restoration on top of it.
     LaunchedEffect(Unit) {
         context.contentResolver.persistedUriPermissions
             .filter { it.isReadPermission }
-            .take(8)
+            .take(MAX_RESTORED_TABS)
             .forEach { permission ->
                 runCatching { repository.rootLocation(permission.uri) }.getOrNull()?.let { root ->
                     val tab = FolderTab(treeUri = permission.uri, locations = listOf(root))
                     tabs += tab
-                    if (activeTabId == null) activeTabId = tab.id
                 }
             }
+    }
+
+    // Recursive search. Cancelled and restarted whenever the query, scope or folder changes --
+    // LaunchedEffect's own cancellation is what makes an in-flight walk stop, and the engine
+    // checks for it at every folder and every entry.
+    LaunchedEffect(query, searchRecursive, activeTab?.current?.uri, refreshKey) {
+        val tab = activeTab
+        if (!searchRecursive || query.isBlank() || tab == null) {
+            searchProgress = null
+            return@LaunchedEffect
+        }
+        val parsed = SearchQuery.parse(query)
+        if (parsed.isEmpty) {
+            searchProgress = null
+            return@LaunchedEffect
+        }
+        searchProgress = SearchProgress(emptyList(), 0, 0, complete = false)
+        searchEngine
+            .search(tab.treeUri, tab.current.uri, tab.current.name, parsed)
+            .collectLatest { searchProgress = it }
     }
 
     LaunchedEffect(activeTab?.current?.uri, refreshKey) {
@@ -411,8 +508,17 @@ private fun FylzV1Workspace(
                 TopAppBar(
                     title = { Text("Fylz") },
                     navigationIcon = {
-                        IconButton(onClick = { rootPicker.launch(null) }) {
-                            Icon(Icons.Outlined.FolderOpen, contentDescription = "Open folder")
+                        // Returns to the storage home surface instead of firing the picker: the
+                        // home surface is now the app's real entry point, and the picker is one
+                        // action on it rather than the only way in.
+                        IconButton(
+                            onClick = { activeTabId = null; homeRefreshKey += 1 },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Home,
+                                contentDescription = stringResource(R.string.browser_open_home),
+                            )
                         }
                     },
                     actions = {
@@ -481,8 +587,35 @@ private fun FylzV1Workspace(
                                     onClick = { moreExpanded = false; aiDialog = true },
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("WebDAV") },
+                                    text = { Text(stringResource(R.string.remotes_title)) },
+                                    leadingIcon = { Icon(Icons.Outlined.Cloud, null) },
+                                    onClick = { moreExpanded = false; remoteDialog = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Quick WebDAV listing") },
                                     onClick = { moreExpanded = false; webDavDialog = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.tools_title)) },
+                                    onClick = {
+                                        moreExpanded = false
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(context, PostV1ToolsActivity::class.java),
+                                            )
+                                        }.onFailure { toast("Tools are unavailable on this build") }
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.tools_index)) },
+                                    onClick = {
+                                        moreExpanded = false
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(context, IndexManagerActivity::class.java),
+                                            )
+                                        }.onFailure { toast("The index manager is unavailable") }
+                                    },
                                 )
                                 DropdownMenuItem(
                                     text = { Text(if (themeMode == ThemeMode.DARK) "Use light theme" else "Use dark theme") },
@@ -555,7 +688,7 @@ private fun FylzV1Workspace(
                                     refresh()
                                 }
                             },
-                            onOpenRoot = { rootPicker.launch(null) },
+                            onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
                             onRecycle = { recycleDialog = true },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
@@ -564,12 +697,22 @@ private fun FylzV1Workspace(
                     FileBrowser(
                         activeTab = activeTab,
                         entries = visibleEntries,
+                        searchHits = searchHits,
+                        searchProgress = searchProgress,
+                        searchRecursive = searchRecursive,
+                        onSearchRecursiveChange = { searchRecursive = it },
+                        sortSpec = sortSpec,
+                        onSortSpecChange = { sortSpec = it },
                         selectedUris = selectedUris,
                         focusedEntry = focusedEntry,
                         query = query,
                         viewMode = viewMode,
                         loading = loading,
                         operationMessage = operationMessage,
+                        onOpenStorageRoot = ::openStorageRoot,
+                        onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
+                        onOpenRemotes = { remoteDialog = true },
+                        homeRefreshKey = homeRefreshKey,
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -762,6 +905,14 @@ private fun FylzV1Workspace(
         )
     }
 
+    if (remoteDialog) {
+        RemoteConnectionsDialog(
+            store = remoteStore,
+            onDismiss = { remoteDialog = false },
+            onError = ::toast,
+        )
+    }
+
     if (webDavDialog) {
         WebDavDialog(
             onDismiss = { webDavDialog = false },
@@ -825,12 +976,22 @@ private fun LibraryRail(
 private fun FileBrowser(
     activeTab: FolderTab?,
     entries: List<FileEntry>,
+    searchHits: List<SearchHit>,
+    searchProgress: SearchProgress?,
+    searchRecursive: Boolean,
+    onSearchRecursiveChange: (Boolean) -> Unit,
+    sortSpec: SortSpec,
+    onSortSpecChange: (SortSpec) -> Unit,
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
     query: String,
     viewMode: ViewMode,
     loading: Boolean,
     operationMessage: String?,
+    onOpenStorageRoot: (StorageRoot) -> Unit,
+    onPickFolder: (StorageRoot?) -> Unit,
+    onOpenRemotes: () -> Unit,
+    homeRefreshKey: Int,
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
@@ -839,42 +1000,113 @@ private fun FileBrowser(
     onSelectAll: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // With no tab open the browser shows the storage home surface, not an empty label. This is
+    // the single change that answers "the app doesn't show any folders on launch".
+    if (activeTab == null) {
+        StorageHomeScreen(
+            onOpenRoot = onOpenStorageRoot,
+            onPickFolder = onPickFolder,
+            onOpenRemotes = onOpenRemotes,
+            refreshKey = homeRefreshKey,
+            modifier = modifier,
+        )
+        return
+    }
+
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onNavigateUp, enabled = (activeTab?.locations?.size ?: 0) > 1) {
-                Icon(Icons.Outlined.ArrowBack, "Parent folder")
+            IconButton(
+                onClick = onNavigateUp,
+                enabled = activeTab.locations.size > 1,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(Icons.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
             }
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                placeholder = { Text("Filter this folder") },
+                placeholder = { Text(stringResource(R.string.browser_search_placeholder)) },
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = onSelectAll, enabled = entries.isNotEmpty()) {
-                Icon(Icons.Outlined.SelectAll, "Select all")
+            SortMenu(sortSpec, onSortSpecChange)
+            IconButton(
+                onClick = onSelectAll,
+                enabled = entries.isNotEmpty(),
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
             }
         }
-        activeTab?.let { tab ->
+
+        if (query.isNotBlank()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // The old placeholder honestly read "Filter this folder" because that is all it
+                // did. Recursive search is now a real, selectable scope.
+                FilterChip(
+                    selected = !searchRecursive,
+                    onClick = { onSearchRecursiveChange(false) },
+                    label = { Text("This folder") },
+                )
+                FilterChip(
+                    selected = searchRecursive,
+                    onClick = { onSearchRecursiveChange(true) },
+                    label = { Text("Everything below") },
+                )
+                if (searchRecursive && searchProgress?.complete == false) {
+                    CircularProgressIndicator(Modifier.size(18.dp))
+                }
+            }
             Text(
-                tab.locations.joinToString(" / ") { it.name },
-                style = MaterialTheme.typography.labelMedium,
+                stringResource(R.string.browser_search_hint),
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
+
+        Text(
+            activeTab.locations.joinToString(" / ") { it.name },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
         HorizontalDivider()
+
+        if (searchRecursive && query.isNotBlank()) {
+            SearchResults(
+                progress = searchProgress,
+                hits = searchHits,
+                selectedUris = selectedUris,
+                focusedEntry = focusedEntry,
+                onOpen = onOpen,
+                onOpenExternal = onOpenExternal,
+                onToggleSelection = onToggleSelection,
+            )
+            return@Column
+        }
+
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(operationMessage ?: "Working…")
             }
-        } else if (activeTab == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Open a folder to begin") }
         } else if (entries.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("This folder is empty") }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (query.isBlank()) {
+                        stringResource(R.string.browser_empty_folder)
+                    } else {
+                        stringResource(R.string.browser_search_none)
+                    },
+                )
+            }
         } else if (viewMode == ViewMode.GRID) {
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(130.dp),
@@ -896,6 +1128,110 @@ private fun FileBrowser(
     }
 }
 
+/** Sort controls. Previously the order was hardcoded in DocumentRepository with no UI at all. */
+@Composable
+private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
+            Icon(Icons.Outlined.Sort, stringResource(R.string.browser_sort))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            SortField.entries.forEach { field ->
+                val active = spec.field == field
+                DropdownMenuItem(
+                    text = {
+                        // Direction is spelled out, not only implied by an arrow: DESIGN.md
+                        // forbids colour or a lone glyph carrying state.
+                        Text(
+                            if (active) "${field.label} · ${spec.direction.label}" else field.label,
+                        )
+                    },
+                    trailingIcon = {
+                        if (active) {
+                            Icon(
+                                if (spec.direction == SortDirection.ASCENDING) {
+                                    Icons.Outlined.ArrowUpward
+                                } else {
+                                    Icons.Outlined.ArrowDownward
+                                },
+                                contentDescription = null,
+                            )
+                        }
+                    },
+                    onClick = { onChange(spec.withField(field)) },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.browser_sort_folders_first)) },
+                trailingIcon = {
+                    Checkbox(
+                        checked = spec.foldersFirst,
+                        onCheckedChange = { onChange(spec.copy(foldersFirst = it)) },
+                    )
+                },
+                onClick = { onChange(spec.copy(foldersFirst = !spec.foldersFirst)) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SearchResults(
+    progress: SearchProgress?,
+    hits: List<SearchHit>,
+    selectedUris: Set<Uri>,
+    focusedEntry: FileEntry?,
+    onOpen: (FileEntry) -> Unit,
+    onOpenExternal: (FileEntry) -> Unit,
+    onToggleSelection: (FileEntry) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            when {
+                progress == null -> stringResource(R.string.browser_search_none)
+                !progress.complete -> stringResource(R.string.browser_searching, progress.foldersScanned)
+                else -> stringResource(R.string.browser_search_results, hits.size)
+            },
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+        if (progress?.limitReached == true) {
+            Text(
+                stringResource(R.string.browser_search_limit),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+        HorizontalDivider()
+        if (hits.isEmpty() && progress?.complete == true) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(stringResource(R.string.browser_search_none))
+            }
+            return@Column
+        }
+        LazyColumn {
+            items(hits, key = { it.entry.uri.toString() }) { hit ->
+                FileRowV1(
+                    entry = hit.entry,
+                    selected = hit.entry.uri in selectedUris,
+                    focused = hit.entry.uri == focusedEntry?.uri,
+                    onOpen = onOpen,
+                    onOpenExternal = onOpenExternal,
+                    onToggleSelection = onToggleSelection,
+                    // Where the file lives, plus the matched line for a content hit -- a result
+                    // list without a path is unusable once the search leaves one folder.
+                    overline = hit.relativePath,
+                    detail = hit.snippet?.let { "\u201c$it\u201d" }
+                        ?: if (hit.source == SearchMatchSource.CONTENT) "Matched file contents" else null,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileRowV1(
@@ -905,28 +1241,48 @@ private fun FileRowV1(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    overline: String? = null,
+    detail: String? = null,
 ) {
+    val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(62.dp)
+            .heightIn(min = 62.dp)
             .combinedClickable(
                 onClick = { onOpen(entry) },
                 onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
                 onLongClick = { onToggleSelection(entry) },
             )
             .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .semantics { contentDescription = label },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = selected, onCheckedChange = { onToggleSelection(entry) })
-        Icon(if (entry.isDirectory) Icons.Outlined.Folder else fileIcon(entry.kind), null)
+        // Real image/video thumbnails; falls back to a per-type icon. Previously every file in
+        // the list rendered the same handful of static vectors.
+        EntryThumbnail(entry, size = 40.dp)
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+            if (overline != null) {
+                Text(
+                    overline,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                listOfNotNull(entry.sizeBytes?.let(::formatBytes), libraryKind(entry.kind)).joinToString(" · "),
+                detail ?: listOfNotNull(
+                    entry.sizeBytes?.let(::formatBytes),
+                    libraryKind(entry.kind),
+                ).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -945,19 +1301,20 @@ private fun FileCard(
     Surface(
         color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.height(120.dp).combinedClickable(
+        modifier = Modifier.height(140.dp).combinedClickable(
             onClick = { onOpen(entry) },
             onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
             onLongClick = { onToggleSelection(entry) },
-        ),
+        ).semantics { contentDescription = entry.name },
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Row {
-                Icon(if (entry.isDirectory) Icons.Outlined.Folder else fileIcon(entry.kind), null, Modifier.size(32.dp))
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.Top) {
+                // Grid cells get a larger thumbnail: it is the whole point of grid view.
+                EntryThumbnail(entry, size = 56.dp)
                 Spacer(Modifier.weight(1f))
                 Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
             }
-            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

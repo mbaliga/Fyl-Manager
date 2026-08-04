@@ -18,7 +18,7 @@
     <string name="storage_home_loading">Reading storage…</string>
     <string name="storage_home_add_folder">Add a folder with the system picker</string>
     <string name="storage_home_remotes">Network locations</string>
-    <string name="storage_home_flavor_note">Storage access model: %1$s</string>
+    <string name="storage_home_access_note">Storage access: %1$s</string>
     <string name="storage_home_open_action">Open %1$s</string>
     <string name="storage_home_grant_action">Grant access to %1$s</string>
     <string name="storage_home_empty">No storage locations are available yet.</string>
