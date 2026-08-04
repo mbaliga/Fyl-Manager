@@ -1,8 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    docs/DESIGN.md requires semantic labels for icon-only controls and layouts that survive font
+    scaling. That is only achievable if user-visible text is a resource, not a Kotlin literal.
+    Strings are extracted here as each screen is touched; the remaining hardcoded literals in
+    older screens are tracked as follow-up work.
+-->
 <resources>
     <string name="app_name">Fylz</string>
     <string name="operation_history_title">Activity</string>
     <string name="operation_history_shortcut_long">Open file operation activity</string>
     <string name="post_v1_tools_title">Tools</string>
     <string name="post_v1_tools_shortcut_long">Open indexing and advanced file tools</string>
+    <string name="index_manager_title">Index</string>
+    <string name="index_manager_shortcut_long">Open the local index and smart collections</string>
+
+    <!-- Storage home surface -->
+    <string name="storage_home_loading">Reading storage…</string>
+    <string name="storage_home_add_folder">Add a folder with the system picker</string>
+    <string name="storage_home_remotes">Network locations</string>
+    <string name="storage_home_flavor_note">Storage access model: %1$s</string>
+    <string name="storage_home_open_action">Open %1$s</string>
+    <string name="storage_home_grant_action">Grant access to %1$s</string>
+    <string name="storage_home_empty">No storage locations are available yet.</string>
+
+    <!-- Broad storage access permission (full flavor) -->
+    <string name="storage_permission_title">All files access</string>
+    <string name="storage_permission_generic">Fylz needs permission before it can list your storage.</string>
+    <string name="storage_permission_grant">Open settings</string>
+    <string name="storage_permission_use_picker">Pick a folder instead</string>
+    <string name="storage_permission_return_hint">After granting access, return to Fylz — your storage appears automatically.</string>
+
+    <!-- Browser -->
+    <string name="browser_search_placeholder">Search this location</string>
+    <string name="browser_search_hint">Search names and text. Try ext:pdf, type:image or size:&gt;10mb.</string>
+    <string name="browser_sort">Sort</string>
+    <string name="browser_sort_folders_first">Folders first</string>
+    <string name="browser_select_all">Select all</string>
+    <string name="browser_parent_folder">Parent folder</string>
+    <string name="browser_open_home">Storage home</string>
+    <string name="browser_searching">Searching… %1$d folders scanned</string>
+    <string name="browser_search_results">%1$d results</string>
+    <string name="browser_search_limit">Showing the first matches only. Narrow the query for more.</string>
+    <string name="browser_search_none">No matches.</string>
+    <string name="browser_empty_folder">This folder is empty</string>
+
+    <!-- Remote connections -->
+    <string name="remotes_title">Network locations</string>
+    <string name="remotes_add">Add a connection</string>
+    <string name="remotes_empty">No saved connections. Fylz supports WebDAV, SFTP, SMB and S3-compatible storage.</string>
+    <string name="remotes_connect">Connect</string>
+    <string name="remotes_delete">Delete connection</string>
+
+    <!-- Advanced tools -->
+    <string name="tools_title">Tools</string>
+    <string name="tools_pdf">PDF tools</string>
+    <string name="tools_pdf_summary">Split, merge, rotate and reorder pages; build searchable PDFs with on-device OCR.</string>
+    <string name="tools_index">Local index</string>
+    <string name="tools_index_summary">Build an on-device index and run smart collections over it.</string>
+    <string name="tools_library">Library and organization</string>
+    <string name="tools_library_summary">Tags, saved searches and deterministic organization rules.</string>
 </resources>

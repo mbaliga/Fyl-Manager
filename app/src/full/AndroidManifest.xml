@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        Full-access (dogfood/sideload) flavor only. This file is not part of the `saf` variant,
+        so the Play-safe build ships without any storage permission at all.
+
+        MANAGE_EXTERNAL_STORAGE is a special access permission: it cannot be requested with a
+        runtime permission dialog. FullAccessPermission sends the user to the system "All files
+        access" screen and re-checks Environment.isExternalStorageManager() on return.
+
+        tools:ignore is required because lint's ScopedStorage check flags this permission
+        unconditionally; the deliberate flavor split is exactly the mitigation
+        docs/ARCHITECTURE.md prescribes for it.
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <application>
+        <!--
+            Fylz's own DocumentsProvider over java.io.File. Exposing broad storage as a document
+            provider keeps every existing SAF-shaped consumer (file operations, recycle bin,
+            archives, backup, history) working against ordinary content:// URIs.
+
+            android:permission="android.permission.MANAGE_DOCUMENTS" is signature-level, so no
+            third-party app can read this provider; same-UID callers (Fylz itself) bypass the
+            check. android:exported must stay true for the platform DocumentsUI to enumerate it.
+        -->
+        <provider
+            android:name="io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider"
+            android:authorities="io.github.mbaliga.fylz.files"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+
+</manifest>

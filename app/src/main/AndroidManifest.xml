@@ -14,9 +14,9 @@
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:icon="@android:drawable/ic_menu_agenda"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@android:drawable/ic_menu_agenda"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Fylz"
         android:usesCleartextTraffic="false">
@@ -29,6 +29,21 @@
         <activity
             android:name=".PostV1ToolsActivity"
             android:exported="true"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            IndexManagerActivity was never declared, which made the whole index/ package
+            unreachable at runtime -- starting it threw ActivityNotFoundException. Declared here
+            and reached from the Tools surface and a launcher shortcut.
+
+            exported="false": nothing outside Fylz has any reason to launch the index manager,
+            and the two sibling activities below only need exported=true because res/xml/shortcuts.xml
+            targets them by class name.
+        -->
+        <activity
+            android:name=".IndexManagerActivity"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
