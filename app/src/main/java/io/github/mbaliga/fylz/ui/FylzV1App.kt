@@ -134,6 +134,8 @@ import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.pdf.PdfPageRef
+import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
 import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
@@ -188,6 +190,7 @@ private fun FylzV1Workspace(
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
+    val pdfTools = remember { PdfToolService(context.applicationContext) }
     val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
     val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
 
@@ -217,6 +220,10 @@ private fun FylzV1Workspace(
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
+    var pdfDialog by remember { mutableStateOf(false) }
+    var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
+    var pendingPdfOcr by remember { mutableStateOf(false) }
+    var pendingPdfMerge by remember { mutableStateOf(false) }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
     var sortSpec by remember { mutableStateOf(SortSpec.Default) }
     var searchRecursive by remember { mutableStateOf(false) }
@@ -341,6 +348,42 @@ private fun FylzV1Workspace(
                     .onFailure { toast(it.message ?: "Unable to create archive") }
                 loading = false
             }
+        }
+    }
+
+    // Destination for PDF page extraction / merge. Kept separate from archiveCreator so the two
+    // flows cannot ever write into each other's target.
+    val pdfOutputCreator = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { destination ->
+        val pages = pendingPdfPages
+        val merge = pendingPdfMerge
+        val ocr = pendingPdfOcr
+        pendingPdfPages = emptyList()
+        pendingPdfMerge = false
+        if (destination == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            loading = true
+            runCatching {
+                if (merge) {
+                    pdfTools.merge(
+                        sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
+                        outputUri = destination,
+                        searchableOcr = ocr,
+                    ) { done, total -> operationMessage = "Merging page \$done of \$total" }
+                } else {
+                    pdfTools.exportPages(
+                        pages = pages,
+                        outputUri = destination,
+                        searchableOcr = ocr,
+                    ) { done, total -> operationMessage = "Writing page \$done of \$total" }
+                }
+            }.onSuccess {
+                toast("PDF written")
+                refresh()
+            }.onFailure { toast(it.message ?: "The PDF operation failed") }
+            operationMessage = null
+            loading = false
         }
     }
 
@@ -635,6 +678,9 @@ private fun FylzV1Workspace(
                         count = selectedEntries.size,
                         canRename = selectedEntries.size == 1,
                         canExtract = selectedEntries.size == 1 && selectedEntries.first().kind == EntryKind.ARCHIVE,
+                        canPdfTools = selectedEntries.isNotEmpty() &&
+                            selectedEntries.all { it.kind == EntryKind.PDF },
+                        onPdfTools = { pdfDialog = true },
                         onCopy = { pendingDestinationAction = PendingDestinationAction.COPY; destinationPicker.launch(null) },
                         onMove = { pendingDestinationAction = PendingDestinationAction.MOVE; destinationPicker.launch(null) },
                         onRecycle = ::recycleSelection,
@@ -902,6 +948,29 @@ private fun FylzV1Workspace(
                     }.onFailure { toast(it.message ?: "AI proposal failed") }
                 }
             },
+        )
+    }
+
+    if (pdfDialog) {
+        PdfToolsDialog(
+            sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
+            service = pdfTools,
+            onDismiss = { pdfDialog = false },
+            onExport = { pages, ocr ->
+                pdfDialog = false
+                pendingPdfPages = pages
+                pendingPdfOcr = ocr
+                pendingPdfMerge = false
+                pdfOutputCreator.launch("Fylz-pages-\${System.currentTimeMillis()}.pdf")
+            },
+            onMerge = { ocr ->
+                pdfDialog = false
+                pendingPdfPages = emptyList()
+                pendingPdfOcr = ocr
+                pendingPdfMerge = true
+                pdfOutputCreator.launch("Fylz-merged-\${System.currentTimeMillis()}.pdf")
+            },
+            onError = ::toast,
         )
     }
 
@@ -1324,6 +1393,8 @@ private fun SelectionActionBar(
     count: Int,
     canRename: Boolean,
     canExtract: Boolean,
+    canPdfTools: Boolean,
+    onPdfTools: () -> Unit,
     onCopy: () -> Unit,
     onMove: () -> Unit,
     onRecycle: () -> Unit,
@@ -1350,6 +1421,7 @@ private fun SelectionActionBar(
             ActionButton(Icons.Outlined.Archive, "Archive", onArchive)
             ActionButton(Icons.Outlined.FolderOpen, "Extract", onExtract, canExtract)
             ActionButton(Icons.Outlined.TextSnippet, "Batch rename", onBatchRename)
+            ActionButton(Icons.Outlined.PictureAsPdf, "PDF tools", onPdfTools, canPdfTools)
             ActionButton(Icons.Outlined.Share, "Share", onShare)
             TextButton(onClick = onClear) { Text("Clear") }
         }

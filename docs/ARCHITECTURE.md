@@ -22,11 +22,30 @@ Android DocumentsProvider implementations
 (local, removable, cloud, or third-party)
 ```
 
-The application manifest requests no internet permission, no legacy external-storage permission, and no `MANAGE_EXTERNAL_STORAGE` permission.
+The application manifest declares `MANAGE_EXTERNAL_STORAGE`. Fylz is a file manager, and the owner's
+requirement is explicit: it needs full filesystem access from the start. It declares no legacy
+`READ_/WRITE_EXTERNAL_STORAGE` permission.
 
-## Why SAF first
+## Storage backends
 
-SAF lets the user choose a file or directory and grants scoped URI access that can be persisted. It also enables compatible cloud and third-party providers through the same document model. This is the least-privilege default and is more appropriate for a general open-source build than silently requesting broad filesystem authority.
+Fylz has two storage sources behind one capability adapter (`storage.StorageProvider`), and picks
+between them at **runtime**, not at build time:
+
+1. **File backend (primary).** `storage.FileStorageProvider`, backed by
+   `StorageManager.getStorageVolumes()` and `java.io.File`. Active whenever
+   `Environment.isExternalStorageManager()` is true. It puts internal storage, removable volumes and
+   the standard shared folders on the launch surface immediately, with no picker in the happy path.
+2. **SAF backend (secondary).** `storage.SafStorageProvider`. Active always.
+
+`storage.StorageAccess` makes that choice on every call, because the user can grant or revoke "All
+files access" from Settings while the app is running.
+
+### Why SAF is kept
+
+SAF is not merely a fallback for a declined permission, though it is that too. `MANAGE_EXTERNAL_STORAGE`
+covers shared local volumes and nothing else, so SAF remains the **only** route to cloud, USB and
+third-party `DocumentsProvider` roots. Both providers contribute rows to the same home surface when
+broad access is granted.
 
 SAF is not a perfect filesystem abstraction:
 
@@ -215,14 +234,42 @@ Community themes should be data-only token bundles. They must not execute code o
 
 ## Broad storage access
 
-`MANAGE_EXTERNAL_STORAGE` is not part of the foundation. If a future power distribution needs it:
+`MANAGE_EXTERNAL_STORAGE` **is** part of the foundation. This is a deliberate reversal of the
+earlier position, made by the project owner: a file manager that cannot see the filesystem until the
+user picks a folder is not a file manager.
 
-- keep SAF as the default path;
-- isolate broad access behind a separate build flavor and capability adapter;
-- document why core functions cannot be fulfilled through SAF on that distribution channel;
-- comply with Google Play eligibility/declaration requirements;
-- make the permission's effect and risk unmistakable;
-- continue to protect Android/data and other restricted areas according to platform rules.
+An earlier revision of this document proposed isolating broad access behind a separate build flavor.
+That was implemented and then withdrawn — a compile-time split produced two apps to reason about,
+two sets of Gradle variant task names, and no benefit to the person actually running the app. The
+capability adapter it called for was kept; only the flavor dimension was dropped, and the choice
+became a runtime one.
+
+Obligations that come with the permission, and how they are met:
+
+- **The user must be able to decline.** `StorageAccess` degrades to the SAF source, which still
+  reaches granted subtrees, cloud and third-party providers. Nothing crashes and no screen is empty.
+- **The grant flow must be honest.** `MANAGE_EXTERNAL_STORAGE` is a special access permission with no
+  runtime dialog. `storage.FullAccessPermission` sends the user to the system "All files access"
+  screen with a stated rationale, and the home surface re-checks on return.
+- **Google Play eligibility.** Distributing on Play with this permission requires the Permissions
+  Declaration Form and acceptance under the file-manager use case. Sideload and F-Droid builds are
+  unaffected. This is a release-process obligation, not a code one.
+- **Restricted areas.** `Android/data`, `Android/obb` and similar remain protected by the platform
+  regardless of this permission; the File backend does not attempt to work around that.
+
+### How the File backend reaches the rest of the app
+
+`storage.FylzFilesDocumentsProvider` is a `DocumentsProvider` owned by this app, serving
+`java.io.File` under the authority `io.github.mbaliga.fylz.files`, guarded by signature-level
+`MANAGE_DOCUMENTS` (which same-UID Fylz bypasses and other apps cannot).
+
+This is the load-bearing decision. `FileOperationService`, `RecycleBinService`, `ArchiveService`,
+`BackupService`, `FileHistoryStore` and `DocumentRepository` all speak `DocumentsContract` against
+tree URIs, and `model.FileEntry` is keyed by `Uri`. Serving broad storage *through a provider* means
+those services need no second backend and no capability branching: they keep receiving ordinary
+`content://` document URIs. Copy, move, rename, recycle, archive, backup and history all keep working
+unchanged, and the recycle-bin contract in `docs/product/preview-and-recycle-bin-contract.md` holds
+on both backends for the same reason.
 
 ## Open-source hygiene
 

@@ -77,13 +77,13 @@
             unreachable at runtime — starting it threw ActivityNotFoundException. Declared here
             and reached from the Tools surface and a launcher shortcut.
 
-            exported="false": nothing outside Fylz has any reason to launch the index manager,
-            and the two sibling activities below only need exported=true because res/xml/shortcuts.xml
-            targets them by class name.
+            exported="true" matches its two sibling tool activities: a static launcher shortcut
+            is started by the launcher process, not by Fylz, so the target must be exported for the
+            shortcut in res/xml/shortcuts.xml to work.
         -->
         <activity
             android:name=".IndexManagerActivity"
-            android:exported="false"
+            android:exported="true"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 

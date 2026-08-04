@@ -8,7 +8,8 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 
 ### Workspace
 
-- Storage Access Framework folder access with persisted user grants.
+- Full filesystem access on launch: storage volumes, removable media and standard folders, no picker required.
+- Storage Access Framework folder access with persisted user grants, for cloud, USB and third-party providers.
 - Multiple folder tabs, breadcrumbs, parent navigation, filtering and refresh.
 - Adaptive list, grid and details views.
 - Collapsible navigation and docked or floating preview panes.
@@ -84,7 +85,7 @@ See [the roadmap](docs/ROADMAP.md) for longer-term work beyond stable v1.
 ## Principles
 
 1. **Local by default.** File contents do not leave the device unless the user explicitly invokes a remote provider or model.
-2. **Least privilege.** Fylz starts with Android's Storage Access Framework rather than blanket file access.
+2. **Full access, honestly asked for.** Fylz is a file manager and requests `MANAGE_EXTERNAL_STORAGE` up front, with a plain rationale and a working degraded mode if you decline. It does not pretend a folder picker is a filesystem. The Storage Access Framework path is kept as the route to cloud, USB and third-party providers. (This reverses an earlier least-privilege-first stance; see docs/ARCHITECTURE.md.)
 3. **Reversible operations.** Destructive actions are explicit and recoverable where the provider permits it.
 4. **Minimal surface, deep workspace.** Everyday browsing stays quiet while power tools remain available.
 5. **Provider neutrality.** Local, removable, cloud and future network providers share capability-aware abstractions.
