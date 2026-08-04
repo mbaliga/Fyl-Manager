@@ -111,7 +111,7 @@ dependencies {
     // settings.gradle.kts). Gradle's composite-build dependency substitution resolves
     // these to the :hyle and :crash-recovery projects, not a remote registry.
     implementation("dev.aarso:hyle:0.2.0")
-    implementation("dev.aarso:crash-recovery:1.2.0")
+    implementation("dev.aarso:crash-recovery:1.3.0")
 
     testImplementation("junit:junit:4.13.2")
     // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*
