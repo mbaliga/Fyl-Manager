@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="operation_history"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_recent_history"
+        android:shortcutShortLabel="@string/operation_history_title"
+        android:shortcutLongLabel="@string/operation_history_shortcut_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.OperationHistoryActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="advanced_tools"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:shortcutShortLabel="@string/post_v1_tools_title"
+        android:shortcutLongLabel="@string/post_v1_tools_shortcut_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.PostV1ToolsActivity" />
+    </shortcut>
+    <!--
+        IndexManagerActivity had no manifest declaration at all until now, so nothing could reach
+        the index/ package. It is exported="false", which a launcher shortcut with an explicit
+        targetClass can still start because the shortcut is published by this same app.
+    -->
+    <shortcut
+        android:shortcutId="index_manager"
+        android:enabled="true"
+        android:icon="@android:drawable/ic_menu_sort_by_size"
+        android:shortcutShortLabel="@string/index_manager_title"
+        android:shortcutLongLabel="@string/index_manager_shortcut_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.IndexManagerActivity" />
+    </shortcut>
+</shortcuts>
