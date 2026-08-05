@@ -71,11 +71,17 @@ class DocumentRepository(context: Context) {
                     val name = cursor.getString(nameIndex) ?: "Untitled"
                     val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
                     val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                    val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
                     entries += FileEntry(
                         uri = documentUri,
                         name = name,
                         mimeType = mimeType,
-                        sizeBytes = cursor.longOrNull(sizeIndex),
+                        // COLUMN_SIZE is meaningless for a directory, but some OEM documents
+                        // providers report the raw filesystem entry size anyway (a few KiB of
+                        // junk — observed as "3.4 KiB" on every folder on a RedMagic). Our own
+                        // FylzFilesDocumentsProvider correctly reports null; normalize foreign
+                        // providers to the same contract so the UI never renders nonsense.
+                        sizeBytes = cursor.longOrNull(sizeIndex).takeUnless { isDirectory },
                         lastModifiedMillis = cursor.longOrNull(modifiedIndex),
                         flags = cursor.intOrZero(flagsIndex),
                         kind = FileType.classify(name, mimeType),

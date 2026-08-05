@@ -30,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -38,6 +39,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -71,10 +75,24 @@ fun StorageHomeScreen(
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
-    // Re-evaluated on every composition and after every refresh: the user can grant or revoke
-    // "All files access" from Settings while Fylz is alive, and the home surface must follow.
     val provider = StorageAccess.fileProvider
-    val ready = provider.isReady(context)
+
+    // The grant round trip happens OUTSIDE this app: the user leaves for the system's
+    // "All files access" screen, flips the toggle, and comes back. Nothing about that trip
+    // changes any Compose state here, so nothing recomposes — the previous bare
+    // `provider.isReady(context)` read in composition stayed stale forever, and the gate card
+    // survived a successful grant (the exact on-device report: "did not get access to all
+    // files even after giving it access"). ON_RESUME is the one signal that reliably fires on
+    // the way back from Settings, so re-read the grant there and let state drive everything.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var ready by remember { mutableStateOf(provider.isReady(context)) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) ready = provider.isReady(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val groups by produceState(
         initialValue = emptyList<StorageRootGroup>(),

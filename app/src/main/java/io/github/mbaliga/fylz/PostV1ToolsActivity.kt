@@ -51,11 +51,23 @@ import io.github.mbaliga.fylz.index.LocalIndexStore
 import io.github.mbaliga.fylz.library.LibraryMetadataTransfer
 import java.text.DateFormat
 import java.util.Date
+import io.github.mbaliga.fylz.ui.theme.FylzTheme
+import io.github.mbaliga.fylz.model.AccentPreset
+import io.github.mbaliga.fylz.model.ThemeMode
 
 class PostV1ToolsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { PostV1ToolsScreen() } }
+        // FylzTheme, not a bare MaterialTheme. This screen opened in the platform default
+        // while the rest of the app was dark — the light-coloured Tools screen inside a
+        // dark app that device testing turned up. An activity of Fylz is themed by Fylz.
+        setContent {
+            FylzTheme(
+                themeMode = ThemeMode.SYSTEM,
+                accentPreset = AccentPreset.MOSS,
+                dynamicColor = true,
+            ) { PostV1ToolsScreen() }
+        }
     }
 }
 

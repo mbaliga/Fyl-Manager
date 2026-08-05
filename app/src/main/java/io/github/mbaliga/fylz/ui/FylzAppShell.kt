@@ -53,19 +53,26 @@ import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private enum class RootDestination {
-    FILES,
-    RECOVERY,
-}
-
-/** App-level chrome for the file workspace and durable storage/recovery tools. */
+/**
+ * App-level chrome for the file workspace and durable storage/recovery tools.
+ *
+ * There is no chrome left. Recovery used to be one of two `NavigationBarItem`s across the
+ * bottom of the app; it is a **room** now — a surface parked off the bottom edge that the file
+ * workspace lifts and parts to reveal, rendered by [FylzV1App]'s [SpatialShell]. Tabs went for
+ * the reason the owner gave after the first test build: a bottom tab bar is not the fonebrew
+ * pattern, and two permanent tabs for a screen most sessions never open is chrome charging rent.
+ *
+ * This function keeps only what Recovery *needs* — the journal, its polling, and the operation
+ * history dialog — and hands the room down as content. That matters for more than tidiness: the
+ * content is composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own
+ * colours instead of the bare `MaterialTheme` default it used to sit in.
+ */
 @Composable
 fun FylzAppShell() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
     val fileOperations = remember { FileOperationService(context.applicationContext) }
-    var destination by remember { mutableStateOf(RootDestination.FILES) }
     var showHistory by remember { mutableStateOf(false) }
     var operations by remember { mutableStateOf(journal.list()) }
 
@@ -76,42 +83,17 @@ fun FylzAppShell() {
         }
     }
 
-    MaterialTheme {
-        Scaffold(
-            bottomBar = {
-                NavigationBar {
-                    NavigationBarItem(
-                        selected = destination == RootDestination.FILES,
-                        onClick = { destination = RootDestination.FILES },
-                        icon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
-                        label = { Text("Files") },
-                    )
-                    NavigationBarItem(
-                        selected = destination == RootDestination.RECOVERY,
-                        onClick = { destination = RootDestination.RECOVERY },
-                        icon = { Icon(Icons.Outlined.SettingsBackupRestore, contentDescription = null) },
-                        label = { Text("Recovery") },
-                    )
-                }
-            },
-        ) { padding ->
-            when (destination) {
-                RootDestination.FILES -> Box(
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                ) {
-                    FylzV1App()
-                }
-                RootDestination.RECOVERY -> RecoveryHome(
-                    operations = operations,
-                    onOpenOperations = {
-                        operations = journal.list()
-                        showHistory = true
-                    },
-                    modifier = Modifier.padding(padding),
-                )
-            }
-        }
-
+    FylzV1App(
+        recoveryRoom = {
+            RecoveryHome(
+                operations = operations,
+                onOpenOperations = {
+                    operations = journal.list()
+                    showHistory = true
+                },
+            )
+        },
+    ) {
         if (showHistory) {
             OperationHistoryDialog(
                 operations = operations,

@@ -53,11 +53,23 @@ import io.github.mbaliga.fylz.index.RuleOperator
 import io.github.mbaliga.fylz.index.SmartCollection
 import io.github.mbaliga.fylz.index.SmartRule
 import io.github.mbaliga.fylz.library.LibraryStore
+import io.github.mbaliga.fylz.ui.theme.FylzTheme
+import io.github.mbaliga.fylz.model.AccentPreset
+import io.github.mbaliga.fylz.model.ThemeMode
 
 class IndexManagerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { IndexManagerScreen(onClose = ::finish) } }
+        // FylzTheme, not a bare MaterialTheme. This screen opened in the platform default
+        // while the rest of the app was dark — the light-coloured Tools screen inside a
+        // dark app that device testing turned up. An activity of Fylz is themed by Fylz.
+        setContent {
+            FylzTheme(
+                themeMode = ThemeMode.SYSTEM,
+                accentPreset = AccentPreset.MOSS,
+                dynamicColor = true,
+            ) { IndexManagerScreen(onClose = ::finish) }
+        }
     }
 }
 

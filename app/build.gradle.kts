@@ -111,7 +111,12 @@ dependencies {
     // settings.gradle.kts). Gradle's composite-build dependency substitution resolves
     // these to the :hyle and :crash-recovery projects, not a remote registry.
     implementation("dev.aarso:hyle:0.2.0")
-    implementation("dev.aarso:crash-recovery:1.1.0")
+    implementation("dev.aarso:crash-recovery:1.4.0")
+    // The constellation's navigation and motion shell: the fonebrew spatial pattern (rooms
+    // parked off the screen edges), the word-wheel rail and the Niagara-style edge scrubber.
+    // Shared rather than local so Fylz and Foto Xplorr move identically — which is the whole
+    // of the owner's "followed everywhere".
+    implementation("dev.aarso:cell-shell:0.1.0")
 
     testImplementation("junit:junit:4.13.2")
     // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*

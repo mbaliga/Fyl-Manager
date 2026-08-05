@@ -40,16 +40,41 @@ class SafStorageProvider : StorageProvider {
 
     override fun permissionIntent(context: Context): Intent? = null
 
+    /**
+     * SAF's contribution to the home surface.
+     *
+     * When the File backend is live, SAF contributes **only what File cannot reach**: cloud
+     * and third-party document providers, and subtrees the user granted outside the shared
+     * volume. Its "add a location" shortcuts and its granted-subtree list are suppressed,
+     * because with full access those are the *same folders the File backend already lists as
+     * directly openable* — the home screen was showing Internal storage, Downloads, DCIM,
+     * Documents, Pictures, Movies and Music twice, the second time behind padlocks inviting a
+     * grant the user had already given. Offering to unlock a door that is already open reads
+     * as the app not knowing its own state.
+     */
     override suspend fun rootGroups(context: Context): List<StorageRootGroup> =
         withContext(Dispatchers.IO) {
+            val fileBackendLive = StorageAccess.hasFullAccess(context)
             buildList {
-                grantedRoots(context).takeIf { it.isNotEmpty() }?.let {
-                    add(StorageRootGroup(GROUP_GRANTED, it))
+                // Granted subtrees are only worth showing when they add reach. Under full
+                // access the File backend already serves everything on the shared volume, so
+                // a granted subtree there is a duplicate row, not a second way in.
+                grantedRoots(context)
+                    .filterNot { fileBackendLive && it.isOnSharedVolume }
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { add(StorageRootGroup(GROUP_GRANTED, it)) }
+
+                // The grant shortcuts exist to escape the no-permission state. With the
+                // permission held they are noise at best and misleading at worst.
+                if (!fileBackendLive) {
+                    add(StorageRootGroup(GROUP_SUGGESTED, suggestedShortcuts()))
                 }
-                add(StorageRootGroup(GROUP_SUGGESTED, suggestedShortcuts()))
+
                 removableShortcuts(context).takeIf { it.isNotEmpty() }?.let {
                     add(StorageRootGroup(GROUP_REMOVABLE, it))
                 }
+                // Always kept: MANAGE_EXTERNAL_STORAGE covers local shared storage and nothing
+                // else, so SAF remains the only route to cloud, USB and third-party providers.
                 providerRoots(context).takeIf { it.isNotEmpty() }?.let {
                     add(StorageRootGroup(GROUP_PROVIDERS, it))
                 }
