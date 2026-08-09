@@ -57,14 +57,19 @@ import kotlinx.coroutines.launch
  * App-level chrome for the file workspace and durable storage/recovery tools.
  *
  * There is no chrome left. Recovery used to be one of two `NavigationBarItem`s across the
- * bottom of the app; it is a **room** now — a surface parked off the bottom edge that the file
- * workspace lifts and parts to reveal, rendered by [FylzV1App]'s [SpatialShell]. Tabs went for
- * the reason the owner gave after the first test build: a bottom tab bar is not the fonebrew
- * pattern, and two permanent tabs for a screen most sessions never open is chrome charging rent.
+ * bottom of the app; it became a **room** — a surface parked off the bottom edge that the file
+ * workspace lifts and parts to reveal — and it is now the last *section* of that room, which is
+ * Actions. Tabs went for the reason the owner gave after the first test build: a bottom tab bar
+ * is not the fonebrew pattern, and two permanent tabs for a screen most sessions never open is
+ * chrome charging rent.
+ *
+ * The edge did not move and neither did the gesture; what changed is what shares it. Finishing
+ * an interrupted move is an action on files, so it sits with the other actions on files rather
+ * than owning a whole surface for a screen most sessions never open.
  *
  * This function keeps only what Recovery *needs* — the journal, its polling, and the operation
- * history dialog — and hands the room down as content. That matters for more than tidiness: the
- * content is composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own
+ * history dialog — and hands the section down as content. That matters for more than tidiness:
+ * the content is composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own
  * colours instead of the bare `MaterialTheme` default it used to sit in.
  */
 @Composable
@@ -84,7 +89,7 @@ fun FylzAppShell() {
     }
 
     FylzV1App(
-        recoveryRoom = {
+        recoverySection = {
             RecoveryHome(
                 operations = operations,
                 onOpenOperations = {
@@ -148,6 +153,13 @@ fun FylzAppShell() {
     }
 }
 
+/**
+ * The recovery section of the actions room.
+ *
+ * It owns neither its scroll nor its heading any more — the room does both, and a `verticalScroll`
+ * nested inside the room's own would be a crash, not a style choice. What is left is the cards
+ * themselves and the sentence explaining what they are for.
+ */
 @Composable
 private fun RecoveryHome(
     operations: List<FileOperation>,
@@ -157,12 +169,8 @@ private fun RecoveryHome(
     val attentionCount = operations.count { it.state == OperationState.NEEDS_ATTENTION }
     Column(
         verticalArrangement = Arrangement.spacedBy(14.dp),
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Text("Storage & recovery", style = MaterialTheme.typography.headlineMedium)
         Text(
             "Review file operations, restore earlier file versions, manage backups, and safely work with ZIP archives.",
             style = MaterialTheme.typography.bodyMedium,
@@ -212,7 +220,7 @@ private fun RecoveryHome(
             "Recovery metadata stays private to this app and is excluded from Android cloud backup. External backup snapshots and archives remain in the destinations you selected.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp),
+            modifier = Modifier.padding(top = 4.dp),
         )
     }
 }

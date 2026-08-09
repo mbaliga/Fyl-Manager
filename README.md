@@ -15,7 +15,7 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Collapsible navigation and docked or floating preview panes.
 - Phone, landscape and larger-window layouts.
 - System, light and dark themes, accent presets and optional dynamic colour.
-- Primary **Files** and **Recovery** destinations rather than independent floating recovery controls.
+- A spatial shell with four rooms parked off the browser's edges — locations left, tools and settings right, **details** up, **actions** down — rather than tab bars, chip rows and an overflow menu.
 
 ### Files and recovery
 

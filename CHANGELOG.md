@@ -46,6 +46,14 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Consolidated operations, file history, backups, backup import and archive tools into a primary Recovery destination.
 - Removed independent global floating recovery controls.
 - Added explicit labels and content descriptions for recovery actions.
+- Added a **details** room on the previously reserved top edge: a tree of where the selected file or folder lives, plus kind, size, modified time, MIME type, path and tags. Sizes and timestamps a provider declines to report are stated as not reported rather than shown as `0 B` or 1970.
+- Turned the bottom room into **actions**: the selection's actions, the folder's own (new folder, new text file, scan to PDF, find duplicates, AI organize proposal), and storage & recovery as its last section.
+- Replaced the eleven-button horizontally scrolling selection bar with a one-line summary that opens the actions room, and retired the file browser's overflow menu.
+- Actions now appear only when they apply, decided by a testable `SelectionActionPolicy`: rename needs one entry, batch rename two or more, extract exactly one archive, PDF tools an all-PDF selection.
+- Stopped offering Share for selections containing a folder; `ACTION_SEND` cannot deliver a directory, so the share sheet appeared and nothing arrived.
+- Corrected entry-kind wording throughout the browser — "Folder" and "PDF" rather than "Directory" and "Pdf".
+- Rooms now arrive scaled from 0.97 and reach full size as the drag completes, instead of sliding in at full size under the lifting file browser.
+- Made the top bar's folder title a 48dp target that opens the details room, for anyone who would rather tap than drag.
 
 ### Release engineering
 

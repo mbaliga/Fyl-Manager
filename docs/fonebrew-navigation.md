@@ -30,8 +30,11 @@ navigation act and it happens **on the content**, not through chrome.
   video's island morphing around focus), never a rectangular slide or a fade.
 - **Because the pull-down owns that space, no other gesture may claim pull-down.** This is
   why pull-to-refresh / pull-to-backup are banned everywhere in the constellation.
-- The top room is NOT yet required in any app (owner, 2026-08-05). What is required now is
-  keeping its gesture unclaimed and its copy off the screen — no "PULL TO …" static text.
+- The top room is NOT required in any app (owner, 2026-08-05). What is required is keeping its
+  gesture unclaimed and its copy off the screen — no "PULL TO …" static text. An app that has
+  something worth putting up there may build it; Fylz did (details), Foto Xplorr's is
+  notifications and alerts. An app with nothing to put there leaves the slot null, and the
+  shell then refuses top drags outright rather than opening a void.
 
 **Refresh is a shake**, not a pull (`ShakeToRefresh` in this repo, `hyle/ShakeToRefresh.kt`).
 A deliberate physical gesture that needs no affordance copy and competes with no scroll.
@@ -50,13 +53,13 @@ These are the things the first test builds got wrong. Do not reintroduce them:
 - **No static instructional copy in gesture spaces** ("PULL TO CREATE BACKUP"). If a gesture
   needs a permanent caption, the gesture is wrong.
 
-## Where each app stands (2026-08-05)
+## Where each app stands (2026-08-05; Fylz row 2026-08-09)
 
 | App | Has | Needs |
 |---|---|---|
 | fonebrew (IDE-core) | rooms implementation (`ui/rooms/`) | is the reference |
 | Foto Xplorr | nine destinations + `SlideInPanel` rail exists, but presented behind a hamburger; settings are a Material dialog | word-wheel rail presentation + motion; settings → slide-in panel; hamburger retired |
-| Fylz | neither — hamburger-less but bottom tabs, chip tabs, Material tools screen (light) | full pattern adoption; one theme |
+| Fylz | full pattern: word-wheel rail, edge scrubber, shake-to-refresh, one theme, and all four rooms (locations, tools, details, actions) | — |
 | csapp / assay | standard Material consoles | pattern adoption once the two testable apps validate it |
 
 ## Motion notes for the implementer

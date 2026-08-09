@@ -10,7 +10,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -26,6 +25,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -39,16 +39,11 @@ import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.CreateNewFolder
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.List
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestoreFromTrash
@@ -56,11 +51,9 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
@@ -97,6 +90,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -113,6 +107,7 @@ import io.github.mbaliga.fylz.ai.ApiKeyVault
 import io.github.mbaliga.fylz.browse.SortDirection
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
+import io.github.mbaliga.fylz.browse.readableLabel
 import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
@@ -134,6 +129,7 @@ import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.operations.SelectionActionPolicy
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
@@ -148,6 +144,7 @@ import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
+import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -164,6 +161,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.outlined.Close
 import io.github.mbaliga.fylz.browse.entryStops
 import dev.aarso.cellshell.EdgeTimelineScrubber
+import dev.aarso.cellshell.RoomEdge
 import dev.aarso.cellshell.ShakeToRefresh
 import dev.aarso.cellshell.SpatialShell
 import dev.aarso.cellshell.WheelItem
@@ -180,17 +178,19 @@ private const val MAX_RESTORED_TABS = 8
 /**
  * The app, and the owner of its theme.
  *
- * [recoveryRoom] and [overlays] are composed *inside* [FylzTheme] on purpose. Recovery used to
+ * [recoverySection] and [overlays] are composed *inside* [FylzTheme] on purpose. Recovery used to
  * be a sibling screen under a bare `MaterialTheme`, which is why it — like the Tools and Index
  * activities — arrived light inside an otherwise dark app. Content that belongs to Fylz is
  * rendered by Fylz's theme; there is no second place for that decision to be made.
  *
- * @param recoveryRoom the storage-and-recovery surface, shown as the shell's bottom room.
+ * @param recoverySection the storage-and-recovery surface. It is no longer the whole bottom room:
+ *   the bottom room is Actions now, and recovery is its last section — still the same edge, the
+ *   same drag, and still owned by the caller so the journal it reads has one owner.
  * @param overlays dialogs the caller owns and needs drawn over everything.
  */
 @Composable
 fun FylzV1App(
-    recoveryRoom: @Composable () -> Unit = {},
+    recoverySection: @Composable () -> Unit = {},
     overlays: @Composable () -> Unit = {},
 ) {
     var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
@@ -202,7 +202,7 @@ fun FylzV1App(
         FylzV1Workspace(
             themeMode = themeMode,
             onThemeModeChange = { themeMode = it },
-            recoveryRoom = recoveryRoom,
+            recoverySection = recoverySection,
         )
         overlays()
     }
@@ -212,7 +212,7 @@ fun FylzV1App(
 private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    recoveryRoom: @Composable () -> Unit,
+    recoverySection: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -252,7 +252,6 @@ private fun FylzV1Workspace(
     var tagDialog by remember { mutableStateOf(false) }
     var batchRenameDialog by remember { mutableStateOf(false) }
     var recycleDialog by remember { mutableStateOf(false) }
-    var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
@@ -266,9 +265,11 @@ private fun FylzV1Workspace(
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
 
-    // Three rooms: locations LEFT, tools and settings RIGHT, recovery BOTTOM. The top edge is
-    // deliberately empty — it is reserved for the top room, and nothing else may claim the
-    // pull-down space.
+    // Four rooms: locations LEFT, tools and settings RIGHT, details TOP, actions BOTTOM. The
+    // vertical pair is the one to read together — up is what you are looking at, down is what to
+    // do about it — and it is why the pull-down space stayed reserved for so long: the gesture
+    // was always going to belong to the top room, and nothing had earned that room until details
+    // did.
     val shell = rememberSpatialController()
     // Hoisted so the edge scrubber can read where the list is and jump it. Both are needed
     // because the browser switches between a column and a grid, and a scrubber that only worked
@@ -278,6 +279,13 @@ private fun FylzV1Workspace(
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
     val selectedEntries = entries.filter { it.uri in selectedUris }
+
+    // What this selection may be asked to do. Derived once and handed to the actions room, so
+    // "does Extract apply" is answered by one testable policy rather than by an expression
+    // written inline wherever a button happened to be drawn.
+    val selectionActions = remember(selectedEntries) {
+        SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
+    }
 
     // Sorting is applied after filtering so the two controls compose: the user's chosen order
     // holds for the current folder, a folder filter, and recursive search results alike.
@@ -590,6 +598,80 @@ private fun FylzV1Workspace(
         }
     }
 
+    fun shareSelection() {
+        if (selectedEntries.isEmpty()) return
+        val uris = ArrayList(selectedEntries.map { it.uri })
+        val intent = if (uris.size == 1) {
+            Intent(Intent.ACTION_SEND)
+                .setType(selectedEntries.first().mimeType)
+                .putExtra(Intent.EXTRA_STREAM, uris.first())
+        } else {
+            Intent(Intent.ACTION_SEND_MULTIPLE)
+                .setType("*/*")
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+        }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
+    }
+
+    fun findDuplicates() {
+        scope.launch {
+            loading = true
+            runCatching { fileTools.findDuplicates(entries.filterNot { it.isDirectory }.map { it.uri }) }
+                .onSuccess { groups ->
+                    duplicateResult = if (groups.isEmpty()) {
+                        "No duplicate files found in this folder."
+                    } else {
+                        groups.joinToString("\n\n") { group ->
+                            "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n${group.items.joinToString("\n")}"
+                        }
+                    }
+                }
+                .onFailure { toast(it.message ?: "Duplicate scan failed") }
+            loading = false
+        }
+    }
+
+    /**
+     * Everything the actions room can ask for.
+     *
+     * One function rather than fifteen lambdas threaded through a parameter list: the room's job
+     * is to decide what to *offer*, and the workspace's job is to know how to *do* it. Closing
+     * the room first is uniform — every one of these either opens a picker, a dialog or another
+     * app, and leaving a room open behind a modal is how you end up back on a surface you thought
+     * you had left.
+     */
+    fun runAction(action: FylzAction) {
+        shell.closeAll()
+        when (action) {
+            FylzAction.COPY -> {
+                pendingDestinationAction = PendingDestinationAction.COPY
+                destinationPicker.launch(null)
+            }
+            FylzAction.MOVE -> {
+                pendingDestinationAction = PendingDestinationAction.MOVE
+                destinationPicker.launch(null)
+            }
+            FylzAction.RECYCLE -> recycleSelection()
+            FylzAction.RENAME -> renameDialog = true
+            FylzAction.BATCH_RENAME -> batchRenameDialog = true
+            FylzAction.TAGS -> tagDialog = true
+            FylzAction.ARCHIVE -> archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip")
+            FylzAction.EXTRACT -> {
+                pendingArchiveUri = selectedEntries.firstOrNull()?.uri
+                pendingDestinationAction = PendingDestinationAction.EXTRACT
+                destinationPicker.launch(null)
+            }
+            FylzAction.PDF_TOOLS -> pdfDialog = true
+            FylzAction.SHARE -> shareSelection()
+            FylzAction.CLEAR_SELECTION -> selectedUris = emptySet()
+            FylzAction.NEW_FOLDER -> createDialog = "folder"
+            FylzAction.NEW_FILE -> createDialog = "file"
+            FylzAction.SCAN_PDF -> startScan()
+            FylzAction.FIND_DUPLICATES -> findDuplicates()
+            FylzAction.AI_ORGANIZE -> aiDialog = true
+        }
+    }
+
     // Back closes an open room before it does anything else: a room is not a back-stack entry,
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
@@ -601,50 +683,95 @@ private fun FylzV1Workspace(
         cardColor = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxSize(),
         left = {
-            LocationsRoom(
-                tabs = tabs,
-                activeTabId = activeTabId,
-                onSelect = { id ->
-                    activeTabId = id
-                    shell.closeAll()
-                },
-                onOpenHome = {
-                    activeTabId = null
-                    homeRefreshKey += 1
-                    shell.closeAll()
-                },
-                onClose = { tab ->
-                    val wasActive = activeTabId == tab.id
-                    tabs.remove(tab)
-                    if (wasActive) activeTabId = tabs.lastOrNull()?.id
-                },
-                onAdd = {
-                    shell.closeAll()
-                    rootPicker.launch(null)
-                },
-            )
+            RevealedRoom({ shell.hProgress }) {
+                LocationsRoom(
+                    tabs = tabs,
+                    activeTabId = activeTabId,
+                    onSelect = { id ->
+                        activeTabId = id
+                        shell.closeAll()
+                    },
+                    onOpenHome = {
+                        activeTabId = null
+                        homeRefreshKey += 1
+                        shell.closeAll()
+                    },
+                    onClose = { tab ->
+                        val wasActive = activeTabId == tab.id
+                        tabs.remove(tab)
+                        if (wasActive) activeTabId = tabs.lastOrNull()?.id
+                    },
+                    onAdd = {
+                        shell.closeAll()
+                        rootPicker.launch(null)
+                    },
+                )
+            }
         },
         right = {
-            ToolsRoom(
-                themeMode = themeMode,
-                onThemeModeChange = onThemeModeChange,
-                onAction = { action ->
-                    shell.closeAll()
-                    when (action) {
-                        ToolsAction.RECYCLE_BIN -> recycleDialog = true
-                        ToolsAction.REMOTES -> remoteDialog = true
-                        ToolsAction.WEBDAV -> webDavDialog = true
-                        ToolsAction.TOOLS -> runCatching {
-                            context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
-                        }.onFailure { toast("Tools are unavailable on this build") }
-                        ToolsAction.INDEX -> runCatching {
-                            context.startActivity(Intent(context, IndexManagerActivity::class.java))
-                        }.onFailure { toast("The index manager is unavailable") }
-                    }
-                },
-            )
+            RevealedRoom({ -shell.hProgress }) {
+                ToolsRoom(
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange,
+                    onAction = { action ->
+                        shell.closeAll()
+                        when (action) {
+                            ToolsAction.RECYCLE_BIN -> recycleDialog = true
+                            ToolsAction.REMOTES -> remoteDialog = true
+                            ToolsAction.WEBDAV -> webDavDialog = true
+                            ToolsAction.TOOLS -> runCatching {
+                                context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
+                            }.onFailure { toast("Tools are unavailable on this build") }
+                            ToolsAction.INDEX -> runCatching {
+                                context.startActivity(Intent(context, IndexManagerActivity::class.java))
+                            }.onFailure { toast("The index manager is unavailable") }
+                        }
+                    },
+                )
+            }
         },
-        bottom = recoveryRoom,
+        top = {
+            RevealedRoom({ shell.vProgress }) {
+                DetailsRoom(
+                    ancestors = activeTab?.locations.orEmpty(),
+                    // The tree lists what the browser lists, so the two never disagree about what
+                    // is in this folder — a filtered listing and an unfiltered tree would be two
+                    // answers to one question.
+                    children = visibleEntries,
+                    folderItemCount = entries.size,
+                    focused = focusedEntry,
+                    selection = selectedEntries,
+                    // Looked up on demand rather than remembered: the room only composes while it
+                    // is revealed, and a tag saved from the actions room has to be true here the
+                    // next time the user drags down — not one focus change later.
+                    tagsFor = { uri -> library.tags(uri).sorted() },
+                    onOpenAncestor = { index ->
+                        val tab = activeTab ?: return@DetailsRoom
+                        val position = tabs.indexOfFirst { it.id == tab.id }
+                        if (position >= 0 && index < tab.locations.lastIndex) {
+                            tabs[position] = tab.copy(locations = tab.locations.take(index + 1))
+                        }
+                        shell.closeAll()
+                    },
+                    onOpenChild = { entry ->
+                        openEntry(entry)
+                        shell.closeAll()
+                    },
+                )
+            }
+        },
+        bottom = {
+            RevealedRoom({ -shell.vProgress }) {
+                ActionsRoom(
+                    selection = selectionActions,
+                    folderOpen = activeTab != null,
+                    canFindDuplicates = entries.count { !it.isDirectory } > 1,
+                    canOrganize = focusedEntry != null,
+                    onAction = ::runAction,
+                    recovery = recoverySection,
+                )
+            }
+        },
     ) {
     // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
     // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
@@ -658,8 +785,33 @@ private fun FylzV1Workspace(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(activeTab?.current?.name ?: "Fylz") },
+                    // The title is also the way into the details room for anyone who would
+                    // rather tap than drag — the same courtesy the Refresh button pays the
+                    // shake. What it opens is a description of the folder it is naming, which
+                    // is the one thing a title could open without surprising anybody.
+                    title = {
+                        Text(
+                            activeTab?.current?.name ?: "Fylz",
+                            // heightIn before clickable so the target is the 48dp DESIGN.md asks
+                            // for rather than the height of the glyphs; wrapContentHeight then
+                            // re-centres the text inside it.
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clickable { shell.open(RoomEdge.TOP) }
+                                .wrapContentHeight(Alignment.CenterVertically)
+                                .semantics {
+                                    contentDescription =
+                                        "${activeTab?.current?.name ?: "Fylz"}. Show details"
+                                },
+                        )
+                    },
                     actions = {
+                        // What is left here is what changes how the listing is *displayed*.
+                        // Everything that changes a file — new folder, scan, duplicates, the AI
+                        // proposal, and the whole selection bar — moved to the actions room. An
+                        // overflow menu mixing "make a folder here" with "open the index
+                        // manager" was why it had eleven items and no shape; splitting it by
+                        // "does this touch my files" is what finally gave it one.
                         IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
                             Icon(
                                 if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
@@ -669,101 +821,14 @@ private fun FylzV1Workspace(
                         IconButton(onClick = { refresh() }) {
                             Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                         }
-                        Box {
-                            IconButton(onClick = { moreExpanded = true }) {
-                                Icon(Icons.Outlined.MoreVert, contentDescription = "More actions")
-                            }
-                            DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("New folder") },
-                                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; createDialog = "folder" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("New text file") },
-                                    leadingIcon = { Icon(Icons.Outlined.TextSnippet, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; createDialog = "file" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Scan to PDF") },
-                                    leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; startScan() },
-                                )
-                                // Recycle Bin, Remotes, WebDAV, Tools, the index manager and
-                                // the theme toggle all moved to the right room. They are not
-                                // actions on *this folder* — they are the app's own tools, and
-                                // burying them in a per-folder overflow was why the menu had
-                                // eleven items and no shape. What is left here is what genuinely
-                                // acts on the folder you are looking at.
-                                DropdownMenuItem(
-                                    text = { Text("Find duplicates") },
-                                    enabled = entries.count { !it.isDirectory } > 1,
-                                    onClick = {
-                                        moreExpanded = false
-                                        scope.launch {
-                                            loading = true
-                                            runCatching { fileTools.findDuplicates(entries.filterNot { it.isDirectory }.map { it.uri }) }
-                                                .onSuccess { groups ->
-                                                    duplicateResult = if (groups.isEmpty()) {
-                                                        "No duplicate files found in this folder."
-                                                    } else {
-                                                        groups.joinToString("\n\n") { group ->
-                                                            "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n${group.items.joinToString("\n")}" 
-                                                        }
-                                                    }
-                                                }
-                                                .onFailure { toast(it.message ?: "Duplicate scan failed") }
-                                            loading = false
-                                        }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("AI organize proposal") },
-                                    enabled = focusedEntry != null,
-                                    onClick = { moreExpanded = false; aiDialog = true },
-                                )
-                            }
-                        }
                     },
                 )
             },
             bottomBar = {
-                if (selectedEntries.isNotEmpty()) {
-                    SelectionActionBar(
-                        count = selectedEntries.size,
-                        canRename = selectedEntries.size == 1,
-                        canExtract = selectedEntries.size == 1 && selectedEntries.first().kind == EntryKind.ARCHIVE,
-                        canPdfTools = selectedEntries.isNotEmpty() &&
-                            selectedEntries.all { it.kind == EntryKind.PDF },
-                        onPdfTools = { pdfDialog = true },
-                        onCopy = { pendingDestinationAction = PendingDestinationAction.COPY; destinationPicker.launch(null) },
-                        onMove = { pendingDestinationAction = PendingDestinationAction.MOVE; destinationPicker.launch(null) },
-                        onRecycle = ::recycleSelection,
-                        onRename = { renameDialog = true },
-                        onTags = { tagDialog = true },
-                        onArchive = { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") },
-                        onExtract = {
-                            pendingArchiveUri = selectedEntries.first().uri
-                            pendingDestinationAction = PendingDestinationAction.EXTRACT
-                            destinationPicker.launch(null)
-                        },
-                        onBatchRename = { batchRenameDialog = true },
-                        onShare = {
-                            val uris = ArrayList(selectedEntries.map { it.uri })
-                            val intent = if (uris.size == 1) {
-                                Intent(Intent.ACTION_SEND)
-                                    .setType(selectedEntries.first().mimeType)
-                                    .putExtra(Intent.EXTRA_STREAM, uris.first())
-                            } else {
-                                Intent(Intent.ACTION_SEND_MULTIPLE)
-                                    .setType("*/*")
-                                    .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                            }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
-                        },
+                if (selectionActions.any) {
+                    SelectionSummaryBar(
+                        count = selectionActions.count,
+                        onOpenActions = { shell.open(RoomEdge.BOTTOM) },
                         onClear = { selectedUris = emptySet() },
                     )
                 }
@@ -858,7 +923,9 @@ private fun FylzV1Workspace(
         // letters, months, size bands or extensions — because Fylz re-keys the same folder as
         // the sort changes, and a strip showing months down an A-Z list would be a map of
         // somewhere else. It only appears when there is a listing to map: not on the storage
-        // home surface, and not while a selection has taken over the bottom bar.
+        // home surface, and not while a selection is live — with entries picked out, the next
+        // move is an action on them, and a travel control down the edge of the list is an
+        // invitation to scroll away from what you just chose.
         if (activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty()) {
             val stops = remember(visibleEntries, sortSpec) { entryStops(visibleEntries, sortSpec) }
             val grid = viewMode == ViewMode.GRID
@@ -1429,7 +1496,7 @@ private fun FileRowV1(
             Text(
                 detail ?: listOfNotNull(
                     entry.sizeBytes?.let(::formatBytes),
-                    libraryKind(entry.kind),
+                    entry.kind.readableLabel(),
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1471,51 +1538,38 @@ private fun FileCard(
     }
 }
 
+/**
+ * What a live selection looks like from the file list.
+ *
+ * The eleven-button horizontal scroller this replaces was the app's largest piece of chrome and
+ * its least usable control: it covered the listing it acted on, it needed a sideways swipe to
+ * read, and the actions past the fourth were effectively hidden. All of them are rows in the
+ * actions room now.
+ *
+ * What survives here is only what the file list itself has to say — how many are selected, and
+ * the two ways out of that state. "Actions" opens the bottom room by tap, because a control the
+ * app draws may open a room directly; the drag from the bottom edge does the same thing and is
+ * the gesture this bar is teaching.
+ */
 @Composable
-private fun SelectionActionBar(
-    count: Int,
-    canRename: Boolean,
-    canExtract: Boolean,
-    canPdfTools: Boolean,
-    onPdfTools: () -> Unit,
-    onCopy: () -> Unit,
-    onMove: () -> Unit,
-    onRecycle: () -> Unit,
-    onRename: () -> Unit,
-    onTags: () -> Unit,
-    onArchive: () -> Unit,
-    onExtract: () -> Unit,
-    onBatchRename: () -> Unit,
-    onShare: () -> Unit,
-    onClear: () -> Unit,
-) {
+private fun SelectionSummaryBar(count: Int, onOpenActions: () -> Unit, onClear: () -> Unit) {
     Surface(tonalElevation = 8.dp) {
         Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(6.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("$count selected", modifier = Modifier.padding(horizontal = 10.dp))
-            ActionButton(Icons.Outlined.ContentCopy, "Copy", onCopy)
-            ActionButton(Icons.Outlined.DriveFileMove, "Move", onMove)
-            ActionButton(Icons.Outlined.Delete, "Recycle", onRecycle)
-            ActionButton(Icons.Outlined.Edit, "Rename", onRename, canRename)
-            ActionButton(Icons.Outlined.Tag, "Tags", onTags)
-            ActionButton(Icons.Outlined.Archive, "Archive", onArchive)
-            ActionButton(Icons.Outlined.FolderOpen, "Extract", onExtract, canExtract)
-            ActionButton(Icons.Outlined.TextSnippet, "Batch rename", onBatchRename)
-            ActionButton(Icons.Outlined.PictureAsPdf, "PDF tools", onPdfTools, canPdfTools)
-            ActionButton(Icons.Outlined.Share, "Share", onShare)
+            Text(
+                if (count == 1) "1 selected" else "$count selected",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.weight(1f))
             TextButton(onClick = onClear) { Text("Clear") }
+            FilledTonalButton(onClick = onOpenActions) {
+                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Actions", Modifier.padding(start = 6.dp))
+            }
         }
-    }
-}
-
-@Composable
-private fun ActionButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, enabled: Boolean = true) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Icon(icon, null, Modifier.size(18.dp))
-        Text(label, Modifier.padding(start = 5.dp))
     }
 }
 
@@ -1647,19 +1701,45 @@ private fun fileIcon(kind: EntryKind) = when (kind) {
     else -> Icons.Outlined.ViewSidebar
 }
 
-private fun libraryKind(kind: EntryKind): String = kind.name.lowercase().replaceFirstChar(Char::uppercase)
-
-private fun formatBytes(bytes: Long): String {
-    if (bytes < 1_024) return "$bytes B"
-    val units = arrayOf("KiB", "MiB", "GiB", "TiB")
-    var value = bytes.toDouble()
-    var unit = -1
-    do {
-        value /= 1_024.0
-        unit += 1
-    } while (value >= 1_024 && unit < units.lastIndex)
-    return "%.1f %s".format(value, units[unit])
+/**
+ * A room, arriving.
+ *
+ * `docs/fonebrew-navigation.md` is specific about the reveal: *"the surface being revealed scales
+ * from ~0.97 … Nothing fades in from nothing — material flows."* The shell already does the home
+ * card's half of that — lift, shrink, part — but the room itself was sliding in at full size,
+ * which reads as a panel arriving rather than a place settling into view. This is the room's
+ * half: it comes up under-sized and reaches 1.0 exactly as the drag completes, so the two halves
+ * of the motion finish together.
+ *
+ * Scale only, no fade. The distinction is the pattern's, not a preference: material that flows is
+ * material that was already there.
+ *
+ * [progress] is read inside the layer block rather than passed as a value, so tracking a finger
+ * costs a redraw instead of a recomposition of the room's whole subtree.
+ *
+ * This belongs in `cell-shell` beside the card's motion — one shell, one feel, and every app in
+ * the constellation gets it. It lives here for now because Fylz consumes that module rather than
+ * owning it. The melt's edge distortion, the other half of the note, is still unbuilt on both
+ * sides.
+ */
+@Composable
+private fun RevealedRoom(progress: () -> Float, content: @Composable () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                val scale = ROOM_REVEAL_SCALE +
+                    (1f - ROOM_REVEAL_SCALE) * progress().coerceIn(0f, 1f)
+                scaleX = scale
+                scaleY = scale
+            },
+    ) {
+        content()
+    }
 }
+
+/** Where a revealed room starts, per the pattern's motion note. */
+private const val ROOM_REVEAL_SCALE = 0.97f
 
 /**
  * The left room: every open location, plus the ways to get another one.
@@ -1793,8 +1873,9 @@ private fun ToolsRoom(
     }
 }
 
+/** The small uppercase label that opens a section of any room. Shared by all four. */
 @Composable
-private fun RoomHeading(text: String) {
+internal fun RoomHeading(text: String) {
     Text(
         text.uppercase(),
         style = MaterialTheme.typography.labelSmall,

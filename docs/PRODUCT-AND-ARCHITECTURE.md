@@ -104,9 +104,9 @@ motion constants, as Foto Xplorr. See
 [Foto Xplorr's `fonebrew-navigation.md`](https://github.com/mbaliga/Foto-Xplorr/blob/main/docs/fonebrew-navigation.md)
 for the pattern itself.
 
-### Three rooms
+### Four rooms
 
-The file browser is *home*. Three surfaces are parked off its edges:
+The file browser is *home*. Four surfaces are parked off its edges:
 
 - **LEFT — locations.** Every open location as a word wheel, plus the storage home surface and
   "Add a location…". This replaced a numbered chip row that made "which folder am I in" a
@@ -114,13 +114,28 @@ The file browser is *home*. Three surfaces are parked off its edges:
 - **RIGHT — tools and settings.** Recycle Bin, remotes, WebDAV, Tools, the index manager, theme.
   None of these act on the folder you are looking at, which is exactly why they are not in the
   folder's overflow menu.
-- **BOTTOM — recovery.** Operation history, file versions, backups and archive tools.
+- **TOP — details.** What you are looking at, described: a tree of where it lives, then kind,
+  size, timestamp, MIME type, path and tags. Read-only apart from the tree rows, which move you
+  to a folder already on screen.
+- **BOTTOM — actions.** Everything that changes a file: the selection's actions, the folder's own
+  (new folder, new text file, scan to PDF, find duplicates, the AI proposal), and recovery last.
 
-**TOP is reserved.** Nothing claims the pull-down space.
+The vertical pair is meant to be read together: **up is what you are looking at, down is what to
+do about it.** The horizontal pair is *where else you could be* and *what the app itself can do*.
 
 Dragging an edge lifts the browser, shrinks it slightly and parts it to reveal the room; the
 browser stays alive behind, and dragging it back is the way out. Rooms push no back-stack entry;
 Back closes them.
+
+The room arrives scaled from 0.97 and reaches full size exactly as the drag completes — the room
+half of the pattern's reveal note, so both halves of the motion finish together instead of a
+full-size panel sliding under a shrinking card. Scale only, never a fade: material that flows is
+material that was already there. It is implemented in `FylzV1App` rather than in `cell-shell`
+only because Fylz consumes that module; it belongs beside the card's motion, and the melt's edge
+distortion is still unbuilt on both sides.
+
+The top room does not change the pull-down rule that made it possible: the gesture belongs to it
+and to nothing else, so pull-to-refresh stays banned and refresh stays a shake.
 
 ### The edge scrubber
 
@@ -145,11 +160,18 @@ either way, so there is no direction branch to get wrong.
 Same rule as everywhere in the constellation: the pull-down space is reserved, so refresh moved
 off the touch plane. The toolbar button stays for anyone who would rather tap.
 
-### Selection and the action bar
+### Selection, and where its actions live
 
-Selecting entries replaces the bottom bar with a contextual action bar: copy, move, recycle,
-rename, tag, archive, extract, PDF tools, share. Actions appear only when they apply — "Extract"
-needs exactly one archive selected, "PDF tools" needs an all-PDF selection.
+Selecting entries puts a one-line summary across the bottom of the list — how many, "Clear", and
+"Actions" — and the actions themselves are rows in the bottom room. The eleven-button horizontal
+scroller this replaces covered the listing it acted on and needed a sideways swipe to read, so
+its right-hand half was effectively hidden.
+
+`SelectionActionPolicy` decides what applies, and actions appear only when they do: "Rename"
+needs exactly one entry, "Batch rename" at least two, "Extract" exactly one archive, "PDF tools"
+an all-PDF selection, and "Share" no folders — `ACTION_SEND` cannot deliver a directory, so
+offering it produced a share sheet that silently sent nothing. Inapplicable actions are absent
+rather than greyed out; the room is a list read top to bottom, and a shorter one is a faster one.
 
 ### Adaptive layout
 
@@ -179,8 +201,9 @@ Storage home surface          ← the entry point when no location is open
 Rooms
 ├── LEFT    Locations wheel
 ├── RIGHT   Tools & settings
-├── BOTTOM  Recovery → operations, history, backups, archive tools
-└── TOP     (reserved)
+├── TOP     Details → location tree, kind, size, modified, type, path, tags
+└── BOTTOM  Actions → selection, this folder, recovery (operations, history,
+                      backups, archive tools)
 ```
 
 Two organising rules:
@@ -249,12 +272,18 @@ A recurring pattern worth noticing: decisions that could be scattered through se
 extracted into named, pure policy objects — `ArchiveExtractionPolicy`, `ArchiveSpacePolicy`,
 `RecycleBinPolicy`, `DuplicateCleanupPolicy`, `OperationRetryPolicy`, `BackupManifestPolicy`,
 `AiTransmissionPolicy`, `SmartCollectionPolicy`, `DesktopWorkspacePolicy`,
-`KeyboardShortcutPolicy`. Each is testable without a device, and each names a decision that would
-otherwise be an unexamined `if` inside a service.
+`KeyboardShortcutPolicy`, `SelectionActionPolicy`. Each is testable without a device, and each
+names a decision that would otherwise be an unexamined `if` inside a service.
+
+The rooms follow the same rule for what they *say*, not only what they do: `EntryDetails` and
+`locationTree` are framework-free, so the details room's wording and shape are unit-testable —
+which matters most for the one surface whose entire job is to be accurate.
 
 ### Testing
 
 The pure layers carry the tests: sorting (`sortEntries`), scrubber stops (`EntryStops`), the
+details room's facts and tree (`EntryDetails`, `LocationTree`), the selection rules
+(`SelectionActionPolicy`), the
 shared-volume suppression (`StorageRoot.isOnSharedVolume`, which is quietly bad in *both*
 directions if wrong — too eager and a cloud provider vanishes, too shy and the padlock rows come
 back), the policies, the archive and backup manifest logic, and the search query model.
@@ -281,8 +310,11 @@ could not be built without Gradle already on `PATH`, and nothing pinned which ve
 - **Kotlin 2.1.20 diverges from the constellation's 2.1.0.** The AGP/Gradle lockstep is codified;
   the Kotlin half is not, and Fylz is the repo that diverges. It consumes 2.1.0-built metadata
   from the shared modules fine today (forward-compatible), but this is the gap to close.
-- **The top room is reserved but not built.**
+- **The details room describes one subject at a time.** With several entries selected it drops to
+  a count, a total and a breakdown by kind; there is no per-entry list.
+- **The location tree is windowed at eight children.** A folder with more says how many it left
+  out. It is a map of where you are, not a second file listing.
 - **The scrubber appears only when there is a listing to map** — not on the storage home surface,
-  and not while a selection has taken over the bottom bar.
+  and not while a selection is live.
 - **`MANAGE_EXTERNAL_STORAGE` is a sensitive permission.** The app is fully usable without it,
   running entirely on SAF; granting it removes picker round-trips for local storage only.
