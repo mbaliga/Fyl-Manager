@@ -112,5 +112,11 @@ class FileBackendContractTest : StorageBackendContractTest() {
             // computation reads -- reports afterwards.
             return !target.canWrite()
         }
+
+        override fun seedHugeFile(name: String, sizeBytes: Long): Boolean {
+            // setLength allocates no blocks on ext4/tmpfs; length() still reports it all.
+            java.io.RandomAccessFile(File(root, name), "rw").use { it.setLength(sizeBytes) }
+            return true
+        }
     }
 }

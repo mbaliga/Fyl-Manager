@@ -38,12 +38,28 @@ class ThemeOwnershipGuardTest {
 
         assertTrue(
             buildString {
-                appendLine("MaterialTheme(...) may only be invoked inside $ALLOWED_OWNER.")
+                appendLine("MaterialTheme may only be invoked inside $ALLOWED_OWNER.")
                 appendLine("Compose new screens inside FylzTheme (via FylzV1App) instead — a bare")
                 appendLine("MaterialTheme ships the app's colours wrong. Offending lines:")
                 offences.forEach { appendLine("  $it") }
             },
             offences.isEmpty(),
+        )
+    }
+
+    /**
+     * The positive control. If the pattern ever regresses to something that matches nothing,
+     * the guard above would go green by scanning everything and flagging nothing — vacuously.
+     * The one legitimate call site must always match, so a dead pattern fails loudly here.
+     */
+    @Test
+    fun `the allowed owner itself matches the guarded pattern`() {
+        val owner = RepoLayout.kotlinFiles(RepoLayout.mainSource)
+            .single { it.invariantPath().endsWith(ALLOWED_OWNER) }
+
+        assertTrue(
+            "$ALLOWED_OWNER no longer matches the guard pattern — the guard is scanning for nothing",
+            owner.readLines().any { INVOCATION.containsMatchIn(it) },
         )
     }
 
@@ -53,10 +69,13 @@ class ThemeOwnershipGuardTest {
         const val ALLOWED_OWNER = "ui/theme/FylzTheme.kt"
 
         /**
-         * The invocation, not the object: `MaterialTheme(` with optional whitespace before the
-         * paren. Property reads (`MaterialTheme.colorScheme`) never match, and the word boundary
-         * keeps `FylzMaterialThemeSomething(` from matching if one ever exists.
+         * `MaterialTheme` followed by `(` OR `{` — both are invocations. The brace matters
+         * more than the paren: every `MaterialTheme(...)` parameter except the content lambda
+         * has a default in Material 3, so the habitual form of the shipped bug is the
+         * paren-free `MaterialTheme { ... }`, which a paren-only pattern waves straight
+         * through. Property reads (`MaterialTheme.colorScheme`) still never match, and the
+         * word boundary keeps a hypothetical `FylzMaterialTheme(` from matching.
          */
-        val INVOCATION = Regex("""\bMaterialTheme\s*\(""")
+        val INVOCATION = Regex("""\bMaterialTheme\s*[({]""")
     }
 }

@@ -74,6 +74,13 @@ interface BackendFixture {
      * with `assumeTrue` rather than asserting against a permission bit that never took.
      */
     fun makeReadOnly(name: String): Boolean
+
+    /**
+     * Seeds a file that REPORTS [sizeBytes] without materialising the bytes (sparse file or
+     * metadata); false when the backend cannot. Exists so the >2 GiB size-reporting contract
+     * costs no disk.
+     */
+    fun seedHugeFile(name: String, sizeBytes: Long): Boolean = false
 }
 
 /**
@@ -503,6 +510,65 @@ abstract class StorageBackendContractTest {
         )
         assertTrue("truncation must keep the leading name", createdName.startsWith("l".repeat(64)))
         assertTrue(createdName in listChildren(root).map { it.displayName })
+    }
+
+    @Test
+    fun `a display name carrying path separators cannot traverse out of its parent`() {
+        // The path-escape shape of the reserved-character problem, which is the shape that
+        // matters: a provider may refuse the name or serve it defanged, but the document it
+        // returns must be a DIRECT child of the requested parent — never a nested hierarchy,
+        // never an entry outside it. The containment check is the membership of the returned
+        // document id in the parent's own listing; a provider that quietly created `a/b.txt`
+        // as a folder `a` holding `b.txt` would return an id the parent listing does not have.
+        val root = rootDocumentUri()
+        val requested = "../escape/..\\a/b.txt"
+        val created = try {
+            DocumentsContract.createDocument(fixture.resolver, root, "text/plain", requested)
+        } catch (refused: Exception) {
+            null
+        }
+        assumeTrue("backend refuses separator-bearing names outright, which is also safe", created != null)
+
+        val ids = listChildren(root).map { it.documentId }
+        assertTrue(
+            "created document must be a direct child of the requested parent",
+            DocumentsContract.getDocumentId(created!!) in ids,
+        )
+        writeBytes(created, "contained".toByteArray())
+        assertArrayEquals("contained".toByteArray(), readBytes(created))
+    }
+
+    @Test
+    fun `provider-level copy is unsupported so copying stays client-side`() {
+        // Neither backend overrides copyDocument, and the app's copy path is deliberately a
+        // client-side stream copy through the operation journal. Pinning the refusal keeps
+        // that arrangement honest: if a provider ever grows native copy, this test is the
+        // prompt to add a capability knob and route the operation engine through it —
+        // not to let two copy paths exist unannounced.
+        val root = rootDocumentUri()
+        val source = createFile(root, "copy-src.txt", content = "x".toByteArray())
+
+        val copied = try {
+            DocumentsContract.copyDocument(fixture.resolver, source, root)
+        } catch (expected: Exception) {
+            null
+        }
+
+        assertNull("copyDocument must be refused; copying is the operation engine's job", copied)
+    }
+
+    @Test
+    fun `a file larger than two gigabytes reports its true size`() {
+        // COLUMN_SIZE is a long; a backend that funnels it through Int truncates or goes
+        // negative right where files stop being toys. Sparse on disk, so this costs no I/O.
+        val fiveGiB = 5L * 1024 * 1024 * 1024
+        assumeTrue(
+            "backend cannot seed a sparse huge file",
+            fixture.seedHugeFile("huge.bin", fiveGiB),
+        )
+
+        val row = listChildren(rootDocumentUri()).single { it.displayName == "huge.bin" }
+        assertEquals(fiveGiB, row.size)
     }
 
     @Test

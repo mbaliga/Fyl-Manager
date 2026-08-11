@@ -16,11 +16,21 @@ backend supplies to enter it. Two concrete fixtures today:
 
 Covered per the plan's list: create/list/rename/move/delete/recursive-delete semantics,
 duplicate-name disambiguation, rename/move-onto-existing failures, case-only rename (both
-directions, knob-gated), NFC/NFD coexistence without normalization, emoji/RTL names, reserved
-characters, 300-char names (truncation pinned), zero-byte files, zero-epoch and null
-timestamps, read-only flags (self-probing — `setWritable(false)` is a no-op for root, so the
-test gates rather than lies), and cursor-snapshot stability + requery convergence under
-out-of-band insert/delete. Crash-at-journaled-steps lives in WP-0.6's suite.
+directions, knob-gated), NFC/NFD coexistence without normalization, emoji/RTL names,
+path-separator containment (the reserved-character shape that matters: a `../a/b.txt` display
+name must yield a direct child or a clean refusal, never traversal), 300-char names (truncation
+pinned), zero-byte files, >2 GiB size reporting (sparse-seeded, File backend), zero-epoch and
+null timestamps, read-only flags (self-probing — `setWritable(false)` is a no-op for root, so
+the test gates rather than lies), cursor-snapshot stability + requery convergence under
+out-of-band insert/delete, and a pin that provider-level `copyDocument` stays refused — copying
+is the operation engine's job, and a backend that grows native copy must arrive as a capability
+knob, not a second unannounced copy path.
+
+Declared out of this suite rather than silently absent: **trash** is client-side composition
+(`RecycleBinService` + `.fylz-trash`), exercised by its own service tests and WP-0.6's crash
+suite, so it is not a provider-contract behavior today; **crash-at-journaled-steps** lives in
+WP-0.6's suite; other literal reserved characters (`:`, `*`, `?`) ride the File backend's
+sanitizer unpinned — behavior to define, then pin, when Phase 1 touches the provider.
 
 Also `FileStorageProviderRootGroupsTest`: `rootGroups` grouping and standard-directory
 filtering, using a local `Environment.isExternalStorageManager` shadow (Robolectric 4.16.1
