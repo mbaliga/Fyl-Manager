@@ -58,6 +58,11 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 ### Release engineering
 
 - Added debug CI and release-readiness workflows.
+- Made Android CI manually triggerable (`workflow_dispatch`).
+- Lockstepped Kotlin with the constellation (2.1.20 → 2.1.0, matching both submodules), with a guard test that fails the build on AGP/Kotlin/Compose-plugin drift across the composite.
+- Added a theme-ownership guard test: `MaterialTheme(...)` outside `FylzTheme` fails the build — the bare-MaterialTheme bug shipped three times and is now structurally impossible.
+- Added crash-injection tests simulating process death at every journaled operation transition; recovery now marks QUEUED items of an interrupted operation as interrupted instead of leaving them looking "still waiting" forever.
+- Added a behavioral contract test suite that both storage backends must pass, with capability-gated skips — the gate every future provider must clear.
 - Added release lint, R8 release assembly and dependency graph artifacts.
 - Added third-party notices, signing/upgrade procedure and real-device/provider acceptance matrix.
 

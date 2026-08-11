@@ -63,7 +63,13 @@ data class FileOperation(
 
 /** Pure state rules shared by the Android journal and JVM tests. */
 object OperationRecoveryPolicy {
+    // QUEUED belongs here even though no service persists a QUEUED *operation*: the transfer
+    // path's first durable write is a PREFLIGHT operation whose ITEMS are QUEUED, and a queued
+    // item inside a crashed operation was interrupted before it began — leaving it QUEUED after
+    // recovery reads as "still waiting" inside an operation that will never run, with no error
+    // code to explain it. (Found by the WP-0.6 crash-injection suite on its first run.)
     private val interruptedStates = setOf(
+        OperationState.QUEUED,
         OperationState.PREFLIGHT,
         OperationState.RUNNING,
         OperationState.PAUSED,

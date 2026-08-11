@@ -65,12 +65,13 @@ android {
 
 // AGP 8.9 supports Kotlin 2.1. Several fast-moving libraries publish against newer Kotlin
 // runtimes. Keep the runtime metadata aligned with the compiler until the project migrates to
-// AGP 9.1+ as one deliberate toolchain change.
+// AGP 9.1+ as one deliberate toolchain change. The version here follows the constellation
+// lockstep (2.1.0, matching both submodules' catalogs — see root build.gradle.kts).
 configurations.configureEach {
     resolutionStrategy.force(
-        "org.jetbrains.kotlin:kotlin-stdlib:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.20",
+        "org.jetbrains.kotlin:kotlin-stdlib:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0",
     )
 }
 
