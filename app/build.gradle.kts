@@ -48,6 +48,18 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.all {
+            // The storage contract suite creates non-ASCII filenames through java.io.File and
+            // lists them back. The JVM decodes directory entries with the HOST's locale, so a
+            // C/POSIX-locale machine reads UTF-8 names back as '?' and fails those tests for
+            // reasons no provider can see. Android itself is always UTF-8; pin the forked test
+            // JVM to match the platform under test instead of the machine it happens to run on.
+            it.environment("LANG", "C.UTF-8")
+            it.environment("LC_ALL", "C.UTF-8")
+        }
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/AL2.0",
