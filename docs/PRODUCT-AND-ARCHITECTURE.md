@@ -160,6 +160,34 @@ either way, so there is no direction branch to get wrong.
 Same rule as everywhere in the constellation: the pull-down space is reserved, so refresh moved
 off the touch plane. The toolbar button stays for anyone who would rather tap.
 
+### The cluster drag and the corner bulges
+
+Press-hold on any **selected** row gathers the whole selection into a card cluster under the
+finger; the moment it lifts, the screen's corners grow organic bulges — material swelling out
+of the corner, not panels floating over it. **Actions top-left** (clipboard, move tray, new
+folder, compress), **trash alone bottom-right**: opposite corners, so a sloppy drop can miss
+within a family but never cross from constructive to destructive.
+
+Targets react as the cluster approaches — continuously, driven by one proximity scalar from
+`DropTargetPolicy`, so approach and retreat play the same motion both ways. The trash can
+tilts, lifts and opens its lid; releasing on it pours the cluster in with a genie squeeze.
+The clipboard snaps the files aboard, visibly.
+
+A tray with content keeps a small resting bulge on its corner (count + glyph). Tapping it
+expands the tray: an endlessly looped scroll of the staged files (`LoopedCarousel` owns the
+wrap-around), **pull a card down** to take it back out (with an equivalent accessibility
+action — a gesture is never the only path), and "Paste here" / "Move here" commits into the
+folder on screen through the ordinary journaled operations. A paste into a nested folder
+resolves the destination by walking display names from the granted root — provider-neutral —
+and such operations refuse journal replay rather than risk replaying into the tree root
+(`OperationRetryPolicy.isReplayableDestination`).
+
+The trash bulge is the session's can: what went in during this visit, each item offering
+**Put back** or **Shred**. Shredding is permanent deletion through the existing
+`RecycleBinPolicy` gate, staged behind a confirm with the shredder animation — and its copy is
+deliberately honest: flash translation and wear levelling mean no app can promise forensic
+erasure, so Fylz says "as gone as software can honestly make it" and never "securely erased".
+
 ### Selection, and where its actions live
 
 Selecting entries puts a one-line summary across the bottom of the list — how many, "Clear", and

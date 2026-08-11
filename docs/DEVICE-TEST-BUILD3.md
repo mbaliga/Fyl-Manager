@@ -145,7 +145,36 @@ Only if a debug crash trigger exists in this build; otherwise skip.
 - [ ] 9.3 Deny it and use the SAF picker instead: the app remains fully usable (this is the
       MANAGE_EXTERNAL_STORAGE-never-required invariant, live).
 
-## 10. Free-form notes
+## 10. Cluster drag and corner bulges
+
+- [ ] 10.1 Select 3 files, press-hold one of them: the selected rows gather into a card
+      cluster under the finger (cards fly from their rows, fan slightly, count badge on top).
+      Corners grow bulges: actions top-left, trash bottom-right.
+- [ ] 10.2 Drag toward the **trash**: the can tilts, lifts a little, lid swings open — all
+      continuously with distance, reversing smoothly when you retreat.
+- [ ] 10.3 Release on the trash: the cluster pours in with a genie squeeze; files land in the
+      Recycle Bin; the bottom-right resting bulge appears with a count.
+- [ ] 10.4 Drag to the **clipboard** slot: it swells as you near; release snaps the cards to
+      the corner. The top-left resting bulge appears with a count.
+- [ ] 10.5 Release over nothing: the cluster springs back to the rows; nothing happens.
+- [ ] 10.6 Release on **New folder**: name dialog appears; confirming creates the folder and
+      moves the files in. On **Compress**: the ZIP creator opens for the selection.
+- [ ] 10.7 Tap the top-left resting bulge: the tray expands. Flick the strip both directions —
+      it loops endlessly with no wall and no jump (try with 1 item and with 5).
+- [ ] 10.8 Pull a card straight down past the threshold: it leaves the tray. TalkBack: each
+      card exposes a "Remove …" accessibility action.
+- [ ] 10.9 "Paste here" in a nested subfolder copies into THAT folder, not the root. "Move
+      here" moves and empties the move tray; the clipboard keeps its contents after pasting.
+- [ ] 10.10 Tap the trash resting bulge: this session's items list with **Put back** and
+      **Shred**. Put back restores to the original folder.
+- [ ] 10.11 Shred: the confirm shows the shredder animation and the honest not-a-forensic-wipe
+      copy; confirming permanently deletes; the strips animate while it runs.
+- [ ] 10.12 With a room open or the storage home showing: no bulges anywhere (they live in
+      the browser only). Back closes shred confirm → sheet → room, in that order.
+- [ ] 10.13 Long-press on an UNSELECTED row still just selects it; drag-scroll of the list
+      still works normally with a selection active.
+
+## 11. Free-form notes
 
 Anything that felt wrong, slow, or surprising — one line each, no filter:
 

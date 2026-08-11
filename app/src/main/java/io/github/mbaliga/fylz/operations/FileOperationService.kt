@@ -33,15 +33,19 @@ class FileOperationService(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        destinationPathSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, onProgress)
+    ): List<Uri> =
+        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        destinationPathSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, onProgress)
+    ): List<Uri> =
+        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -100,14 +104,30 @@ class FileOperationService(
         destinationTreeUri: Uri,
         move: Boolean,
         conflictPolicy: ConflictPolicy,
+        destinationPathSegments: List<String>,
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
-        val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
+        // Subfolder destinations are reached by walking display names down from the granted
+        // tree root. Walking is the only provider-neutral resolution: synthesising a tree URI
+        // rooted at the subfolder works on our own provider and fails permission checks on
+        // third-party ones, and parsing the document ID for a path assumes an ID scheme no
+        // contract promises (acceptance law #8).
+        val root = DocumentFile.fromTreeUri(context, destinationTreeUri)
             ?: error("Unable to open the destination folder.")
+        val destination = destinationPathSegments.fold(root) { folder, segment ->
+            folder.findFile(segment)
+                ?.takeIf(DocumentFile::isDirectory)
+                ?: error("The destination folder “$segment” no longer exists.")
+        }
         require(destination.isDirectory && destination.canWrite()) {
             "The destination folder is not writable."
         }
+        // Journaled destination: the resolved folder's own URI when walking happened. The
+        // retry policy refuses to replay these (it cannot re-walk display names), which is the
+        // conservative outcome — a replay against the raw tree URI would land files in the
+        // tree ROOT, silently the wrong folder.
+        val journaledDestination = if (destinationPathSegments.isEmpty()) destinationTreeUri else destination.uri
 
         val operation = FileOperation(
             type = if (move) FileOperationType.MOVE else FileOperationType.COPY,
@@ -115,7 +135,7 @@ class FileOperationService(
                 val source = DocumentFile.fromSingleUri(context, uri)
                 OperationItem(
                     source = uri,
-                    destination = destinationTreeUri,
+                    destination = journaledDestination,
                     displayName = source?.name ?: "untitled",
                     expectedBytes = source?.length()?.takeIf { source.isFile && it >= 0L },
                     state = OperationState.QUEUED,

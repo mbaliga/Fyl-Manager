@@ -153,6 +153,7 @@ import java.util.Locale
 import java.util.UUID
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
@@ -168,7 +169,27 @@ import dev.aarso.cellshell.WheelItem
 import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
+import io.github.mbaliga.fylz.operations.RecycleRecord
+import io.github.mbaliga.fylz.staging.DropTarget
+import io.github.mbaliga.fylz.staging.StagedItem
+import io.github.mbaliga.fylz.staging.StagingTray
+import io.github.mbaliga.fylz.staging.TrayKind
+import io.github.mbaliga.fylz.ui.cluster.BulgeCorner
+import io.github.mbaliga.fylz.ui.cluster.ClusterDragController
+import io.github.mbaliga.fylz.ui.cluster.ClusterDragLayer
+import io.github.mbaliga.fylz.ui.cluster.RestingBulge
+import io.github.mbaliga.fylz.ui.cluster.ShredConfirmOverlay
+import io.github.mbaliga.fylz.ui.cluster.TrashBrowserSheet
+import io.github.mbaliga.fylz.ui.cluster.TrashGlyph
+import io.github.mbaliga.fylz.ui.cluster.TrayBrowserSheet
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 
@@ -264,6 +285,23 @@ private fun FylzV1Workspace(
     var searchRecursive by remember { mutableStateOf(false) }
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
+
+    // ── The cluster drag and its corner bulges ────────────────────────────────────────
+    // Press-hold on a selected row gathers the selection under the finger; the corners grow
+    // targets (actions top-left, trash bottom-right — opposite corners so a sloppy drop can
+    // never cross from constructive to destructive). Trays are session state: they empty when
+    // the app process does, like any clipboard.
+    val clusterController = remember { ClusterDragController() }
+    val clusterOrigins = remember { mutableStateMapOf<Uri, Offset>() }
+    var clipboardTray by remember { mutableStateOf(StagingTray(TrayKind.CLIPBOARD)) }
+    var moveTray by remember { mutableStateOf(StagingTray(TrayKind.MOVE)) }
+    var openTray by remember { mutableStateOf<TrayKind?>(null) }
+    var trashSheetOpen by remember { mutableStateOf(false) }
+    val sessionTrashIds = remember { mutableStateListOf<String>() }
+    var trashRefreshKey by remember { mutableIntStateOf(0) }
+    var shredTargets by remember { mutableStateOf<List<RecycleRecord>?>(null) }
+    var shredding by remember { mutableStateOf(false) }
+    var pendingFolderItems by remember { mutableStateOf<List<StagedItem>>(emptyList()) }
 
     // Four rooms: locations LEFT, tools and settings RIGHT, details TOP, actions BOTTOM. The
     // vertical pair is the one to read together — up is what you are looking at, down is what to
@@ -574,9 +612,9 @@ private fun FylzV1Workspace(
         }.onFailure { toast("No app can open this file") }
     }
 
-    fun recycleSelection() {
+    fun recycleUris(uris: List<Uri>) {
         val tab = activeTab ?: return
-        if (selectedEntries.isEmpty()) return
+        if (uris.isEmpty()) return
         scope.launch {
             loading = true
             runCatching {
@@ -586,15 +624,114 @@ private fun FylzV1Workspace(
                     ?.takeIf(DocumentFile::isDirectory)
                     ?: root.createDirectory(".fylz-trash")
                     ?: error("This provider cannot create a recycle location.")
-                selectedEntries.forEach { entry ->
-                    recycleBin.recycle(entry.uri, tab.current.uri, recycleRoot.uri)
+                uris.forEach { uri ->
+                    val record = recycleBin.recycle(uri, tab.current.uri, recycleRoot.uri)
+                    // Remembered so the trash bulge can offer put-back and shred for what went
+                    // in during this visit — however it went in, gesture or actions room.
+                    sessionTrashIds += record.itemId
                 }
             }.onSuccess {
                 toast("Moved to Recycle Bin")
                 selectedUris = emptySet()
+                trashRefreshKey += 1
                 refresh()
             }.onFailure { toast(it.message ?: "Unable to recycle selection") }
             loading = false
+        }
+    }
+
+    fun recycleSelection() = recycleUris(selectedEntries.map(FileEntry::uri))
+
+    /** "Paste here" / "Move here" from an expanded tray, into the folder on screen. */
+    fun commitTrayHere(kind: TrayKind) {
+        val tab = activeTab ?: run {
+            toast("Open a folder to paste into")
+            return
+        }
+        val tray = if (kind == TrayKind.CLIPBOARD) clipboardTray else moveTray
+        if (tray.isEmpty) return
+        val segments = tab.locations.drop(1).map(FolderLocation::name)
+        scope.launch {
+            loading = true
+            runCatching {
+                if (kind == TrayKind.CLIPBOARD) {
+                    fileOperations.copy(
+                        sourceUris = tray.items.map(StagedItem::uri),
+                        destinationTreeUri = tab.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                    ) { progress -> operationMessage = "Copying ${progress.displayName}" }
+                } else {
+                    fileOperations.move(
+                        sourceUris = tray.items.map(StagedItem::uri),
+                        destinationTreeUri = tab.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                    ) { progress -> operationMessage = "Moving ${progress.displayName}" }
+                }
+            }.onSuccess {
+                toast(if (kind == TrayKind.CLIPBOARD) "Pasted" else "Moved")
+                // A move's manifest is spent — leaving it would invite moving the same files
+                // twice. The clipboard keeps its contents like any clipboard does.
+                if (kind == TrayKind.MOVE) moveTray = moveTray.clear()
+                openTray = null
+                refresh()
+            }.onFailure { toast(it.message ?: "The operation failed") }
+            operationMessage = null
+            loading = false
+        }
+    }
+
+    /** A genie or snap flight finished: commit what it animated. */
+    fun clusterFlightLanded(target: DropTarget, cargo: List<StagedItem>) {
+        when (target) {
+            DropTarget.CLIPBOARD -> {
+                clipboardTray = clipboardTray.stage(cargo)
+                selectedUris = emptySet()
+                toast("On the clipboard")
+            }
+            DropTarget.MOVE -> {
+                moveTray = moveTray.stage(cargo)
+                selectedUris = emptySet()
+                toast("Riding the move tray")
+            }
+            DropTarget.TRASH -> recycleUris(cargo.map(StagedItem::uri))
+            else -> Unit
+        }
+    }
+
+    /** The row's press-hold drag ended; targets without a flight commit right here. */
+    fun clusterReleased() {
+        val cargo = clusterController.items
+        when (clusterController.release()) {
+            DropTarget.NEW_FOLDER -> {
+                clusterController.settle()
+                pendingFolderItems = cargo
+                createDialog = "cluster-folder"
+            }
+            DropTarget.COMPRESS -> {
+                clusterController.settle()
+                archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip")
+            }
+            // NONE returns home, the rest fly; the layer commits them on landing.
+            else -> Unit
+        }
+    }
+
+    fun shredNow(records: List<RecycleRecord>) {
+        scope.launch {
+            shredding = true
+            var failure: Throwable? = null
+            records.forEach { record ->
+                runCatching { recycleBin.permanentlyDelete(record.itemId, confirmed = true) }
+                    .onSuccess { sessionTrashIds.remove(record.itemId) }
+                    .onFailure { failure = it }
+            }
+            shredding = false
+            shredTargets = null
+            trashRefreshKey += 1
+            failure?.let { toast(it.message ?: "Shredding failed for some files") }
+            refresh()
         }
     }
 
@@ -892,6 +1029,19 @@ private fun FylzV1Workspace(
                         onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
                         listState = listState,
                         gridState = gridState,
+                        cluster = ClusterGestureHooks(
+                            onPositioned = { uri, centre -> clusterOrigins[uri] = centre },
+                            onStart = { at ->
+                                clusterController.start(
+                                    items = selectedEntries.map { StagedItem(it.uri, it.name, it.kind) },
+                                    origins = clusterOrigins.toMap(),
+                                    at = at,
+                                )
+                            },
+                            onDrag = clusterController::drag,
+                            onEnd = ::clusterReleased,
+                            onCancel = clusterController::cancel,
+                        ),
                         modifier = Modifier.weight(1f),
                     )
                     if (wide && previewMode == PreviewMode.DOCKED) {
@@ -968,22 +1118,172 @@ private fun FylzV1Workspace(
                 )
             }
         }
+
+        // ── Resting bulges: the trays' standing presence while they hold something ─────
+        // Drawn only outside a drag (the drag layer renders its own swollen versions) and only
+        // while occupied — an empty tray leaves the corner clean.
+        if (!clusterController.active) {
+            if (!clipboardTray.isEmpty || !moveTray.isEmpty) {
+                val total = clipboardTray.size + moveTray.size
+                RestingBulge(
+                    corner = BulgeCorner.TOP_LEFT,
+                    swell = 0f,
+                    label = "$total",
+                    contentDescription = "Staged files: $total. Open the clipboard",
+                    onTap = {
+                        openTray = if (!clipboardTray.isEmpty) TrayKind.CLIPBOARD else TrayKind.MOVE
+                    },
+                    modifier = Modifier.align(Alignment.TopStart),
+                ) {
+                    Icon(
+                        Icons.Outlined.ContentPaste,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+            if (sessionTrashIds.isNotEmpty()) {
+                RestingBulge(
+                    corner = BulgeCorner.BOTTOM_RIGHT,
+                    swell = 0f,
+                    label = "${sessionTrashIds.size}",
+                    contentDescription = "In the can: ${sessionTrashIds.size}. Open the trash",
+                    onTap = { trashSheetOpen = true },
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                ) {
+                    TrashGlyph(
+                        proximity = 0f,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
+            }
+        }
+
+        ClusterDragLayer(
+            controller = clusterController,
+            onFlightLanded = ::clusterFlightLanded,
+        )
+
+        openTray?.let { kind ->
+            val tray = if (kind == TrayKind.CLIPBOARD) clipboardTray else moveTray
+            val other = if (kind == TrayKind.CLIPBOARD) moveTray else clipboardTray
+            TrayBrowserSheet(
+                tray = tray,
+                otherTray = other.takeUnless(StagingTray::isEmpty),
+                onPickTray = { openTray = it },
+                onRemove = { item ->
+                    if (kind == TrayKind.CLIPBOARD) {
+                        clipboardTray = clipboardTray.without(item.uri)
+                        if (clipboardTray.isEmpty) openTray = moveTray.takeUnless(StagingTray::isEmpty)?.kind
+                    } else {
+                        moveTray = moveTray.without(item.uri)
+                        if (moveTray.isEmpty) openTray = clipboardTray.takeUnless(StagingTray::isEmpty)?.kind
+                    }
+                },
+                onCommitHere = { commitTrayHere(kind) },
+                onClear = {
+                    if (kind == TrayKind.CLIPBOARD) clipboardTray = clipboardTray.clear() else moveTray = moveTray.clear()
+                    openTray = null
+                },
+                onDismiss = { openTray = null },
+            )
+        }
+
+        if (trashSheetOpen) {
+            val sessionRecords = remember(trashRefreshKey, sessionTrashIds.size) {
+                recycleBin.records().filter { it.itemId in sessionTrashIds }
+            }
+            TrashBrowserSheet(
+                records = sessionRecords,
+                onPutBack = { record ->
+                    scope.launch {
+                        runCatching { recycleBin.restore(record.itemId, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
+                            .onSuccess {
+                                sessionTrashIds.remove(record.itemId)
+                                trashRefreshKey += 1
+                                refresh()
+                            }
+                            .onFailure { toast(it.message ?: "Restore failed") }
+                        if (sessionTrashIds.isEmpty()) trashSheetOpen = false
+                    }
+                },
+                onShred = { record -> shredTargets = listOf(record) },
+                onShredAll = { shredTargets = sessionRecords },
+                onDismiss = { trashSheetOpen = false },
+            )
+        }
+
+        shredTargets?.let { targets ->
+            ShredConfirmOverlay(
+                itemCount = targets.size,
+                shredding = shredding,
+                onConfirm = { shredNow(targets) },
+                onDismiss = { if (!shredding) shredTargets = null },
+            )
+        }
     }
+    }
+
+    // Composed after the shell's handler so it wins while a sheet is up: Back peels the
+    // shred confirm, then a sheet, before it ever reaches a room.
+    BackHandler(enabled = shredTargets != null || openTray != null || trashSheetOpen) {
+        when {
+            shredTargets != null -> if (!shredding) shredTargets = null
+            openTray != null -> openTray = null
+            else -> trashSheetOpen = false
+        }
     }
 
     createDialog?.let { kind ->
         NameDialog(
-            title = if (kind == "folder") "New folder" else "New text file",
-            initial = if (kind == "folder") "New folder" else "Untitled.txt",
-            onDismiss = { createDialog = null },
+            title = when (kind) {
+                "folder" -> "New folder"
+                "cluster-folder" -> {
+                    val count = pendingFolderItems.size
+                    "New folder for $count ${if (count == 1) "file" else "files"}"
+                }
+                else -> "New text file"
+            },
+            initial = if (kind == "file") "Untitled.txt" else "New folder",
+            onDismiss = {
+                createDialog = null
+                pendingFolderItems = emptyList()
+            },
             onConfirm = { name ->
                 createDialog = null
+                val tab = activeTab
                 activeTab?.current?.uri?.let { parent ->
                     scope.launch {
                         runCatching {
-                            if (kind == "folder") repository.createDirectory(parent, name)
-                            else repository.createFile(parent, name, "text/plain")
-                        }.onSuccess { refresh() }.onFailure { toast(it.message ?: "Unable to create item") }
+                            when (kind) {
+                                "folder" -> repository.createDirectory(parent, name)
+                                // Dropped on "New folder": make it, then move the cluster in.
+                                // The move resolves the folder by walking display names, so it
+                                // rides the same journaled path as every other transfer.
+                                "cluster-folder" -> {
+                                    checkNotNull(tab) { "No folder is open." }
+                                    repository.createDirectory(parent, name)
+                                    val segments = tab.locations.drop(1).map(FolderLocation::name) + name
+                                    fileOperations.move(
+                                        sourceUris = pendingFolderItems.map(StagedItem::uri),
+                                        destinationTreeUri = tab.treeUri,
+                                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                                        destinationPathSegments = segments,
+                                    ) { progress -> operationMessage = "Moving ${progress.displayName}" }
+                                }
+                                else -> repository.createFile(parent, name, "text/plain")
+                            }
+                        }.onSuccess {
+                            if (kind == "cluster-folder") {
+                                toast("Moved into $name")
+                                selectedUris = emptySet()
+                            }
+                            refresh()
+                        }.onFailure { toast(it.message ?: "Unable to create item") }
+                        pendingFolderItems = emptyList()
+                        operationMessage = null
                     }
                 }
             },
@@ -1216,6 +1516,7 @@ private fun FileBrowser(
     onSelectAll: () -> Unit,
     listState: LazyListState,
     gridState: LazyGridState,
+    cluster: ClusterGestureHooks?,
     modifier: Modifier = Modifier,
 ) {
     // With no tab open the browser shows the storage home surface, not an empty label. This is
@@ -1334,13 +1635,13 @@ private fun FileBrowser(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
                 }
             }
         } else {
             LazyColumn(state = listState) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
                 }
             }
         }
@@ -1451,6 +1752,21 @@ private fun SearchResults(
     }
 }
 
+/**
+ * The press-hold cluster gesture, attached only to SELECTED rows.
+ *
+ * An unselected row keeps its long-press meaning (select); once selected, holding the row
+ * gathers the whole selection under the finger and the corners grow drop targets. Positions
+ * are reported in root coordinates so the drag survives the list scrolling under it.
+ */
+internal class ClusterGestureHooks(
+    val onPositioned: (Uri, Offset) -> Unit,
+    val onStart: (Offset) -> Unit,
+    val onDrag: (Offset) -> Unit,
+    val onEnd: () -> Unit,
+    val onCancel: () -> Unit,
+)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileRowV1(
@@ -1460,18 +1776,43 @@ private fun FileRowV1(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    cluster: ClusterGestureHooks? = null,
     overline: String? = null,
     detail: String? = null,
 ) {
     val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 62.dp)
+            .onGloballyPositioned { coordinates ->
+                originInRoot = coordinates.positionInRoot()
+                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
+            }
+            .then(
+                if (selected && cluster != null) {
+                    Modifier.pointerInput(entry.uri) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                cluster.onDrag(originInRoot + change.position)
+                            },
+                            onDragEnd = { cluster.onEnd() },
+                            onDragCancel = { cluster.onCancel() },
+                        )
+                    }
+                } else {
+                    Modifier
+                },
+            )
             .combinedClickable(
                 onClick = { onOpen(entry) },
                 onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                onLongClick = { onToggleSelection(entry) },
+                // A selected row's long-press belongs to the cluster drag; deselecting is a
+                // checkbox tap away, so the two gestures never fight over one finger.
+                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
             )
             .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -1516,15 +1857,41 @@ private fun FileCard(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    cluster: ClusterGestureHooks? = null,
 ) {
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     Surface(
         color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.height(140.dp).combinedClickable(
-            onClick = { onOpen(entry) },
-            onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-            onLongClick = { onToggleSelection(entry) },
-        ).semantics { contentDescription = entry.name },
+        modifier = Modifier
+            .height(140.dp)
+            .onGloballyPositioned { coordinates ->
+                originInRoot = coordinates.positionInRoot()
+                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
+            }
+            .then(
+                if (selected && cluster != null) {
+                    Modifier.pointerInput(entry.uri) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                cluster.onDrag(originInRoot + change.position)
+                            },
+                            onDragEnd = { cluster.onEnd() },
+                            onDragCancel = { cluster.onCancel() },
+                        )
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .combinedClickable(
+                onClick = { onOpen(entry) },
+                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
+            )
+            .semantics { contentDescription = entry.name },
     ) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Row(verticalAlignment = Alignment.Top) {

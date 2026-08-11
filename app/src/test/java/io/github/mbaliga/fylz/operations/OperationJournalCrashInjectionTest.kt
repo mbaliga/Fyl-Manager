@@ -43,10 +43,13 @@ class OperationJournalCrashInjectionTest {
 
     private fun uri(tail: String): Uri = Uri.parse("content://fylz.test/tree/root/document/$tail")
 
+    /** The picker-shaped destination a pending transfer journals: a plain tree URI. */
+    private val destTree: Uri = Uri.parse("content://fylz.test/tree/dest")
+
     private fun item(
         name: String,
         state: OperationState,
-        destination: Uri? = uri("dest-tree"),
+        destination: Uri? = destTree,
         completedBytes: Long = 0,
         expectedBytes: Long? = 1_024L,
         errorCode: String? = null,
@@ -241,6 +244,23 @@ class OperationJournalCrashInjectionTest {
             "Mixing a final-file cleanup URI with a replayable tree URI must refuse retry",
             OperationRetryPolicy.plan(journal.only()),
         )
+    }
+
+    @Test
+    fun `an interrupted paste into a subfolder refuses replay rather than landing in the root`() {
+        // A tray paste journals the RESOLVED subfolder document URI. Replaying it through
+        // copy() would resolve back to the tree ROOT and put the files in the wrong folder,
+        // so the policy must refuse — the tray still holds the items for a one-tap redo.
+        val subfolder = Uri.parse("content://fylz.test/tree/dest/document/dest%2Fnested")
+        val journal = seedThenCrash(
+            operation(
+                FileOperationType.COPY,
+                OperationState.RUNNING,
+                listOf(item("live.txt", OperationState.RUNNING, destination = subfolder)),
+            ),
+        )
+
+        assertNull(OperationRetryPolicy.plan(journal.only()))
     }
 
     @Test

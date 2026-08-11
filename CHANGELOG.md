@@ -54,6 +54,10 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Corrected entry-kind wording throughout the browser — "Folder" and "PDF" rather than "Directory" and "Pdf".
 - Rooms now arrive scaled from 0.97 and reach full size as the drag completes, instead of sliding in at full size under the lifting file browser.
 - Made the top bar's folder title a 48dp target that opens the details room, for anyone who would rather tap than drag.
+- Added the cluster drag: press-hold a selected row to gather the selection under the finger, with organic corner bulges as drop targets — clipboard/move/new-folder/compress top-left, trash bottom-right. The trash tilts, lifts and opens its lid as files approach; dropping pours them in with a genie squeeze; the clipboard snaps them visibly aboard.
+- Added persistent tray bulges while staged content exists: tap to browse in an endlessly looped strip, pull a card down (or use its accessibility action) to unstage, "Paste here"/"Move here" commits into the folder on screen via the journaled operations — nested folders resolved by walking display names, never by parsing provider IDs.
+- Added the session trash bulge with Put back and **Shred**. Shredding permanently deletes through the existing recycle-bin gate with honest copy: no secure-erase claims, ever — flash storage makes them a lie.
+- Subfolder-destination operations refuse journal replay rather than risk replaying into the tree root (`OperationRetryPolicy.isReplayableDestination`).
 
 ### Release engineering
 

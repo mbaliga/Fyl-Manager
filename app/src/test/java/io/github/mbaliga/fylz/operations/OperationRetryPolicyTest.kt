@@ -108,4 +108,21 @@ class OperationRetryPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun `only a tree-root destination is replayable`() {
+        // Picker-shaped tree URI: replayable.
+        assertTrue(OperationRetryPolicy.isReplayableDestination(listOf("tree", "primary")))
+        // Tree-document URI still pointing at the tree root: equivalent, replayable.
+        assertTrue(
+            OperationRetryPolicy.isReplayableDestination(listOf("tree", "primary", "document", "primary")),
+        )
+        // A subfolder resolved by a tray paste: replay would land in the ROOT — refuse.
+        assertFalse(
+            OperationRetryPolicy.isReplayableDestination(listOf("tree", "primary", "document", "primary:Sub")),
+        )
+        // Plain document URI (a cleanup item's final file): not a transfer destination.
+        assertFalse(OperationRetryPolicy.isReplayableDestination(listOf("document", "primary:file.txt")))
+        assertFalse(OperationRetryPolicy.isReplayableDestination(emptyList()))
+    }
 }
