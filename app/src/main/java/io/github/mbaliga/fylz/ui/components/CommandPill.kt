@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -127,7 +127,7 @@ fun CommandPill(
                     enabled = canNavigateUp,
                     modifier = Modifier.size(44.dp),
                 ) {
-                    Icon(Icons.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
+                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
                 }
 
                 Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
