@@ -1,6 +1,6 @@
-package io.github.mbaliga.fylz.preview
+package io.github.mbaliga.fylz.core.format
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test

@@ -49,7 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.operations.RecycleRecord
 import io.github.mbaliga.fylz.staging.LoopedCarousel
 import io.github.mbaliga.fylz.staging.StagedItem

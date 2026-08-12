@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.preview
 
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
+
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.max

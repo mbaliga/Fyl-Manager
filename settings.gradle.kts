@@ -17,6 +17,26 @@ dependencyResolutionManagement {
 rootProject.name = "Fylz"
 include(":app")
 
+// Portable core modules (WP-1.3 of docs/worklog/PHASE-1-*.md): plain Kotlin/JVM libraries with
+// zero Android dependency, so their tests run off-device and CI stays SDK-free for them. They
+// are internal to this build only — consumed via project(":core-model") etc., not published
+// Maven coordinates — so they cannot collide with the dev.aarso:* coordinates the two
+// includeBuild composites below vend.
+//
+// core-model    — ItemRef/ItemSnapshot/VersionStamp, the ItemCapability vocabulary, EntryKind.
+// core-format   — file-kind/preview-family detection (FileFormatRegistry and friends).
+// core-vfs      — capability-requirement policy: which user actions need which capabilities.
+// core-operations — the operation journal's pure model and state-machine policies.
+//
+// Dependency order: core-model has none of these as a dependency; core-format, core-vfs and
+// core-operations each depend on core-model only (never on each other), so there is one shared
+// foundation and three independent consumers of it — no cycle is possible to introduce by
+// accident.
+include(":core-model")
+include(":core-format")
+include(":core-vfs")
+include(":core-operations")
+
 // Hyle Design System (dev.aarso:hyle, dev.aarso:crash-recovery) is pulled in via the
 // constellation's sanctioned sharing mechanism: git submodule + Gradle includeBuild.
 // Do not vendor/copy Hyle source and do not add a second way to depend on it.

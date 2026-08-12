@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Environment
 import android.os.storage.StorageManager
 import android.provider.DocumentsContract
+import io.github.mbaliga.fylz.core.model.ItemCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -24,13 +25,15 @@ class SafStorageProvider : StorageProvider {
 
     override val id: String = ID
 
-    override val capabilities: Set<StorageCapability> = setOf(
-        StorageCapability.CREATE,
-        StorageCapability.RENAME,
-        StorageCapability.DELETE,
-        StorageCapability.RECYCLE_BIN,
-        StorageCapability.RECURSIVE_SEARCH,
-        StorageCapability.CONTENT_SEARCH,
+    override val capabilities: Set<ItemCapability> = setOf(
+        ItemCapability.LIST,
+        ItemCapability.CREATE_FILE,
+        ItemCapability.CREATE_DIRECTORY,
+        ItemCapability.RENAME,
+        ItemCapability.TRASH,
+        ItemCapability.RESTORE_TRASH,
+        ItemCapability.DELETE_PERMANENT,
+        ItemCapability.CONTENT_SEARCH,
     )
 
     /** SAF needs no system grant; it is always able to render its home surface. */

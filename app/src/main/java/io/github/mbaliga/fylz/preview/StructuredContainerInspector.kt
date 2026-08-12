@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.preview
 
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
+
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers

@@ -1,6 +1,6 @@
 package io.github.mbaliga.fylz.operations
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

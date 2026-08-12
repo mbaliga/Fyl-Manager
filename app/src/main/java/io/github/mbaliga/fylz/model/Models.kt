@@ -1,19 +1,8 @@
 package io.github.mbaliga.fylz.model
 
 import android.net.Uri
+import io.github.mbaliga.fylz.core.model.EntryKind
 import java.util.UUID
-
-enum class EntryKind {
-    DIRECTORY,
-    MARKDOWN,
-    TEXT,
-    IMAGE,
-    PDF,
-    ARCHIVE,
-    AUDIO,
-    VIDEO,
-    OTHER,
-}
 
 data class FileEntry(
     val uri: Uri,

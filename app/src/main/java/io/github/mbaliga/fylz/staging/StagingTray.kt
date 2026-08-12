@@ -1,7 +1,7 @@
 package io.github.mbaliga.fylz.staging
 
 import android.net.Uri
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 
 /** One file riding a tray, reduced to what the bulge needs to draw and act on it. */
 data class StagedItem(

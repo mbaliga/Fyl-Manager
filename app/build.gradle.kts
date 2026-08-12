@@ -91,6 +91,13 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
     val media3Version = "1.10.1"
 
+    // The portable core (WP-1.3): pure Kotlin/JVM, zero Android dependency. See their KDoc and
+    // settings.gradle.kts for the module map and dependency order.
+    implementation(project(":core-model"))
+    implementation(project(":core-format"))
+    implementation(project(":core-vfs"))
+    implementation(project(":core-operations"))
+
     implementation(composeBom)
     androidTestImplementation(composeBom)
 

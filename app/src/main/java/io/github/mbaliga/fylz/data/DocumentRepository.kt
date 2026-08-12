@@ -7,6 +7,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.history.FileHistoryReason
 import io.github.mbaliga.fylz.history.FileHistoryStore
+import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.util.FileType
@@ -19,6 +20,7 @@ import kotlin.coroutines.coroutineContext
 class DocumentRepository(context: Context) {
     private val resolver: ContentResolver = context.contentResolver
     private val history = FileHistoryStore(context.applicationContext)
+    private val library = LibraryStore(context.applicationContext)
 
     data class TextContent(
         val value: String,
@@ -114,8 +116,15 @@ class DocumentRepository(context: Context) {
 
     suspend fun rename(uri: Uri, newName: String): Uri = withContext(Dispatchers.IO) {
         require(newName.isNotBlank()) { "A new name is required." }
-        DocumentsContract.renameDocument(resolver, uri, newName.trim())
+        val renamed = DocumentsContract.renameDocument(resolver, uri, newName.trim())
             ?: error("The provider could not rename the item.")
+        // Some providers keep the document ID (and therefore the URI) stable across a rename;
+        // only a genuinely new URI needs its identity-keyed metadata carried over.
+        if (renamed != uri) {
+            history.migrateSource(uri, renamed)
+            library.migrateUri(uri, renamed)
+        }
+        renamed
     }
 
     suspend fun copyStream(sourceUri: Uri, destinationUri: Uri): Long = withContext(Dispatchers.IO) {

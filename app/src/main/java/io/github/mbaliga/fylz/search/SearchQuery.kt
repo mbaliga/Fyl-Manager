@@ -1,6 +1,6 @@
 package io.github.mbaliga.fylz.search
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 
 /** Where a hit came from, so the results list can say why a file matched. */

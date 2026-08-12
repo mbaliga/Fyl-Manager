@@ -1,6 +1,6 @@
-package io.github.mbaliga.fylz.operations
+package io.github.mbaliga.fylz.core.operations
 
-import android.net.Uri
+import io.github.mbaliga.fylz.core.model.ItemRef
 import java.util.UUID
 
 enum class FileOperationType {
@@ -34,10 +34,24 @@ enum class ConflictPolicy {
     SKIP,
 }
 
+/**
+ * One item within a [FileOperation].
+ *
+ * [source] and [destination] are [ItemRef] (WP-1.1), not `android.net.Uri` — this is the
+ * module boundary that makes `core-operations` pure-JVM. The Android layer
+ * (`app/operations/FileOperationService.kt` and its siblings) converts at the edge, via
+ * `app/storage/ItemRefs.kt`'s adapter, exactly where it already talks to `DocumentFile`.
+ *
+ * Both fields still change meaning across an item's lifecycle exactly as they did before this
+ * move — [source] can point at a document that no longer exists the instant a move or rename
+ * succeeds, and [destination] starts as "the folder to write into" and becomes "the file that
+ * was written" once one exists. That is a pre-existing design property this migration
+ * preserves, not one it introduces or resolves.
+ */
 data class OperationItem(
     val id: String = UUID.randomUUID().toString(),
-    val source: Uri,
-    val destination: Uri? = null,
+    val source: ItemRef,
+    val destination: ItemRef? = null,
     val displayName: String,
     val expectedBytes: Long? = null,
     val completedBytes: Long = 0,

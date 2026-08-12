@@ -42,7 +42,7 @@ import io.github.mbaliga.fylz.browse.TreeChild
 import io.github.mbaliga.fylz.browse.TreeRow
 import io.github.mbaliga.fylz.browse.TreeTarget
 import io.github.mbaliga.fylz.browse.locationTree
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import java.time.Instant

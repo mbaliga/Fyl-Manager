@@ -6,11 +6,13 @@ import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
-import io.github.mbaliga.fylz.operations.FileOperation
-import io.github.mbaliga.fylz.operations.FileOperationType
-import io.github.mbaliga.fylz.operations.OperationItem
+import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
 import io.github.mbaliga.fylz.operations.OperationJournal
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -63,8 +65,8 @@ class ArchiveService(
             type = FileOperationType.ARCHIVE,
             items = sourceUris.mapIndexed { index, uri ->
                 OperationItem(
-                    source = uri,
-                    destination = destinationUri,
+                    source = uri.toItemRef(),
+                    destination = destinationUri.toItemRef(),
                     displayName = queryName(uri) ?: "file-${index + 1}",
                     state = OperationState.PREFLIGHT,
                 )
@@ -128,7 +130,7 @@ class ArchiveService(
                 archive.inputStream().use { input -> copyBounded(input, output, extractionLimits.maxArchiveBytes) }
             } ?: error("Unable to write the destination archive.")
 
-            journal.put(operation.succeeded(destinationUri))
+            journal.put(operation.succeeded(destinationUri.toItemRef()))
         } catch (cancelled: CancellationException) {
             journal.put(operation.cancelled())
             throw cancelled
@@ -189,8 +191,8 @@ class ArchiveService(
             type = FileOperationType.EXTRACT,
             items = listOf(
                 OperationItem(
-                    source = archiveUri,
-                    destination = destinationTreeUri,
+                    source = archiveUri.toItemRef(),
+                    destination = destinationTreeUri.toItemRef(),
                     displayName = archiveDisplayName,
                     state = OperationState.PREFLIGHT,
                 ),
@@ -253,7 +255,7 @@ class ArchiveService(
                 copyIntoProvider(source, requireNotNull(providerExtractionRoot))
             }
 
-            journal.put(operation.succeeded(requireNotNull(providerExtractionRoot).uri))
+            journal.put(operation.succeeded(requireNotNull(providerExtractionRoot).uri.toItemRef()))
         } catch (cancelled: CancellationException) {
             val rollbackComplete = rollbackExtraction(providerExtractionRoot)
             journal.put(
@@ -446,7 +448,7 @@ class ArchiveService(
         updatedAtMillis = System.currentTimeMillis(),
     )
 
-    private fun FileOperation.succeeded(destination: Uri): FileOperation = copy(
+    private fun FileOperation.succeeded(destination: ItemRef): FileOperation = copy(
         state = OperationState.SUCCEEDED,
         items = items.map {
             it.copy(destination = destination, state = OperationState.SUCCEEDED, errorCode = null)

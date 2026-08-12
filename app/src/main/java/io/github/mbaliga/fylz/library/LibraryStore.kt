@@ -71,6 +71,36 @@ class LibraryStore(context: Context) {
         preferences.edit().putStringSet(TAG_PREFIX + uri.toString(), normalizeTags(tags)).commit()
     }
 
+    /** Preserves favorites and tags after a provider returns a new URI for rename or move. */
+    @Synchronized
+    fun migrateUri(oldUri: Uri, newUri: Uri): Boolean {
+        if (oldUri == newUri) return false
+        var changed = false
+
+        val current = favorites()
+        val favoriteIndex = current.indexOfFirst { it.uri == oldUri }
+        if (favoriteIndex >= 0) {
+            val migrated = current.toMutableList()
+            migrated[favoriteIndex] = migrated[favoriteIndex].copy(uri = newUri)
+            preferences.edit().putString(FAVORITES, encodeFavorites(migrated).toString()).commit()
+            changed = true
+        }
+
+        val oldTagsKey = TAG_PREFIX + oldUri.toString()
+        val oldTags = preferences.getStringSet(oldTagsKey, null)
+        if (oldTags != null) {
+            val newTagsKey = TAG_PREFIX + newUri.toString()
+            val merged = oldTags + preferences.getStringSet(newTagsKey, emptySet()).orEmpty()
+            preferences.edit()
+                .remove(oldTagsKey)
+                .putStringSet(newTagsKey, merged)
+                .commit()
+            changed = true
+        }
+
+        return changed
+    }
+
     @Synchronized
     fun savedSearches(): List<SavedSearch> = decodeSearches(preferences.getString(SEARCHES, "[]").orEmpty())
 

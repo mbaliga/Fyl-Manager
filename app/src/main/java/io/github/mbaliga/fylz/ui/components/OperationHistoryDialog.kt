@@ -38,10 +38,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import io.github.mbaliga.fylz.operations.FileOperation
-import io.github.mbaliga.fylz.operations.FileOperationType
-import io.github.mbaliga.fylz.operations.OperationRetryPolicy
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationRetryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
 import java.text.DateFormat
 import java.util.Date
 

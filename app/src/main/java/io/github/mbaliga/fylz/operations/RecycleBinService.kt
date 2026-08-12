@@ -3,6 +3,12 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -42,8 +48,8 @@ class RecycleBinService(
             type = FileOperationType.RECYCLE,
             items = listOf(
                 OperationItem(
-                    source = sourceUri,
-                    destination = recycleRootUri,
+                    source = sourceUri.toItemRef(),
+                    destination = recycleRootUri.toItemRef(),
                     displayName = displayName,
                     expectedBytes = sourceSize,
                     state = OperationState.PREFLIGHT,
@@ -97,7 +103,7 @@ class RecycleBinService(
                     state = OperationState.SUCCEEDED,
                     items = operation.items.map {
                         it.copy(
-                            destination = recycled.uri,
+                            destination = recycled.uri.toItemRef(),
                             completedBytes = sourceSize ?: it.completedBytes,
                             state = OperationState.SUCCEEDED,
                         )
@@ -148,8 +154,8 @@ class RecycleBinService(
             conflictPolicy = conflictPolicy,
             items = listOf(
                 OperationItem(
-                    source = record.recycledUri,
-                    destination = destinationUri,
+                    source = record.recycledUri.toItemRef(),
+                    destination = destinationUri.toItemRef(),
                     displayName = record.originalDisplayName,
                     expectedBytes = record.sizeBytes,
                     state = OperationState.PREFLIGHT,
@@ -207,7 +213,7 @@ class RecycleBinService(
                         state = OperationState.SUCCEEDED,
                         items = operation.items.map {
                             it.copy(
-                                destination = restored.uri,
+                                destination = restored.uri.toItemRef(),
                                 completedBytes = record.sizeBytes ?: it.completedBytes,
                                 state = OperationState.SUCCEEDED,
                             )
@@ -261,7 +267,7 @@ class RecycleBinService(
             type = FileOperationType.PERMANENT_DELETE,
             items = listOf(
                 OperationItem(
-                    source = record.recycledUri,
+                    source = record.recycledUri.toItemRef(),
                     displayName = record.originalDisplayName,
                     expectedBytes = record.sizeBytes,
                     state = OperationState.RUNNING,

@@ -3,6 +3,12 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -11,7 +17,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
-data class DuplicateGroup(val sha256: String, val sizeBytes: Long, val items: List<Uri>)
+data class DuplicateGroup(val sha256: String, val sizeBytes: Long, val items: List<ItemRef>)
 
 data class BatchRenamePlan(val source: Uri, val oldName: String, val newName: String)
 
@@ -78,7 +84,7 @@ class FileTools(
                 sameSize.groupBy { (uri, _) -> sha256(uri) }
                     .filterValues { it.size > 1 }
                     .map { (hash, items) ->
-                        DuplicateGroup(hash, items.first().second, items.map { it.first })
+                        DuplicateGroup(hash, items.first().second, items.map { it.first.toItemRef() })
                     }
             }
             .sortedByDescending(DuplicateGroup::sizeBytes)
@@ -123,7 +129,7 @@ class FileTools(
                 type = FileOperationType.RENAME,
                 items = plans.map { plan ->
                     OperationItem(
-                        source = plan.source,
+                        source = plan.source.toItemRef(),
                         displayName = plan.oldName,
                         state = OperationState.PREFLIGHT,
                     )
@@ -197,7 +203,7 @@ class FileTools(
                     state = OperationState.SUCCEEDED,
                     items = operation.items.mapIndexed { index, item ->
                         item.copy(
-                            destination = steps[index].document.uri,
+                            destination = steps[index].document.uri.toItemRef(),
                             displayName = steps[index].plan.newName,
                             state = OperationState.SUCCEEDED,
                         )

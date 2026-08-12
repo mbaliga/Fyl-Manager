@@ -180,7 +180,7 @@ action — a gesture is never the only path), and "Paste here" / "Move here" com
 folder on screen through the ordinary journaled operations. A paste into a nested folder
 resolves the destination by walking display names from the granted root — provider-neutral —
 and such operations refuse journal replay rather than risk replaying into the tree root
-(`OperationRetryPolicy.isReplayableDestination`).
+(`OperationRetryPolicy.plan`, gated on `ItemIdentity.isRoot`).
 
 The trash bulge is the session's can: what went in during this visit, each item offering
 **Put back** or **Shred**. Shredding is permanent deletion through the existing
@@ -239,11 +239,15 @@ Two organising rules:
 1. **A location is a workspace, not a route.** Multiple locations stay open at once, each with its
    own folder stack. Switching between them in the left room is lateral movement, not navigation
    into or out of anything.
-2. **Capability, not backend, decides what the UI offers.** `StorageCapability` (`CREATE`,
-   `RENAME`, `DELETE`, `RECYCLE_BIN`, `RECURSIVE_SEARCH`, `CONTENT_SEARCH`,
-   `BROWSE_WITHOUT_PICKER`, `WHOLE_VOLUME`) tells the UI what to show. Downstream services are all
-   written against `content://` document URIs, so no service needs to know which backend served a
-   file.
+2. **Capability, not backend, decides what the UI offers.** Each `StorageProvider` declares a
+   `Set<ItemCapability>` (`core-model`'s grouped vocabulary — `CREATE_FILE`, `CREATE_DIRECTORY`,
+   `RENAME`, `TRASH`, `RESTORE_TRASH`, `DELETE_PERMANENT`, `LIST`, `CONTENT_SEARCH` today) plus two
+   plain booleans, `browseWithoutPicker` and `wholeVolume`, for what describes the provider's
+   launch surface rather than an item's operations. Downstream services are all written against
+   `content://` document URIs, so no service needs to know which backend served a file. Nothing
+   consults the capability set yet — declaring it per provider is Phase 1's job; a command
+   declaring what it requires and the UI deriving visibility from that (`core-vfs`'s
+   `CapabilityPolicy`) is Phase 2's.
 
 ---
 
@@ -251,16 +255,34 @@ Two organising rules:
 
 ### Module map
 
+Four pure-JVM Gradle modules — no `android.*`/`androidx.*` import, ever — sit below `app`,
+extracted in Phase 1 (WP-1.3):
+
+| Module | Responsibility |
+|---|---|
+| `core-model` | `ItemRef`/`ItemSnapshot`/`VersionStamp` opaque item identity, `ItemCapability`, `ItemIdentity`, `EntryKind` |
+| `core-vfs` | `CapabilityPolicy` — what a user action requires, in `ItemCapability` terms (built, not yet consulted) |
+| `core-operations` | The operation-journal model (`FileOperation`/`OperationItem`), retry and recovery policy, `JournalSchema` |
+| `core-format` | `FileFormatRegistry`, preview family/depth, the provisional `PreviewLevel` scaffolding |
+
+`core-model` depends on nothing else in the set; the other three depend only on `core-model`,
+never on each other. `app` depends on all four. The operation journal's actual JSON codec stays
+in `app` (`operations/OperationJournal.kt`) rather than `core-operations`, because `org.json.*`
+is part of the Android platform at runtime, not a dependency a pure-JVM module should bundle a
+second copy of.
+
+`app`'s own package map:
+
 | Package | Responsibility |
 |---|---|
-| `storage/` | The two backends, capability model, permission handling, the exported `DocumentsProvider` |
+| `storage/` | The two backends, the `Uri`↔`ItemRef` adapter (`ItemRefs.kt`), permission handling, the exported `DocumentsProvider` |
 | `data/` | `DocumentRepository` (the read/write surface), archives, scan-to-PDF |
-| `operations/` | File operations, the journal, retry policy, recycle bin, duplicate cleanup |
+| `operations/` | File operations, the journal, recycle bin, duplicate cleanup — the durable-record model itself lives in `core-operations` |
 | `browse/` | `SortSpec` and pure sorting; `EntryStops` for the scrubber |
 | `search/` | Recursive search engine and query model |
 | `index/`, `library/` | Local index, smart collections, organisation engine, metadata transfer |
 | `network/` | WebDAV, SFTP, SMB, S3 providers |
-| `preview/` | Format registry, DXF/mesh/geometry parsers, container inspectors |
+| `preview/` | DXF/mesh/geometry parsers, container inspectors — the format registry itself lives in `core-format` |
 | `pdf/` | Page tools, merging, OCR/searchable PDF |
 | `backup/`, `history/` | Scheduled backup and manifests; per-file version history |
 | `ai/` | BYOK client, transmission policy, key vault, local model management |
@@ -300,8 +322,12 @@ A recurring pattern worth noticing: decisions that could be scattered through se
 extracted into named, pure policy objects — `ArchiveExtractionPolicy`, `ArchiveSpacePolicy`,
 `RecycleBinPolicy`, `DuplicateCleanupPolicy`, `OperationRetryPolicy`, `BackupManifestPolicy`,
 `AiTransmissionPolicy`, `SmartCollectionPolicy`, `DesktopWorkspacePolicy`,
-`KeyboardShortcutPolicy`, `SelectionActionPolicy`. Each is testable without a device, and each
-names a decision that would otherwise be an unexamined `if` inside a service.
+`KeyboardShortcutPolicy`, `SelectionActionPolicy`, `ItemIdentity`, `CapabilityPolicy`. Each is
+testable without a device, and each names a decision that would otherwise be an unexamined `if`
+inside a service. `ItemIdentity.isRoot` in particular replaced a raw `Uri` path-segment
+inspection inside `OperationRetryPolicy` with a real correctness fix: two differently-spelled
+URIs naming the same tree root now compare equal, where the old string-based check saw them as
+different destinations and wrongly refused a valid batch retry.
 
 The rooms follow the same rule for what they *say*, not only what they do: `EntryDetails` and
 `locationTree` are framework-free, so the details room's wording and shape are unit-testable —
@@ -315,6 +341,10 @@ details room's facts and tree (`EntryDetails`, `LocationTree`), the selection ru
 shared-volume suppression (`StorageRoot.isOnSharedVolume`, which is quietly bad in *both*
 directions if wrong — too eager and a cloud provider vanishes, too shy and the padlock rows come
 back), the policies, the archive and backup manifest logic, and the search query model.
+
+The four `core-*` modules run as plain JVM `test` tasks (`:core-model:test`, `:core-vfs:test`,
+`:core-operations:test`, `:core-format:test`) — no Robolectric, no device, no `Context` — which
+is the actual point of extracting them, not just a smaller diff.
 
 CI runs two workflows: `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug`, and a
 release-readiness job that additionally runs `:app:lintRelease :app:assembleRelease` and captures

@@ -115,7 +115,7 @@ import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.library.SavedSearch
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.DensityMode
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.model.FolderTab
@@ -125,7 +125,7 @@ import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
-import io.github.mbaliga.fylz.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
@@ -139,6 +139,7 @@ import io.github.mbaliga.fylz.search.SearchProgress
 import io.github.mbaliga.fylz.search.SearchQuery
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
@@ -759,7 +760,8 @@ private fun FylzV1Workspace(
                         "No duplicate files found in this folder."
                     } else {
                         groups.joinToString("\n\n") { group ->
-                            "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n${group.items.joinToString("\n")}"
+                            "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n" +
+                                group.items.joinToString("\n") { it.toUri().toString() }
                         }
                     }
                 }

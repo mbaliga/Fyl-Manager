@@ -3,6 +3,13 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
+import io.github.mbaliga.fylz.storage.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -62,11 +69,11 @@ class FileOperationService(
             coroutineContext.ensureActive()
             val destinationUri = item.destination
                 ?: return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
-            val destination = DocumentFile.fromSingleUri(context, destinationUri)
+            val destination = DocumentFile.fromSingleUri(context, destinationUri.toUri())
             if (destination?.exists() != true) {
                 return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
             }
-            val source = DocumentFile.fromSingleUri(context, item.source)
+            val source = DocumentFile.fromSingleUri(context, item.source.toUri())
             if (source?.exists() != true) {
                 changed = true
                 return@map item.copy(state = OperationState.SUCCEEDED, errorCode = null)
@@ -134,8 +141,8 @@ class FileOperationService(
             items = sourceUris.map { uri ->
                 val source = DocumentFile.fromSingleUri(context, uri)
                 OperationItem(
-                    source = uri,
-                    destination = journaledDestination,
+                    source = uri.toItemRef(),
+                    destination = journaledDestination.toItemRef(),
                     displayName = source?.name ?: "untitled",
                     expectedBytes = source?.length()?.takeIf { source.isFile && it >= 0L },
                     state = OperationState.QUEUED,
@@ -195,7 +202,7 @@ class FileOperationService(
                     if (move && !source.delete()) {
                         current = updateItem(current, index) { item ->
                             item.copy(
-                                destination = copied.uri,
+                                destination = copied.uri.toItemRef(),
                                 completedBytes = item.expectedBytes ?: item.completedBytes,
                                 state = OperationState.NEEDS_ATTENTION,
                                 errorCode = MOVE_SOURCE_DELETE_PENDING,
@@ -208,7 +215,7 @@ class FileOperationService(
 
                     current = updateItem(current, index) { item ->
                         item.copy(
-                            destination = copied.uri,
+                            destination = copied.uri.toItemRef(),
                             completedBytes = item.expectedBytes ?: item.completedBytes,
                             state = OperationState.SUCCEEDED,
                             errorCode = null,

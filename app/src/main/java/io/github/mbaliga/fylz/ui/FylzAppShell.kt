@@ -42,13 +42,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationRetryPlan
+import io.github.mbaliga.fylz.core.operations.OperationRetryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
 import io.github.mbaliga.fylz.operations.FileOperationService
-import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationJournal
-import io.github.mbaliga.fylz.operations.OperationRetryPlan
-import io.github.mbaliga.fylz.operations.OperationRetryPolicy
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -121,13 +122,13 @@ fun FylzAppShell() {
                                 when (plan) {
                                     is OperationRetryPlan.Transfer -> when (plan.type) {
                                         FileOperationType.COPY -> fileOperations.copy(
-                                            sourceUris = plan.sourceUris,
-                                            destinationTreeUri = plan.destinationTreeUri,
+                                            sourceUris = plan.sourceRefs.map { it.toUri() },
+                                            destinationTreeUri = plan.destinationRef.toUri(),
                                             conflictPolicy = plan.conflictPolicy,
                                         )
                                         FileOperationType.MOVE -> fileOperations.move(
-                                            sourceUris = plan.sourceUris,
-                                            destinationTreeUri = plan.destinationTreeUri,
+                                            sourceUris = plan.sourceRefs.map { it.toUri() },
+                                            destinationTreeUri = plan.destinationRef.toUri(),
                                             conflictPolicy = plan.conflictPolicy,
                                         )
                                         else -> error("Unsupported retry type.")

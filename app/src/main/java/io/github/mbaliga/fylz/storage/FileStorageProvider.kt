@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.storage
 
 import android.content.Context
 import android.content.Intent
+import io.github.mbaliga.fylz.core.model.ItemCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -19,16 +20,19 @@ class FileStorageProvider : StorageProvider {
 
     override val id: String = ID
 
-    override val capabilities: Set<StorageCapability> = setOf(
-        StorageCapability.BROWSE_WITHOUT_PICKER,
-        StorageCapability.WHOLE_VOLUME,
-        StorageCapability.CREATE,
-        StorageCapability.RENAME,
-        StorageCapability.DELETE,
-        StorageCapability.RECYCLE_BIN,
-        StorageCapability.RECURSIVE_SEARCH,
-        StorageCapability.CONTENT_SEARCH,
+    override val capabilities: Set<ItemCapability> = setOf(
+        ItemCapability.LIST,
+        ItemCapability.CREATE_FILE,
+        ItemCapability.CREATE_DIRECTORY,
+        ItemCapability.RENAME,
+        ItemCapability.TRASH,
+        ItemCapability.RESTORE_TRASH,
+        ItemCapability.DELETE_PERMANENT,
+        ItemCapability.CONTENT_SEARCH,
     )
+
+    override val browseWithoutPicker: Boolean = true
+    override val wholeVolume: Boolean = true
 
     override fun isReady(context: Context): Boolean = FullAccessPermission.isGranted()
 

@@ -53,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.preview.FileFormatDescriptor
+import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

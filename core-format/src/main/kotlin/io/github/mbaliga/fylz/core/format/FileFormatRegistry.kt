@@ -1,6 +1,6 @@
-package io.github.mbaliga.fylz.preview
+package io.github.mbaliga.fylz.core.format
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import java.util.Locale
 
 enum class PreviewFamily {
@@ -49,6 +49,11 @@ data class FileFormatDescriptor(
  * renderer still receive the bounded universal inspector instead of a dead-end "unsupported"
  * screen. This is intentionally extension-and-MIME driven; individual renderers must still verify
  * signatures and bounds before parsing untrusted input.
+ *
+ * Relocated here (WP-1.3) from `io.github.mbaliga.fylz.preview` — it was already pure Kotlin
+ * with no Android dependency, so this move is a package change only, not a rewrite. The
+ * Android-coupled parts of the old `preview` package (route-to-composable dispatch, the
+ * `ContentResolver`-backed universal inspector) stay in `app`, importing this module.
  */
 object FileFormatRegistry {
     private val markdown = setOf("md", "markdown", "mdown", "mkd", "mdx")

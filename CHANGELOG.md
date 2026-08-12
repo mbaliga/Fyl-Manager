@@ -70,6 +70,15 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added release lint, R8 release assembly and dependency graph artifacts.
 - Added third-party notices, signing/upgrade procedure and real-device/provider acceptance matrix.
 
+### Internal architecture (Phase 1)
+
+- Extracted four pure-JVM Gradle modules — `core-model`, `core-vfs`, `core-operations`, `core-format` — carrying opaque item identity, the capability vocabulary, the operation-journal model and policies, and the format registry, so their tests run off-device.
+- Replaced ad hoc `Uri`-based identity in the operation journal with `ItemRef`, an opaque provider/location/item triple; added the one adapter (`ItemRefs.kt`) allowed to know what a SAF `Uri`'s segments mean.
+- Fixed a latent retry bug where two differently-spelled URIs naming the same destination tree root compared unequal and wrongly blocked a valid batch retry.
+- Versioned the operation journal's on-disk format (`schemaVersion`), with shape-based decoding so old, unversioned records keep loading after the upgrade.
+- Expanded the eight-value storage capability enum into `core-model`'s grouped `ItemCapability` vocabulary; both storage backends now declare their capabilities against it. Not yet consulted by any command — that wiring is Phase 2.
+- Wired previously-dormant identity-preserving migration into rename: file history and library favorites/tags now follow a renamed item instead of orphaning under its old URI.
+
 ### Known pre-release requirements
 
 - Execute and record the real-device/provider matrix.

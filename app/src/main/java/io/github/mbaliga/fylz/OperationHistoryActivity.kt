@@ -36,9 +36,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
-import io.github.mbaliga.fylz.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.operations.OperationJournal
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.core.operations.OperationState
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import java.text.DateFormat
 import java.util.Date

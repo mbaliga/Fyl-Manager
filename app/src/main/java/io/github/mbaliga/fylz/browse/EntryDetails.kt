@@ -1,6 +1,6 @@
 package io.github.mbaliga.fylz.browse
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.util.formatBytes
 
 /** One label/value line in the details room. */

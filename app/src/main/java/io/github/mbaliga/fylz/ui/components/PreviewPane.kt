@@ -30,10 +30,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.preview.FileFormatRegistry
-import io.github.mbaliga.fylz.preview.PreviewFamily
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
+import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.util.FileType
 
 private val SEMANTIC_ZIP_DOCUMENTS = setOf(

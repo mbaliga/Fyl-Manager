@@ -2,6 +2,13 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationRetryPlan
+import io.github.mbaliga.fylz.core.operations.OperationRetryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,8 +61,8 @@ class OperationJournalCrashInjectionTest {
         expectedBytes: Long? = 1_024L,
         errorCode: String? = null,
     ) = OperationItem(
-        source = uri("src-$name"),
-        destination = destination,
+        source = uri("src-$name").toItemRef(),
+        destination = destination?.toItemRef(),
         displayName = name,
         expectedBytes = expectedBytes,
         completedBytes = completedBytes,
@@ -198,8 +205,8 @@ class OperationJournalCrashInjectionTest {
         val plan = OperationRetryPolicy.plan(journal.only())
 
         val transfer = plan as OperationRetryPlan.Transfer
-        assertEquals(listOf(live.source), transfer.sourceUris)
-        assertTrue("A finished item must never be copied again", done.source !in transfer.sourceUris)
+        assertEquals(listOf(live.source), transfer.sourceRefs)
+        assertTrue("A finished item must never be copied again", done.source !in transfer.sourceRefs)
     }
 
     @Test
