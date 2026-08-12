@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.hypot
 
 class DropTargetPolicyTest {
 
@@ -46,7 +47,7 @@ class DropTargetPolicyTest {
     fun `the corners keep destructive and constructive targets apart`() {
         // The convention the composables draw from: actions hug the top-left origin, trash
         // hugs the bottom-right — opposite corners, so a sloppy drop can never cross families.
-        val actions = DropTargetPolicy.actionSlotCentres(spacingPx = 120f, insetPx = 90f)
+        val actions = DropTargetPolicy.actionSlotCentres(radiusPx = 260f)
         val trash = DropTargetPolicy.trashCentre(widthPx = 1080f, heightPx = 2340f, insetPx = 120f)
 
         assertEquals(DropTargetPolicy.actionSlots.size, actions.size)
@@ -54,5 +55,39 @@ class DropTargetPolicyTest {
             assertTrue(x < 1080f / 2 && y < 2340f / 2)
         }
         assertTrue(trash.first > 1080f / 2 && trash.second > 2340f / 2)
+    }
+
+    @Test
+    fun `every action slot sits on the arc radius`() {
+        // The whole reason the bulge can be small: no slot is further from the corner than the
+        // radius, so the blob only has to be radius-plus-a-glyph across.
+        val radius = 260f
+        DropTargetPolicy.actionSlotCentres(radius).forEach { (x, y) ->
+            assertEquals(radius, hypot(x, y), 0.01f)
+        }
+    }
+
+    @Test
+    fun `action slots march around the arc without colliding`() {
+        val centres = DropTargetPolicy.actionSlotCentres(radiusPx = 260f)
+        // Ordered: reading from the top edge down to the side edge.
+        centres.zipWithNext().forEach { (first, second) ->
+            assertTrue(second.second > first.second)
+            assertTrue(second.first < first.first)
+        }
+        // And far enough apart that adjacent hit circles cannot swallow each other's centre.
+        centres.zipWithNext().forEach { (first, second) ->
+            assertTrue(hypot(second.first - first.first, second.second - first.second) > 40f)
+        }
+    }
+
+    @Test
+    fun `the arc scales with its radius rather than reshaping`() {
+        val small = DropTargetPolicy.actionSlotCentres(radiusPx = 100f)
+        val large = DropTargetPolicy.actionSlotCentres(radiusPx = 300f)
+        small.zip(large).forEach { (near, far) ->
+            assertEquals(near.first * 3f, far.first, 0.01f)
+            assertEquals(near.second * 3f, far.second, 0.01f)
+        }
     }
 }

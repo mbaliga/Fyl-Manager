@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -42,10 +43,15 @@ import kotlin.math.sin
 /**
  * The trash can, drawn as parts so it can act.
  *
- * The reference behavior: as dragged files approach, the can notices — it tilts away, lifts a
- * little, and its lid swings open, all continuously with [proximity] so approach and retreat
- * play the same motion forwards and backwards. An `ImageVector` can't split its lid from its
- * body, which is the whole reason this is a Canvas.
+ * The reference behavior: as dragged files approach, the can notices — it swells, rises, tilts
+ * back, and its lid swings up and away, all continuously with [proximity] so approach and
+ * retreat play the same motion forwards and backwards. An `ImageVector` can't split its lid from
+ * its body, which is the whole reason this is a Canvas.
+ *
+ * The swell is the part that reads from across the screen: tilt and lid angle are legible once
+ * you are already looking at the corner, but growing is what makes the corner *worth* looking
+ * at, and it is the cue that says "release here" without a word of copy. It is drawn from the
+ * bottom-right, so the can grows out of its corner rather than drifting away from it.
  *
  * @param proximity 0 at rest … 1 with the cluster on the can.
  * @param tint the can's colour; the caller decides rest vs danger emphasis.
@@ -59,6 +65,10 @@ internal fun TrashGlyph(
     Canvas(
         modifier
             .graphicsLayer {
+                val swell = 1f + SWELL_FRACTION * proximity
+                scaleX = swell
+                scaleY = swell
+                transformOrigin = TransformOrigin(1f, 1f)
                 rotationZ = -TILT_DEGREES * proximity
                 translationY = -size.height * LIFT_FRACTION * proximity
             },
@@ -84,8 +94,9 @@ internal fun TrashGlyph(
             )
         }
 
-        // Lid: hinged at its back-left corner, swinging open with proximity.
-        val lidY = h * 0.24f
+        // Lid: hinged at its back-left corner, swinging open with proximity — and lifting clear
+        // of the rim as it goes, so the can reads as *open* rather than as merely hinged ajar.
+        val lidY = h * 0.24f - h * LID_RISE_FRACTION * proximity
         rotate(degrees = -LID_DEGREES * proximity, pivot = Offset(w * 0.16f, lidY)) {
             drawRoundRect(
                 color = tint,
@@ -244,3 +255,9 @@ private fun plural(count: Int) = if (count == 1) "1 file" else "$count files"
 private const val TILT_DEGREES = 14f
 private const val LIFT_FRACTION = 0.10f
 private const val LID_DEGREES = 62f
+
+/** How much the can grows at full proximity — the "ready to receive" cue. */
+private const val SWELL_FRACTION = 0.34f
+
+/** How far the lid rises off the rim as it swings, as a fraction of the glyph's height. */
+private const val LID_RISE_FRACTION = 0.07f

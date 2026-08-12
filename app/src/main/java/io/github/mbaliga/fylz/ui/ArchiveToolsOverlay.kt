@@ -40,6 +40,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
+import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.ui.picker.FylzPicker
+import io.github.mbaliga.fylz.ui.picker.PickerMode
+import io.github.mbaliga.fylz.ui.picker.PickerOutcome
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -50,11 +54,34 @@ private enum class ArchivePasswordPurpose {
     EXTRACT,
 }
 
+/**
+ * What the archive tools are currently asking the in-app picker for.
+ *
+ * All four steps of both journeys used to hand the user to the system file manager — sources,
+ * output, the archive to inspect, and the folder to extract into. Picking files for a file
+ * manager's own archiver, inside a different file manager, is the handoff this removes.
+ */
+private sealed interface ArchivePick {
+    /** Files to compress. */
+    data object Sources : ArchivePick
+
+    /** An existing ZIP to inspect. */
+    data object Archive : ArchivePick
+
+    /** Where to write a new ZIP, and what to call it. */
+    data class CreateOutput(val name: String) : ArchivePick
+
+    /** The folder to extract into. */
+    data object ExtractInto : ArchivePick
+}
+
 @Composable
 fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val service = remember { ArchiveService(context.applicationContext) }
+    val repository = remember { DocumentRepository(context.applicationContext) }
+    var pick by remember { mutableStateOf<ArchivePick?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
@@ -75,14 +102,14 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
         runCatching { context.contentResolver.takePersistableUriPermission(uri, flags) }
     }
 
-    val createDestination = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip"),
-    ) { destination ->
+    // The operations, lifted out of the picker callbacks so the in-app picker and the platform
+    // one drive identical code however the destination was chosen.
+    fun runCreate(destination: Uri) {
         val password = pendingCreatePassword
         pendingCreatePassword = null
-        if (destination == null || selectedSources.isEmpty()) {
-            password?.fill('\u0000')
-            return@rememberLauncherForActivityResult
+        if (selectedSources.isEmpty()) {
+            password?.fill(NUL)
+            return
         }
         scope.launch {
             busy = true
@@ -98,26 +125,14 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
         }
     }
 
-    val sourcePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        uris.forEach(::persistRead)
-        selectedSources = uris
-        passwordPurpose = ArchivePasswordPurpose.CREATE
-    }
-
-    val extractDestination = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree(),
-    ) { destination ->
+    fun runExtract(destination: Uri) {
         val archive = selectedArchive
         val password = pendingExtractPassword
         pendingExtractPassword = null
-        if (destination == null || archive == null) {
-            password?.fill('\u0000')
-            return@rememberLauncherForActivityResult
+        if (archive == null) {
+            password?.fill(NUL)
+            return
         }
-        persistTree(destination)
         scope.launch {
             busy = true
             runCatching { service.extractZip(archive, destination, password) }
@@ -137,11 +152,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
         }
     }
 
-    val archivePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        persistRead(uri)
+    fun runInspect(uri: Uri) {
         selectedArchive = uri
         scope.launch {
             busy = true
@@ -153,6 +164,124 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                 }
             busy = false
         }
+    }
+
+    /** Wipes whichever password a cancelled journey was holding. */
+    fun discardPassword(purpose: ArchivePasswordPurpose) {
+        when (purpose) {
+            ArchivePasswordPurpose.CREATE -> {
+                pendingCreatePassword?.fill(NUL)
+                pendingCreatePassword = null
+            }
+            ArchivePasswordPurpose.EXTRACT -> {
+                pendingExtractPassword?.fill(NUL)
+                pendingExtractPassword = null
+            }
+        }
+    }
+
+    val createDestination = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { destination ->
+        if (destination == null) discardPassword(ArchivePasswordPurpose.CREATE) else runCreate(destination)
+    }
+
+    val sourcePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        uris.forEach(::persistRead)
+        selectedSources = uris
+        passwordPurpose = ArchivePasswordPurpose.CREATE
+    }
+
+    val extractDestination = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { destination ->
+        if (destination == null) {
+            discardPassword(ArchivePasswordPurpose.EXTRACT)
+        } else {
+            persistTree(destination)
+            runExtract(destination)
+        }
+    }
+
+    val archivePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        persistRead(uri)
+        runInspect(uri)
+    }
+
+    // ── The in-app picker, driving all four steps of both journeys ────────────────────
+    pick?.let { request ->
+        FylzPicker(
+            mode = when (request) {
+                ArchivePick.Sources, ArchivePick.Archive -> PickerMode.FILES
+                is ArchivePick.CreateOutput -> PickerMode.SAVE
+                ArchivePick.ExtractInto -> PickerMode.FOLDER
+            },
+            title = when (request) {
+                ArchivePick.Sources -> "Files to compress"
+                ArchivePick.Archive -> "Choose a ZIP"
+                is ArchivePick.CreateOutput -> "Save archive"
+                ArchivePick.ExtractInto -> "Extract into"
+            },
+            confirmLabel = when (request) {
+                ArchivePick.Sources -> "Compress"
+                ArchivePick.Archive -> "Inspect"
+                is ArchivePick.CreateOutput -> "Create"
+                ArchivePick.ExtractInto -> "Extract here"
+            },
+            repository = repository,
+            suggestedName = (request as? ArchivePick.CreateOutput)?.name.orEmpty(),
+            onDismiss = {
+                pick = null
+                // Abandoning a destination step abandons the password with it, rather than
+                // leaving a key in memory for a journey the user walked away from.
+                if (request is ArchivePick.CreateOutput) discardPassword(ArchivePasswordPurpose.CREATE)
+                if (request is ArchivePick.ExtractInto) discardPassword(ArchivePasswordPurpose.EXTRACT)
+            },
+            onBrowseSystem = {
+                pick = null
+                when (request) {
+                    ArchivePick.Sources -> sourcePicker.launch(arrayOf("*/*"))
+                    ArchivePick.Archive -> archivePicker.launch(ZIP_MIME_TYPES)
+                    is ArchivePick.CreateOutput -> createDestination.launch(request.name)
+                    ArchivePick.ExtractInto -> extractDestination.launch(null)
+                }
+            },
+            onResult = { outcome ->
+                pick = null
+                when (request) {
+                    ArchivePick.Sources -> (outcome as? PickerOutcome.Files)?.let { files ->
+                        if (files.uris.isNotEmpty()) {
+                            selectedSources = files.uris
+                            passwordPurpose = ArchivePasswordPurpose.CREATE
+                        }
+                    }
+                    ArchivePick.Archive ->
+                        (outcome as? PickerOutcome.Files)?.uris?.firstOrNull()?.let(::runInspect)
+                    is ArchivePick.CreateOutput -> (outcome as? PickerOutcome.Save)?.let { save ->
+                        scope.launch {
+                            runCatching { repository.createFile(save.folderUri, save.name, "application/zip") }
+                                .onSuccess { runCreate(it) }
+                                .onFailure { failure ->
+                                    discardPassword(ArchivePasswordPurpose.CREATE)
+                                    Toast.makeText(
+                                        context,
+                                        failure.message ?: "Unable to create that file.",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                        }
+                    }
+                    ArchivePick.ExtractInto ->
+                        (outcome as? PickerOutcome.Folder)?.let { runExtract(it.folderUri) }
+                }
+            },
+        )
     }
 
     FloatingActionButton(onClick = { menuOpen = true }, modifier = modifier) {
@@ -173,7 +302,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     Button(
                         onClick = {
                             menuOpen = false
-                            sourcePicker.launch(arrayOf("*/*"))
+                            pick = ArchivePick.Sources
                         },
                         enabled = !busy,
                         modifier = Modifier.fillMaxWidth(),
@@ -185,7 +314,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     OutlinedButton(
                         onClick = {
                             menuOpen = false
-                            archivePicker.launch(ZIP_MIME_TYPES)
+                            pick = ArchivePick.Archive
                         },
                         enabled = !busy,
                         modifier = Modifier.fillMaxWidth(),
@@ -213,11 +342,11 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     ArchivePasswordPurpose.CREATE -> {
                         pendingCreatePassword = password
                         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                        createDestination.launch("Fylz-$stamp.zip")
+                        pick = ArchivePick.CreateOutput("Fylz-$stamp.zip")
                     }
                     ArchivePasswordPurpose.EXTRACT -> {
                         pendingExtractPassword = password
-                        extractDestination.launch(null)
+                        pick = ArchivePick.ExtractInto
                     }
                 }
             },
@@ -237,7 +366,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     passwordPurpose = ArchivePasswordPurpose.EXTRACT
                 } else {
                     pendingExtractPassword = null
-                    extractDestination.launch(null)
+                    pick = ArchivePick.ExtractInto
                 }
             },
         )
@@ -390,3 +519,6 @@ private val ZIP_MIME_TYPES = arrayOf(
     "application/x-zip-compressed",
     "application/octet-stream",
 )
+
+/** The character a wiped password buffer is filled with. */
+private const val NUL = '\u0000'

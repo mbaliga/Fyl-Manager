@@ -4,8 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -21,16 +24,17 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
 /**
- * The organic corner blob the references show: material melting out of the screen's corner,
- * not a card floating over it. The silhouette is a quarter-round belly bridged to the two
- * screen edges by concave shoulders — the shoulders are what sell "the edge itself bulged"
- * instead of "a circle was pasted into the corner".
+ * The organic corner blob: material melting out of the screen's corner, not a card floating over
+ * it. The silhouette is a quarter-round belly bridged to the two screen edges by concave
+ * shoulders — the shoulders are what sell "the edge itself bulged" instead of "a circle was
+ * pasted into the corner".
  *
  * [bulge] scales the belly (0 = flat edge, 1 = fully swollen); the shape recomputes rather
  * than scale-transforms so the shoulders stay tangent to the edges at every size.
@@ -72,12 +76,19 @@ internal class CornerBulgeShape(
 internal enum class BulgeCorner { TOP_LEFT, BOTTOM_RIGHT }
 
 /**
+ * How big a resting tab is. Small enough to sit in the corner of a listing without becoming
+ * part of it — the reference is a hibernation tab peeling off a panel edge, not a FAB.
+ */
+internal val RestingBulgeSize: Dp = 58.dp
+
+/**
  * A corner bulge at rest: the collapsed tab that stays on screen while its tray has content.
  *
- * Kept deliberately small and quiet (the hibernation-tab reference): a count and a glyph on
- * the blob's belly, one tap to expand. It is chrome, but chrome that exists only while the
- * user has staged something — an empty tray draws nothing at all, so the browser's edges stay
- * clean the moment the clipboard empties.
+ * Deliberately tiny and quiet. It is chrome, and chrome that exists only while the user has
+ * staged something — an empty tray draws nothing at all, so the browser's edges stay clean the
+ * moment the clipboard empties. The count rides a small badge on the outer shoulder rather than
+ * being stamped across the belly, which is what let the old tab shrink to a third of its size
+ * without the glyph and the number fighting for the same pixels.
  */
 @Composable
 internal fun RestingBulge(
@@ -89,21 +100,20 @@ internal fun RestingBulge(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val sizeDp = 92.dp + 40.dp * swell
+    val sizeDp = RestingBulgeSize + 8.dp * swell
     Box(
         modifier
             .size(sizeDp)
-            .graphicsLayer { clip = true; shape = CornerBulgeShape(corner, 0.94f + 0.06f * swell) }
+            .graphicsLayer { clip = true; shape = CornerBulgeShape(corner, 0.96f + 0.04f * swell) }
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(onClick = onTap)
             .semantics { this.contentDescription = contentDescription },
     ) {
-        val inward = 0.30f + 0.04f * swell
         Box(
             Modifier
                 .align(if (corner == BulgeCorner.TOP_LEFT) Alignment.TopStart else Alignment.BottomEnd)
                 .offset {
-                    val edge = (sizeDp.toPx() * inward).roundToInt()
+                    val edge = (sizeDp.toPx() * 0.26f).roundToInt()
                     if (corner == BulgeCorner.TOP_LEFT) IntOffset(edge, edge) else IntOffset(-edge, -edge)
                 },
             contentAlignment = Alignment.Center,
@@ -111,18 +121,24 @@ internal fun RestingBulge(
             content()
         }
         if (label.isNotEmpty()) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
+            Surface(
                 color = MaterialTheme.colorScheme.primary,
+                shape = RoundedCornerShape(50),
                 modifier = Modifier
                     .align(if (corner == BulgeCorner.TOP_LEFT) Alignment.TopStart else Alignment.BottomEnd)
                     .offset {
-                        val edge = (sizeDp.toPx() * 0.10f).roundToInt()
+                        val edge = (sizeDp.toPx() * 0.06f).roundToInt()
                         if (corner == BulgeCorner.TOP_LEFT) IntOffset(edge, edge) else IntOffset(-edge, -edge)
                     },
-            )
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                )
+            }
         }
     }
 }
@@ -133,19 +149,24 @@ internal fun restingBulgeAnchor(
     overlaySize: Size,
     density: Density,
 ): Offset {
-    val edge = with(density) { 34.dp.toPx() }
+    val edge = with(density) { (RestingBulgeSize * 0.42f).toPx() }
     return when (corner) {
         BulgeCorner.TOP_LEFT -> Offset(edge, edge)
         BulgeCorner.BOTTOM_RIGHT -> Offset(overlaySize.width - edge, overlaySize.height - edge)
     }
 }
 
-/** A slot glyph reacting to the cluster: swells and brightens as the finger nears. */
+/**
+ * A slot glyph reacting to the cluster: swells and brightens as the finger nears.
+ *
+ * No label of its own. Four labelled slots on a corner arc is four captions overlapping each
+ * other and the icons they belong to; the arc names only whichever slot the finger is nearest,
+ * once, in a fixed place — see [SlotCaption].
+ */
 @Composable
 internal fun ReactiveSlot(
     proximity: Float,
     hit: Boolean,
-    label: String,
     modifier: Modifier = Modifier,
     content: @Composable (Color) -> Unit,
 ) {
@@ -156,21 +177,39 @@ internal fun ReactiveSlot(
     }
     Box(
         modifier.graphicsLayer {
-            val scale = 1f + 0.35f * proximity
+            val scale = 1f + 0.30f * proximity
             scaleX = scale
             scaleY = scale
+            alpha = 0.55f + 0.45f * proximity
         },
         contentAlignment = Alignment.Center,
     ) {
         content(tint)
+    }
+}
+
+/**
+ * The single caption naming whatever slot the finger is nearest, drawn clear of the arc.
+ *
+ * One caption in one place is what makes a four-slot corner readable: the labels used to be
+ * stamped under each glyph, where at any arc small enough to be discreet they overlapped both
+ * each other and the icons. Fading rather than swapping instantly keeps the arc from flickering
+ * as the finger crosses the midpoint between two slots.
+ */
+@Composable
+internal fun SlotCaption(text: String, strength: Float, modifier: Modifier = Modifier) {
+    if (text.isEmpty()) return
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(50),
+        modifier = modifier.graphicsLayer { alpha = strength },
+    ) {
         Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = tint,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .offset(y = 18.dp)
-                .graphicsLayer { alpha = 0.4f + 0.6f * proximity },
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }
 }

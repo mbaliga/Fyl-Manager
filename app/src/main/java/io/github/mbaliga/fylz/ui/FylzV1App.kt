@@ -140,9 +140,15 @@ import io.github.mbaliga.fylz.search.SearchQuery
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.toUri
+import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.CommandPillReservedHeight
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
+import io.github.mbaliga.fylz.ui.components.listingPaddingFor
+import io.github.mbaliga.fylz.ui.picker.FylzPicker
+import io.github.mbaliga.fylz.ui.picker.PickerMode
+import io.github.mbaliga.fylz.ui.picker.PickerOutcome
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
@@ -155,6 +161,7 @@ import java.util.UUID
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
@@ -268,6 +275,9 @@ private fun FylzV1Workspace(
     var previewLoading by remember { mutableStateOf(false) }
     var pendingDestinationAction by remember { mutableStateOf<PendingDestinationAction?>(null) }
     var pendingArchiveUri by remember { mutableStateOf<Uri?>(null) }
+    // What the in-app picker is currently asking for, or null while it is closed. Choosing a
+    // destination inside a file manager should not mean being handed to a different one.
+    var pickerRequest by remember { mutableStateOf<InAppPickerRequest?>(null) }
     var operationMessage by remember { mutableStateOf<String?>(null) }
     var createDialog by remember { mutableStateOf<String?>(null) }
     var renameDialog by remember { mutableStateOf(false) }
@@ -389,11 +399,10 @@ private fun FylzV1Workspace(
         }
     }
 
-    val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
-        val action = pendingDestinationAction
-        pendingDestinationAction = null
-        if (destination == null || action == null) return@rememberLauncherForActivityResult
-        repository.persistTreePermission(destination)
+    // The operations themselves, lifted out of the picker callbacks so the in-app picker and the
+    // platform one drive exactly the same code. Whichever route produced the destination, what
+    // happens to the files afterwards must not depend on which picker the user came through.
+    fun performDestination(action: PendingDestinationAction, destination: Uri) {
         scope.launch {
             loading = true
             runCatching {
@@ -430,22 +439,61 @@ private fun FylzV1Workspace(
         }
     }
 
+    fun performArchive(destination: Uri) {
+        if (selectedEntries.isEmpty()) return
+        scope.launch {
+            loading = true
+            runCatching { archiveService.createZip(selectedEntries.map { it.uri }, destination) }
+                .onSuccess { toast("Archive created"); refresh() }
+                .onFailure { toast(it.message ?: "Unable to create archive") }
+            loading = false
+        }
+    }
+
+    val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
+        val action = pendingDestinationAction
+        pendingDestinationAction = null
+        if (destination == null || action == null) return@rememberLauncherForActivityResult
+        repository.persistTreePermission(destination)
+        performDestination(action, destination)
+    }
+
     val archiveCreator = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { destination ->
-        if (destination != null && selectedEntries.isNotEmpty()) {
-            scope.launch {
-                loading = true
-                runCatching { archiveService.createZip(selectedEntries.map { it.uri }, destination) }
-                    .onSuccess { toast("Archive created") }
-                    .onFailure { toast(it.message ?: "Unable to create archive") }
-                loading = false
-            }
-        }
+        if (destination != null) performArchive(destination)
     }
 
     // Destination for PDF page extraction / merge. Kept separate from archiveCreator so the two
     // flows cannot ever write into each other's target.
+    fun performPdf(destination: Uri, pages: List<PdfPageRef>, merge: Boolean, ocr: Boolean) {
+        scope.launch {
+            loading = true
+            runCatching {
+                if (merge) {
+                    pdfTools.merge(
+                        sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
+                        outputUri = destination,
+                        searchableOcr = ocr,
+                    ) { done, total -> operationMessage = "Merging page $done of $total" }
+                } else {
+                    pdfTools.exportPages(
+                        pages = pages,
+                        outputUri = destination,
+                        searchableOcr = ocr,
+                    ) { done, total -> operationMessage = "Writing page $done of $total" }
+                }
+            }.onSuccess {
+                toast("PDF written")
+                refresh()
+            }.onFailure { toast(it.message ?: "The PDF operation failed") }
+            operationMessage = null
+            loading = false
+        }
+    }
+
+    // Kept separate from archiveCreator so the two flows cannot ever write into each other's
+    // target.
     val pdfOutputCreator = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { destination ->
@@ -455,29 +503,7 @@ private fun FylzV1Workspace(
         pendingPdfPages = emptyList()
         pendingPdfMerge = false
         if (destination == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            loading = true
-            runCatching {
-                if (merge) {
-                    pdfTools.merge(
-                        sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
-                        outputUri = destination,
-                        searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Merging page \$done of \$total" }
-                } else {
-                    pdfTools.exportPages(
-                        pages = pages,
-                        outputUri = destination,
-                        searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Writing page \$done of \$total" }
-                }
-            }.onSuccess {
-                toast("PDF written")
-                refresh()
-            }.onFailure { toast(it.message ?: "The PDF operation failed") }
-            operationMessage = null
-            loading = false
-        }
+        performPdf(destination, pages, merge, ocr)
     }
 
     val scannerOptions = remember {
@@ -783,22 +809,21 @@ private fun FylzV1Workspace(
         shell.closeAll()
         when (action) {
             FylzAction.COPY -> {
-                pendingDestinationAction = PendingDestinationAction.COPY
-                destinationPicker.launch(null)
+                pickerRequest = InAppPickerRequest.Destination(PendingDestinationAction.COPY)
             }
             FylzAction.MOVE -> {
-                pendingDestinationAction = PendingDestinationAction.MOVE
-                destinationPicker.launch(null)
+                pickerRequest = InAppPickerRequest.Destination(PendingDestinationAction.MOVE)
             }
             FylzAction.RECYCLE -> recycleSelection()
             FylzAction.RENAME -> renameDialog = true
             FylzAction.BATCH_RENAME -> batchRenameDialog = true
             FylzAction.TAGS -> tagDialog = true
-            FylzAction.ARCHIVE -> archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip")
+            FylzAction.ARCHIVE -> {
+                pickerRequest = InAppPickerRequest.ArchiveOutput("Fylz-${System.currentTimeMillis()}.zip")
+            }
             FylzAction.EXTRACT -> {
                 pendingArchiveUri = selectedEntries.firstOrNull()?.uri
-                pendingDestinationAction = PendingDestinationAction.EXTRACT
-                destinationPicker.launch(null)
+                pickerRequest = InAppPickerRequest.Destination(PendingDestinationAction.EXTRACT)
             }
             FylzAction.PDF_TOOLS -> pdfDialog = true
             FylzAction.SHARE -> shareSelection()
@@ -826,6 +851,25 @@ private fun FylzV1Workspace(
                 LocationsRoom(
                     tabs = tabs,
                     activeTabId = activeTabId,
+                    activeTab = activeTab,
+                    repository = repository,
+                    onOpenFolder = { location ->
+                        // Descend in place: the tree hands the browser a folder inside the tab
+                        // it is already showing, so this is a push onto that tab's stack rather
+                        // than a new location. Re-entering a folder already on the stack rewinds
+                        // to it instead of stacking a second copy of the same crumb.
+                        val tab = activeTab ?: return@LocationsRoom
+                        val index = tabs.indexOfFirst { it.id == tab.id }
+                        if (index >= 0) {
+                            val existing = tab.locations.indexOfFirst { it.uri == location.uri }
+                            tabs[index] = if (existing >= 0) {
+                                tab.copy(locations = tab.locations.take(existing + 1))
+                            } else {
+                                tab.copy(locations = tab.locations + location)
+                            }
+                        }
+                        shell.closeAll()
+                    },
                     onSelect = { id ->
                         activeTabId = id
                         shell.closeAll()
@@ -1095,7 +1139,16 @@ private fun FylzV1Workspace(
                 inkColor = MaterialTheme.colorScheme.onSurface,
                 accentColor = MaterialTheme.colorScheme.primary,
                 bubbleTextColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.align(Alignment.CenterEnd),
+                // Held clear of the chrome at both ends. The strip is drawn over the whole
+                // workspace, so left to itself it runs the full height of the window — its top
+                // letters landing on the toolbar's buttons, its foot under the command pill.
+                // Both ends were unhittable: a tap there goes to whatever is on top. Insetting
+                // costs a little travel and makes the entire strip a real target.
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(top = TOP_BAR_HEIGHT, bottom = CommandPillReservedHeight),
             )
         }
 
@@ -1400,6 +1453,59 @@ private fun FylzV1Workspace(
         )
     }
 
+    // ── The in-app picker ─────────────────────────────────────────────────────────────
+    // Opens on the folder the browser is showing, so "put it here" starts from where the user
+    // already is instead of at the top of a foreign app's storage tree.
+    pickerRequest?.let { request ->
+        val current = activeTab?.let { it.treeUri to it.current }
+        FylzPicker(
+            mode = if (request is InAppPickerRequest.Destination) PickerMode.FOLDER else PickerMode.SAVE,
+            title = request.title,
+            confirmLabel = request.confirmLabel,
+            repository = repository,
+            startAt = current,
+            suggestedName = (request as? InAppPickerRequest.Named)?.suggestedName.orEmpty(),
+            onDismiss = { pickerRequest = null },
+            onBrowseSystem = {
+                pickerRequest = null
+                when (request) {
+                    is InAppPickerRequest.Destination -> {
+                        pendingDestinationAction = request.action
+                        destinationPicker.launch(null)
+                    }
+                    is InAppPickerRequest.ArchiveOutput -> archiveCreator.launch(request.suggestedName)
+                    is InAppPickerRequest.PdfOutput -> pdfOutputCreator.launch(request.suggestedName)
+                }
+            },
+            onResult = { outcome ->
+                pickerRequest = null
+                when (request) {
+                    is InAppPickerRequest.Destination ->
+                        (outcome as? PickerOutcome.Folder)?.let { performDestination(request.action, it.folderUri) }
+                    is InAppPickerRequest.ArchiveOutput -> (outcome as? PickerOutcome.Save)?.let { save ->
+                        scope.launch {
+                            runCatching { repository.createFile(save.folderUri, save.name, "application/zip") }
+                                .onSuccess { performArchive(it) }
+                                .onFailure { toast(it.message ?: "Unable to create that file") }
+                        }
+                    }
+                    is InAppPickerRequest.PdfOutput -> (outcome as? PickerOutcome.Save)?.let { save ->
+                        val pages = pendingPdfPages
+                        val merge = pendingPdfMerge
+                        val ocr = pendingPdfOcr
+                        pendingPdfPages = emptyList()
+                        pendingPdfMerge = false
+                        scope.launch {
+                            runCatching { repository.createFile(save.folderUri, save.name, "application/pdf") }
+                                .onSuccess { performPdf(it, pages, merge, ocr) }
+                                .onFailure { toast(it.message ?: "Unable to create that file") }
+                        }
+                    }
+                }
+            },
+        )
+    }
+
     if (pdfDialog) {
         PdfToolsDialog(
             sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
@@ -1410,14 +1516,14 @@ private fun FylzV1Workspace(
                 pendingPdfPages = pages
                 pendingPdfOcr = ocr
                 pendingPdfMerge = false
-                pdfOutputCreator.launch("Fylz-pages-\${System.currentTimeMillis()}.pdf")
+                pickerRequest = InAppPickerRequest.PdfOutput("Fylz-pages-${System.currentTimeMillis()}.pdf")
             },
             onMerge = { ocr ->
                 pdfDialog = false
                 pendingPdfPages = emptyList()
                 pendingPdfOcr = ocr
                 pendingPdfMerge = true
-                pdfOutputCreator.launch("Fylz-merged-\${System.currentTimeMillis()}.pdf")
+                pickerRequest = InAppPickerRequest.PdfOutput("Fylz-merged-${System.currentTimeMillis()}.pdf")
             },
             onError = ::toast,
         )
@@ -1534,117 +1640,85 @@ private fun FileBrowser(
         return
     }
 
-    Column(modifier) {
-        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = onNavigateUp,
-                enabled = activeTab.locations.size > 1,
-                modifier = Modifier.size(48.dp),
-            ) {
-                Icon(Icons.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
-            }
-            OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
-                leadingIcon = { Icon(Icons.Outlined.Search, null) },
-                placeholder = { Text(stringResource(R.string.browser_search_placeholder)) },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
+    // The listing fills the surface and the pill floats over its foot, rather than a band of
+    // chrome pushing the listing down. Everything the old top row held now rides the pill.
+    Box(modifier) {
+        Column(Modifier.fillMaxSize()) {
+            Text(
+                activeTab.locations.joinToString(" / ") { it.name },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            HorizontalDivider()
+
+            if (searchRecursive && query.isNotBlank()) {
+                SearchResults(
+                    progress = searchProgress,
+                    hits = searchHits,
+                    selectedUris = selectedUris,
+                    focusedEntry = focusedEntry,
+                    onOpen = onOpen,
+                    onOpenExternal = onOpenExternal,
+                    onToggleSelection = onToggleSelection,
+                )
+            } else if (loading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(operationMessage ?: "Working…")
+                }
+            } else if (entries.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        if (query.isBlank()) {
+                            stringResource(R.string.browser_empty_folder)
+                        } else {
+                            stringResource(R.string.browser_search_none)
+                        },
+                    )
+                }
+            } else if (viewMode == ViewMode.GRID) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(130.dp),
+                    state = gridState,
+                    contentPadding = listingPaddingFor(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(entries, key = { it.uri.toString() }) { entry ->
+                        FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
+                ) {
+                    items(entries, key = { it.uri.toString() }) { entry ->
+                        FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
+                    }
+                }
+            }
+        }
+
+        CommandPill(
+            query = query,
+            onQueryChange = onQueryChange,
+            canNavigateUp = activeTab.locations.size > 1,
+            onNavigateUp = onNavigateUp,
+            searchRecursive = searchRecursive,
+            onSearchRecursiveChange = onSearchRecursiveChange,
+            searchBusy = searchRecursive && searchProgress?.complete == false,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
             SortMenu(sortSpec, onSortSpecChange)
             IconButton(
                 onClick = onSelectAll,
                 enabled = entries.isNotEmpty(),
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(44.dp),
             ) {
                 Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
-            }
-        }
-
-        if (query.isNotBlank()) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // The old placeholder honestly read "Filter this folder" because that is all it
-                // did. Recursive search is now a real, selectable scope.
-                FilterChip(
-                    selected = !searchRecursive,
-                    onClick = { onSearchRecursiveChange(false) },
-                    label = { Text("This folder") },
-                )
-                FilterChip(
-                    selected = searchRecursive,
-                    onClick = { onSearchRecursiveChange(true) },
-                    label = { Text("Everything below") },
-                )
-                if (searchRecursive && searchProgress?.complete == false) {
-                    CircularProgressIndicator(Modifier.size(18.dp))
-                }
-            }
-            Text(
-                stringResource(R.string.browser_search_hint),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
-
-        Text(
-            activeTab.locations.joinToString(" / ") { it.name },
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
-        HorizontalDivider()
-
-        if (searchRecursive && query.isNotBlank()) {
-            SearchResults(
-                progress = searchProgress,
-                hits = searchHits,
-                selectedUris = selectedUris,
-                focusedEntry = focusedEntry,
-                onOpen = onOpen,
-                onOpenExternal = onOpenExternal,
-                onToggleSelection = onToggleSelection,
-            )
-            return@Column
-        }
-
-        if (loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(operationMessage ?: "Working…")
-            }
-        } else if (entries.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    if (query.isBlank()) {
-                        stringResource(R.string.browser_empty_folder)
-                    } else {
-                        stringResource(R.string.browser_search_none)
-                    },
-                )
-            }
-        } else if (viewMode == ViewMode.GRID) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(130.dp),
-                state = gridState,
-                contentPadding = PaddingValues(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
-                }
-            }
-        } else {
-            LazyColumn(state = listState) {
-                items(entries, key = { it.uri.toString() }) { entry ->
-                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
-                }
             }
         }
     }
@@ -1734,7 +1808,7 @@ private fun SearchResults(
             }
             return@Column
         }
-        LazyColumn {
+        LazyColumn(contentPadding = PaddingValues(bottom = CommandPillReservedHeight)) {
             items(hits, key = { it.entry.uri.toString() }) { hit ->
                 FileRowV1(
                     entry = hit.entry,
@@ -2127,10 +2201,13 @@ private const val ROOM_REVEAL_SCALE = 0.97f
 private fun LocationsRoom(
     tabs: List<FolderTab>,
     activeTabId: String?,
+    activeTab: FolderTab?,
+    repository: DocumentRepository,
     onSelect: (String) -> Unit,
     onOpenHome: () -> Unit,
     onClose: (FolderTab) -> Unit,
     onAdd: () -> Unit,
+    onOpenFolder: (FolderLocation) -> Unit,
 ) {
     val items = remember(tabs) {
         buildList {
@@ -2174,6 +2251,25 @@ private fun LocationsRoom(
                 }
             },
         )
+
+        // The structure under whichever location is open, below the quick links rather than
+        // beside them: the wheel answers "which location", the tree answers "where in it".
+        if (activeTab != null) {
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Text(
+                "FOLDERS",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            FolderTreeRail(
+                treeUri = activeTab.treeUri,
+                ancestors = activeTab.locations,
+                repository = repository,
+                onOpenFolder = onOpenFolder,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -2267,6 +2363,51 @@ private fun ToolsRow(label: String, onClick: () -> Unit) {
 }
 
 /** Sentence-case names for the theme modes; the enum's own names are shouting. */
+/** Material's own top app bar height, which the toolbar does not expose as a public constant. */
+private val TOP_BAR_HEIGHT = 64.dp
+
+/**
+ * What the workspace is currently asking the in-app picker for.
+ *
+ * Modelled as a request rather than a bag of `pendingX` flags because each variant carries
+ * exactly the context its result needs, so the callback cannot read a stale field left over from
+ * a different flow — the failure mode the old `pendingDestinationAction` / `pendingArchiveUri`
+ * pairing invited every time two picker journeys overlapped.
+ */
+private sealed interface InAppPickerRequest {
+
+    val title: String
+    val confirmLabel: String
+
+    /** Requests that also name a file to create. */
+    sealed interface Named : InAppPickerRequest {
+        val suggestedName: String
+    }
+
+    data class Destination(val action: PendingDestinationAction) : InAppPickerRequest {
+        override val title: String get() = when (action) {
+            PendingDestinationAction.COPY -> "Copy to"
+            PendingDestinationAction.MOVE -> "Move to"
+            PendingDestinationAction.EXTRACT -> "Extract into"
+        }
+        override val confirmLabel: String get() = when (action) {
+            PendingDestinationAction.COPY -> "Copy here"
+            PendingDestinationAction.MOVE -> "Move here"
+            PendingDestinationAction.EXTRACT -> "Extract here"
+        }
+    }
+
+    data class ArchiveOutput(override val suggestedName: String) : Named {
+        override val title: String get() = "Create archive"
+        override val confirmLabel: String get() = "Create"
+    }
+
+    data class PdfOutput(override val suggestedName: String) : Named {
+        override val title: String get() = "Save PDF"
+        override val confirmLabel: String get() = "Save"
+    }
+}
+
 private fun ThemeMode.readableLabel(): String = when (this) {
     ThemeMode.SYSTEM -> "Follow the system"
     ThemeMode.LIGHT -> "Light"

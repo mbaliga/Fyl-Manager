@@ -1,6 +1,9 @@
 package io.github.mbaliga.fylz.staging
 
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /** What the finger is currently over, or near, while dragging a cluster. */
 enum class DropTarget { NONE, CLIPBOARD, MOVE, NEW_FOLDER, COMPRESS, TRASH }
@@ -40,20 +43,35 @@ object DropTargetPolicy {
     /** Distance within which release counts as a drop on the slot, px. */
     const val HIT_RADIUS = 132f
 
-    /** The actions bulge's slots, in reading order from the corner outward. */
+    /** The actions bulge's slots, in reading order around the arc from the corner. */
     val actionSlots: List<DropTarget> =
         listOf(DropTarget.CLIPBOARD, DropTarget.MOVE, DropTarget.NEW_FOLDER, DropTarget.COMPRESS)
 
+    /** Where the first and last slot sit on the quarter arc, in degrees off the top edge. */
+    private const val ARC_START_DEGREES = 12f
+    private const val ARC_END_DEGREES = 78f
+
     /**
-     * Slot centres for the actions bulge, hugging the top-left corner along a shallow arc.
-     * Returned in [actionSlots] order.
+     * Slot centres for the actions bulge: four points on a quarter arc struck from the
+     * top-left corner, returned in [actionSlots] order.
+     *
+     * An arc rather than the old marching row, because the row was the reason the bulge had to
+     * be as wide as four slot spacings plus an inset — over 400dp, most of the top of a phone —
+     * to hold slots that were still drifting out of the blob it was supposed to be drawn on.
+     * On an arc every slot sits the same distance from the corner, so the blob only has to be
+     * as big as [radiusPx] plus a glyph, and the silhouette it needs is the quarter-round one
+     * it was already drawing.
      */
-    fun actionSlotCentres(spacingPx: Float, insetPx: Float): List<Pair<Float, Float>> =
-        actionSlots.mapIndexed { index, _ ->
-            val along = insetPx + spacingPx * index
-            // A gentle arc: slots march right while sagging slightly, tracing the bulge's lip.
-            along to (insetPx + spacingPx * 0.42f + index * spacingPx * 0.16f)
+    fun actionSlotCentres(radiusPx: Float): List<Pair<Float, Float>> {
+        val last = (actionSlots.size - 1).coerceAtLeast(1)
+        return actionSlots.mapIndexed { index, _ ->
+            val sweep = ARC_START_DEGREES +
+                (ARC_END_DEGREES - ARC_START_DEGREES) * (index.toFloat() / last)
+            val radians = sweep * PI.toFloat() / 180f
+            // Measured off the top edge, so slot 0 sits near the top and the last near the side.
+            (radiusPx * cos(radians)) to (radiusPx * sin(radians))
         }
+    }
 
     /** The trash slot centre, tucked into the bottom-right corner. */
     fun trashCentre(widthPx: Float, heightPx: Float, insetPx: Float): Pair<Float, Float> =
