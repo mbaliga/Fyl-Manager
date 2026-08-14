@@ -2,13 +2,18 @@ package io.github.mbaliga.fylz.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,15 +23,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.OpenInNew
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,7 +44,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.browse.readableLabel
 import io.github.mbaliga.fylz.core.format.FileFormatRegistry
@@ -63,7 +75,7 @@ private val QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS = setOf(
  * `entry` alone used to be the only thing frozen for the exit animation; `textContent` and
  * `loading` kept coming straight from the live parameters, which are reset by a caller-side effect
  * the instant focus clears. Freezing only the entry let the `when` in [QuickLookContent] re-branch
- * mid-fade onto a *different* preview family than the one on screen — see [QuickLook]'s doc.
+ * mid-fade onto a *different* preview family than the one on screen.
  */
 private data class QuickLookSnapshot(
     val entry: FileEntry,
@@ -73,21 +85,23 @@ private data class QuickLookSnapshot(
 )
 
 /**
- * The transient centered preview that replaced `FloatingPreviewPane` on phones.
+ * The transient preview card: content edge-to-edge inside a notched silhouette, with its actions
+ * living in the notches rather than on top of the picture.
  *
- * The pane it replaces was pinned chrome: it lingered after the file it was showing stopped being
- * relevant, and its "close" action ([PreviewMode.HIDDEN][io.github.mbaliga.fylz.model.PreviewMode])
- * had no way back short of relaunching the app. Quick-look has no state of its own to get stuck
- * in — it is on screen exactly when [entry] is non-null, and every dismissal (scrim tap, Back)
- * calls [onDismiss], which the caller wires straight to clearing focus. There is nothing here to
- * leave "hidden forever".
+ * ### Why the notches
  *
- * [entry] going null plays the exit animation rather than yanking the card away: the last
- * non-null snapshot — entry AND the preview state that went with it — is what the card keeps
- * drawing while it fades and shrinks out. Freezing only [entry] would leave `textContent`/`loading`
- * live: the caller nulls `previewText` the instant focus clears (well inside the ~140ms exit), so
- * a text/markdown file's `when` branch in [QuickLookContent] would stop matching mid-fade and fall
- * through to the generic inspector preview instead of just shrinking away.
+ * The card's whole point is that the file fills it. Chrome laid over the content — a header strip,
+ * a footer of buttons — spends the card's best pixels describing the card. Cutting two corners
+ * away instead ([NotchedCardShape]) means the content genuinely stops there, and the actions sit
+ * in space the card no longer occupies: a long rail top-left that grows a slot per action, and
+ * close alone bottom-right, diagonally opposite so a reach for one is never a near-miss on the
+ * other. The notch interiors are painted in the surface colour rather than cut through to the
+ * scrim, so an icon never has to survive whatever image happens to be behind it.
+ *
+ * The card is resizable from the free top-right corner and remembers the size it was left at.
+ *
+ * [entry] going null plays the exit animation rather than yanking the card away: the last non-null
+ * snapshot — entry AND the preview state that went with it — keeps drawing while it fades out.
  */
 @Composable
 fun QuickLook(
@@ -95,15 +109,22 @@ fun QuickLook(
     textContent: String?,
     textTruncated: Boolean,
     loading: Boolean,
-    onOpenExternal: (FileEntry) -> Unit,
+    rail: List<QuickAction>,
+    widthFraction: Float,
+    heightFraction: Float,
+    onScaleChange: (Float, Float) -> Unit,
+    onAction: (QuickAction, FileEntry) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var lastShown by remember { mutableStateOf<QuickLookSnapshot?>(null) }
     if (entry != null) {
         lastShown = QuickLookSnapshot(entry, textContent, textTruncated, loading)
     }
+    var moreOpen by remember(entry?.uri) { mutableStateOf(false) }
 
-    BackHandler(enabled = entry != null, onBack = onDismiss)
+    // Back closes the "more" list before it closes the card: the list is the thing most recently
+    // opened, and dismissing the whole preview to put it away would lose the file too.
+    BackHandler(enabled = entry != null) { if (moreOpen) moreOpen = false else onDismiss() }
 
     AnimatedVisibility(
         visible = entry != null,
@@ -111,12 +132,11 @@ fun QuickLook(
         exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.95f, animationSpec = tween(140)),
     ) {
         val shown = lastShown ?: return@AnimatedVisibility
+        val density = LocalDensity.current
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-                // Scrim tap dismisses; the card below consumes its own taps via Surface's onClick
-                // so this never fires for a tap that landed on the card.
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -124,18 +144,187 @@ fun QuickLook(
                 ),
             contentAlignment = Alignment.Center,
         ) {
-            Surface(
-                onClick = {},
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 6.dp,
-                shadowElevation = 10.dp,
-                modifier = Modifier
-                    .padding(horizontal = 24.dp)
-                    .fillMaxWidth()
-                    .heightIn(max = maxHeight * 0.7f),
-            ) {
-                QuickLookContent(shown.entry, shown.textContent, shown.textTruncated, shown.loading, onOpenExternal)
+            val viewportW = maxWidth
+            val viewportH = maxHeight
+            var w by remember { mutableStateOf(widthFraction) }
+            var h by remember { mutableStateOf(heightFraction) }
+
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                QuickLookCard(
+                    shown = shown,
+                    rail = rail,
+                    moreOpen = moreOpen,
+                    width = viewportW * w,
+                    height = viewportH * h,
+                    onResize = { dx, dy ->
+                        // Dragging the top-right grip: right widens, up grows taller, which is the
+                        // direction the corner itself moves.
+                        w = (w + dx / with(density) { viewportW.toPx() }).coerceIn(0.4f, 1f)
+                        h = (h - dy / with(density) { viewportH.toPx() }).coerceIn(0.3f, 0.95f)
+                    },
+                    onResizeEnd = { onScaleChange(w, h) },
+                    onToggleMore = { moreOpen = !moreOpen },
+                    onAction = { onAction(it, shown.entry) },
+                    onDismiss = onDismiss,
+                )
+                // The overflow list unrolls beneath the card, the same way a room reveals; the
+                // Column re-centres as it grows, so the card rides up to make room.
+                AnimatedVisibility(
+                    visible = moreOpen,
+                    enter = fadeIn(tween(160)) + expandVertically(tween(200)),
+                    exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
+                ) {
+                    QuickLookOverflow(
+                        actions = QuickAction.overflowFor(rail),
+                        maxWidth = viewportW * w,
+                        onAction = {
+                            moreOpen = false
+                            onAction(it, shown.entry)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickLookCard(
+    shown: QuickLookSnapshot,
+    rail: List<QuickAction>,
+    moreOpen: Boolean,
+    width: Dp,
+    height: Dp,
+    onResize: (Float, Float) -> Unit,
+    onResizeEnd: () -> Unit,
+    onToggleMore: () -> Unit,
+    onAction: (QuickAction) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val slots = quickLookSlots(rail.size + 1)
+    Box(Modifier.width(width).height(height)) {
+        // The panel behind the cut. Everything the notches remove reveals this, which is what
+        // makes the notch interiors read as solid surface rather than as holes.
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            shadowElevation = 10.dp,
+            modifier = Modifier.fillMaxSize(),
+        ) {}
+
+        // The content, clipped to the notched silhouette so the picture stops at the cut.
+        Surface(
+            onClick = {},
+            shape = NotchedCardShape(railSlots = slots),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            QuickLookContent(shown.entry, shown.textContent, shown.textTruncated, shown.loading)
+        }
+
+        // ── The rail, in the top-left notch ───────────────────────────────────────────
+        Row(Modifier.align(Alignment.TopStart).height(QuickLookSlot)) {
+            rail.forEach { action ->
+                QuickLookSlotButton(action.icon, action.label) { onAction(action) }
+            }
+            QuickLookSlotButton(
+                icon = Icons.Outlined.MoreHoriz,
+                label = if (moreOpen) "Fewer actions" else "More actions",
+                onClick = onToggleMore,
+            )
+        }
+
+        // ── Close, alone in the bottom-right notch ────────────────────────────────────
+        Box(Modifier.align(Alignment.BottomEnd)) {
+            QuickLookSlotButton(Icons.Outlined.Close, "Close preview", onDismiss)
+        }
+
+        // ── Resize, in the corner the notches leave free ──────────────────────────────
+        ResizeGrip(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(QuickLookSlot)
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragEnd = onResizeEnd,
+                        onDrag = { change, drag ->
+                            change.consume()
+                            onResize(drag.x, drag.y)
+                        },
+                    )
+                },
+        )
+    }
+}
+
+/** One 48dp action cell. Sized to the slot so the rail and the shape's notch cannot disagree. */
+@Composable
+private fun QuickLookSlotButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, modifier = Modifier.size(QuickLookSlot)) {
+        Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
+    }
+}
+
+/**
+ * The resize affordance: two short arcs struck concentrically about the corner.
+ *
+ * Drawn rather than iconified because it has to read as *this corner is draggable* at a glance
+ * without occupying a slot — arcs parallel to the corner say that; a glyph in a button would look
+ * like a fourth action.
+ */
+@Composable
+private fun ResizeGrip(modifier: Modifier = Modifier) {
+    val color = MaterialTheme.colorScheme.onSurfaceVariant
+    Canvas(modifier) {
+        val inset = size.minDimension * 0.30f
+        val stroke = size.minDimension * 0.055f
+        listOf(0.34f, 0.52f).forEach { fraction ->
+            val r = size.minDimension * fraction
+            drawArc(
+                color = color,
+                startAngle = 0f,
+                sweepAngle = 90f,
+                useCenter = false,
+                topLeft = Offset(size.width - inset - r, inset - r),
+                size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+        }
+    }
+}
+
+/** The actions that did not fit the rail, revealed beneath the card. */
+@Composable
+private fun QuickLookOverflow(
+    actions: List<QuickAction>,
+    maxWidth: Dp,
+    onAction: (QuickAction) -> Unit,
+) {
+    if (actions.isEmpty()) return
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 4.dp,
+        modifier = Modifier.padding(top = 10.dp).width(maxWidth),
+    ) {
+        Column(Modifier.padding(vertical = 6.dp)) {
+            actions.forEach { action ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onAction(action) }
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Icon(action.icon, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Text(action.label, style = MaterialTheme.typography.bodyLarge)
+                }
             }
         }
     }
@@ -147,70 +336,68 @@ private fun QuickLookContent(
     textContent: String?,
     textTruncated: Boolean,
     loading: Boolean,
-    onOpenExternal: (FileEntry) -> Unit,
 ) {
     val descriptor = remember(entry.name, entry.mimeType, entry.kind) {
         FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
     }
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(entry.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · "),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+    Box(Modifier.fillMaxSize()) {
+        when {
+            loading -> Box(
+                Modifier.fillMaxWidth().aspectRatio(4f / 3f),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
             }
+            entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
+                if (textTruncated) QuickLookTruncationNotice()
+                MarkdownPreview(textContent, Modifier.fillMaxSize())
+            }
+            entry.kind == EntryKind.TEXT && textContent != null -> Column(Modifier.fillMaxSize()) {
+                if (textTruncated) QuickLookTruncationNotice()
+                // Read-only here even though the docked pane can edit: a transient card that
+                // vanishes on the next tap elsewhere is the wrong place to hold unsaved text.
+                MonospaceTextPreview(textContent, Modifier.fillMaxSize())
+            }
+            descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
+            descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
+                MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.extension in QUICK_LOOK_SEMANTIC_ZIP_DOCUMENTS ->
+                ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.extension in QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS ->
+                ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
+                GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
+            else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())
         }
-        HorizontalDivider()
 
-        Box(Modifier.weight(1f)) {
-            when {
-                loading -> Box(
-                    Modifier.fillMaxWidth().aspectRatio(4f / 3f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
-                entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
-                    if (textTruncated) QuickLookTruncationNotice()
-                    MarkdownPreview(textContent, Modifier.fillMaxSize())
-                }
-                entry.kind == EntryKind.TEXT && textContent != null -> Column(Modifier.fillMaxSize()) {
-                    if (textTruncated) QuickLookTruncationNotice()
-                    // Read-only here even though the docked pane can edit: a transient card that
-                    // vanishes on the next tap elsewhere is the wrong place to hold unsaved text.
-                    MonospaceTextPreview(textContent, Modifier.fillMaxSize())
-                }
-                descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
-                descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
-                    MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in QUICK_LOOK_SEMANTIC_ZIP_DOCUMENTS ->
-                    ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS ->
-                    ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
-                    GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
-                else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())
-            }
-        }
-        HorizontalDivider()
+        // The name rides a gradient scrim along the foot rather than a divider-and-header band:
+        // it has to be legible over an arbitrary image without stealing a strip of the content.
+        QuickLookCaption(
+            entry = entry,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 18.dp, bottom = 12.dp, end = QuickLookSlot),
+        )
+    }
+}
 
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Button(onClick = { onOpenExternal(entry) }) {
-                Icon(Icons.Outlined.OpenInNew, contentDescription = null)
-                Text("Open with…", Modifier.padding(start = 6.dp))
-            }
-        }
+@Composable
+private fun QuickLookCaption(entry: FileEntry, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(
+            entry.name,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · "),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

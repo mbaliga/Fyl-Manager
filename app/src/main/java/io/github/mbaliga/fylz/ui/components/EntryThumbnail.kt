@@ -7,19 +7,12 @@ import android.util.Size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.AudioFile
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.InsertDriveFile
-import androidx.compose.material.icons.outlined.PictureAsPdf
-import androidx.compose.material.icons.outlined.TextSnippet
-import androidx.compose.material.icons.outlined.VideoFile
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
@@ -27,12 +20,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import kotlinx.coroutines.Dispatchers
@@ -103,12 +96,21 @@ fun EntryThumbnail(
                 modifier = Modifier.size(size).clip(MaterialTheme.shapes.small),
             )
 
-            else -> Icon(
-                imageVector = entryIcon(entry),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(size * ICON_SCALE),
-            )
+            else -> {
+                val style = LocalIconStyle.current
+                val asset = remember(entry.name, entry.mimeType, entry.kind, style) {
+                    val descriptor = FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
+                    "file:///android_asset/" + FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
+                }
+                AsyncImage(
+                    model = asset,
+                    contentDescription = null,
+                    // Fit, not Crop: these are drawn marks with their own margins, and cropping
+                    // one to a square eats the folded corner that distinguishes the format.
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(size * ICON_SCALE),
+                )
+            }
         }
     }
 }
@@ -150,20 +152,20 @@ private object ThumbnailCache {
     }
 }
 
-/** Type icon shown when no thumbnail is available. Covers every [EntryKind]. */
-fun entryIcon(entry: FileEntry): ImageVector = when {
-    entry.isDirectory -> Icons.Outlined.Folder
-    else -> when (entry.kind) {
-        EntryKind.IMAGE -> Icons.Outlined.Image
-        EntryKind.VIDEO -> Icons.Outlined.VideoFile
-        EntryKind.AUDIO -> Icons.Outlined.AudioFile
-        EntryKind.PDF -> Icons.Outlined.PictureAsPdf
-        EntryKind.ARCHIVE -> Icons.Outlined.Archive
-        EntryKind.MARKDOWN -> Icons.Outlined.Description
-        EntryKind.TEXT -> Icons.Outlined.TextSnippet
-        EntryKind.DIRECTORY -> Icons.Outlined.Folder
-        EntryKind.OTHER -> Icons.Outlined.InsertDriveFile
-    }
+/**
+ * The icon treatment in force for this subtree.
+ *
+ * A composition local rather than a parameter because [EntryThumbnail] is reached from the list
+ * row, the grid card, the folder-peek strip and the in-app picker; threading a display preference
+ * through four unrelated call chains to reach one leaf is exactly what locals are for. Defaults to
+ * [IconStyle.DEFAULT] so a preview or a test that does not provide one still draws something.
+ */
+val LocalIconStyle: ProvidableCompositionLocal<IconStyle> = compositionLocalOf { IconStyle.DEFAULT }
+
+/** Scopes [content] to an icon [style]; the composition root provides the persisted preference. */
+@Composable
+fun ProvideIconStyle(style: IconStyle, content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalIconStyle provides style, content = content)
 }
 
 private const val THUMBNAIL_PIXELS = 192

@@ -36,10 +36,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.remember
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Remove
+import io.github.mbaliga.fylz.ui.components.NotchedCardShape
+import io.github.mbaliga.fylz.ui.components.quickLookSlots
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.model.ThemeMode
+import io.github.mbaliga.fylz.ui.components.FileTypeIcons
+import io.github.mbaliga.fylz.ui.components.IconStyle
+import io.github.mbaliga.fylz.ui.components.QuickAction
 
 /**
  * The app's own tools and settings, reached from the left room rather than a swipe-in edge.
@@ -57,6 +75,10 @@ internal fun SettingsOverlay(
     onThemeModeChange: (ThemeMode) -> Unit,
     showHidden: Boolean,
     onShowHiddenChange: (Boolean) -> Unit,
+    iconStyle: IconStyle,
+    onIconStyleChange: (IconStyle) -> Unit,
+    quickActions: List<QuickAction>,
+    onQuickActionsChange: (List<QuickAction>) -> Unit,
     onOpenRecycleBin: () -> Unit,
     onOpenRemotes: () -> Unit,
     onOpenWebDav: () -> Unit,
@@ -149,6 +171,31 @@ internal fun SettingsOverlay(
                 }
 
                 Spacer(Modifier.size(20.dp))
+                RoomHeading("Preview actions")
+                QuickActionEditor(
+                    rail = quickActions,
+                    iconStyle = iconStyle,
+                    onChange = onQuickActionsChange,
+                )
+
+                Spacer(Modifier.size(20.dp))
+                RoomHeading("File icons")
+                Text(
+                    "Every style is shown as it will actually be drawn \u2014 the four treatments differ " +
+                        "enough that naming them tells you very little.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                IconStyle.entries.forEach { style ->
+                    IconStyleRow(
+                        style = style,
+                        selected = style == iconStyle,
+                        onSelect = { onIconStyleChange(style) },
+                    )
+                }
+
+                Spacer(Modifier.size(20.dp))
                 RoomHeading("Storage & tools")
                 SettingsToolRow(Icons.Outlined.RestoreFromTrash, "Recycle Bin", onOpenRecycleBin)
                 SettingsToolRow(Icons.Outlined.Cloud, "Remotes", onOpenRemotes)
@@ -172,5 +219,214 @@ private fun SettingsToolRow(icon: ImageVector, label: String, onClick: () -> Uni
     ) {
         Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 16.dp))
+    }
+}
+
+/**
+ * One selectable icon treatment, previewed with real artwork rather than described.
+ *
+ * The sample formats are picked to span the pack's range — a document, a spreadsheet, an image and
+ * an archive — because the styles diverge most on the busiest marks; a row of four identical grey
+ * document icons would make Filled and Gray look like the same choice.
+ */
+@Composable
+private fun IconStyleRow(style: IconStyle, selected: Boolean, onSelect: () -> Unit) {
+    val samples = remember(style) {
+        listOf(
+            "pdf" to PreviewFamily.PDF,
+            "xlsx" to PreviewFamily.OFFICE,
+            "png" to PreviewFamily.IMAGE,
+            "zip" to PreviewFamily.ARCHIVE,
+        ).map { (ext, family) ->
+            "file:///android_asset/" + FileTypeIcons.assetPath(ext, family, style)
+        }
+    }
+    Surface(
+        onClick = onSelect,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+    ) {
+        Row(
+            Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = selected, onClick = onSelect)
+            Text(
+                style.name.lowercase().replaceFirstChar(Char::titlecase),
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(start = 4.dp).width(88.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                samples.forEach { asset ->
+                    AsyncImage(
+                        model = asset,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(30.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Arranges the preview card's rail, showing the card itself rather than describing it.
+ *
+ * The miniature is drawn with the same [NotchedCardShape] the real card uses and re-renders as
+ * actions are added or removed, so the thing that grows a notch here is the thing that grows a
+ * notch there. A checkbox list would have left the user to imagine what "four pinned actions"
+ * does to the silhouette — which is precisely the part worth seeing before committing to it.
+ *
+ * Pinned actions are capped at [QuickAction.MAX_PINNED]; the last slot always belongs to "more",
+ * so the rail can never be arranged into a state that hides the actions it did not pin.
+ */
+@Composable
+private fun QuickActionEditor(
+    rail: List<QuickAction>,
+    iconStyle: IconStyle,
+    onChange: (List<QuickAction>) -> Unit,
+) {
+    val overflow = remember(rail) { QuickAction.overflowFor(rail) }
+    val sample = remember(iconStyle) {
+        "file:///android_asset/" + FileTypeIcons.assetPath("pdf", PreviewFamily.PDF, iconStyle)
+    }
+
+    Text(
+        "Pinned actions sit in the card's notch. The rest live behind “more”. " +
+            "Up to ${QuickAction.MAX_PINNED}, because the last slot is always “more”.",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 10.dp),
+    )
+
+    // ── The card, as it will actually look ────────────────────────────────────────────
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .padding(bottom = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.width(220.dp).height(132.dp)) {
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier.fillMaxSize(),
+            ) {}
+            Surface(
+                shape = NotchedCardShape(railSlots = quickLookSlots(rail.size + 1), slotSize = 34.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    AsyncImage(
+                        model = sample,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(46.dp),
+                    )
+                }
+            }
+            Row(Modifier.align(Alignment.TopStart).height(34.dp)) {
+                rail.forEach { action ->
+                    MiniSlot(action.icon)
+                }
+                MiniSlot(Icons.Outlined.MoreHoriz)
+            }
+            Box(Modifier.align(Alignment.BottomEnd)) { MiniSlot(Icons.Outlined.Close) }
+        }
+    }
+
+    // ── Pinned, in rail order ─────────────────────────────────────────────────────────
+    rail.forEachIndexed { index, action ->
+        QuickActionEditorRow(
+            action = action,
+            pinned = true,
+            canMoveUp = index > 0,
+            onMoveUp = { onChange(rail.toMutableList().apply { add(index - 1, removeAt(index)) }) },
+            onToggle = { onChange(rail - action) },
+        )
+    }
+    if (overflow.isNotEmpty()) {
+        Text(
+            "Behind “more”",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+        )
+        overflow.forEach { action ->
+            QuickActionEditorRow(
+                action = action,
+                pinned = false,
+                canMoveUp = false,
+                onMoveUp = {},
+                // Silently refusing the tap at the cap would read as a broken button; the row is
+                // disabled instead, so the ceiling is visible before it is hit.
+                onToggle = { if (rail.size < QuickAction.MAX_PINNED) onChange(rail + action) },
+                enabled = rail.size < QuickAction.MAX_PINNED,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniSlot(icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+@Composable
+private fun QuickActionEditorRow(
+    action: QuickAction,
+    pinned: Boolean,
+    canMoveUp: Boolean,
+    onMoveUp: () -> Unit,
+    onToggle: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(enabled = enabled, onClick = onToggle)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val tint = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        }
+        Icon(action.icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Text(
+            action.label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = tint,
+            modifier = Modifier.weight(1f).padding(start = 16.dp),
+        )
+        if (pinned && canMoveUp) {
+            IconButton(onClick = onMoveUp, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Move ${action.label} earlier")
+            }
+        }
+        Icon(
+            if (pinned) Icons.Outlined.Remove else Icons.Outlined.Add,
+            contentDescription = if (pinned) "Unpin ${action.label}" else "Pin ${action.label}",
+            tint = tint,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }

@@ -142,6 +142,9 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.IconStyle
+import io.github.mbaliga.fylz.ui.components.ProvideIconStyle
+import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.components.CommandPillReservedHeight
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.PreviewPane
@@ -241,11 +244,13 @@ fun FylzV1App(
     val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
     var themeMode by remember { mutableStateOf(preferencesStore.themeMode()) }
     var showHidden by remember { mutableStateOf(preferencesStore.showHidden()) }
+    var iconStyle by remember { mutableStateOf(preferencesStore.iconStyle()) }
     FylzTheme(
         themeMode = themeMode,
         accentPreset = AccentPreset.MOSS,
         dynamicColor = true,
     ) {
+      ProvideIconStyle(iconStyle) {
         FylzV1Workspace(
             themeMode = themeMode,
             onThemeModeChange = {
@@ -257,9 +262,15 @@ fun FylzV1App(
                 showHidden = it
                 preferencesStore.setShowHidden(it)
             },
+            iconStyle = iconStyle,
+            onIconStyleChange = {
+                iconStyle = it
+                preferencesStore.setIconStyle(it)
+            },
             recoverySection = recoverySection,
         )
         overlays(showHidden)
+      }
     }
 }
 
@@ -269,6 +280,8 @@ private fun FylzV1Workspace(
     onThemeModeChange: (ThemeMode) -> Unit,
     showHidden: Boolean,
     onShowHiddenChange: (Boolean) -> Unit,
+    iconStyle: IconStyle,
+    onIconStyleChange: (IconStyle) -> Unit,
     recoverySection: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -284,6 +297,13 @@ private fun FylzV1Workspace(
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
     val pdfTools = remember { PdfToolService(context.applicationContext) }
+    // A second handle on the same SharedPreferences the root holds. Theme and show-hidden have
+    // to be known before FylzTheme opens so they are threaded down; the preview's own settings are
+    // read and written only here and in the settings sheet this composable renders, so routing
+    // them through the root would be four parameters carrying nothing the root uses.
+    val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
+    var quickActions by remember { mutableStateOf(preferencesStore.quickActions()) }
+    var previewScale by remember { mutableStateOf(preferencesStore.previewScale()) }
     val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
     val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
 
@@ -809,12 +829,12 @@ private fun FylzV1Workspace(
         }
     }
 
-    fun shareSelection() {
-        if (selectedEntries.isEmpty()) return
-        val uris = ArrayList(selectedEntries.map { it.uri })
+    fun shareEntries(sharing: List<FileEntry>) {
+        if (sharing.isEmpty()) return
+        val uris = ArrayList(sharing.map { it.uri })
         val intent = if (uris.size == 1) {
             Intent(Intent.ACTION_SEND)
-                .setType(selectedEntries.first().mimeType)
+                .setType(sharing.first().mimeType)
                 .putExtra(Intent.EXTRA_STREAM, uris.first())
         } else {
             Intent(Intent.ACTION_SEND_MULTIPLE)
@@ -823,6 +843,8 @@ private fun FylzV1Workspace(
         }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
     }
+
+    fun shareSelection() = shareEntries(selectedEntries)
 
     fun findDuplicates() {
         scope.launch {
@@ -880,6 +902,40 @@ private fun FylzV1Workspace(
             FylzAction.SCAN_PDF -> startScan()
             FylzAction.FIND_DUPLICATES -> findDuplicates()
             FylzAction.AI_ORGANIZE -> aiDialog = true
+        }
+    }
+
+    /**
+     * Runs a preview-card action against the one file the card is showing.
+     *
+     * Split by *when* the action reads its subject, which is the only thing that matters here.
+     * [selectedEntries] is a plain val computed during composition, so anything that consumes it
+     * synchronously — share, recycle — cannot be redirected by assigning `selectedUris` first and
+     * would act on whatever was selected before the preview opened. Those two are handed the
+     * entry directly. The rest only read the selection later, from a dialog or a picker callback
+     * that composes after the assignment lands, so pointing the selection at the previewed file is
+     * both safe and correct for them.
+     */
+    fun runQuickAction(action: QuickAction, entry: FileEntry) {
+        when (action) {
+            QuickAction.OPEN_WITH -> openExternal(entry)
+            QuickAction.SHARE -> shareEntries(listOf(entry))
+            QuickAction.RECYCLE -> {
+                focusedEntry = null
+                recycleUris(listOf(entry.uri))
+            }
+            QuickAction.COPY, QuickAction.MOVE, QuickAction.RENAME, QuickAction.TAGS -> {
+                selectedUris = setOf(entry.uri)
+                focusedEntry = null
+                runAction(
+                    when (action) {
+                        QuickAction.COPY -> FylzAction.COPY
+                        QuickAction.MOVE -> FylzAction.MOVE
+                        QuickAction.RENAME -> FylzAction.RENAME
+                        else -> FylzAction.TAGS
+                    },
+                )
+            }
         }
     }
 
@@ -1208,7 +1264,14 @@ private fun FylzV1Workspace(
                 textContent = previewText,
                 textTruncated = previewTruncated,
                 loading = previewLoading,
-                onOpenExternal = ::openExternal,
+                rail = quickActions,
+                widthFraction = previewScale.first,
+                heightFraction = previewScale.second,
+                onScaleChange = { cardWidth, cardHeight ->
+                    previewScale = cardWidth to cardHeight
+                    preferencesStore.setPreviewScale(cardWidth, cardHeight)
+                },
+                onAction = ::runQuickAction,
                 onDismiss = { focusedEntry = null },
             )
         }
@@ -1607,6 +1670,13 @@ private fun FylzV1Workspace(
             onThemeModeChange = onThemeModeChange,
             showHidden = showHidden,
             onShowHiddenChange = onShowHiddenChange,
+            iconStyle = iconStyle,
+            onIconStyleChange = onIconStyleChange,
+            quickActions = quickActions,
+            onQuickActionsChange = {
+                quickActions = it
+                preferencesStore.setQuickActions(it)
+            },
             onOpenRecycleBin = { settingsOpen = false; recycleDialog = true },
             onOpenRemotes = { settingsOpen = false; remoteDialog = true },
             onOpenWebDav = { settingsOpen = false; webDavDialog = true },
@@ -2324,13 +2394,6 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
-}
-
-private fun fileIcon(kind: EntryKind) = when (kind) {
-    EntryKind.ARCHIVE -> Icons.Outlined.Archive
-    EntryKind.PDF -> Icons.Outlined.PictureAsPdf
-    EntryKind.TEXT, EntryKind.MARKDOWN -> Icons.Outlined.TextSnippet
-    else -> Icons.Outlined.ViewSidebar
 }
 
 /**
