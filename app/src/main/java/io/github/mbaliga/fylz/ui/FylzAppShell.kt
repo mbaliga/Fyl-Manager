@@ -2,32 +2,15 @@ package io.github.mbaliga.fylz.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Backup
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.RestorePage
-import androidx.compose.material.icons.outlined.SettingsBackupRestore
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,11 +19,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.core.operations.FileOperationType
@@ -80,6 +60,12 @@ fun FylzAppShell() {
     val journal = remember { OperationJournal(context.applicationContext) }
     val fileOperations = remember { FileOperationService(context.applicationContext) }
     var showHistory by remember { mutableStateOf(false) }
+    // One open flag per recovery card. Each overlay now hosts its own dialogs; the shell's only
+    // job is to remember which card was tapped and hand that boolean down to the matching host.
+    var showFileHistory by remember { mutableStateOf(false) }
+    var showBackup by remember { mutableStateOf(false) }
+    var showBackupImport by remember { mutableStateOf(false) }
+    var showArchiveTools by remember { mutableStateOf(false) }
     var operations by remember { mutableStateOf(journal.list()) }
 
     LaunchedEffect(Unit) {
@@ -97,9 +83,13 @@ fun FylzAppShell() {
                     operations = journal.list()
                     showHistory = true
                 },
+                onOpenFileHistory = { showFileHistory = true },
+                onOpenBackup = { showBackup = true },
+                onOpenBackupImport = { showBackupImport = true },
+                onOpenArchiveTools = { showArchiveTools = true },
             )
         },
-    ) {
+    ) { showHidden ->
         if (showHistory) {
             OperationHistoryDialog(
                 operations = operations,
@@ -151,6 +141,14 @@ fun FylzAppShell() {
                 },
             )
         }
+        FileHistoryHost(open = showFileHistory, onDismiss = { showFileHistory = false })
+        BackupHost(open = showBackup, onDismiss = { showBackup = false })
+        BackupImportHost(open = showBackupImport, onDismiss = { showBackupImport = false })
+        ArchiveToolsHost(
+            open = showArchiveTools,
+            showHidden = showHidden,
+            onDismiss = { showArchiveTools = false },
+        )
     }
 }
 
@@ -158,13 +156,18 @@ fun FylzAppShell() {
  * The recovery section of the actions room.
  *
  * It owns neither its scroll nor its heading any more — the room does both, and a `verticalScroll`
- * nested inside the room's own would be a crash, not a style choice. What is left is the cards
- * themselves and the sentence explaining what they are for.
+ * nested inside the room's own would be a crash, not a style choice. What is left is the card
+ * carousel and the sentence explaining what it is for. Every card is the same [ActionCard] the
+ * rest of the room uses, whole-card clickable — there is no FAB left to find inside one.
  */
 @Composable
 private fun RecoveryHome(
     operations: List<FileOperation>,
     onOpenOperations: () -> Unit,
+    onOpenFileHistory: () -> Unit,
+    onOpenBackup: () -> Unit,
+    onOpenBackupImport: () -> Unit,
+    onOpenArchiveTools: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val attentionCount = operations.count { it.state == OperationState.NEEDS_ATTENTION }
@@ -178,44 +181,52 @@ private fun RecoveryHome(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        RecoveryActionCard(
-            icon = Icons.Outlined.History,
-            title = "Operation history",
-            description = if (attentionCount == 0) {
-                "Review completed, failed, cancelled, and interrupted file operations."
-            } else {
-                "$attentionCount operation${if (attentionCount == 1) "" else "s"} need attention."
-            },
-            action = {
-                FloatingActionButton(onClick = onOpenOperations) {
-                    Icon(Icons.Outlined.History, contentDescription = "Open operation history")
-                }
-            },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.History,
-            title = "File history",
-            description = "Configure local version retention, inspect saved versions, and perform verified restores.",
-            action = { FileHistoryOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.Backup,
-            title = "Backup plans",
-            description = "Create, schedule, run, inspect, restore, and delete transactional backups.",
-            action = { BackupOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.RestorePage,
-            title = "Import existing backups",
-            description = "Rediscover verified manifest-bearing backup folders after reinstall or app-data loss.",
-            action = { BackupImportOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.Archive,
-            title = "Archive tools",
-            description = "Create standard or AES-256 protected ZIP files, inspect archives, and extract through safety limits.",
-            action = { ArchiveToolsOverlay() },
-        )
+        ActionCardRow {
+            item {
+                ActionCard(
+                    icon = Icons.Outlined.History,
+                    title = "Operation history",
+                    subtitle = if (attentionCount == 0) {
+                        "Review past file operations"
+                    } else {
+                        "$attentionCount operation${if (attentionCount == 1) "" else "s"} need attention"
+                    },
+                    onClick = onOpenOperations,
+                )
+            }
+            item {
+                ActionCard(
+                    icon = Icons.Outlined.History,
+                    title = "File history",
+                    subtitle = "Restore an earlier version",
+                    onClick = onOpenFileHistory,
+                )
+            }
+            item {
+                ActionCard(
+                    icon = Icons.Outlined.Backup,
+                    title = "Backup plans",
+                    subtitle = "Schedule automatic backups",
+                    onClick = onOpenBackup,
+                )
+            }
+            item {
+                ActionCard(
+                    icon = Icons.Outlined.RestorePage,
+                    title = "Import backups",
+                    subtitle = "Rediscover backup folders",
+                    onClick = onOpenBackupImport,
+                )
+            }
+            item {
+                ActionCard(
+                    icon = Icons.Outlined.Archive,
+                    title = "Archive tools",
+                    subtitle = "Create or extract a ZIP",
+                    onClick = onOpenArchiveTools,
+                )
+            }
+        }
 
         Text(
             "Recovery metadata stays private to this app and is excluded from Android cloud backup. External backup snapshots and archives remain in the destinations you selected.",
@@ -223,37 +234,5 @@ private fun RecoveryHome(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
         )
-    }
-}
-
-@Composable
-private fun RecoveryActionCard(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    action: @Composable () -> Unit,
-) {
-    Surface(
-        shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(18.dp),
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            action()
-        }
     }
 }

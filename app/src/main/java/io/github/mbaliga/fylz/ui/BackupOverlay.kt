@@ -24,7 +24,6 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,14 +60,18 @@ import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 
+/**
+ * Owns the store, its derived state, and every dialog in the backups journey. Hoisted so a caller
+ * that already has its own open/close affordance (a recovery card) can drive this directly instead
+ * of going through a FAB it doesn't want.
+ */
 @Composable
-fun BackupOverlay(modifier: Modifier = Modifier) {
+fun BackupHost(open: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { BackupStore(context.applicationContext) }
     val service = remember { BackupService(context.applicationContext, store) }
     val scheduler = remember { BackupScheduler(context.applicationContext) }
-    var open by remember { mutableStateOf(false) }
     var editor by remember { mutableStateOf<BackupPlanDraft?>(null) }
     var plans by remember { mutableStateOf(store.plans()) }
     var snapshots by remember { mutableStateOf(store.snapshots()) }
@@ -80,6 +84,12 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
         plans = store.plans()
         snapshots = store.snapshots()
         runs = store.runs()
+    }
+
+    // The store is a thin JSON wrapper, not a live feed — re-read it whenever the dialog is about
+    // to show so it reflects runs and snapshots recorded elsewhere since the last open.
+    LaunchedEffect(open) {
+        if (open) refresh()
     }
 
     fun persist(uri: Uri) {
@@ -121,23 +131,13 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
         }
     }
 
-    FloatingActionButton(
-        onClick = {
-            refresh()
-            open = true
-        },
-        modifier = modifier,
-    ) {
-        Icon(Icons.Outlined.Backup, contentDescription = "Backups")
-    }
-
     if (open) {
         BackupManagerDialog(
             plans = plans,
             snapshots = snapshots,
             runs = runs,
             working = working,
-            onDismiss = { open = false },
+            onDismiss = onDismiss,
             onAdd = { editor = BackupPlanDraft() },
             onEdit = { editor = BackupPlanDraft.from(it) },
             onRun = { plan ->

@@ -1,25 +1,26 @@
 package io.github.mbaliga.fylz.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
@@ -30,11 +31,12 @@ import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.operations.SelectionActions
 
@@ -66,15 +68,15 @@ internal enum class FylzAction {
  * right-hand half most people never saw, and which covered the listing it acted on. The second
  * was the top bar's overflow menu, which held "New folder" and "Scan to PDF" next to "AI organize
  * proposal" because there was nowhere else to put them. Both were chrome renting space from the
- * file list; both are now rows on a surface that is only there when asked for.
+ * file list; both are now card carousels on a surface that is only there when asked for.
  *
  * Pairs with [DetailsRoom] above: **up is what you are looking at, down is what to do about it.**
  *
  * ### Actions appear only when they apply
  *
- * Inapplicable actions are absent, not greyed out. A room is read top to bottom, so a shorter
- * list is a faster one, and a disabled row is a question the user has to answer ("why can't I?")
- * for no benefit. [SelectionActions] decides — this file contains no rules, only rows, which is
+ * Inapplicable actions are absent, not greyed out. Each group is read left to right, so a shorter
+ * row is a faster one, and a disabled card is a question the user has to answer ("why can't I?")
+ * for no benefit. [SelectionActions] decides — this file contains no rules, only cards, which is
  * what makes the rules testable without a device.
  *
  * Recovery keeps this edge. It was the bottom room before actions arrived, it is reached by the
@@ -109,36 +111,117 @@ internal fun ActionsRoom(
             RoomHeading(
                 if (selection.count == 1) "Selection · 1 item" else "Selection · ${selection.count} items",
             )
-            if (selection.copy) ActionRow(Icons.Outlined.ContentCopy, "Copy to…") { onAction(FylzAction.COPY) }
-            if (selection.move) ActionRow(Icons.AutoMirrored.Outlined.DriveFileMove, "Move to…") { onAction(FylzAction.MOVE) }
-            if (selection.rename) ActionRow(Icons.Outlined.Edit, "Rename") { onAction(FylzAction.RENAME) }
-            if (selection.batchRename) {
-                ActionRow(Icons.AutoMirrored.Outlined.TextSnippet, "Batch rename") { onAction(FylzAction.BATCH_RENAME) }
+            ActionCardRow {
+                if (selection.copy) {
+                    item {
+                        ActionCard(Icons.Outlined.ContentCopy, "Copy to…", "Duplicate into another folder") {
+                            onAction(FylzAction.COPY)
+                        }
+                    }
+                }
+                if (selection.move) {
+                    item {
+                        ActionCard(Icons.AutoMirrored.Outlined.DriveFileMove, "Move to…", "Relocate into another folder") {
+                            onAction(FylzAction.MOVE)
+                        }
+                    }
+                }
+                if (selection.rename) {
+                    item {
+                        ActionCard(Icons.Outlined.Edit, "Rename", "Give it a new name") {
+                            onAction(FylzAction.RENAME)
+                        }
+                    }
+                }
+                if (selection.batchRename) {
+                    item {
+                        ActionCard(Icons.AutoMirrored.Outlined.TextSnippet, "Batch rename", "Rename many files at once") {
+                            onAction(FylzAction.BATCH_RENAME)
+                        }
+                    }
+                }
+                if (selection.tag) {
+                    item {
+                        ActionCard(Icons.Outlined.Tag, "Tags", "Label for quick search later") {
+                            onAction(FylzAction.TAGS)
+                        }
+                    }
+                }
+                if (selection.archive) {
+                    item {
+                        ActionCard(Icons.Outlined.Archive, "Add to a ZIP…", "Compress into an archive") {
+                            onAction(FylzAction.ARCHIVE)
+                        }
+                    }
+                }
+                if (selection.extract) {
+                    item {
+                        ActionCard(Icons.Outlined.FolderOpen, "Extract to…", "Unpack into a folder") {
+                            onAction(FylzAction.EXTRACT)
+                        }
+                    }
+                }
+                if (selection.pdfTools) {
+                    item {
+                        ActionCard(Icons.Outlined.PictureAsPdf, "PDF tools", "Merge, split, or convert") {
+                            onAction(FylzAction.PDF_TOOLS)
+                        }
+                    }
+                }
+                if (selection.share) {
+                    item {
+                        ActionCard(Icons.Outlined.Share, "Share", "Send outside Fylz") {
+                            onAction(FylzAction.SHARE)
+                        }
+                    }
+                }
+                // Destructive last: the one card in the row worth a second glance before tapping.
+                if (selection.recycle) {
+                    item {
+                        ActionCard(
+                            Icons.Outlined.Delete,
+                            "Move to Recycle Bin",
+                            "Delete, recoverable later",
+                            destructive = true,
+                        ) { onAction(FylzAction.RECYCLE) }
+                    }
+                }
             }
-            if (selection.tag) ActionRow(Icons.Outlined.Tag, "Tags") { onAction(FylzAction.TAGS) }
-            if (selection.archive) ActionRow(Icons.Outlined.Archive, "Add to a ZIP…") { onAction(FylzAction.ARCHIVE) }
-            if (selection.extract) ActionRow(Icons.Outlined.FolderOpen, "Extract to…") { onAction(FylzAction.EXTRACT) }
-            if (selection.pdfTools) {
-                ActionRow(Icons.Outlined.PictureAsPdf, "PDF tools") { onAction(FylzAction.PDF_TOOLS) }
-            }
-            if (selection.share) ActionRow(Icons.Outlined.Share, "Share") { onAction(FylzAction.SHARE) }
-            if (selection.recycle) {
-                ActionRow(Icons.Outlined.Delete, "Move to Recycle Bin") { onAction(FylzAction.RECYCLE) }
-            }
-            ActionRow(Icons.Outlined.Close, "Clear selection") { onAction(FylzAction.CLEAR_SELECTION) }
             Spacer(Modifier.height(24.dp))
         }
 
         if (folderOpen) {
             RoomHeading("This folder")
-            ActionRow(Icons.Outlined.CreateNewFolder, "New folder") { onAction(FylzAction.NEW_FOLDER) }
-            ActionRow(Icons.AutoMirrored.Outlined.TextSnippet, "New text file") { onAction(FylzAction.NEW_FILE) }
-            ActionRow(Icons.Outlined.PictureAsPdf, "Scan to PDF") { onAction(FylzAction.SCAN_PDF) }
-            if (canFindDuplicates) {
-                ActionRow(Icons.Outlined.ContentCopy, "Find duplicates") { onAction(FylzAction.FIND_DUPLICATES) }
-            }
-            if (canOrganize) {
-                ActionRow(Icons.Outlined.AutoAwesome, "AI organize proposal") { onAction(FylzAction.AI_ORGANIZE) }
+            ActionCardRow {
+                item {
+                    ActionCard(Icons.Outlined.CreateNewFolder, "New folder", "Start an empty folder here") {
+                        onAction(FylzAction.NEW_FOLDER)
+                    }
+                }
+                item {
+                    ActionCard(Icons.AutoMirrored.Outlined.TextSnippet, "New text file", "Start an empty text file") {
+                        onAction(FylzAction.NEW_FILE)
+                    }
+                }
+                item {
+                    ActionCard(Icons.Outlined.PictureAsPdf, "Scan to PDF", "Capture pages with the camera") {
+                        onAction(FylzAction.SCAN_PDF)
+                    }
+                }
+                if (canFindDuplicates) {
+                    item {
+                        ActionCard(Icons.Outlined.ContentCopy, "Find duplicates", "Scan this folder for copies") {
+                            onAction(FylzAction.FIND_DUPLICATES)
+                        }
+                    }
+                }
+                if (canOrganize) {
+                    item {
+                        ActionCard(Icons.Outlined.AutoAwesome, "AI organize proposal", "Suggest a better home for this file") {
+                            onAction(FylzAction.AI_ORGANIZE)
+                        }
+                    }
+                }
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -149,34 +232,68 @@ internal fun ActionsRoom(
 }
 
 /**
- * One action.
- *
- * Icon plus word, never icon alone: `docs/DESIGN.md` requires a semantic label on every icon-only
- * control, and the cheapest way to satisfy that is to not build icon-only controls. The glyph is
- * decorative here — the text beside it is what a screen reader reads — so it carries no
- * content description of its own rather than repeating the label.
+ * A horizontal carousel of [ActionCard]s, shared by every group in this room and by the recovery
+ * section in `FylzAppShell`. The trailing content padding is narrower than a card, so a row that
+ * overflows the screen always cuts through its last visible card instead of stopping on a clean
+ * edge — that sliver is the only hint a room this quiet needs that there is more to scroll to.
  */
 @Composable
-private fun ActionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+internal fun ActionCardRow(content: LazyListScope.() -> Unit) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(ACTION_CARD_SPACING),
+        contentPadding = PaddingValues(end = ACTION_CARD_PEEK),
+        content = content,
+    )
+}
+
+/**
+ * One action, or one recovery surface: an icon, a title, and a subtitle that says what tapping it
+ * does. Icon plus words, never icon alone — `docs/DESIGN.md` requires a semantic label on every
+ * icon-only control, and the cheapest way to satisfy that is to not build icon-only controls. The
+ * glyph is decorative here — the title and subtitle beside it are what a screen reader reads — so
+ * it carries no content description of its own rather than repeating the label.
+ */
+@Composable
+internal fun ActionCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    destructive: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.width(ACTION_CARD_WIDTH),
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 14.dp),
-        )
+        Column(Modifier.padding(16.dp)) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
     }
 }
+
+internal val ACTION_CARD_WIDTH = 150.dp
+private val ACTION_CARD_SPACING = 12.dp
+private val ACTION_CARD_PEEK = 32.dp

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -129,7 +131,10 @@ fun StorageHomeScreen(
             return@Column
         }
 
-        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+        // contentPadding is fixed breathing room below the last row; it does not know about the
+        // gesture nav bar's device-dependent inset, which is why the footer below also carries
+        // navigationBarsPadding() -- without it the caption clips under the gesture bar.
+        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)) {
             groups.forEach { group ->
                 item(key = "header:${group.title}") {
                     Text(
@@ -149,15 +154,21 @@ fun StorageHomeScreen(
 
             item(key = "footer-actions") {
                 Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+                    Modifier.fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
+                        .navigationBarsPadding(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Button(onClick = { onPickFolder(null) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Icon(Icons.Outlined.Add, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.storage_home_add_folder))
+                    // The gate card's "Use picker" button is this exact action -- showing both
+                    // is the same affordance twice on one screen.
+                    if (ready) {
+                        Button(onClick = { onPickFolder(null) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Icon(Icons.Outlined.Add, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.storage_home_add_folder))
+                        }
                     }
-                    Button(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                    OutlinedButton(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Outlined.Cloud, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.storage_home_remotes))

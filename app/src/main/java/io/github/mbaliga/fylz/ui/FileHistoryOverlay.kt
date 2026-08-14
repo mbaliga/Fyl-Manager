@@ -2,18 +2,23 @@ package io.github.mbaliga.fylz.ui
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
@@ -21,20 +26,21 @@ import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,11 +48,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import io.github.mbaliga.fylz.history.FileHistoryReason
 import io.github.mbaliga.fylz.history.FileHistoryRestoreStatus
 import io.github.mbaliga.fylz.history.FileHistorySettings
 import io.github.mbaliga.fylz.history.FileHistoryStore
@@ -57,13 +70,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.abs
 
+/**
+ * Owns the store, its derived state, toasts, and the dialog itself. Hoisted so a caller that
+ * already has its own open/close affordance (a recovery card, a menu row) can drive this directly
+ * instead of going through a FAB it doesn't want.
+ */
 @Composable
-fun FileHistoryOverlay(modifier: Modifier = Modifier) {
+fun FileHistoryHost(open: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = remember { FileHistoryStore(context.applicationContext) }
-    var open by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(store.settings()) }
     var versions by remember { mutableStateOf(store.allVersions()) }
     var usage by remember { mutableStateOf(store.usage()) }
@@ -75,15 +93,10 @@ fun FileHistoryOverlay(modifier: Modifier = Modifier) {
         usage = store.usage()
     }
 
-    Box(modifier) {
-        FloatingActionButton(
-            onClick = {
-                refresh()
-                open = true
-            },
-        ) {
-            Icon(Icons.Outlined.History, contentDescription = "File history")
-        }
+    // The store is a thin JSON+file wrapper, not a live feed — re-read it whenever the dialog
+    // is about to be shown so it reflects captures taken elsewhere since the last open.
+    LaunchedEffect(open) {
+        if (open) refresh()
     }
 
     if (open) {
@@ -92,7 +105,7 @@ fun FileHistoryOverlay(modifier: Modifier = Modifier) {
             usage = usage,
             versions = versions,
             busy = busy,
-            onDismiss = { open = false },
+            onDismiss = onDismiss,
             onSaveSettings = { value ->
                 scope.launch {
                     busy = true
@@ -159,6 +172,7 @@ private fun FileHistoryDialog(
     onDelete: (FileHistoryVersion) -> Unit,
     onClear: () -> Unit,
 ) {
+    var settingsOpen by remember { mutableStateOf(false) }
     var enabled by remember(settings) { mutableStateOf(settings.enabled) }
     var versionLimit by remember(settings) { mutableStateOf(settings.maxVersionsPerFile.toString()) }
     var fileLimitMb by remember(settings) {
@@ -167,6 +181,11 @@ private fun FileHistoryDialog(
     var storageLimitGb by remember(settings) {
         mutableStateOf(formatDecimal(settings.maxStorageBytes.toDouble() / GIBIBYTE.toDouble()))
     }
+    // Timeline selection. Held as a raw id, not a version: versions is replaced wholesale on
+    // every refresh, and re-resolving against the current list below is what lets a stale id
+    // (deleted, or filtered out) fall back to the most recent version instead of selecting nothing.
+    var filterKey by remember { mutableStateOf<String?>(null) }
+    var selectedId by remember { mutableStateOf<String?>(null) }
 
     val parsedVersions = versionLimit.toIntOrNull()
     val parsedFileMb = fileLimitMb.toLongOrNull()
@@ -175,13 +194,27 @@ private fun FileHistoryDialog(
         parsedFileMb != null && parsedFileMb in 1L..102_400L &&
         parsedStorageGb != null && parsedStorageGb > 0.0 && parsedStorageGb <= 1024.0
 
+    val distinctFiles = remember(versions) {
+        versions.groupBy(FileHistoryVersion::sourceKey)
+            .map { (key, group) -> key to (group.maxByOrNull(FileHistoryVersion::capturedAtMillis)?.displayName ?: key) }
+            .sortedBy { it.second.lowercase() }
+    }
+    val filteredVersions = if (filterKey == null) versions else versions.filter { it.sourceKey == filterKey }
+    val selectedVersion = filteredVersions.firstOrNull { it.id == selectedId }
+        ?: filteredVersions.maxByOrNull(FileHistoryVersion::capturedAtMillis)
+
     Dialog(onDismissRequest = { if (!busy) onDismiss() }) {
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             tonalElevation = 6.dp,
             modifier = Modifier.fillMaxWidth().heightIn(max = 760.dp),
         ) {
-            Column(Modifier.padding(20.dp)) {
+            // verticalScroll, not a bare Column: with the settings panel expanded plus a
+            // populated timeline and detail card, this comfortably exceeds the height a phone in
+            // landscape (or split-screen) has to give the 760.dp cap above -- without a scrolling
+            // container the excess is simply clipped, taking the Save-settings and Restore
+            // buttons with it, with no gesture to reach them.
+            Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {
                         Text("File history", style = MaterialTheme.typography.headlineSmall)
@@ -191,75 +224,83 @@ private fun FileHistoryDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    IconButton(onClick = { settingsOpen = !settingsOpen }, enabled = !busy) {
+                        Icon(
+                            Icons.Outlined.Settings,
+                            contentDescription = if (settingsOpen) "Hide file history settings" else "File history settings",
+                        )
+                    }
                     IconButton(onClick = onDismiss, enabled = !busy) {
                         Icon(Icons.Outlined.Close, contentDescription = "Close file history")
                     }
                 }
 
-                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                if (settingsOpen) {
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Keep file versions", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "Disabled by default because snapshots duplicate file contents.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Keep file versions", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Disabled by default because snapshots duplicate file contents.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(checked = enabled, onCheckedChange = { enabled = it }, enabled = !busy)
+                    }
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = versionLimit,
+                            onValueChange = { versionLimit = it.filter(Char::isDigit).take(3) },
+                            label = { Text("Versions/file") },
+                            singleLine = true,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedTextField(
+                            value = fileLimitMb,
+                            onValueChange = { fileLimitMb = it.filter(Char::isDigit).take(6) },
+                            label = { Text("Max file (MiB)") },
+                            singleLine = true,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f),
                         )
                     }
-                    Switch(checked = enabled, onCheckedChange = { enabled = it }, enabled = !busy)
-                }
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                ) {
                     OutlinedTextField(
-                        value = versionLimit,
-                        onValueChange = { versionLimit = it.filter(Char::isDigit).take(3) },
-                        label = { Text("Versions/file") },
+                        value = storageLimitGb,
+                        onValueChange = { value ->
+                            storageLimitGb = value.filter { it.isDigit() || it == '.' }.take(8)
+                        },
+                        label = { Text("History storage cap (GiB)") },
+                        supportingText = { Text("Oldest versions are pruned first when this cap is reached.") },
                         singleLine = true,
                         enabled = !busy,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
-                    OutlinedTextField(
-                        value = fileLimitMb,
-                        onValueChange = { fileLimitMb = it.filter(Char::isDigit).take(6) },
-                        label = { Text("Max file (MiB)") },
-                        singleLine = true,
-                        enabled = !busy,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                OutlinedTextField(
-                    value = storageLimitGb,
-                    onValueChange = { value ->
-                        storageLimitGb = value.filter { it.isDigit() || it == '.' }.take(8)
-                    },
-                    label = { Text("History storage cap (GiB)") },
-                    supportingText = { Text("Oldest versions are pruned first when this cap is reached.") },
-                    singleLine = true,
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                )
 
-                Button(
-                    onClick = {
-                        onSaveSettings(
-                            FileHistorySettings(
-                                enabled = enabled,
-                                maxVersionsPerFile = parsedVersions!!,
-                                maxFileBytes = parsedFileMb!! * MEBIBYTE,
-                                maxStorageBytes = (parsedStorageGb!! * GIBIBYTE).toLong(),
-                            ),
-                        )
-                    },
-                    enabled = valid && !busy,
-                    modifier = Modifier.align(Alignment.End).padding(top = 8.dp),
-                ) {
-                    Icon(Icons.Outlined.Save, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Save settings")
+                    Button(
+                        onClick = {
+                            onSaveSettings(
+                                FileHistorySettings(
+                                    enabled = enabled,
+                                    maxVersionsPerFile = parsedVersions!!,
+                                    maxFileBytes = parsedFileMb!! * MEBIBYTE,
+                                    maxStorageBytes = (parsedStorageGb!! * GIBIBYTE).toLong(),
+                                ),
+                            )
+                        },
+                        enabled = valid && !busy,
+                        modifier = Modifier.align(Alignment.End).padding(top = 8.dp),
+                    ) {
+                        Icon(Icons.Outlined.Save, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Save settings")
+                    }
                 }
 
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
@@ -276,6 +317,8 @@ private fun FileHistoryDialog(
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 12.dp),
                 )
+
+                HorizontalDivider(Modifier.padding(bottom = 12.dp))
 
                 if (versions.isEmpty()) {
                     Column(
@@ -296,19 +339,43 @@ private fun FileHistoryDialog(
                         )
                     }
                 } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f, fill = false),
-                    ) {
-                        items(versions, key = FileHistoryVersion::id) { version ->
-                            FileHistoryVersionCard(
-                                version = version,
-                                restoreEnabled = settings.enabled && !busy,
-                                deleteEnabled = !busy,
-                                onRestore = { onRestore(version) },
-                                onDelete = { onDelete(version) },
-                            )
+                    if (distinctFiles.size > 1) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        ) {
+                            item {
+                                FilterChip(
+                                    selected = filterKey == null,
+                                    onClick = { filterKey = null },
+                                    label = { Text("All files") },
+                                )
+                            }
+                            items(distinctFiles, key = { it.first }) { (key, name) ->
+                                FilterChip(
+                                    selected = filterKey == key,
+                                    onClick = { filterKey = key },
+                                    label = { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                )
+                            }
                         }
+                    }
+
+                    HistoryTimelineStrip(
+                        versions = filteredVersions,
+                        selectedId = selectedVersion?.id,
+                        onSelect = { selectedId = it.id },
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
+
+                    selectedVersion?.let { version ->
+                        FileHistoryDetailCard(
+                            version = version,
+                            restoreEnabled = !busy,
+                            deleteEnabled = !busy,
+                            onRestore = { onRestore(version) },
+                            onDelete = { onDelete(version) },
+                        )
                     }
                 }
 
@@ -319,43 +386,154 @@ private fun FileHistoryDialog(
                         Spacer(Modifier.width(6.dp))
                         Text("Clear history")
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = onDismiss, enabled = !busy) { Text("Done") }
                 }
             }
         }
     }
 }
 
+/**
+ * A horizontal map of [versions] by capture time, one marker per version. Tapping or dragging
+ * anywhere on the strip selects whichever marker's x is nearest the finger — there is no per-dot
+ * hit target to miss.
+ */
 @Composable
-private fun FileHistoryVersionCard(
+private fun HistoryTimelineStrip(
+    versions: List<FileHistoryVersion>,
+    selectedId: String?,
+    onSelect: (FileHistoryVersion) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (versions.isEmpty()) return
+
+    val minMillis = versions.minOf(FileHistoryVersion::capturedAtMillis)
+    val maxMillis = versions.maxOf(FileHistoryVersion::capturedAtMillis)
+    val colorByReason = FileHistoryReason.entries.associateWith { reasonColor(it) }
+    val markerOutline = MaterialTheme.colorScheme.onSurface
+    val track = MaterialTheme.colorScheme.outlineVariant
+
+    Column(modifier) {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(TIMELINE_HEIGHT)
+                .pointerInput(versions) {
+                    fun selectNearest(x: Float) {
+                        nearestVersionTo(
+                            x = x,
+                            versions = versions,
+                            minMillis = minMillis,
+                            maxMillis = maxMillis,
+                            widthPx = size.width.toFloat(),
+                            paddingPx = TIMELINE_PADDING.toPx(),
+                        )?.let(onSelect)
+                    }
+                    // Down selects immediately (a plain tap), then every subsequent move
+                    // re-selects the nearest marker — the same loop covers both gestures the
+                    // strip needs to support without two competing detectors fighting for the
+                    // pointer.
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        selectNearest(down.position.x)
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) break
+                            if (change.positionChanged()) selectNearest(change.position.x)
+                            change.consume()
+                        }
+                    }
+                },
+        ) {
+            val paddingPx = TIMELINE_PADDING.toPx()
+            val baselineY = size.height * TIMELINE_BASELINE_FRACTION
+            drawLine(
+                color = track,
+                start = Offset(paddingPx, baselineY),
+                end = Offset(size.width - paddingPx, baselineY),
+                strokeWidth = 1.5.dp.toPx(),
+            )
+            versions.forEach { version ->
+                if (version.id == selectedId) return@forEach // drawn last, on top of the rest
+                val x = timelineX(version.capturedAtMillis, minMillis, maxMillis, size.width, paddingPx)
+                drawCircle(
+                    color = colorByReason.getValue(version.reason),
+                    radius = TIMELINE_DOT_RADIUS.toPx(),
+                    center = Offset(x, baselineY),
+                )
+            }
+            versions.firstOrNull { it.id == selectedId }?.let { version ->
+                val x = timelineX(version.capturedAtMillis, minMillis, maxMillis, size.width, paddingPx)
+                val topY = baselineY - TIMELINE_PIN_HEIGHT.toPx()
+                val color = colorByReason.getValue(version.reason)
+                drawLine(
+                    color = color,
+                    start = Offset(x, baselineY),
+                    end = Offset(x, topY),
+                    strokeWidth = 2.5.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                drawCircle(color = color, radius = TIMELINE_SELECTED_DOT_RADIUS.toPx(), center = Offset(x, topY))
+                drawCircle(
+                    color = markerOutline,
+                    radius = TIMELINE_SELECTED_DOT_RADIUS.toPx(),
+                    center = Offset(x, topY),
+                    style = Stroke(width = 1.5.dp.toPx()),
+                )
+            }
+        }
+
+        Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                formatHistoryTime(minMillis),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (maxMillis != minMillis) {
+                Text(
+                    formatHistoryTime(maxMillis),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FileHistoryDetailCard(
     version: FileHistoryVersion,
     restoreEnabled: Boolean,
     deleteEnabled: Boolean,
     onRestore: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    version.displayName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                ReasonChip(version.reason)
+            }
             Text(
-                version.displayName,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "${formatHistoryTime(version.capturedAtMillis)} · ${formatBytes(version.sizeBytes)} · " +
-                    version.reason.name.lowercase().replace('_', ' '),
+                "${formatFullDateTime(version.capturedAtMillis)} · ${formatBytes(version.sizeBytes)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onRestore, enabled = restoreEnabled) {
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                Button(onClick = onRestore, enabled = restoreEnabled) {
                     Icon(Icons.Outlined.Restore, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Restore")
@@ -369,8 +547,75 @@ private fun FileHistoryVersionCard(
     }
 }
 
+@Composable
+private fun ReasonChip(reason: FileHistoryReason, modifier: Modifier = Modifier) {
+    val color = reasonColor(reason)
+    Surface(
+        color = color.copy(alpha = 0.16f),
+        contentColor = color,
+        shape = MaterialTheme.shapes.small,
+        modifier = modifier,
+    ) {
+        Text(
+            reason.readableLabel(),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/** One scheme color per reason, shared by the timeline dots and [ReasonChip]. */
+@Composable
+private fun reasonColor(reason: FileHistoryReason): Color = when (reason) {
+    FileHistoryReason.OBSERVED -> MaterialTheme.colorScheme.primary
+    FileHistoryReason.BEFORE_WRITE -> MaterialTheme.colorScheme.tertiary
+    FileHistoryReason.BEFORE_REPLACE -> MaterialTheme.colorScheme.secondary
+    FileHistoryReason.BEFORE_RESTORE -> MaterialTheme.colorScheme.error
+}
+
+private fun FileHistoryReason.readableLabel(): String = when (this) {
+    FileHistoryReason.OBSERVED -> "Observed"
+    FileHistoryReason.BEFORE_WRITE -> "Before write"
+    FileHistoryReason.BEFORE_REPLACE -> "Before replace"
+    FileHistoryReason.BEFORE_RESTORE -> "Before restore"
+}
+
+/**
+ * Where [capturedAtMillis] lands on the strip: linear over `[minMillis, maxMillis]`, inset by
+ * [paddingPx] at both ends. A single-instant range (or a lone version) collapses to the centre
+ * rather than dividing by zero.
+ */
+private fun timelineX(
+    capturedAtMillis: Long,
+    minMillis: Long,
+    maxMillis: Long,
+    widthPx: Float,
+    paddingPx: Float,
+): Float {
+    if (maxMillis <= minMillis) return widthPx / 2f
+    val available = (widthPx - 2f * paddingPx).coerceAtLeast(0f)
+    val fraction = (capturedAtMillis - minMillis).toFloat() / (maxMillis - minMillis).toFloat()
+    return paddingPx + fraction * available
+}
+
+/** The marker whose [timelineX] is closest to [x] — how a tap or drag position resolves to a version. */
+private fun nearestVersionTo(
+    x: Float,
+    versions: List<FileHistoryVersion>,
+    minMillis: Long,
+    maxMillis: Long,
+    widthPx: Float,
+    paddingPx: Float,
+): FileHistoryVersion? = versions.minByOrNull { version ->
+    abs(timelineX(version.capturedAtMillis, minMillis, maxMillis, widthPx, paddingPx) - x)
+}
+
 private fun formatHistoryTime(timeMillis: Long): String =
     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(timeMillis))
+
+private fun formatFullDateTime(timeMillis: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.FULL, DateFormat.MEDIUM).format(Date(timeMillis))
 
 private fun formatDecimal(value: Double): String =
     if (value % 1.0 == 0.0) value.toLong().toString() else "%.2f".format(value)
@@ -384,3 +629,10 @@ private fun formatBytes(bytes: Long): String = when {
 
 private const val MEBIBYTE = 1024L * 1024L
 private const val GIBIBYTE = 1024L * 1024L * 1024L
+
+private val TIMELINE_HEIGHT = 72.dp
+private val TIMELINE_PADDING = 20.dp
+private const val TIMELINE_BASELINE_FRACTION = 0.68f
+private val TIMELINE_DOT_RADIUS = 4.5.dp
+private val TIMELINE_SELECTED_DOT_RADIUS = 7.dp
+private val TIMELINE_PIN_HEIGHT = 22.dp

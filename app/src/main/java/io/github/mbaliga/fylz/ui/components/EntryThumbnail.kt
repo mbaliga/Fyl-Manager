@@ -25,6 +25,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -55,6 +56,10 @@ import kotlinx.coroutines.withContext
  * Every step is bounded: thumbnails are requested at [size], never full resolution, satisfying
  * docs/product/preview-and-recycle-bin-contract.md's "must never load an unbounded file into
  * memory" rule.
+ *
+ * Provider thumbnails (step 1) are cached in [ThumbnailCache] by URI, so a row that recomposes --
+ * or a folder-grid card asking for the same three thumbnails on every peek -- re-queries the
+ * resolver once, not on every recomposition.
  */
 @Composable
 fun EntryThumbnail(
@@ -66,20 +71,26 @@ fun EntryThumbnail(
     val thumbnailable = !entry.isDirectory &&
         (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO)
 
-    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = entry.uri, key2 = thumbnailable) {
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = entry.uri, key2 = thumbnailable) {
         if (!thumbnailable) {
             value = null
             return@produceState
         }
-        value = withContext(Dispatchers.IO) {
-            loadProviderThumbnail(context.contentResolver, entry.uri, THUMBNAIL_PIXELS)
+        val cacheKey = entry.uri.toString()
+        val cached = ThumbnailCache.get(cacheKey)
+        if (cached != null) {
+            value = cached
+            return@produceState
         }
+        value = withContext(Dispatchers.IO) {
+            loadProviderThumbnail(context.contentResolver, entry.uri, THUMBNAIL_PIXELS)?.asImageBitmap()
+        }?.also { ThumbnailCache.put(cacheKey, it) }
     }
 
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         when {
             bitmap != null -> Image(
-                bitmap = bitmap!!.asImageBitmap(),
+                bitmap = bitmap!!,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.size(size).clip(MaterialTheme.shapes.small),
@@ -114,6 +125,30 @@ private fun loadProviderThumbnail(
 ): Bitmap? = runCatching {
     resolver.loadThumbnail(uri, Size(pixels, pixels), CancellationSignal())
 }.getOrNull()
+
+/**
+ * Process-wide LRU of decoded provider thumbnails, keyed by URI string.
+ *
+ * Without this, `produceState` re-hits the content resolver on every recomposition -- and a
+ * folder-grid card that peeks three children re-fires that query for the same three URIs every
+ * time the grid recomposes. `LinkedHashMap`'s `accessOrder = true` constructor plus overriding
+ * [LinkedHashMap.removeEldestEntry] is the standard bounded-LRU idiom; a plain `Map` would grow
+ * without bound over a long browsing session.
+ */
+private object ThumbnailCache {
+    private const val MAX_ENTRIES = 64
+    private val cache = object : LinkedHashMap<String, ImageBitmap>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>) = size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(key: String): ImageBitmap? = cache[key]
+
+    @Synchronized
+    fun put(key: String, bitmap: ImageBitmap) {
+        cache[key] = bitmap
+    }
+}
 
 /** Type icon shown when no thumbnail is available. Covers every [EntryKind]. */
 fun entryIcon(entry: FileEntry): ImageVector = when {

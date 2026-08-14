@@ -108,6 +108,9 @@ sealed interface PickerOutcome {
  *   is showing, so the picker begins where the user's attention already is.
  * @param onBrowseSystem escape hatch into the platform picker, for locations Fylz has not been
  *   granted. Null hides the affordance entirely.
+ * @param showHidden dotfile entries (`name.startsWith(".")`) are read but left out of the listing
+ *   unless this is on, matching the main browser and the folder tree. Defaults off so a caller
+ *   that has not wired the preference through still gets today's behaviour.
  */
 @Composable
 fun FylzPicker(
@@ -120,6 +123,7 @@ fun FylzPicker(
     startAt: Pair<Uri, FolderLocation>? = null,
     suggestedName: String = "",
     onBrowseSystem: (() -> Unit)? = null,
+    showHidden: Boolean = false,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -223,6 +227,7 @@ fun FylzPicker(
                             entries = children.orEmpty(),
                             mode = mode,
                             selected = selected,
+                            showHidden = showHidden,
                             onOpenFolder = { entry ->
                                 crumbs = crumbs + PickerCrumb(here.treeUri, entry.uri, entry.name)
                             },
@@ -376,12 +381,16 @@ private fun EntryList(
     entries: List<FileEntry>,
     mode: PickerMode,
     selected: Set<Uri>,
+    showHidden: Boolean,
     onOpenFolder: (FileEntry) -> Unit,
     onToggleFile: (FileEntry) -> Unit,
 ) {
     // Folders first, then files. In folder and save modes the files are still drawn — greyed and
     // inert — because a folder shown empty when it is not is a folder the user distrusts.
-    val ordered = remember(entries) { entries.sortedWith(compareByDescending<FileEntry> { it.isDirectory }.thenBy { it.name.lowercase() }) }
+    val ordered = remember(entries, showHidden) {
+        val visible = if (showHidden) entries else entries.filterNot { it.name.startsWith(".") }
+        visible.sortedWith(compareByDescending<FileEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
+    }
     if (ordered.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(

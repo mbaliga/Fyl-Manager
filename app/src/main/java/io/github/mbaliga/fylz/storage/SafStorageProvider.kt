@@ -78,10 +78,10 @@ class SafStorageProvider : StorageProvider {
                 }
                 // Always kept: MANAGE_EXTERNAL_STORAGE covers local shared storage and nothing
                 // else, so SAF remains the only route to cloud, USB and third-party providers.
-                providerRoots(context).takeIf { it.isNotEmpty() }?.let {
+                providerRoots(context, fileBackendLive).takeIf { it.isNotEmpty() }?.let {
                     add(StorageRootGroup(GROUP_PROVIDERS, it))
                 }
-            }
+            }.let(::dropShadowedProviderRows)
         }
 
     /**
@@ -188,7 +188,7 @@ class SafStorageProvider : StorageProvider {
      * permission, so a normal app usually cannot read root rows. We therefore *try* the query and
      * fall back to a bare picker shortcut per authority, which always works.
      */
-    private fun providerRoots(context: Context): List<StorageRoot> {
+    private fun providerRoots(context: Context, fileBackendLive: Boolean): List<StorageRoot> {
         val intent = Intent(DOCUMENTS_PROVIDER_ACTION)
         val providers = runCatching {
             context.packageManager.queryIntentContentProviders(intent, 0)
@@ -196,7 +196,7 @@ class SafStorageProvider : StorageProvider {
 
         return providers.mapNotNull { info ->
             val authority = info.providerInfo?.authority ?: return@mapNotNull null
-            if (authority == EXTERNAL_STORAGE_AUTHORITY) return@mapNotNull null
+            if (isNoiseAuthority(authority, context.packageName, fileBackendLive)) return@mapNotNull null
             val label = runCatching {
                 info.providerInfo.loadLabel(context.packageManager).toString()
             }.getOrNull() ?: authority
@@ -224,10 +224,46 @@ class SafStorageProvider : StorageProvider {
 
     private fun describeAuthority(authority: String?): String = when (authority) {
         EXTERNAL_STORAGE_AUTHORITY -> "Device storage"
-        "com.android.providers.downloads.documents" -> "Downloads"
+        DOWNLOADS_AUTHORITY -> "Downloads"
         "com.android.providers.media.documents" -> "Media"
         null -> "Document provider"
         else -> authority
+    }
+
+    /**
+     * Policy for what "Other providers" is for: authorities that add no reach beyond what the
+     * home surface already offers directly. Fylz's own provider is already surfaced as the app
+     * itself, not a document source to browse into; MTP host and shell never expose anything a
+     * user meaningfully browses; Downloads is a picker-only echo of the folder the File backend
+     * already lists directly once full access is live.
+     */
+    private fun isNoiseAuthority(authority: String, packageName: String, fileBackendLive: Boolean): Boolean =
+        authority == EXTERNAL_STORAGE_AUTHORITY ||
+            authority.startsWith(packageName) ||
+            authority in NOISY_PROVIDER_AUTHORITIES ||
+            (fileBackendLive && authority == DOWNLOADS_AUTHORITY)
+
+    /** Titles already reachable with no picker round-trip, across every group built so far. */
+    private fun directOpenTitles(groups: List<StorageRootGroup>): Set<String> =
+        groups.asSequence()
+            .flatMap { it.roots }
+            .filter { it.opensDirectly }
+            .mapTo(mutableSetOf()) { it.title.lowercase() }
+
+    /**
+     * Drops "Other providers" rows that just repeat a title already reachable directly --
+     * vendor-shipped "Files"/"Local storage" shims, and a provider "Downloads" row shadowing a
+     * folder the user already granted straight access to.
+     */
+    private fun dropShadowedProviderRows(groups: List<StorageRootGroup>): List<StorageRootGroup> {
+        val directTitles = directOpenTitles(groups)
+        if (directTitles.isEmpty()) return groups
+        return groups.mapNotNull { group ->
+            if (group.title != GROUP_PROVIDERS) return@mapNotNull group
+            group.roots.filterNot { it.title.lowercase() in directTitles }
+                .takeIf { it.isNotEmpty() }
+                ?.let { StorageRootGroup(group.title, it) }
+        }
     }
 
     companion object {
@@ -244,6 +280,14 @@ class SafStorageProvider : StorageProvider {
         const val EXTERNAL_STORAGE_PRIMARY: String = "primary:"
 
         private const val DOCUMENTS_PROVIDER_ACTION = "android.content.action.DOCUMENTS_PROVIDER"
+
+        private const val DOWNLOADS_AUTHORITY = "com.android.providers.downloads.documents"
+
+        /** Never a useful "Other providers" row: neither exposes anything a user can browse. */
+        private val NOISY_PROVIDER_AUTHORITIES = setOf(
+            "com.android.mtp.documents",
+            "com.android.shell.documents",
+        )
 
         /**
          * Well-known shared directories, in the order the home surface shows them. Kept in one

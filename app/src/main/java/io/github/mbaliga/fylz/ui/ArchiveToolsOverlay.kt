@@ -19,7 +19,6 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -75,14 +74,23 @@ private sealed interface ArchivePick {
     data object ExtractInto : ArchivePick
 }
 
+/**
+ * Owns the create/inspect/extract state machine and every dialog it drives. Hoisted so a caller
+ * that already has its own open/close affordance (a recovery card) can drive this directly instead
+ * of going through a FAB it doesn't want — [open] stands in for the old menu-choice dialog's own
+ * `menuOpen` flag.
+ *
+ * @param showHidden dotfile entries stay out of the in-app picker's listing unless this is on,
+ *   matching the main browser, the folder tree and the move/copy/PDF-output picker — all four are
+ *   answering the same "Show hidden files" setting, not four independent choices.
+ */
 @Composable
-fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
+fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val service = remember { ArchiveService(context.applicationContext) }
     val repository = remember { DocumentRepository(context.applicationContext) }
     var pick by remember { mutableStateOf<ArchivePick?>(null) }
-    var menuOpen by remember { mutableStateOf(false) }
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var selectedArchive by remember { mutableStateOf<Uri?>(null) }
@@ -236,6 +244,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
             },
             repository = repository,
             suggestedName = (request as? ArchivePick.CreateOutput)?.name.orEmpty(),
+            showHidden = showHidden,
             onDismiss = {
                 pick = null
                 // Abandoning a destination step abandons the password with it, rather than
@@ -284,13 +293,9 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
         )
     }
 
-    FloatingActionButton(onClick = { menuOpen = true }, modifier = modifier) {
-        Icon(Icons.Outlined.Archive, contentDescription = "Open archive tools")
-    }
-
-    if (menuOpen) {
+    if (open) {
         AlertDialog(
-            onDismissRequest = { if (!busy) menuOpen = false },
+            onDismissRequest = { if (!busy) onDismiss() },
             icon = { Icon(Icons.Outlined.FolderZip, contentDescription = null) },
             title = { Text("Archive tools") },
             text = {
@@ -301,7 +306,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     )
                     Button(
                         onClick = {
-                            menuOpen = false
+                            onDismiss()
                             pick = ArchivePick.Sources
                         },
                         enabled = !busy,
@@ -313,7 +318,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     }
                     OutlinedButton(
                         onClick = {
-                            menuOpen = false
+                            onDismiss()
                             pick = ArchivePick.Archive
                         },
                         enabled = !busy,
@@ -325,7 +330,7 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { menuOpen = false }) { Text("Done") } },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
         )
     }
 

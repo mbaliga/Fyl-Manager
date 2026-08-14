@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,7 +32,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
@@ -75,12 +76,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
@@ -141,8 +144,8 @@ import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CommandPill
 import io.github.mbaliga.fylz.ui.components.CommandPillReservedHeight
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
-import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
+import io.github.mbaliga.fylz.ui.components.QuickLook
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
@@ -174,7 +177,6 @@ import dev.aarso.cellshell.SpatialShell
 import dev.aarso.cellshell.WheelItem
 import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Offset
@@ -182,8 +184,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.text.font.FontWeight
 import io.github.mbaliga.fylz.operations.RecycleRecord
+import io.github.mbaliga.fylz.settings.AppPreferencesStore
 import io.github.mbaliga.fylz.staging.DropTarget
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
@@ -203,6 +205,14 @@ enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 private const val MAX_RESTORED_TABS = 8
 
 /**
+ * A directory grid card's lazily-fetched preview: how many children it has, and up to three of
+ * them worth drawing as thumbnails. Kept in a cache the workspace owns (see `folderPeeks` below)
+ * so a card scrolled off-screen and back doesn't repeat the [DocumentRepository.listChildren] read
+ * that filled it the first time.
+ */
+private data class FolderPeek(val itemCount: Int, val thumbs: List<FileEntry>)
+
+/**
  * The app, and the owner of its theme.
  *
  * [recoverySection] and [overlays] are composed *inside* [FylzTheme] on purpose. Recovery used to
@@ -213,14 +223,24 @@ private const val MAX_RESTORED_TABS = 8
  * @param recoverySection the storage-and-recovery surface. It is no longer the whole bottom room:
  *   the bottom room is Actions now, and recovery is its last section — still the same edge, the
  *   same drag, and still owned by the caller so the journal it reads has one owner.
- * @param overlays dialogs the caller owns and needs drawn over everything.
+ * @param overlays dialogs the caller owns and needs drawn over everything. Handed the current
+ *   "Show hidden files" preference, since an overlay that opens its own [io.github.mbaliga.fylz.ui.picker.FylzPicker]
+ *   (the archive tools' source/destination pickers, say) needs the same setting the main browser
+ *   and folder tree already respect — without this the caller has no way to reach a preference
+ *   that lives inside this composable.
  */
 @Composable
 fun FylzV1App(
     recoverySection: @Composable () -> Unit = {},
-    overlays: @Composable () -> Unit = {},
+    overlays: @Composable (showHidden: Boolean) -> Unit = {},
 ) {
-    var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
+    val context = LocalContext.current
+    // Both prefs live here, not inside the workspace: theme mode has to be known before
+    // FylzTheme opens, and show-hidden rides along on the same small store rather than opening a
+    // second one for one more boolean.
+    val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
+    var themeMode by remember { mutableStateOf(preferencesStore.themeMode()) }
+    var showHidden by remember { mutableStateOf(preferencesStore.showHidden()) }
     FylzTheme(
         themeMode = themeMode,
         accentPreset = AccentPreset.MOSS,
@@ -228,10 +248,18 @@ fun FylzV1App(
     ) {
         FylzV1Workspace(
             themeMode = themeMode,
-            onThemeModeChange = { themeMode = it },
+            onThemeModeChange = {
+                themeMode = it
+                preferencesStore.setThemeMode(it)
+            },
+            showHidden = showHidden,
+            onShowHiddenChange = {
+                showHidden = it
+                preferencesStore.setShowHidden(it)
+            },
             recoverySection = recoverySection,
         )
-        overlays()
+        overlays(showHidden)
     }
 }
 
@@ -239,6 +267,8 @@ fun FylzV1App(
 private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    showHidden: Boolean,
+    onShowHiddenChange: (Boolean) -> Unit,
     recoverySection: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -294,6 +324,11 @@ private fun FylzV1Workspace(
     var searchRecursive by remember { mutableStateOf(false) }
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
+    // Settings is a plain overlay now, not a room — it has no edge of its own to track, just
+    // whether it is on screen. rememberSaveable, not remember: MainActivity declares no
+    // android:configChanges, so a rotation recreates the Activity, and a plain remember would
+    // silently drop the overlay mid-edit with no error shown.
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
     // ── The cluster drag and its corner bulges ────────────────────────────────────────
     // Press-hold on a selected row gathers the selection under the finger; the corners grow
@@ -302,6 +337,13 @@ private fun FylzV1Workspace(
     // the app process does, like any clipboard.
     val clusterController = remember { ClusterDragController() }
     val clusterOrigins = remember { mutableStateMapOf<Uri, Offset>() }
+    // Filled lazily, one directory at a time, as grid cards for it compose -- see FileCard and
+    // FolderPeek. Cleared alongside the listing itself so a stale peek never outlives the folder
+    // it described. Keyed on showHidden too, same as FolderTreeRail's children cache: a peek read
+    // before the setting flipped would keep counting (or omitting) dotfiles the new setting
+    // disagrees with, and a plain clear() from a sibling effect would race the per-card refetch
+    // below -- rebinding to a fresh map is what makes the flip atomic instead.
+    val folderPeeks = remember(showHidden) { mutableStateMapOf<Uri, FolderPeek>() }
     var clipboardTray by remember { mutableStateOf(StagingTray(TrayKind.CLIPBOARD)) }
     var moveTray by remember { mutableStateOf(StagingTray(TrayKind.MOVE)) }
     var openTray by remember { mutableStateOf<TrayKind?>(null) }
@@ -335,15 +377,18 @@ private fun FylzV1Workspace(
     }
 
     // Sorting is applied after filtering so the two controls compose: the user's chosen order
-    // holds for the current folder, a folder filter, and recursive search results alike.
-    val visibleEntries = remember(entries, query, searchRecursive, sortSpec) {
+    // holds for the current folder, a folder filter, and recursive search results alike. Hidden
+    // dotfiles are filtered last — sorting an item that will not be drawn wastes nothing, but
+    // filtering before the search match would let a hidden file's name silently narrow a query.
+    val visibleEntries = remember(entries, query, searchRecursive, sortSpec, showHidden) {
         val filtered = if (query.isBlank() || searchRecursive) {
             entries
         } else {
             val parsed = SearchQuery.parse(query)
             entries.filter { parsed.matchesMetadata(it) && parsed.matchesName(it.name) }
         }
-        sortEntries(filtered, sortSpec)
+        val visible = if (showHidden) filtered else filtered.filterNot { it.name.startsWith(".") }
+        sortEntries(visible, sortSpec)
     }
 
     val searchHits = remember(searchProgress, sortSpec) {
@@ -586,6 +631,10 @@ private fun FylzV1Workspace(
         selectedUris = emptySet()
         focusedEntry = null
         previewText = null
+        // Folder peeks are keyed by uri, not by (uri, refreshKey) -- clearing here is what makes
+        // a refresh (or a folder change) show newly-added thumbnails instead of a stale peek from
+        // before the folder changed underneath it.
+        folderPeeks.clear()
         if (activeTab == null) {
             entries = emptyList()
             return@LaunchedEffect
@@ -851,20 +900,17 @@ private fun FylzV1Workspace(
                     activeTabId = activeTabId,
                     activeTab = activeTab,
                     repository = repository,
-                    onOpenFolder = { location ->
-                        // Descend in place: the tree hands the browser a folder inside the tab
-                        // it is already showing, so this is a push onto that tab's stack rather
-                        // than a new location. Re-entering a folder already on the stack rewinds
-                        // to it instead of stacking a second copy of the same crumb.
+                    showHidden = showHidden,
+                    onOpenFolder = { path ->
+                        // The rail hands back the full root-inclusive ancestor chain for the
+                        // tapped folder, not just the folder itself, so the tab's stack is
+                        // replaced wholesale here rather than rewound or appended to — a tap
+                        // three levels deep must not strand the crumb at whatever the stack
+                        // already held above that point.
                         val tab = activeTab ?: return@LocationsRoom
                         val index = tabs.indexOfFirst { it.id == tab.id }
                         if (index >= 0) {
-                            val existing = tab.locations.indexOfFirst { it.uri == location.uri }
-                            tabs[index] = if (existing >= 0) {
-                                tab.copy(locations = tab.locations.take(existing + 1))
-                            } else {
-                                tab.copy(locations = tab.locations + location)
-                            }
+                            tabs[index] = tab.copy(locations = path)
                         }
                         shell.closeAll()
                     },
@@ -886,31 +932,17 @@ private fun FylzV1Workspace(
                         shell.closeAll()
                         rootPicker.launch(null)
                     },
-                )
-            }
-        },
-        right = {
-            RevealedRoom({ -shell.hProgress }) {
-                ToolsRoom(
-                    themeMode = themeMode,
-                    onThemeModeChange = onThemeModeChange,
-                    onAction = { action ->
+                    onOpenSettings = {
                         shell.closeAll()
-                        when (action) {
-                            ToolsAction.RECYCLE_BIN -> recycleDialog = true
-                            ToolsAction.REMOTES -> remoteDialog = true
-                            ToolsAction.WEBDAV -> webDavDialog = true
-                            ToolsAction.TOOLS -> runCatching {
-                                context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
-                            }.onFailure { toast("Tools are unavailable on this build") }
-                            ToolsAction.INDEX -> runCatching {
-                                context.startActivity(Intent(context, IndexManagerActivity::class.java))
-                            }.onFailure { toast("The index manager is unavailable") }
-                        }
+                        settingsOpen = true
                     },
                 )
             }
         },
+        // The right room is gone: Settings moved to a plain entry point in the left room
+        // (SETIO reference), and omitting this slot removes its edge gesture and peek entirely
+        // (SpatialShell's `right` is nullable for exactly this reason) — nothing left to
+        // right-swipe into.
         top = {
             RevealedRoom({ shell.vProgress }) {
                 DetailsRoom(
@@ -971,36 +1003,47 @@ private fun FylzV1Workspace(
                     // shake. What it opens is a description of the folder it is naming, which
                     // is the one thing a title could open without surprising anybody.
                     title = {
-                        Text(
-                            activeTab?.current?.name ?: "Fylz",
-                            // heightIn before clickable so the target is the 48dp DESIGN.md asks
-                            // for rather than the height of the glyphs; wrapContentHeight then
-                            // re-centres the text inside it.
-                            modifier = Modifier
-                                .heightIn(min = 48.dp)
-                                .clickable { shell.open(RoomEdge.TOP) }
-                                .wrapContentHeight(Alignment.CenterVertically)
-                                .semantics {
-                                    contentDescription =
-                                        "${activeTab?.current?.name ?: "Fylz"}. Show details"
-                                },
-                        )
+                        if (activeTab != null) {
+                            Text(
+                                activeTab.current.name,
+                                // heightIn before clickable so the target is the 48dp DESIGN.md
+                                // asks for rather than the height of the glyphs; wrapContentHeight
+                                // then re-centres the text inside it.
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .clickable { shell.open(RoomEdge.TOP) }
+                                    .wrapContentHeight(Alignment.CenterVertically)
+                                    .semantics {
+                                        contentDescription = "${activeTab.current.name}. Show details"
+                                    },
+                            )
+                        } else {
+                            // No tab open means no folder for the details room to describe, so
+                            // the title stops offering to open it — plain text, no target, no
+                            // "Show details" semantics to announce a room with nothing in it.
+                            Text("Fylz")
+                        }
                     },
                     actions = {
-                        // What is left here is what changes how the listing is *displayed*.
-                        // Everything that changes a file — new folder, scan, duplicates, the AI
-                        // proposal, and the whole selection bar — moved to the actions room. An
-                        // overflow menu mixing "make a folder here" with "open the index
-                        // manager" was why it had eleven items and no shape; splitting it by
-                        // "does this touch my files" is what finally gave it one.
-                        IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
-                            Icon(
-                                if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
-                                contentDescription = "Change view",
-                            )
-                        }
-                        IconButton(onClick = { refresh() }) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
+                        // Both buttons act on the listing; on the storage home surface there is
+                        // no listing to toggle or refresh, so they disappear rather than sit
+                        // there wired to nothing.
+                        if (activeTab != null) {
+                            // What is left here is what changes how the listing is *displayed*.
+                            // Everything that changes a file — new folder, scan, duplicates, the
+                            // AI proposal, and the whole selection bar — moved to the actions
+                            // room. An overflow menu mixing "make a folder here" with "open the
+                            // index manager" was why it had eleven items and no shape; splitting
+                            // it by "does this touch my files" is what finally gave it one.
+                            IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
+                                Icon(
+                                    if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
+                                    contentDescription = "Change view",
+                                )
+                            }
+                            IconButton(onClick = { refresh() }) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
+                            }
                         }
                     },
                 )
@@ -1039,6 +1082,9 @@ private fun FylzV1Workspace(
                     }
                     FileBrowser(
                         activeTab = activeTab,
+                        repository = repository,
+                        showHidden = showHidden,
+                        folderPeeks = folderPeeks,
                         entries = visibleEntries,
                         searchHits = searchHits,
                         searchProgress = searchProgress,
@@ -1067,8 +1113,10 @@ private fun FylzV1Workspace(
                         onOpen = ::openEntry,
                         onOpenExternal = ::openExternal,
                         onToggleSelection = { entry ->
+                            // Selection and focus are fully decoupled: a checkbox tap used to
+                            // retarget the preview on every toggle, including on deselection, so
+                            // quick-look chased the selection instead of showing what was opened.
                             selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
-                            focusedEntry = entry.takeUnless(FileEntry::isDirectory)
                         },
                         onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
                         listState = listState,
@@ -1150,26 +1198,19 @@ private fun FylzV1Workspace(
             )
         }
 
-        if (!wide && focusedEntry != null && previewMode != PreviewMode.HIDDEN) {
-            FloatingPreviewPane(
-                onDock = { previewMode = PreviewMode.HIDDEN },
-                onClose = { previewMode = PreviewMode.HIDDEN },
-            ) {
-                PreviewPane(
-                    entry = focusedEntry,
-                    textContent = previewText,
-                    textTruncated = previewTruncated,
-                    loading = previewLoading,
-                    editorValue = editorValue,
-                    onEditorValueChange = { editorValue = it },
-                    onSave = {
-                        focusedEntry?.let { entry ->
-                            scope.launch { repository.writeText(entry.uri, editorValue) }
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+        // Transient, not pinned: quick-look is on screen exactly while focusedEntry is set, and
+        // every dismissal clears it -- there is no "hidden forever" state left to fall into (the
+        // old FloatingPreviewPane's onClose set previewMode = HIDDEN permanently; nothing here
+        // plays that role, and PreviewMode stays reserved for the wide docked pane below).
+        if (!wide) {
+            QuickLook(
+                entry = focusedEntry,
+                textContent = previewText,
+                textTruncated = previewTruncated,
+                loading = previewLoading,
+                onOpenExternal = ::openExternal,
+                onDismiss = { focusedEntry = null },
+            )
         }
 
         // ── Resting bulges: the trays' standing presence while they hold something ─────
@@ -1463,6 +1504,7 @@ private fun FylzV1Workspace(
             repository = repository,
             startAt = current,
             suggestedName = (request as? InAppPickerRequest.Named)?.suggestedName.orEmpty(),
+            showHidden = showHidden,
             onDismiss = { pickerRequest = null },
             onBrowseSystem = {
                 pickerRequest = null
@@ -1556,6 +1598,33 @@ private fun FylzV1Workspace(
             },
         )
     }
+
+    if (settingsOpen) {
+        // Dispatch matches the old right-room ToolsAction handler exactly, including the toast
+        // fallback for the two destination activities: only where the settings live moved.
+        SettingsOverlay(
+            themeMode = themeMode,
+            onThemeModeChange = onThemeModeChange,
+            showHidden = showHidden,
+            onShowHiddenChange = onShowHiddenChange,
+            onOpenRecycleBin = { settingsOpen = false; recycleDialog = true },
+            onOpenRemotes = { settingsOpen = false; remoteDialog = true },
+            onOpenWebDav = { settingsOpen = false; webDavDialog = true },
+            onOpenTools = {
+                settingsOpen = false
+                runCatching {
+                    context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
+                }.onFailure { toast("Tools are unavailable on this build") }
+            },
+            onOpenIndexManager = {
+                settingsOpen = false
+                runCatching {
+                    context.startActivity(Intent(context, IndexManagerActivity::class.java))
+                }.onFailure { toast("The index manager is unavailable") }
+            },
+            onDismiss = { settingsOpen = false },
+        )
+    }
 }
 
 @Composable
@@ -1597,6 +1666,9 @@ private fun LibraryRail(
 @Composable
 private fun FileBrowser(
     activeTab: FolderTab?,
+    repository: DocumentRepository,
+    showHidden: Boolean,
+    folderPeeks: MutableMap<Uri, FolderPeek>,
     entries: List<FileEntry>,
     searchHits: List<SearchHit>,
     searchProgress: SearchProgress?,
@@ -1685,7 +1757,19 @@ private fun FileBrowser(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(entries, key = { it.uri.toString() }) { entry ->
-                        FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
+                        FileCard(
+                            entry = entry,
+                            selected = entry.uri in selectedUris,
+                            focused = entry.uri == focusedEntry?.uri,
+                            onOpen = onOpen,
+                            onOpenExternal = onOpenExternal,
+                            onToggleSelection = onToggleSelection,
+                            cluster = cluster,
+                            treeUri = activeTab.treeUri,
+                            repository = repository,
+                            showHidden = showHidden,
+                            folderPeeks = folderPeeks,
+                        )
                     }
                 }
             } else {
@@ -1922,6 +2006,56 @@ private fun FileRowV1(
     }
 }
 
+/**
+ * The directory grid card's folder-peek header: children fanned above the panel that names the
+ * folder, once [FileCard] has learned the folder is not empty and has something thumbnailable to
+ * show. Everything else about a directory card (loading, empty) stays the plain icon layout.
+ */
+@Composable
+private fun FolderPeekHeader(
+    name: String,
+    peek: FolderPeek,
+    selected: Boolean,
+    onToggleSelection: () -> Unit,
+) {
+    // fillMaxSize, not fillMaxWidth: the top/bottom alignments below only spread the thumbnails
+    // and the name panel apart if this Box actually claims the card's full content height rather
+    // than shrinking to its tallest child.
+    Box(Modifier.fillMaxSize()) {
+        // Up to three children, each nudged further right and down than the last so they read as
+        // a loose stack peeking out from behind the name panel -- the same three the folder had
+        // to read to know it wasn't empty, not a fourth thumbnail's worth of extra traffic.
+        peek.thumbs.forEachIndexed { index, child ->
+            EntryThumbnail(
+                child,
+                size = 34.dp,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset(x = (index * 14).dp, y = (index * 6).dp),
+            )
+        }
+        Checkbox(
+            checked = selected,
+            onCheckedChange = { onToggleSelection() },
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (peek.itemCount == 1) "1 item" else "${peek.itemCount} items",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileCard(
@@ -1931,14 +2065,44 @@ private fun FileCard(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
-    cluster: ClusterGestureHooks? = null,
+    cluster: ClusterGestureHooks?,
+    treeUri: Uri,
+    repository: DocumentRepository,
+    showHidden: Boolean,
+    folderPeeks: MutableMap<Uri, FolderPeek>,
 ) {
     var originInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    // Read once per (folder uri, showHidden), not once per recomposition -- the cache is what
+    // makes scrolling a card off-screen and back free, and the containsKey guard is what makes
+    // composing the same card twice (e.g. a sort that reorders but doesn't change the entry) free
+    // too. showHidden rides in the key alongside entry.uri so a setting flip restarts this effect
+    // against the fresh map `folderPeeks` was just rebound to, instead of leaving the composable
+    // waiting on a key change that would never come.
+    LaunchedEffect(entry.uri, showHidden) {
+        if (!entry.isDirectory || folderPeeks.containsKey(entry.uri)) return@LaunchedEffect
+        val children = runCatching { repository.listChildren(treeUri, entry.uri) }.getOrDefault(emptyList())
+        val visible = if (showHidden) children else children.filterNot { it.name.startsWith(".") }
+        val thumbs = visible.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
+        folderPeeks[entry.uri] = FolderPeek(visible.size, thumbs)
+    }
+    // derivedStateOf, not a bare folderPeeks[entry.uri] read: SnapshotStateMap invalidates every
+    // reader on ANY key's write, not just this one's -- with dozens of folder cards each writing
+    // their own peek as they resolve, a bare read turns every card's arrival into an O(N) recompose
+    // of every other already-resolved card. Scoping the read behind a derived value means this
+    // card only recomposes when the value at its OWN key actually changes.
+    val peekState by remember(entry.uri, folderPeeks) {
+        derivedStateOf { if (entry.isDirectory) folderPeeks[entry.uri] else null }
+    }
+    // Copied into a plain local: a delegated property's reads aren't smart-castable, and the
+    // uses below rely on the null check narrowing the type.
+    val peek = peekState
+
     Surface(
         color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
-            .height(140.dp)
+            .height(164.dp)
             .onGloballyPositioned { coordinates ->
                 originInRoot = coordinates.positionInRoot()
                 if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
@@ -1968,13 +2132,40 @@ private fun FileCard(
             .semantics { contentDescription = entry.name },
     ) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.Top) {
-                // Grid cells get a larger thumbnail: it is the whole point of grid view.
-                EntryThumbnail(entry, size = 56.dp)
-                Spacer(Modifier.weight(1f))
-                Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
+            if (peek != null && peek.thumbs.isNotEmpty()) {
+                // The panel below carries the name and count itself, so there is nothing left
+                // for a second text block underneath -- unlike the plain-icon layout below.
+                FolderPeekHeader(entry.name, peek, selected, onToggleSelection = { onToggleSelection(entry) })
+            } else {
+                Row(verticalAlignment = Alignment.Top) {
+                    // Grid cells get a larger thumbnail: it is the whole point of grid view. A
+                    // directory with no peek yet (still loading) or nothing thumbnailable in it
+                    // falls back to the same folder icon it always drew here.
+                    EntryThumbnail(entry, size = 56.dp)
+                    Spacer(Modifier.weight(1f))
+                    Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
+                }
+                Column {
+                    Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                    // Grid used to show less than list once you looked past the icon -- no size,
+                    // no kind, nothing else at all for a folder. Non-directory cards catch up to
+                    // FileRowV1's caption; directories get a count once their peek resolves.
+                    val caption = when {
+                        peek != null -> if (peek.itemCount == 0) "Empty" else "${peek.itemCount} items"
+                        entry.isDirectory -> null
+                        else -> listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · ")
+                    }
+                    if (caption != null) {
+                        Text(
+                            caption,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
-            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -2201,11 +2392,13 @@ private fun LocationsRoom(
     activeTabId: String?,
     activeTab: FolderTab?,
     repository: DocumentRepository,
+    showHidden: Boolean,
     onSelect: (String) -> Unit,
     onOpenHome: () -> Unit,
     onClose: (FolderTab) -> Unit,
     onAdd: () -> Unit,
-    onOpenFolder: (FolderLocation) -> Unit,
+    onOpenFolder: (List<FolderLocation>) -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val items = remember(tabs) {
         buildList {
@@ -2264,74 +2457,36 @@ private fun LocationsRoom(
                 treeUri = activeTab.treeUri,
                 ancestors = activeTab.locations,
                 repository = repository,
+                showHidden = showHidden,
                 onOpenFolder = onOpenFolder,
                 modifier = Modifier.weight(1f),
             )
         }
-    }
-}
 
-/** What a row in the tools room does. */
-private enum class ToolsAction { RECYCLE_BIN, REMOTES, WEBDAV, TOOLS, INDEX }
-
-/**
- * The right room: the app's own tools and settings.
- *
- * These were all buried in the file browser's overflow menu, which had eleven items and no
- * shape because it mixed "make a folder here" with "open the index manager". They are not
- * actions on the folder you are looking at; they are the app, and they get a surface.
- *
- * It renders in Fylz's theme like everything else here. That is the fix for the light-coloured
- * Tools screen inside a dark app: the destination activities were painting under a bare
- * `MaterialTheme`, and so was this menu's host.
- */
-@Composable
-private fun ToolsRoom(
-    themeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    onAction: (ToolsAction) -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        RoomHeading("Tools")
-        ToolsRow("Recycle Bin") { onAction(ToolsAction.RECYCLE_BIN) }
-        ToolsRow(stringResource(R.string.remotes_title)) { onAction(ToolsAction.REMOTES) }
-        ToolsRow("Quick WebDAV listing") { onAction(ToolsAction.WEBDAV) }
-        ToolsRow(stringResource(R.string.tools_title)) { onAction(ToolsAction.TOOLS) }
-        ToolsRow(stringResource(R.string.tools_index)) { onAction(ToolsAction.INDEX) }
-
-        Spacer(Modifier.size(20.dp))
-        RoomHeading("Appearance")
-        ThemeMode.entries.forEach { mode ->
-            val selected = mode == themeMode
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { onThemeModeChange(mode) }
-                    .padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // A filled square for the chosen mode rather than a RadioButton: the same
-                // marker the rail uses, so the two rooms read as one app.
-                Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                    if (selected) {
-                        Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                    }
-                }
-                Text(
-                    mode.readableLabel(),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                )
-            }
+        // The quiet way in: below the wheel and whatever tree is showing, not competing with
+        // either for attention. A gear this small next to a label this plain reads as "there is
+        // more, if you want it" rather than as a fourth thing to navigate.
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 40.dp)
+                .clickable(onClick = onOpenSettings)
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Settings,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                "Settings",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 10.dp),
+            )
         }
     }
 }
@@ -2347,20 +2502,6 @@ internal fun RoomHeading(text: String) {
     )
 }
 
-@Composable
-private fun ToolsRow(label: String, onClick: () -> Unit) {
-    Text(
-        label,
-        style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-    )
-}
-
-/** Sentence-case names for the theme modes; the enum's own names are shouting. */
 /** Material's own top app bar height, which the toolbar does not expose as a public constant. */
 private val TOP_BAR_HEIGHT = 64.dp
 
@@ -2406,7 +2547,8 @@ private sealed interface InAppPickerRequest {
     }
 }
 
-private fun ThemeMode.readableLabel(): String = when (this) {
+/** Sentence-case names for the theme modes; the enum's own names are shouting. */
+internal fun ThemeMode.readableLabel(): String = when (this) {
     ThemeMode.SYSTEM -> "Follow the system"
     ThemeMode.LIGHT -> "Light"
     ThemeMode.DARK -> "Dark"

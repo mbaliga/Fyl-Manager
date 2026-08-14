@@ -44,6 +44,9 @@ private data class TreeRail(
     val depth: Int,
     val expanded: Boolean,
     val loaded: Boolean,
+    // Root-inclusive, ending at this rail's own location. Reported back whole on a tap so the
+    // caller can replace a tab's stack rather than guess the path from one folder alone.
+    val path: List<FolderLocation>,
 )
 
 /**
@@ -65,13 +68,20 @@ private data class TreeRail(
  *
  * @param ancestors the open location's folder stack, root first. Seeds the expansion so the
  *   path you are standing on is already open when the room appears.
+ * @param onOpenFolder the full root-inclusive ancestor chain for the tapped folder, not just the
+ *   folder itself — the rail is the only side that knows the chain, since it built it walking
+ *   down from [ancestors]`.first()`. A caller that appended only the tapped folder to whatever a
+ *   tab's stack already held could strand the breadcrumb wherever that stack happened to be.
+ * @param showHidden dotfile folders (`name.startsWith(".")`) are read but left out of the tree
+ *   unless this is on, matching the listing and the in-app picker.
  */
 @Composable
 internal fun FolderTreeRail(
     treeUri: Uri?,
     ancestors: List<FolderLocation>,
     repository: DocumentRepository,
-    onOpenFolder: (FolderLocation) -> Unit,
+    showHidden: Boolean,
+    onOpenFolder: (List<FolderLocation>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val root = ancestors.firstOrNull()
@@ -86,20 +96,23 @@ internal fun FolderTreeRail(
         return
     }
 
-    val children = remember(treeUri) { mutableStateMapOf<Uri, List<FileEntry>>() }
+    // Keyed on showHidden too: flipping the setting has to invalidate the cache, or a folder
+    // read before the flip would keep showing (or hiding) entries the new setting disagrees with.
+    val children = remember(treeUri, showHidden) { mutableStateMapOf<Uri, List<FileEntry>>() }
     var expanded by remember(treeUri) { mutableStateOf(ancestors.map { it.uri }.toSet()) }
     val current = ancestors.last().uri
 
     // Read exactly the folders that are open and not yet cached. Keyed on the expansion set, so
     // collapsing costs nothing and re-expanding is served from the cache.
-    LaunchedEffect(expanded, treeUri) {
+    LaunchedEffect(expanded, treeUri, showHidden) {
         expanded.filterNot { children.containsKey(it) }.forEach { uri ->
-            children[uri] = runCatching { repository.listChildren(treeUri, uri) }.getOrDefault(emptyList())
+            val listed = runCatching { repository.listChildren(treeUri, uri) }.getOrDefault(emptyList())
+            children[uri] = if (showHidden) listed else listed.filterNot { it.name.startsWith(".") }
         }
     }
 
     val rails = remember(expanded, children.toMap(), root) {
-        buildList { flattenInto(root, 0, expanded, children, this) }
+        buildList { flattenInto(root, listOf(root), 0, expanded, children, this) }
     }
 
     LazyColumn(modifier.fillMaxWidth()) {
@@ -116,7 +129,7 @@ internal fun FolderTreeRail(
                 onToggle = {
                     expanded = if (rail.expanded) expanded - rail.location.uri else expanded + rail.location.uri
                 },
-                onOpen = { onOpenFolder(rail.location) },
+                onOpen = { onOpenFolder(rail.path) },
             )
         }
     }
@@ -194,6 +207,7 @@ private fun TreeRailRow(
 /** Depth-first walk of the open branches, newest expansion state applied. */
 private fun flattenInto(
     location: FolderLocation,
+    path: List<FolderLocation>,
     depth: Int,
     expanded: Set<Uri>,
     children: Map<Uri, List<FileEntry>>,
@@ -201,12 +215,13 @@ private fun flattenInto(
 ) {
     val isOpen = location.uri in expanded
     val loaded = children.containsKey(location.uri)
-    out += TreeRail(location, depth, isOpen, loaded)
+    out += TreeRail(location, depth, isOpen, loaded, path)
     if (!isOpen) return
     children[location.uri]
         ?.filter { it.isDirectory }
         ?.sortedBy { it.name.lowercase() }
         ?.forEach { entry ->
-            flattenInto(FolderLocation(entry.uri, entry.name), depth + 1, expanded, children, out)
+            val child = FolderLocation(entry.uri, entry.name)
+            flattenInto(child, path + child, depth + 1, expanded, children, out)
         }
 }
