@@ -29,18 +29,8 @@ import io.github.mbaliga.fylz.model.FileEntry
 @Composable
 fun RichImagePreview(entry: FileEntry, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context.applicationContext)
-            .components {
-                if (Build.VERSION.SDK_INT >= 28) {
-                    add(AnimatedImageDecoder.Factory())
-                } else {
-                    add(GifDecoder.Factory())
-                }
-                add(SvgDecoder.Factory())
-            }
-            .build()
-    }
+    // The application's loader already registers the SVG and animated decoders this needs; a
+    // second one here would decode the same file into a second memory cache.
     val request = remember(entry.uri) {
         ImageRequest.Builder(context)
             .data(entry.uri)
@@ -52,7 +42,6 @@ fun RichImagePreview(entry: FileEntry, modifier: Modifier = Modifier) {
     Box(modifier.padding(12.dp), contentAlignment = Alignment.Center) {
         AsyncImage(
             model = request,
-            imageLoader = imageLoader,
             contentDescription = "Preview of ${entry.name}",
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),

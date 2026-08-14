@@ -31,4 +31,23 @@ class NotchedCardShapeTest {
         assertNotEquals(NotchedCardShape(railSlots = 3), NotchedCardShape(railSlots = 4))
         assertEquals(NotchedCardShape(railSlots = 3).hashCode(), NotchedCardShape(railSlots = 3).hashCode())
     }
+
+    @Test
+    fun `a card is never allowed to be narrower than the notch it must cut`() {
+        // The shape refuses to cut a notch wider than `width - slot`, so the card's own minimum
+        // width has to cover the rail plus that reserved slot. Below this the icon row overhangs
+        // the cut and the actions land on the previewed picture — which is what the card exists
+        // to keep them off.
+        val slot = QuickLookSlot.value
+        (QUICK_LOOK_MIN_SLOTS..QUICK_LOOK_MAX_SLOTS).forEach { slots ->
+            val minCardWidth = slot * (slots + 1)
+            val cut = minOf(slot * slots, minCardWidth - slot)
+            assertEquals(
+                "rail of $slots slots must fit its own notch at the minimum card width",
+                slot * slots,
+                cut,
+                0.001f,
+            )
+        }
+    }
 }

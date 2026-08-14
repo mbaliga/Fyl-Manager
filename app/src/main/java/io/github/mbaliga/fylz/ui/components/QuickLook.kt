@@ -2,7 +2,6 @@ package io.github.mbaliga.fylz.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -146,23 +145,37 @@ fun QuickLook(
         ) {
             val viewportW = maxWidth
             val viewportH = maxHeight
+            val slots = quickLookSlots(rail.size + 1)
+            // The card can never be dragged narrower than its own chrome. The shape refuses to cut
+            // a notch wider than `width - slot`, so a card below slot*(slots+1) gets a notch
+            // narrower than the icon row drawn on it and the actions spill onto the picture. The
+            // floor is derived from the rail, so pinning a fourth action widens it along with the
+            // notch rather than leaving a size that used to be legal and no longer is.
+            val minWidth = (QuickLookSlot * (slots + 1) / viewportW).coerceIn(0.4f, 1f)
             var w by remember { mutableStateOf(widthFraction) }
             var h by remember { mutableStateOf(heightFraction) }
+            val cardWidthFraction = w.coerceIn(minWidth, 1f)
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 QuickLookCard(
                     shown = shown,
                     rail = rail,
                     moreOpen = moreOpen,
-                    width = viewportW * w,
+                    width = viewportW * cardWidthFraction,
                     height = viewportH * h,
                     onResize = { dx, dy ->
                         // Dragging the top-right grip: right widens, up grows taller, which is the
                         // direction the corner itself moves.
-                        w = (w + dx / with(density) { viewportW.toPx() }).coerceIn(0.4f, 1f)
-                        h = (h - dy / with(density) { viewportH.toPx() }).coerceIn(0.3f, 0.95f)
+                        //
+                        // Doubled because the card is centred: growing it by d moves each edge by
+                        // d/2, so feeding the finger's travel in raw would slide the grip at half
+                        // the finger's speed and visibly leave it behind on a quick drag.
+                        w = (w + CENTRED_DRAG * dx / with(density) { viewportW.toPx() })
+                            .coerceIn(minWidth, 1f)
+                        h = (h - CENTRED_DRAG * dy / with(density) { viewportH.toPx() })
+                            .coerceIn(0.3f, 0.95f)
                     },
-                    onResizeEnd = { onScaleChange(w, h) },
+                    onResizeEnd = { onScaleChange(w.coerceIn(minWidth, 1f), h) },
                     onToggleMore = { moreOpen = !moreOpen },
                     onAction = { onAction(it, shown.entry) },
                     onDismiss = onDismiss,
@@ -176,7 +189,7 @@ fun QuickLook(
                 ) {
                     QuickLookOverflow(
                         actions = QuickAction.overflowFor(rail),
-                        maxWidth = viewportW * w,
+                        maxWidth = viewportW * cardWidthFraction,
                         onAction = {
                             moreOpen = false
                             onAction(it, shown.entry)
@@ -410,3 +423,6 @@ private fun QuickLookTruncationNotice() {
         modifier = Modifier.fillMaxWidth().padding(8.dp),
     )
 }
+
+/** A centred box moves each edge by half of any size change; the grip has to cover both halves. */
+private const val CENTRED_DRAG = 2f

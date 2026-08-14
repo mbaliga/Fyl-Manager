@@ -351,7 +351,10 @@ private fun QuickActionEditor(
             pinned = true,
             canMoveUp = index > 0,
             onMoveUp = { onChange(rail.toMutableList().apply { add(index - 1, removeAt(index)) }) },
-            onToggle = { onChange(rail - action) },
+            // One pinned action is the floor. The notch is at least two slots wide, so an empty
+            // rail would cut a notch with nothing but "more" sitting in half of it.
+            onToggle = { if (rail.size > 1) onChange(rail - action) },
+            enabled = rail.size > 1,
         )
     }
     if (overflow.isNotEmpty()) {

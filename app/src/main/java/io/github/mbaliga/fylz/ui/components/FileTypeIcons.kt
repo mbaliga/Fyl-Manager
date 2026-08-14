@@ -93,9 +93,7 @@ object FileTypeIcons {
         "simple-folder",
         "simple-image",
         "simple-pdf",
-        "simple-spreadsheet",
         "simple-video",
-        "simple-video-2",
     )
 
     /** The generic mark for each family, used when the exact format has no artwork. */
