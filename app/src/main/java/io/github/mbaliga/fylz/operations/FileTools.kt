@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import io.github.mbaliga.fylz.core.model.ItemRef
 import io.github.mbaliga.fylz.core.operations.FileOperation
@@ -59,13 +60,22 @@ object BatchRenamePolicy {
 class FileTools(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
+    // Fired per item once its final rename in executeBatchRename succeeds. No store type leaks
+    // in here; callers translate. Never fired on rollback.
+    private val onItemRelocated: ((Uri, Uri) -> Unit)? = null,
 ) {
     private data class RenameStep(
         val plan: BatchRenamePlan,
-        val document: DocumentFile,
         val temporaryName: String,
+        // The item's uri as of its last successful rename -- DocumentsContract.renameDocument
+        // is called directly (see executeBatchRename's comment on why), so nothing here ever
+        // reads a DocumentFile's own (unrefreshed) uri field to track this.
+        var currentUri: Uri,
         var staged: Boolean = false,
         var finalized: Boolean = false,
+        // True once the finalize rename actually told onItemRelocated about a changed uri --
+        // only that case needs its rollback reported back too.
+        var relocatedForward: Boolean = false,
     )
 
     suspend fun findDuplicates(
@@ -118,8 +128,15 @@ class FileTools(
      * This supports swaps and cycles without collisions. Any failure triggers a best-effort rollback
      * to the original names. If rollback itself is incomplete, the journal marks the operation as
      * NEEDS_ATTENTION instead of claiming a clean failure.
+     *
+     * @param parentUri the folder every plan's source lives in, if the caller already has it (it
+     *   always does -- batch rename only ever runs against the currently browsed folder). Needed
+     *   because `DocumentFile.fromSingleUri(...).getParentFile()` is unconditionally null (it
+     *   never wires a parent chain, confirmed by decompiling the pinned documentfile artifact);
+     *   omitting this reproduces that same "no parent" preflight failure every time, same as
+     *   before this parameter existed.
      */
-    suspend fun executeBatchRename(plans: List<BatchRenamePlan>): List<Uri> =
+    suspend fun executeBatchRename(plans: List<BatchRenamePlan>, parentUri: Uri? = null): List<Uri> =
         withContext(Dispatchers.IO) {
             val validation = BatchRenamePolicy.validate(plans)
             require(validation.valid) { validation.message ?: "Invalid rename plan." }
@@ -150,12 +167,21 @@ class FileTools(
                     plan to document
                 }
 
-                val parents = documents.map { (_, document) ->
-                    document.parentFile ?: error("The provider does not expose a parent folder for rename preflight.")
+                val parent = if (parentUri != null) {
+                    DocumentFile.fromTreeUri(context, parentUri)
+                        ?: error("Unable to open the containing folder.")
+                } else {
+                    // No caller-supplied folder: fall back to the (always-null) parentFile path,
+                    // preserving this signature's old behaviour -- and its old failure -- for a
+                    // caller that omits the new parameter.
+                    val parents = documents.map { (_, document) ->
+                        document.parentFile
+                            ?: error("The provider does not expose a parent folder for rename preflight.")
+                    }
+                    val parentUris = parents.map { it.uri.toString() }.toSet()
+                    require(parentUris.size == 1) { "Batch rename currently requires all items to share one folder." }
+                    parents.first()
                 }
-                val parentUris = parents.map { it.uri.toString() }.toSet()
-                require(parentUris.size == 1) { "Batch rename currently requires all items to share one folder." }
-                val parent = parents.first()
                 require(parent.canWrite()) { "The containing folder is not writable." }
 
                 val selectedUris = documents.map { it.second.uri.toString() }.toSet()
@@ -173,7 +199,7 @@ class FileTools(
                     do {
                         temporaryName = ".fylz-rename-${UUID.randomUUID()}"
                     } while (parent.findFile(temporaryName) != null)
-                    steps += RenameStep(plan, document, temporaryName)
+                    steps += RenameStep(plan, temporaryName, currentUri = document.uri)
                 }
 
                 operation = operation.copy(
@@ -185,25 +211,35 @@ class FileTools(
 
                 steps.forEach { step ->
                     coroutineContext.ensureActive()
-                    check(step.document.renameTo(step.temporaryName)) {
-                        "Unable to stage ${step.plan.oldName} for batch rename."
-                    }
+                    // DocumentsContract.renameDocument directly, not DocumentFile.renameTo:
+                    // every step's document opened via fromSingleUri, and
+                    // SingleDocumentFile.renameTo() is an unconditional
+                    // UnsupportedOperationException in the pinned documentfile artifact.
+                    val staged = DocumentsContract.renameDocument(context.contentResolver, step.currentUri, step.temporaryName)
+                        ?: error("Unable to stage ${step.plan.oldName} for batch rename.")
+                    step.currentUri = staged
                     step.staged = true
                 }
 
                 steps.forEach { step ->
                     coroutineContext.ensureActive()
-                    check(step.document.renameTo(step.plan.newName)) {
-                        "Unable to rename ${step.plan.oldName} to ${step.plan.newName}."
-                    }
+                    val finalUri = DocumentsContract.renameDocument(context.contentResolver, step.currentUri, step.plan.newName)
+                        ?: error("Unable to rename ${step.plan.oldName} to ${step.plan.newName}.")
+                    step.currentUri = finalUri
                     step.finalized = true
+                    // Some providers keep the document ID stable across a rename; only a
+                    // genuinely new URI needs its identity-keyed metadata carried over.
+                    if (finalUri != step.plan.source) {
+                        onItemRelocated?.invoke(step.plan.source, finalUri)
+                        step.relocatedForward = true
+                    }
                 }
 
                 val completed = operation.copy(
                     state = OperationState.SUCCEEDED,
                     items = operation.items.mapIndexed { index, item ->
                         item.copy(
-                            destination = steps[index].document.uri.toItemRef(),
+                            destination = steps[index].currentUri.toItemRef(),
                             displayName = steps[index].plan.newName,
                             state = OperationState.SUCCEEDED,
                         )
@@ -211,7 +247,7 @@ class FileTools(
                     updatedAtMillis = System.currentTimeMillis(),
                 )
                 journal.put(completed)
-                steps.map { it.document.uri }
+                steps.map { it.currentUri }
             } catch (cancelled: CancellationException) {
                 val rollbackComplete = rollbackRenames(steps)
                 journal.put(
@@ -249,9 +285,21 @@ class FileTools(
         var complete = true
         steps.asReversed().forEach { step ->
             if (step.staged) {
-                val restored = runCatching { step.document.renameTo(step.plan.oldName) }
-                    .getOrDefault(false)
-                if (!restored) complete = false
+                val forwardUri = step.currentUri
+                val restored = runCatching {
+                    DocumentsContract.renameDocument(context.contentResolver, forwardUri, step.plan.oldName)
+                }.getOrNull()
+                if (restored == null) {
+                    complete = false
+                } else {
+                    step.currentUri = restored
+                    // The finalize loop already told onItemRelocated about forwardUri; undo that
+                    // report too, or Shelf/Library/History are left pointed at a uri the provider
+                    // just renamed away from underneath them.
+                    if (step.relocatedForward && restored != forwardUri) {
+                        onItemRelocated?.invoke(forwardUri, restored)
+                    }
+                }
             }
         }
         return complete

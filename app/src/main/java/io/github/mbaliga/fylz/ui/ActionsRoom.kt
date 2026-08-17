@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tag
@@ -52,6 +53,7 @@ internal enum class FylzAction {
     EXTRACT,
     PDF_TOOLS,
     SHARE,
+    ADD_TO_SHELF,
     CLEAR_SELECTION,
     NEW_FOLDER,
     NEW_FILE,
@@ -173,6 +175,12 @@ internal fun ActionsRoom(
                         ActionCard(Icons.Outlined.Share, "Share", "Send outside Fylz") {
                             onAction(FylzAction.SHARE)
                         }
+                    }
+                }
+                // Any non-empty selection can go to the Shelf, staged there for later.
+                item {
+                    ActionCard(Icons.Outlined.Inventory2, "Add to Shelf", "Stage for actions across folders") {
+                        onAction(FylzAction.ADD_TO_SHELF)
                     }
                 }
                 // Destructive last: the one card in the row worth a second glance before tapping.

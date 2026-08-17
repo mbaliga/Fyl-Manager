@@ -2,6 +2,9 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
+import android.os.CancellationSignal
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.core.operations.FileOperation
@@ -21,6 +24,9 @@ import kotlin.coroutines.coroutineContext
 class FileOperationService(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
+    // Fired for a MOVE item at the point its source delete succeeds -- never for COPY, and
+    // never for a conflict-skipped item. No store type leaks in here; callers translate.
+    private val onItemRelocated: ((Uri, Uri) -> Unit)? = null,
 ) {
     data class Progress(
         val itemIndex: Int,
@@ -213,6 +219,10 @@ class FileOperationService(
                         return@forEachIndexed
                     }
 
+                    // Reached only when move is false (a plain copy) or move is true and the
+                    // source delete above already succeeded -- the one point a MOVE is complete.
+                    if (move) onItemRelocated?.invoke(sourceUri, copied.uri)
+
                     current = updateItem(current, index) { item ->
                         item.copy(
                             destination = copied.uri.toItemRef(),
@@ -290,7 +300,9 @@ class FileOperationService(
             val directory = destinationDirectory.createDirectory(requestedName)
                 ?: error("Unable to create $progressName.")
             try {
-                source.listFiles().forEach { child ->
+                listChildUris(source.uri).forEach { childUri ->
+                    val child = DocumentFile.fromSingleUri(context, childUri)
+                        ?: error("Unable to open a child of $progressName.")
                     copyDocument(
                         source = child,
                         destinationDirectory = directory,
@@ -347,6 +359,33 @@ class FileOperationService(
             target.delete()
             throw failure
         }
+    }
+
+    /**
+     * A directory source's immediate children, queried directly rather than through
+     * [DocumentFile.listFiles]. Every source here opens via [DocumentFile.fromSingleUri] --
+     * `transfer()` takes heterogeneous, independently-granted sources, never a shared tree -- and
+     * `SingleDocumentFile.listFiles()` is an unconditional `UnsupportedOperationException` in the
+     * pinned documentfile artifact, a folder source included. [source]'s uri is already
+     * tree-shaped (every uri this app hands to copy/move is minted via
+     * `buildDocumentUriUsingTree`), so it doubles as the tree uri this query needs.
+     */
+    private fun listChildUris(directoryUri: Uri): List<Uri> {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            directoryUri,
+            DocumentsContract.getDocumentId(directoryUri),
+        )
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        val children = mutableListOf<Uri>()
+        context.contentResolver.query(childrenUri, projection, queryArgs, signal)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            while (cursor.moveToNext()) {
+                children += DocumentsContract.buildDocumentUriUsingTree(directoryUri, cursor.getString(idIndex))
+            }
+        }
+        return children
     }
 
     private fun verifyCopy(source: DocumentFile, target: DocumentFile) {

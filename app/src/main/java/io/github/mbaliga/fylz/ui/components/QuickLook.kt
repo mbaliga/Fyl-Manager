@@ -23,10 +23,13 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Anchor
@@ -298,6 +301,9 @@ fun QuickLook(
                     QuickLookOverflow(
                         actions = QuickAction.overflowFor(rail),
                         maxWidth = cardSize.width,
+                        // Whatever the viewport leaves under the card, floored so a very tall
+                        // card still shows a usably scrollable list rather than a sliver.
+                        maxHeight = (viewportH - cardSize.height - 96.dp).coerceAtLeast(132.dp),
                         onAction = {
                             moreOpen = false
                             onAction(it, shown.entry)
@@ -517,6 +523,7 @@ private fun ResizeGrip(modifier: Modifier = Modifier) {
 private fun QuickLookOverflow(
     actions: List<QuickAction>,
     maxWidth: Dp,
+    maxHeight: Dp,
     onAction: (QuickAction) -> Unit,
 ) {
     if (actions.isEmpty()) return
@@ -526,7 +533,15 @@ private fun QuickLookOverflow(
         tonalElevation = 4.dp,
         modifier = Modifier.padding(top = 10.dp).width(maxWidth),
     ) {
-        Column(Modifier.padding(vertical = 6.dp)) {
+        // Scrolls within the room the viewport leaves it: the list grew past a handful of rows
+        // once the rail became user-configurable, and a tall card on a short screen would
+        // otherwise push the last actions somewhere no gesture can reach.
+        Column(
+            Modifier
+                .heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 6.dp),
+        ) {
             actions.forEach { action ->
                 Row(
                     Modifier

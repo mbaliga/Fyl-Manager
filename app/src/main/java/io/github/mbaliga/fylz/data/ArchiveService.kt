@@ -2,6 +2,8 @@ package io.github.mbaliga.fylz.data
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.StatFs
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -25,6 +27,7 @@ import net.lingala.zip4j.model.enums.AesKeyStrength
 import net.lingala.zip4j.model.enums.CompressionLevel
 import net.lingala.zip4j.model.enums.CompressionMethod
 import net.lingala.zip4j.model.enums.EncryptionMethod
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -79,41 +82,106 @@ class ArchiveService(
             operation = operation.running()
             journal.put(operation)
 
+            // Physical staging names are synthetic and carry no meaning -- the zip path for
+            // each entry is tracked alongside its staged file instead, so a folder's contents
+            // never need to be mirrored into nested local directories.
             val staged = File(workspace, "input").apply { mkdirs() }
             val usedNames = mutableSetOf<String>()
             var stagedTotal = 0L
-            val sourceFiles = sourceUris.mapIndexed { index, uri ->
-                coroutineContext.ensureActive()
-                val source = DocumentFile.fromSingleUri(context, uri)
-                    ?: error("Unable to open a selected source.")
-                require(source.isFile) { "Folders cannot be added to an archive yet." }
-                val requestedName = source.name ?: queryName(uri) ?: "file-${index + 1}"
-                val safeName = uniqueName(sanitizeName(requestedName), usedNames)
-                File(staged, safeName).also { target ->
-                    val copied = context.contentResolver.openInputStream(uri)?.use { input ->
-                        target.outputStream().use { output ->
-                            copyBounded(input, output, extractionLimits.maxFileBytes)
-                        }
-                    } ?: error("Unable to read $requestedName")
-                    if (Long.MAX_VALUE - stagedTotal < copied) error("Archive input size overflowed.")
-                    stagedTotal += copied
-                    require(stagedTotal <= extractionLimits.maxTotalUncompressedBytes) {
-                        "Selected files exceed the total archive input limit."
+            var stagedFileCount = 0
+            val fileEntries = mutableListOf<Pair<File, String>>()
+            val directoryEntries = mutableListOf<String>()
+
+            fun stageFile(sourceUri: Uri, displayName: String, zipPath: String) {
+                val target = File(staged, "f${stagedFileCount++}")
+                val copied = context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                    target.outputStream().use { output ->
+                        copyBounded(input, output, extractionLimits.maxFileBytes)
                     }
+                } ?: error("Unable to read $displayName")
+                if (Long.MAX_VALUE - stagedTotal < copied) error("Archive input size overflowed.")
+                stagedTotal += copied
+                require(stagedTotal <= extractionLimits.maxTotalUncompressedBytes) {
+                    "Selected files exceed the total archive input limit."
+                }
+                fileEntries += target to zipPath
+            }
+
+            // A folder with no children produces its own entry so it survives round-trip; a
+            // folder with children never does -- extraction's parentFile.mkdirs() recreates it
+            // implicitly from whatever lives inside, empty or not. depth counts the top-level
+            // source folder as 1, so MAX_FOLDER_DEPTH bounds a cycle a misbehaving provider
+            // could otherwise turn into unbounded recursion.
+            suspend fun stageDirectory(directoryUri: Uri, zipPath: String, depth: Int) {
+                require(depth <= MAX_FOLDER_DEPTH) { "Folder nesting is too deep to archive." }
+                val children = listChildDocuments(directoryUri)
+                if (children.isEmpty()) {
+                    directoryEntries += zipPath
+                    return
+                }
+                children.forEach { child ->
+                    coroutineContext.ensureActive()
+                    val childZipPath = "$zipPath/${sanitizeName(child.name)}"
+                    if (child.isDirectory) {
+                        stageDirectory(child.uri, childZipPath, depth + 1)
+                    } else {
+                        stageFile(child.uri, child.name, childZipPath)
+                    }
+                }
+            }
+
+            sourceUris.forEach { uri ->
+                coroutineContext.ensureActive()
+                // Bundle-args query, not DocumentFile: every uri here already carries tree
+                // context, minted by buildDocumentUriUsingTree wherever the app resolves
+                // entries, but DocumentFile's own accessors (isFile/isDirectory/name/listFiles)
+                // all route through the deprecated 4-String query overload internally, which a
+                // real DocumentsProvider hard-refuses once queried in-process (the same seam
+                // DocumentRepository.probe's comment documents). queryDocumentSummary and
+                // listChildDocuments below use the same working overload probe() does instead.
+                val summary = queryDocumentSummary(uri) ?: error("Unable to open a selected source.")
+                // Flat top-level namespace: sources keep their own name unless two sources
+                // collide, folders included, matching the disambiguation files already got.
+                val topName = uniqueName(sanitizeName(summary.name), usedNames)
+                if (summary.isDirectory) {
+                    stageDirectory(uri, topName, depth = 1)
+                } else {
+                    stageFile(uri, summary.name, topName)
                 }
             }
 
             val encrypted = !password.isNullOrEmpty()
             val archive = File(workspace, "fylz.zip")
             val zipFile = if (encrypted) ZipFile(archive, password) else ZipFile(archive)
-            sourceFiles.forEach { file ->
+            fileEntries.forEach { (file, zipPath) ->
                 coroutineContext.ensureActive()
                 zipFile.addFile(
                     file,
                     ZipParameters().apply {
-                        fileNameInZip = file.name
+                        fileNameInZip = zipPath
                         compressionMethod = CompressionMethod.DEFLATE
                         compressionLevel = CompressionLevel.NORMAL
+                        if (encrypted) {
+                            isEncryptFiles = true
+                            encryptionMethod = EncryptionMethod.AES
+                            aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
+                        }
+                    },
+                )
+                require(archive.length() <= extractionLimits.maxArchiveBytes) {
+                    "The generated archive exceeds the output safety limit."
+                }
+            }
+            directoryEntries.forEach { zipPath ->
+                coroutineContext.ensureActive()
+                // zip4j's documented convention for a directory-only entry: no addDirectory
+                // API exists, but an empty stream whose name ends in '/' writes no data and
+                // is read back with FileHeader.isDirectory set.
+                zipFile.addStream(
+                    ByteArrayInputStream(ByteArray(0)),
+                    ZipParameters().apply {
+                        fileNameInZip = "$zipPath/"
+                        compressionMethod = CompressionMethod.STORE
                         if (encrypted) {
                             isEncryptFiles = true
                             encryptionMethod = EncryptionMethod.AES
@@ -482,9 +550,71 @@ class ArchiveService(
         else -> "UNEXPECTED_ERROR"
     }
 
-    private fun queryName(uri: Uri): String? =
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+    private fun queryName(uri: Uri): String? {
+        // Bundle-args overload, not the deprecated 4-String one: a DocumentsProvider hard-
+        // refuses the legacy query shape once queried in-process (DocumentRepository.probe's
+        // identical comment/seam).
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), queryArgs, signal)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        }.getOrNull()
+    }
+
+    /** [queryDocumentSummary] and [listChildDocuments]'s shared shape: just enough to route a source. */
+    private data class DocumentSummary(val uri: Uri, val name: String, val isDirectory: Boolean)
+
+    /** Single-document name/type probe, [queryName]'s sibling -- see its comment for the overload choice. */
+    private fun queryDocumentSummary(uri: Uri): DocumentSummary? {
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        )
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        return runCatching {
+            context.contentResolver.query(uri, projection, queryArgs, signal)?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                if (nameIndex < 0) return@use null
+                val name = cursor.getString(nameIndex) ?: return@use null
+                val mimeType = if (mimeIndex < 0) null else cursor.getString(mimeIndex)
+                DocumentSummary(uri, name, mimeType == DocumentsContract.Document.MIME_TYPE_DIR)
+            }
+        }.getOrNull()
+    }
+
+    /** A folder's immediate children, [queryDocumentSummary]'s counterpart for a listing instead of one document. */
+    private fun listChildDocuments(directoryUri: Uri): List<DocumentSummary> {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            directoryUri,
+            DocumentsContract.getDocumentId(directoryUri),
+        )
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        )
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        val entries = mutableListOf<DocumentSummary>()
+        context.contentResolver.query(childrenUri, projection, queryArgs, signal)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            while (cursor.moveToNext()) {
+                val documentId = cursor.getString(idIndex)
+                entries += DocumentSummary(
+                    uri = DocumentsContract.buildDocumentUriUsingTree(directoryUri, documentId),
+                    name = cursor.getString(nameIndex) ?: "untitled",
+                    isDirectory = cursor.getString(mimeIndex) == DocumentsContract.Document.MIME_TYPE_DIR,
+                )
+            }
+        }
+        return entries
+    }
 
     private fun newWorkspace(): File =
         File(context.cacheDir, "archive-work/${UUID.randomUUID()}").apply { mkdirs() }
@@ -509,5 +639,6 @@ class ArchiveService(
         const val DEFAULT_VISIBLE_ENTRY_LIMIT = 500
         const val MIN_PASSWORD_LENGTH = 8
         const val MAX_PASSWORD_LENGTH = 256
+        const val MAX_FOLDER_DEPTH = 32
     }
 }

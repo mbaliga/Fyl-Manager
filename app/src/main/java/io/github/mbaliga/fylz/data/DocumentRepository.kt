@@ -4,12 +4,15 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.history.FileHistoryReason
 import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -17,7 +20,7 @@ import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
 import kotlin.coroutines.coroutineContext
 
-class DocumentRepository(context: Context) {
+class DocumentRepository(context: Context, private val shelf: ShelfStore? = null) {
     private val resolver: ContentResolver = context.contentResolver
     private val history = FileHistoryStore(context.applicationContext)
     private val library = LibraryStore(context.applicationContext)
@@ -123,6 +126,7 @@ class DocumentRepository(context: Context) {
         if (renamed != uri) {
             history.migrateSource(uri, renamed)
             library.migrateUri(uri, renamed)
+            shelf?.migrateRef(uri, renamed)
         }
         renamed
     }
@@ -207,6 +211,52 @@ class DocumentRepository(context: Context) {
         )?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
+    }
+
+    /**
+     * Single-document metadata fetch, for probing one URI (a Shelf member, say) without a
+     * parent listing. Null on any failure -- an unreadable, deleted, or permission-revoked
+     * document is indistinguishable to a caller from "nothing to show," never an exception.
+     */
+    suspend fun probe(uri: Uri): FileEntry? = withContext(Dispatchers.IO) {
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_FLAGS,
+        )
+        // The Bundle-args overload, not the deprecated 4-String one: DocumentsProvider hard-
+        // refuses the legacy query shape once queried in-process rather than marshalled through
+        // the framework's own Binder round-trip that upgrades it (FileHistoryStore.kt:330-333).
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        runCatching {
+            resolver.query(uri, projection, queryArgs, signal)?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                if (nameIndex < 0 || mimeIndex < 0) return@use null
+                val name = cursor.getString(nameIndex) ?: "Untitled"
+                val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
+                val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+                FileEntry(
+                    uri = uri,
+                    name = name,
+                    mimeType = mimeType,
+                    // Directories that report a junk size are normalized the same way
+                    // listChildren does -- see the COLUMN_SIZE comment there.
+                    sizeBytes = cursor.longOrNull(
+                        cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE),
+                    ).takeUnless { isDirectory },
+                    lastModifiedMillis = cursor.longOrNull(
+                        cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                    ),
+                    flags = cursor.intOrZero(cursor.getColumnIndex(DocumentsContract.Document.COLUMN_FLAGS)),
+                    kind = FileType.classify(name, mimeType),
+                )
+            }
+        }.getOrNull()
     }
 
     private fun android.database.Cursor.longOrNull(index: Int): Long? =

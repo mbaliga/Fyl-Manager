@@ -44,6 +44,16 @@ class DropTargetPolicyTest {
     }
 
     @Test
+    fun `the actions bulge holds five slots, clipboard through compress, shelf mid-arc`() {
+        // Pins the count and the order: the tray pair, then Shelf, then the creation pair.
+        assertEquals(5, DropTargetPolicy.actionSlots.size)
+        assertEquals(
+            listOf(DropTarget.CLIPBOARD, DropTarget.MOVE, DropTarget.SHELF, DropTarget.NEW_FOLDER, DropTarget.COMPRESS),
+            DropTargetPolicy.actionSlots,
+        )
+    }
+
+    @Test
     fun `the corners keep destructive and constructive targets apart`() {
         // The convention the composables draw from: actions hug the top-left origin, trash
         // hugs the bottom-right — opposite corners, so a sloppy drop can never cross families.
@@ -75,9 +85,13 @@ class DropTargetPolicyTest {
             assertTrue(second.second > first.second)
             assertTrue(second.first < first.first)
         }
-        // And far enough apart that adjacent hit circles cannot swallow each other's centre.
+        // Five slots on the 12°-78° arc puts 16.5° between neighbours; at 260px radius that's a
+        // ~74.6px chord — verified, not assumed, and still clear of the hit-circle-collision
+        // floor now that a fifth slot (Shelf) has narrowed every gap.
         centres.zipWithNext().forEach { (first, second) ->
-            assertTrue(hypot(second.first - first.first, second.second - first.second) > 40f)
+            val chord = hypot(second.first - first.first, second.second - first.second)
+            assertEquals(74.6f, chord, 0.1f)
+            assertTrue(chord > 40f)
         }
     }
 

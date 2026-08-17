@@ -6,7 +6,7 @@ import kotlin.math.hypot
 import kotlin.math.sin
 
 /** What the finger is currently over, or near, while dragging a cluster. */
-enum class DropTarget { NONE, CLIPBOARD, MOVE, NEW_FOLDER, COMPRESS, TRASH }
+enum class DropTarget { NONE, CLIPBOARD, MOVE, SHELF, NEW_FOLDER, COMPRESS, TRASH }
 
 /**
  * One icon slot's live reaction to the approaching cluster.
@@ -27,7 +27,8 @@ data class TargetReaction(
  * Pure geometry between the dragged cluster and the corner bulges.
  *
  * The layout convention lives here, not in the composables: **actions bulge in the top-left
- * corner** (clipboard, move, new folder, compress), **trash bulge alone in the bottom-right**.
+ * corner** (clipboard, move, shelf, new folder, compress), **trash bulge alone in the
+ * bottom-right**.
  * Destructive and non-destructive targets sit in opposite corners of the screen so a sloppy
  * drop can miss within a family but never across one — a file meant for the clipboard cannot
  * land in the trash by a few misjudged pixels.
@@ -45,7 +46,7 @@ object DropTargetPolicy {
 
     /** The actions bulge's slots, in reading order around the arc from the corner. */
     val actionSlots: List<DropTarget> =
-        listOf(DropTarget.CLIPBOARD, DropTarget.MOVE, DropTarget.NEW_FOLDER, DropTarget.COMPRESS)
+        listOf(DropTarget.CLIPBOARD, DropTarget.MOVE, DropTarget.SHELF, DropTarget.NEW_FOLDER, DropTarget.COMPRESS)
 
     /** Where the first and last slot sit on the quarter arc, in degrees off the top edge. */
     private const val ARC_START_DEGREES = 12f

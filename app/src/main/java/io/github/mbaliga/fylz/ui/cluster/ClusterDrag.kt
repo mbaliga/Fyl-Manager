@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -118,8 +119,8 @@ internal class ClusterDragController {
             DropTarget.TRASH -> ClusterPhase.GENIE
             DropTarget.CLIPBOARD -> ClusterPhase.SNAP_CLIPBOARD
             DropTarget.MOVE -> ClusterPhase.SNAP_MOVE
-            // New-folder and compress hand off to dialogs immediately; no flight to draw.
-            DropTarget.NEW_FOLDER, DropTarget.COMPRESS -> ClusterPhase.IDLE
+            // Shelf, new-folder and compress commit immediately; no flight to draw.
+            DropTarget.SHELF, DropTarget.NEW_FOLDER, DropTarget.COMPRESS -> ClusterPhase.IDLE
             DropTarget.NONE -> ClusterPhase.RETURNING
         }
         return target
@@ -471,6 +472,7 @@ private fun lerp(from: Offset, to: Offset, fraction: Float): Offset =
 internal fun DropTarget.slotIcon() = when (this) {
     DropTarget.CLIPBOARD -> Icons.Outlined.ContentPaste
     DropTarget.MOVE -> Icons.AutoMirrored.Outlined.DriveFileMove
+    DropTarget.SHELF -> Icons.Outlined.Inventory2
     DropTarget.NEW_FOLDER -> Icons.Outlined.CreateNewFolder
     DropTarget.COMPRESS -> Icons.Outlined.Archive
     else -> Icons.AutoMirrored.Outlined.InsertDriveFile
@@ -479,6 +481,7 @@ internal fun DropTarget.slotIcon() = when (this) {
 internal fun DropTarget.slotLabel() = when (this) {
     DropTarget.CLIPBOARD -> "Clipboard"
     DropTarget.MOVE -> "Move"
+    DropTarget.SHELF -> "Shelf"
     DropTarget.NEW_FOLDER -> "New folder"
     DropTarget.COMPRESS -> "Compress"
     DropTarget.TRASH -> "Recycle"

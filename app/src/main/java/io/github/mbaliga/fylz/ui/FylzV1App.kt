@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +49,7 @@ import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
@@ -58,6 +58,8 @@ import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,7 +91,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
@@ -153,8 +157,10 @@ import dev.aarso.search.QueryChip
 import dev.aarso.search.toQueryText
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.storage.toItemRef
 import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.FolderFace
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.ProvideAutoAnimate
@@ -168,15 +174,24 @@ import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.components.QuickLook
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
+import io.github.mbaliga.fylz.ui.deck.DeckItem
+import io.github.mbaliga.fylz.ui.deck.DeckSource
+import io.github.mbaliga.fylz.ui.deck.FileDeckSurface
+import io.github.mbaliga.fylz.ui.deck.ShelfSheet
+import io.github.mbaliga.fylz.ui.deck.toDeckItem
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
 import io.github.mbaliga.fylz.ui.picker.PickerOutcome
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -209,9 +224,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.operations.RecycleRecord
 import io.github.mbaliga.fylz.settings.AppPreferencesStore
 import io.github.mbaliga.fylz.staging.DropTarget
+import io.github.mbaliga.fylz.staging.ShelfItem
+import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
 import io.github.mbaliga.fylz.staging.TrayKind
@@ -235,12 +253,18 @@ private const val MAX_RESTORED_TABS = 8
 private const val SEARCH_DEBOUNCE_MILLIS = 250L
 
 /**
- * A directory grid card's lazily-fetched preview: how many children it has, and up to three of
- * them worth drawing as thumbnails. Kept in a cache the workspace owns (see `folderPeeks` below)
- * so a card scrolled off-screen and back doesn't repeat the [DocumentRepository.listChildren] read
- * that filled it the first time.
+ * A directory grid card's lazily-fetched preview: how many children it has, up to three of them
+ * worth drawing as thumbnails, and whether any visible child is something other than a photo or
+ * clip -- [thumbs] alone can't answer that (it's capped at three, so a folder of ten photos and
+ * zero documents looks identical to one with three photos and seven documents by count alone).
+ * Kept in a cache the workspace owns (see `folderPeeks` below) so a card scrolled off-screen and
+ * back doesn't repeat the [DocumentRepository.listChildren] read that filled it the first time.
  */
-private data class FolderPeek(val itemCount: Int, val thumbs: List<FileEntry>)
+internal data class FolderPeek(val itemCount: Int, val thumbs: List<FileEntry>, val hasNonMedia: Boolean)
+
+/** How many Shelf members are probed at once when the Shelf deck opens -- bounded so opening a
+ *  large Shelf doesn't fire dozens of concurrent provider queries at once. */
+private const val SHELF_PROBE_PARALLELISM = 6
 
 /**
  * The app, and the owner of its theme.
@@ -327,12 +351,37 @@ private fun FylzV1Workspace(
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
-    val repository = remember { DocumentRepository(context.applicationContext) }
-    val fileOperations = remember { FileOperationService(context.applicationContext) }
+    val library = remember { LibraryStore(context.applicationContext) }
+    // A second handle on the same on-disk file-history store DocumentRepository already keeps
+    // for its own rename() migration -- both share FileHistoryStore's static GLOBAL_LOCK, so a
+    // second instance here (held only for onItemRelocated below) never disagrees with the
+    // first, the same precedent LibraryStore already sets by being constructed twice.
+    val history = remember { FileHistoryStore(context.applicationContext) }
+    val shelf = remember { ShelfStore(context.applicationContext) }
+    // Bumped by onItemRelocated and by every direct Shelf mutation below -- shelf.items() reads
+    // SharedPreferences, which carries no Compose state of its own, so this is what makes
+    // shelfItems (below) recompute the same way tagsVersion makes a tag-derived read recompute.
+    var shelfVersion by remember { mutableIntStateOf(0) }
+    val shelfItems = remember(shelfVersion) { shelf.items() }
+    // Fired once per item a move or a batch rename actually relocates -- the one seam where all
+    // three identity-keyed stores learn about a URI that changed out from under them. No store
+    // type leaks past this lambda into operations/; each store translates the raw Uri pair
+    // itself.
+    val onItemRelocated: (Uri, Uri) -> Unit = { old, new ->
+        library.migrateUri(old, new)
+        history.migrateSource(old, new)
+        shelf.migrateRef(old, new)
+        shelfVersion += 1
+    }
+    val repository = remember { DocumentRepository(context.applicationContext, shelf) }
+    val fileOperations = remember {
+        FileOperationService(context.applicationContext, onItemRelocated = onItemRelocated)
+    }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
     val archiveService = remember { ArchiveService(context.applicationContext) }
-    val fileTools = remember { FileTools(context.applicationContext) }
-    val library = remember { LibraryStore(context.applicationContext) }
+    val fileTools = remember {
+        FileTools(context.applicationContext, onItemRelocated = onItemRelocated)
+    }
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
@@ -430,6 +479,26 @@ private fun FylzV1Workspace(
     var shredTargets by remember { mutableStateOf<List<RecycleRecord>?>(null) }
     var shredding by remember { mutableStateOf(false) }
     var pendingFolderItems by remember { mutableStateOf<List<StagedItem>>(emptyList()) }
+    // True when pendingFolderItems came from the Shelf's "New folder with" rather than a
+    // cluster drop -- the two share the createDialog = "cluster-folder" path (below) but differ
+    // in what a successful move means afterward: the cluster path clears the selection, the
+    // Shelf path takes the moved members off the Shelf.
+    var pendingFolderFromShelf by remember { mutableStateOf(false) }
+
+    // ── The deck and the Shelf ─────────────────────────────────────────────────────────
+    // Which live source the riffle-able card stack is showing, or null when it is closed --
+    // hoisted the same way previewCardMode is above: an enum in the leaf (ui/deck/FileDeck.kt),
+    // a var here, value and dismissal handed down together.
+    var deckOpen by remember { mutableStateOf<DeckSource?>(null) }
+    // Per-uri probe results for whatever the Shelf deck last opened against -- a key present
+    // with a null value means "probed, found nothing" (missing); a key absent means "not probed
+    // yet this opening," so a freshly opened Shelf renders its cached fields instead of a flash
+    // of every card reading Missing before the probe has had a chance to answer.
+    var shelfProbe by remember { mutableStateOf<Map<Uri, FileEntry?>>(emptyMap()) }
+    // Which uris the next archiveCreator result should zip -- set immediately before every
+    // archiveCreator.launch() call, since the launcher's own callback is fixed at declaration
+    // and cannot otherwise tell a selection-driven Archive from the Shelf's Compress.
+    var archiveSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
 
     // Four rooms: locations LEFT, tools and settings RIGHT, details TOP, actions BOTTOM. The
     // vertical pair is the one to read together — up is what you are looking at, down is what to
@@ -487,6 +556,40 @@ private fun FylzV1Workspace(
 
     fun refresh() {
         refreshKey += 1
+    }
+
+    /**
+     * Every Shelf mutation site calls this rather than touching [shelfVersion] directly -- it is
+     * also what closes the Shelf deck the moment the Shelf it is showing empties out (Clear,
+     * "Remove missing", or the last member leaving via Move here / New folder with), the same
+     * zero-chrome-at-rest rule that keeps the TopAppBar badge from being drawn over nothing.
+     */
+    fun refreshShelf() {
+        shelfVersion += 1
+        if (deckOpen == DeckSource.SHELF && shelf.items().isEmpty()) deckOpen = null
+    }
+
+    // What the Shelf deck actually draws: each member paired with its probe result when one
+    // exists, or its own cached fields (never flagged missing) when the current opening hasn't
+    // probed it yet -- see shelfProbe's own comment for why containment, not nullness, is the
+    // signal.
+    val shelfDeckItems = remember(shelfItems, shelfProbe) {
+        shelfItems.map { item ->
+            val uri = item.ref.toUri()
+            if (shelfProbe.containsKey(uri)) {
+                item.toDeckItem(shelfProbe[uri])
+            } else {
+                DeckItem(
+                    uri = uri,
+                    displayName = item.displayName,
+                    kind = item.kind,
+                    isDirectory = item.isDirectory,
+                    sourceCrumb = item.sourceCrumb,
+                    sizeBytes = item.sizeBytes,
+                    entry = null,
+                )
+            }
+        }
     }
 
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
@@ -565,11 +668,15 @@ private fun FylzV1Workspace(
         }
     }
 
-    fun performArchive(destination: Uri) {
-        if (selectedEntries.isEmpty()) return
+    // Takes an explicit source list rather than reading selectedEntries implicitly: the one
+    // archiveCreator launcher below serves both the selection's Archive action and the Shelf's
+    // Compress button, and archiveSources (set immediately before each launch) is what tells
+    // this callback which source list a given result belongs to.
+    fun performArchive(sources: List<Uri>, destination: Uri) {
+        if (sources.isEmpty()) return
         scope.launch {
             loading = true
-            runCatching { archiveService.createZip(selectedEntries.map { it.uri }, destination) }
+            runCatching { archiveService.createZip(sources, destination) }
                 .onSuccess { toast("Archive created"); refresh() }
                 .onFailure { toast(it.message ?: "Unable to create archive") }
             loading = false
@@ -587,7 +694,7 @@ private fun FylzV1Workspace(
     val archiveCreator = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { destination ->
-        if (destination != null) performArchive(destination)
+        if (destination != null) performArchive(archiveSources, destination)
     }
 
     // Destination for PDF page extraction / merge. Kept separate from archiveCreator so the two
@@ -778,6 +885,44 @@ private fun FylzV1Workspace(
         previewLoading = false
     }
 
+    // Runs once per Shelf opening (keyed on deckOpen, not on shelfItems, so a Move/Compress
+    // mid-visit doesn't restart it): probes every member's current uri and folds the results
+    // back into the store, so a rename or move the app can see is reflected the next time the
+    // Shelf is opened, and a member the provider no longer has anything for is surfaced as
+    // missing rather than silently dropped.
+    //
+    // Writes through shelf.refreshMetadata rather than shelf.replaceAll: this effect can still
+    // be awaiting probes when the user runs Move/Clear/Remove-missing on the Shelf it is
+    // probing, and replaceAll against the `current` snapshot captured above would silently
+    // resurrect whatever that concurrent mutation just removed. refreshMetadata reads the store
+    // fresh at write time instead, so it only ever refreshes metadata for refs still there.
+    LaunchedEffect(deckOpen) {
+        if (deckOpen != DeckSource.SHELF) return@LaunchedEffect
+        val current = shelfItems
+        if (current.isEmpty()) return@LaunchedEffect
+        val gate = Semaphore(SHELF_PROBE_PARALLELISM)
+        val probed = current.map { item ->
+            async { gate.withPermit { item.ref.toUri() to repository.probe(item.ref.toUri()) } }
+        }.awaitAll().toMap()
+        // Merged, then pruned to the membership just probed: earlier visits' entries keep the
+        // deck honest while a re-probe is in flight, but entries for members long since removed
+        // would otherwise accrete here for the life of the workspace.
+        val currentUris = current.map { it.ref.toUri() }.toSet()
+        shelfProbe = (shelfProbe + probed).filterKeys(currentUris::contains)
+        val updates = current.mapNotNull { item ->
+            val found = probed[item.ref.toUri()] ?: return@mapNotNull null
+            item.ref to item.copy(
+                displayName = found.name,
+                kind = found.kind,
+                isDirectory = found.isDirectory,
+                sizeBytes = found.sizeBytes,
+                modifiedAtMillis = found.lastModifiedMillis,
+            )
+        }.toMap()
+        shelf.refreshMetadata(updates)
+        refreshShelf()
+    }
+
     fun openEntry(entry: FileEntry) {
         if (entry.isDirectory) {
             val tab = activeTab ?: return
@@ -875,6 +1020,88 @@ private fun FylzV1Workspace(
         }
     }
 
+    /**
+     * Stages [items] on the persistent Shelf -- the cluster's arc slot, the Actions room card, and
+     * a previewed file's own quick action all funnel into this one place. [ShelfItem.sourceCrumb]
+     * comes from wherever the workspace is standing right now, not from each item's own folder --
+     * items dropped from one open tab share one crumb, matching commitTrayHere's own
+     * `tab.locations` idiom.
+     */
+    fun addToShelf(items: List<FileEntry>) {
+        if (items.isEmpty()) return
+        val crumb = activeTab?.locations?.joinToString(" › ") { it.name }.orEmpty()
+        val staged = items.map { entry ->
+            ShelfItem(
+                ref = entry.uri.toItemRef(),
+                displayName = entry.name,
+                kind = entry.kind,
+                isDirectory = entry.isDirectory,
+                sizeBytes = entry.sizeBytes,
+                modifiedAtMillis = entry.lastModifiedMillis,
+                addedAtMillis = System.currentTimeMillis(),
+                sourceCrumb = crumb,
+            )
+        }
+        val added = shelf.add(staged)
+        refreshShelf()
+        toast(if (added > 0) "Added $added to Shelf" else "${staged.size} already there")
+    }
+
+    // Members the probe has positively marked missing stay out of bulk Shelf operations: one
+    // vanished source fails a whole copy batch or zip, and the sheet already names those
+    // members for removal. Unprobed members stay in -- the probe may simply not have reached
+    // them yet, and excluding them would quietly shrink an operation whose size is on screen.
+    fun reachableShelfItems(): List<ShelfItem> = shelfItems.filterNot { item ->
+        val uri = item.ref.toUri()
+        shelfProbe.containsKey(uri) && shelfProbe[uri] == null
+    }
+
+    /**
+     * "Copy here" / "Move here" from the Shelf deck, into the folder on screen -- mirrors
+     * commitTrayHere; a successful move also takes its members off the Shelf, since they have
+     * arrived where the drag was staging them for.
+     */
+    fun commitShelfHere(move: Boolean) {
+        val tab = activeTab ?: run {
+            toast("Open a folder to add into")
+            return
+        }
+        val members = reachableShelfItems()
+        if (members.isEmpty()) {
+            if (shelfItems.isNotEmpty()) toast("Nothing on the Shelf is still reachable")
+            return
+        }
+        val segments = tab.locations.drop(1).map(FolderLocation::name)
+        val uris = members.map { it.ref.toUri() }
+        scope.launch {
+            loading = true
+            runCatching {
+                if (move) {
+                    fileOperations.move(uris, tab.treeUri, ConflictPolicy.KEEP_BOTH, segments) { progress ->
+                        operationMessage = "Moving ${progress.displayName}"
+                    }
+                } else {
+                    fileOperations.copy(uris, tab.treeUri, ConflictPolicy.KEEP_BOTH, segments) { progress ->
+                        operationMessage = "Copying ${progress.displayName}"
+                    }
+                }
+            }.onSuccess { result ->
+                toast(if (move) "Moved" else "Copied")
+                if (move) {
+                    // The uris returned here are already post-migration (onItemRelocated ran
+                    // mid-move and rewrote each member's ref as its own delete succeeded), so
+                    // removing by the RESULT is what actually finds them -- removing by the
+                    // original refs captured before the call would silently miss every one.
+                    shelf.removeAll(result.map { it.toItemRef() })
+                    refreshShelf()
+                }
+                refresh()
+            }.onFailure { toast(it.message ?: "The operation failed") }
+            operationMessage = null
+            loading = false
+        }
+    }
+
     /** A genie or snap flight finished: commit what it animated. */
     fun clusterFlightLanded(target: DropTarget, cargo: List<StagedItem>) {
         when (target) {
@@ -900,11 +1127,21 @@ private fun FylzV1Workspace(
             DropTarget.NEW_FOLDER -> {
                 clusterController.settle()
                 pendingFolderItems = cargo
+                pendingFolderFromShelf = false
                 createDialog = "cluster-folder"
             }
             DropTarget.COMPRESS -> {
                 clusterController.settle()
+                archiveSources = selectedEntries.map { it.uri }
                 archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip")
+            }
+            DropTarget.SHELF -> {
+                clusterController.settle()
+                // The cluster's cargo carries only uri/name/kind; the full metadata addToShelf
+                // wants rides on selectedEntries, which seeded the cargo at drag-start and (the
+                // drag being over in one gesture) still names the same files.
+                addToShelf(cargo.mapNotNull { staged -> selectedEntries.firstOrNull { it.uri == staged.uri } })
+                selectedUris = emptySet()
             }
             // NONE returns home, the rest fly; the layer commits them on landing.
             else -> Unit
@@ -995,6 +1232,10 @@ private fun FylzV1Workspace(
             }
             FylzAction.PDF_TOOLS -> pdfDialog = true
             FylzAction.SHARE -> shareSelection()
+            FylzAction.ADD_TO_SHELF -> {
+                addToShelf(selectedEntries)
+                selectedUris = emptySet()
+            }
             FylzAction.CLEAR_SELECTION -> selectedUris = emptySet()
             FylzAction.NEW_FOLDER -> createDialog = "folder"
             FylzAction.NEW_FILE -> createDialog = "file"
@@ -1019,6 +1260,7 @@ private fun FylzV1Workspace(
         when (action) {
             QuickAction.OPEN_WITH -> openExternal(entry)
             QuickAction.SHARE -> shareEntries(listOf(entry))
+            QuickAction.ADD_TO_SHELF -> addToShelf(listOf(entry))
             QuickAction.RECYCLE -> {
                 focusedEntry = null
                 recycleUris(listOf(entry.uri))
@@ -1183,6 +1425,19 @@ private fun FylzV1Workspace(
                         }
                     },
                     actions = {
+                        // Composed only while the Shelf holds something -- zero chrome at rest,
+                        // and visible regardless of whether a folder tab is open, since the
+                        // Shelf outlives any one of them.
+                        if (shelfItems.isNotEmpty()) {
+                            IconButton(onClick = { deckOpen = DeckSource.SHELF }) {
+                                BadgedBox(badge = { Badge { Text("${shelfItems.size}") } }) {
+                                    Icon(
+                                        Icons.Outlined.Inventory2,
+                                        contentDescription = "The Shelf, ${shelfItems.size} items",
+                                    )
+                                }
+                            }
+                        }
                         // Both buttons act on the listing; on the storage home surface there is
                         // no listing to toggle or refresh, so they disappear rather than sit
                         // there wired to nothing.
@@ -1229,6 +1484,7 @@ private fun FylzV1Workspace(
                     SelectionSummaryBar(
                         count = selectionActions.count,
                         onOpenActions = { shell.open(RoomEdge.BOTTOM) },
+                        onOpenDeck = { deckOpen = DeckSource.SELECTION },
                         onClear = { selectedUris = emptySet() },
                     )
                 }
@@ -1520,14 +1776,86 @@ private fun FylzV1Workspace(
                 onDismiss = { if (!shredding) shredTargets = null },
             )
         }
+
+        // The riffle-able deck: the current selection or the Shelf, drawn last among this
+        // group so it sits above the tray/trash sheets, matching the BackHandler order below
+        // (deck peels first).
+        when (deckOpen) {
+            DeckSource.SELECTION -> {
+                val crumb = activeTab?.locations?.joinToString(" › ") { it.name }
+                FileDeckSurface(
+                    items = selectedEntries.map { it.toDeckItem(crumb) },
+                    title = "Selected",
+                    caption = "${selectionActions.count} " +
+                        "${if (selectionActions.count == 1) "item" else "items"} · " +
+                        formatBytes(selectedEntries.sumOf { it.sizeBytes ?: 0L }),
+                    onRemove = { item ->
+                        selectedUris = selectedUris - item.uri
+                        if (selectedUris.isEmpty()) deckOpen = null
+                    },
+                    onDismiss = { deckOpen = null },
+                )
+            }
+            DeckSource.SHELF -> {
+                val missingRefs = shelfItems.filter { item ->
+                    val uri = item.ref.toUri()
+                    shelfProbe.containsKey(uri) && shelfProbe[uri] == null
+                }.map(ShelfItem::ref)
+                ShelfSheet(
+                    items = shelfDeckItems,
+                    caption = "${shelfItems.size} ${if (shelfItems.size == 1) "item" else "items"} · " +
+                        formatBytes(shelfItems.sumOf { it.sizeBytes ?: 0L }),
+                    hasMissing = missingRefs.isNotEmpty(),
+                    canCommitHere = activeTab != null,
+                    onRemove = { item -> shelf.remove(item.uri.toItemRef()); refreshShelf() },
+                    onRemoveMissing = {
+                        shelf.removeAll(missingRefs)
+                        refreshShelf()
+                    },
+                    onCopyHere = { commitShelfHere(move = false) },
+                    onMoveHere = { commitShelfHere(move = true) },
+                    onCompress = {
+                        val members = reachableShelfItems()
+                        if (members.isEmpty()) {
+                            toast("Nothing on the Shelf is still reachable")
+                        } else {
+                            archiveSources = members.map { it.ref.toUri() }
+                            archiveCreator.launch("Fylz-Shelf-${System.currentTimeMillis()}.zip")
+                        }
+                    },
+                    onNewFolderWith = {
+                        val members = reachableShelfItems()
+                        if (members.isEmpty()) {
+                            toast("Nothing on the Shelf is still reachable")
+                        } else {
+                            pendingFolderItems = members.map { StagedItem(it.ref.toUri(), it.displayName, it.kind) }
+                            pendingFolderFromShelf = true
+                            createDialog = "cluster-folder"
+                        }
+                    },
+                    onShare = {
+                        val fileEntries = shelfDeckItems.filterNot { it.isDirectory }.mapNotNull { it.entry }
+                        if (shelfDeckItems.any { it.isDirectory }) toast("Folders excluded from sharing")
+                        shareEntries(fileEntries)
+                    },
+                    onClear = {
+                        shelf.clear()
+                        refreshShelf()
+                    },
+                    onDismiss = { deckOpen = null },
+                )
+            }
+            null -> Unit
+        }
     }
     }
     }
 
-    // Composed after the shell's handler so it wins while a sheet is up: Back peels the
-    // shred confirm, then a sheet, before it ever reaches a room.
-    BackHandler(enabled = shredTargets != null || openTray != null || trashSheetOpen) {
+    // Composed after the shell's handler so it wins while a sheet is up: Back peels the deck,
+    // then the shred confirm, then a tray or trash sheet, before it ever reaches a room.
+    BackHandler(enabled = deckOpen != null || shredTargets != null || openTray != null || trashSheetOpen) {
         when {
+            deckOpen != null -> deckOpen = null
             shredTargets != null -> if (!shredding) shredTargets = null
             openTray != null -> openTray = null
             else -> trashSheetOpen = false
@@ -1548,23 +1876,31 @@ private fun FylzV1Workspace(
             onDismiss = {
                 createDialog = null
                 pendingFolderItems = emptyList()
+                pendingFolderFromShelf = false
             },
             onConfirm = { name ->
                 createDialog = null
                 val tab = activeTab
+                val folderFromShelf = pendingFolderFromShelf
                 activeTab?.current?.uri?.let { parent ->
                     scope.launch {
+                        // Only "cluster-folder" ever populates this -- the move's own resulting
+                        // uris, needed afterward to take Shelf members off the Shelf by the ref
+                        // they actually landed at rather than the one they started from (see
+                        // commitShelfHere's identical note on why the RESULT is what to remove).
+                        var movedUris: List<Uri> = emptyList()
                         runCatching {
                             when (kind) {
                                 "folder" -> repository.createDirectory(parent, name)
-                                // Dropped on "New folder": make it, then move the cluster in.
-                                // The move resolves the folder by walking display names, so it
-                                // rides the same journaled path as every other transfer.
+                                // Dropped on "New folder" (cluster drag or the Shelf's "New
+                                // folder with"): make it, then move the items in. The move
+                                // resolves the folder by walking display names, so it rides the
+                                // same journaled path as every other transfer.
                                 "cluster-folder" -> {
                                     checkNotNull(tab) { "No folder is open." }
                                     repository.createDirectory(parent, name)
                                     val segments = tab.locations.drop(1).map(FolderLocation::name) + name
-                                    fileOperations.move(
+                                    movedUris = fileOperations.move(
                                         sourceUris = pendingFolderItems.map(StagedItem::uri),
                                         destinationTreeUri = tab.treeUri,
                                         conflictPolicy = ConflictPolicy.KEEP_BOTH,
@@ -1576,11 +1912,17 @@ private fun FylzV1Workspace(
                         }.onSuccess {
                             if (kind == "cluster-folder") {
                                 toast("Moved into $name")
-                                selectedUris = emptySet()
+                                if (folderFromShelf) {
+                                    shelf.removeAll(movedUris.map { it.toItemRef() })
+                                    refreshShelf()
+                                } else {
+                                    selectedUris = emptySet()
+                                }
                             }
                             refresh()
                         }.onFailure { toast(it.message ?: "Unable to create item") }
                         pendingFolderItems = emptyList()
+                        pendingFolderFromShelf = false
                         operationMessage = null
                     }
                 }
@@ -1627,7 +1969,7 @@ private fun FylzV1Workspace(
                 batchRenameDialog = false
                 scope.launch {
                     val plans = fileTools.planBatchRename(selectedEntries.map { it.uri to it.name }, prefix)
-                    runCatching { fileTools.executeBatchRename(plans) }
+                    runCatching { fileTools.executeBatchRename(plans, parentUri = activeTab?.current?.uri) }
                         .onSuccess { selectedUris = emptySet(); refresh() }
                         .onFailure { toast(it.message ?: "Batch rename failed") }
                 }
@@ -1718,7 +2060,10 @@ private fun FylzV1Workspace(
                         pendingDestinationAction = request.action
                         destinationPicker.launch(null)
                     }
-                    is InAppPickerRequest.ArchiveOutput -> archiveCreator.launch(request.suggestedName)
+                    is InAppPickerRequest.ArchiveOutput -> {
+                        archiveSources = selectedEntries.map { it.uri }
+                        archiveCreator.launch(request.suggestedName)
+                    }
                     is InAppPickerRequest.PdfOutput -> pdfOutputCreator.launch(request.suggestedName)
                 }
             },
@@ -1728,9 +2073,10 @@ private fun FylzV1Workspace(
                     is InAppPickerRequest.Destination ->
                         (outcome as? PickerOutcome.Folder)?.let { performDestination(request.action, it.folderUri) }
                     is InAppPickerRequest.ArchiveOutput -> (outcome as? PickerOutcome.Save)?.let { save ->
+                        val sources = selectedEntries.map { it.uri }
                         scope.launch {
                             runCatching { repository.createFile(save.folderUri, save.name, "application/zip") }
-                                .onSuccess { performArchive(it) }
+                                .onSuccess { performArchive(sources, it) }
                                 .onFailure { toast(it.message ?: "Unable to create that file") }
                         }
                     }
@@ -2351,49 +2697,6 @@ private fun SelectionBadge(modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * The directory grid card's folder-peek header: children fanned above the panel that names the
- * folder, once [FileCard] has learned the folder is not empty and has something thumbnailable to
- * show. Everything else about a directory card (loading, empty) stays the plain icon layout.
- */
-@Composable
-private fun FolderPeekHeader(
-    name: String,
-    peek: FolderPeek,
-) {
-    // fillMaxSize, not fillMaxWidth: the top/bottom alignments below only spread the thumbnails
-    // and the name panel apart if this Box actually claims the card's full content height rather
-    // than shrinking to its tallest child.
-    Box(Modifier.fillMaxSize()) {
-        // Up to three children, each nudged further right and down than the last so they read as
-        // a loose stack peeking out from behind the name panel -- the same three the folder had
-        // to read to know it wasn't empty, not a fourth thumbnail's worth of extra traffic.
-        peek.thumbs.forEachIndexed { index, child ->
-            EntryThumbnail(
-                child,
-                size = 34.dp,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .offset(x = (index * 14).dp, y = (index * 6).dp),
-            )
-        }
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                Text(
-                    if (peek.itemCount == 1) "1 item" else "${peek.itemCount} items",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileCard(
@@ -2423,7 +2726,8 @@ private fun FileCard(
         val children = runCatching { repository.listChildren(treeUri, entry.uri) }.getOrDefault(emptyList())
         val visible = if (showHidden) children else children.filterNot { it.name.startsWith(".") }
         val thumbs = visible.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
-        folderPeeks[entry.uri] = FolderPeek(visible.size, thumbs)
+        val hasNonMedia = visible.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
+        folderPeeks[entry.uri] = FolderPeek(visible.size, thumbs, hasNonMedia)
     }
     // derivedStateOf, not a bare folderPeeks[entry.uri] read: SnapshotStateMap invalidates every
     // reader on ANY key's write, not just this one's -- with dozens of folder cards each writing
@@ -2484,29 +2788,32 @@ private fun FileCard(
             },
     ) {
         Box(Modifier.fillMaxSize()) {
-            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                if (peek != null && peek.thumbs.isNotEmpty()) {
-                    // The panel below carries the name and count itself, so there is nothing left
-                    // for a second text block underneath -- unlike the plain-icon layout below.
-                    FolderPeekHeader(shownName, peek)
-                } else {
-                    // Grid cells get a larger thumbnail: it is the whole point of grid view. A
-                    // directory with no peek yet (still loading) or nothing thumbnailable in it
-                    // falls back to the same folder icon it always drew here.
-                    EntryThumbnail(entry, size = 56.dp)
-                    Column {
-                        Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                        // Grid used to show less than list once you looked past the icon -- no size,
-                        // no kind, nothing else at all for a folder. Non-directory cards catch up to
-                        // FileRowV1's caption; directories get a count once their peek resolves.
-                        val caption = when {
-                            peek != null -> if (peek.itemCount == 0) "Empty" else "${peek.itemCount} items"
-                            entry.isDirectory -> null
-                            else -> listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · ")
+            when {
+                // Every resolved directory hands its peek to FolderFace now -- both the
+                // frosted, media-bearing register and the quiet, empty one live inside it (see
+                // ui/components/FolderFace.kt), so this call site no longer branches on
+                // peek.thumbs. Full-bleed, no padding: the frosted register's blurred backdrop
+                // is meant to run to the card's own rounded corners, which the Surface above
+                // already clips to.
+                peek != null -> FolderFace(entry, peek, modifier = Modifier.fillMaxSize())
+                // A directory whose peek hasn't resolved yet: the same bare icon-plus-name
+                // placeholder this card always drew here, before FolderFace existed -- it never
+                // sees this state, only a resolved one.
+                entry.isDirectory -> {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                        EntryThumbnail(entry, size = 56.dp)
+                        Column {
+                            Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                         }
-                        if (caption != null) {
+                    }
+                }
+                else -> {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                        EntryThumbnail(entry, size = 56.dp)
+                        Column {
+                            Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                             Text(
-                                caption,
+                                listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · "),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -2721,12 +3028,18 @@ private fun formatDetailsModified(millis: Long?): String? = millis
  * actions room now.
  *
  * What survives here is only what the file list itself has to say — how many are selected, and
- * the two ways out of that state. "Actions" opens the bottom room by tap, because a control the
- * app draws may open a room directly; the drag from the bottom edge does the same thing and is
- * the gesture this bar is teaching.
+ * the ways out of that state. "Actions" opens the bottom room by tap, because a control the app
+ * draws may open a room directly; the drag from the bottom edge does the same thing and is the
+ * gesture this bar is teaching. The count itself is the fourth way: tapping it opens the deck to
+ * riffle and prune the very selection it is counting.
  */
 @Composable
-private fun SelectionSummaryBar(count: Int, onOpenActions: () -> Unit, onClear: () -> Unit) {
+private fun SelectionSummaryBar(
+    count: Int,
+    onOpenActions: () -> Unit,
+    onOpenDeck: () -> Unit,
+    onClear: () -> Unit,
+) {
     Surface(tonalElevation = 8.dp) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
@@ -2736,6 +3049,12 @@ private fun SelectionSummaryBar(count: Int, onOpenActions: () -> Unit, onClear: 
             Text(
                 if (count == 1) "1 selected" else "$count selected",
                 style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .clickable(onClick = onOpenDeck)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Review $count selected"
+                    },
             )
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onClear) { Text("Clear") }

@@ -5,6 +5,7 @@ import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Share
@@ -28,6 +29,7 @@ enum class QuickAction(val id: String, val label: String, val icon: ImageVector)
     MOVE("move", "Move to", Icons.AutoMirrored.Outlined.DriveFileMove),
     RENAME("rename", "Rename", Icons.Outlined.DriveFileRenameOutline),
     TAGS("tags", "Tags", Icons.Outlined.Sell),
+    ADD_TO_SHELF("add_to_shelf", "Add to Shelf", Icons.Outlined.Inventory2),
     RECYCLE("recycle", "Recycle", Icons.Outlined.DeleteOutline),
     ;
 
