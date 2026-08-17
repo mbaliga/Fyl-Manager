@@ -137,6 +137,9 @@ dependencies {
     // Shared rather than local so Fylz and Foto Xplorr move identically — which is the whole
     // of the owner's "followed everywhere".
     implementation("dev.aarso:cell-shell:0.1.0")
+    // The natural-language search engine (io.github.mbaliga.fylz.search.FylzSearch), same
+    // includeBuild substitution as the rest of the constellation.
+    implementation("dev.aarso:search-core:0.2.0")
 
     testImplementation("junit:junit:4.13.2")
     // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*

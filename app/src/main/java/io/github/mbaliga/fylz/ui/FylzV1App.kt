@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowDownward
@@ -53,6 +54,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
@@ -88,11 +90,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
@@ -133,22 +141,32 @@ import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.SelectionActionPolicy
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.search.FylzSearch
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
 import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
 import io.github.mbaliga.fylz.search.SearchProgress
-import io.github.mbaliga.fylz.search.SearchQuery
+import io.github.mbaliga.fylz.search.isEmptyQuery
+import dev.aarso.search.Diagnostic
+import dev.aarso.search.EvalContext
+import dev.aarso.search.QueryChip
+import dev.aarso.search.toQueryText
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CommandPill
 import io.github.mbaliga.fylz.ui.components.IconStyle
+import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
+import io.github.mbaliga.fylz.ui.components.ProvideAutoAnimate
 import io.github.mbaliga.fylz.ui.components.ProvideIconStyle
+import io.github.mbaliga.fylz.ui.components.ProvideShowExtensions
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.components.CommandPillReservedHeight
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
+import io.github.mbaliga.fylz.ui.components.PreviewCardMode
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.components.QuickLook
+import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
@@ -156,9 +174,13 @@ import io.github.mbaliga.fylz.ui.picker.PickerOutcome
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -207,6 +229,11 @@ enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
 
+/** How long a settled query has to hold still before it restarts the recursive walk or is
+ *  recorded as a recent search -- long enough that a word typed at normal speed reads as one
+ *  edit, short enough that pausing to think does not feel like the box stopped listening. */
+private const val SEARCH_DEBOUNCE_MILLIS = 250L
+
 /**
  * A directory grid card's lazily-fetched preview: how many children it has, and up to three of
  * them worth drawing as thumbnails. Kept in a cache the workspace owns (see `folderPeeks` below)
@@ -245,31 +272,42 @@ fun FylzV1App(
     var themeMode by remember { mutableStateOf(preferencesStore.themeMode()) }
     var showHidden by remember { mutableStateOf(preferencesStore.showHidden()) }
     var iconStyle by remember { mutableStateOf(preferencesStore.iconStyle()) }
+    // Same handle as showHidden, for the same reason: every leaf that draws a name needs this
+    // before it draws anything, so it rides down as a CompositionLocal rather than a parameter
+    // threaded through the row, the card, the preview header, the details room and the picker.
+    var showExtensions by remember { mutableStateOf(preferencesStore.showExtensions()) }
     FylzTheme(
         themeMode = themeMode,
         accentPreset = AccentPreset.MOSS,
         dynamicColor = true,
     ) {
       ProvideIconStyle(iconStyle) {
-        FylzV1Workspace(
-            themeMode = themeMode,
-            onThemeModeChange = {
-                themeMode = it
-                preferencesStore.setThemeMode(it)
-            },
-            showHidden = showHidden,
-            onShowHiddenChange = {
-                showHidden = it
-                preferencesStore.setShowHidden(it)
-            },
-            iconStyle = iconStyle,
-            onIconStyleChange = {
-                iconStyle = it
-                preferencesStore.setIconStyle(it)
-            },
-            recoverySection = recoverySection,
-        )
-        overlays(showHidden)
+        ProvideShowExtensions(showExtensions) {
+          FylzV1Workspace(
+              themeMode = themeMode,
+              onThemeModeChange = {
+                  themeMode = it
+                  preferencesStore.setThemeMode(it)
+              },
+              showHidden = showHidden,
+              onShowHiddenChange = {
+                  showHidden = it
+                  preferencesStore.setShowHidden(it)
+              },
+              iconStyle = iconStyle,
+              onIconStyleChange = {
+                  iconStyle = it
+                  preferencesStore.setIconStyle(it)
+              },
+              showExtensions = showExtensions,
+              onShowExtensionsChange = {
+                  showExtensions = it
+                  preferencesStore.setShowExtensions(it)
+              },
+              recoverySection = recoverySection,
+          )
+          overlays(showHidden)
+        }
       }
     }
 }
@@ -282,6 +320,8 @@ private fun FylzV1Workspace(
     onShowHiddenChange: (Boolean) -> Unit,
     iconStyle: IconStyle,
     onIconStyleChange: (IconStyle) -> Unit,
+    showExtensions: Boolean,
+    onShowExtensionsChange: (Boolean) -> Unit,
     recoverySection: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -304,8 +344,17 @@ private fun FylzV1Workspace(
     val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
     var quickActions by remember { mutableStateOf(preferencesStore.quickActions()) }
     var previewScale by remember { mutableStateOf(preferencesStore.previewScale()) }
+    // Read and written only here and in the settings sheet, same as quickActions/previewScale
+    // above -- autoplay and thumbnail motion are a preview concern, not a pre-theme one.
+    var autoAnimate by remember { mutableStateOf(preferencesStore.autoAnimate()) }
+    // Local mirror of the store's own MRU list -- SharedPreferences has no change stream, so
+    // every write that should be visible this composition also assigns here.
+    var recentSearches by remember { mutableStateOf(preferencesStore.recentSearches()) }
     val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
     val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
+    // The zone every relative date phrase ("today", "last week") in a typed query resolves
+    // against -- fixed for the composition's lifetime rather than re-read per keystroke.
+    val searchZone = remember { ZoneId.systemDefault() }
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
@@ -313,10 +362,18 @@ private fun FylzV1Workspace(
     var selectedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var focusedEntry by remember { mutableStateOf<FileEntry?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
+    // `library` is a stable singleton mutated out-of-band (setTags below writes straight into
+    // its SharedPreferences-backed store with no Compose state to invalidate on). Bumped
+    // wherever tags actually change so a live `tag:` query can be re-ranked against them.
+    var tagsVersion by remember { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    var viewMode by remember { mutableStateOf(ViewMode.LIST) }
+    var viewMode by remember { mutableStateOf(preferencesStore.viewMode()) }
     var previewMode by remember { mutableStateOf(PreviewMode.DOCKED) }
+    // How the Quick Look card sits relative to the browser -- see PreviewCardMode. Reset to
+    // EXPANDED on every dismissal (below), so an anchored or docked card never reopens still
+    // anchored or docked for the next file.
+    var previewCardMode by remember { mutableStateOf(PreviewCardMode.EXPANDED) }
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
     var editorValue by remember { mutableStateOf("") }
@@ -396,27 +453,33 @@ private fun FylzV1Workspace(
         SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
     }
 
+    // Parsed once per keystroke, not once per consumer: the in-folder ranking below, the
+    // recursive-search effect, and the pill's chip row all read this same interpretation, so a
+    // kind noun or a date phrase never means something subtly different to one of the three.
+    val parsedQuery = remember(query) { FylzSearch.parse(query, System.currentTimeMillis(), searchZone) }
+
     // Sorting is applied after filtering so the two controls compose: the user's chosen order
     // holds for the current folder, a folder filter, and recursive search results alike. Hidden
     // dotfiles are filtered last — sorting an item that will not be drawn wastes nothing, but
     // filtering before the search match would let a hidden file's name silently narrow a query.
-    val visibleEntries = remember(entries, query, searchRecursive, sortSpec, showHidden) {
-        val filtered = if (query.isBlank() || searchRecursive) {
-            entries
+    //
+    // A live in-folder query drops sortSpec entirely rather than composing with it: Spotlight's
+    // rule is best-match-first, and a result ranked by score but then re-sorted by name would
+    // just be sorted by name with extra steps.
+    val visibleEntries = remember(entries, parsedQuery, searchRecursive, sortSpec, showHidden, tagsVersion) {
+        val base = if (showHidden) entries else entries.filterNot { it.name.startsWith(".") }
+        if (query.isBlank() || searchRecursive) {
+            sortEntries(base, sortSpec)
         } else {
-            val parsed = SearchQuery.parse(query)
-            entries.filter { parsed.matchesMetadata(it) && parsed.matchesName(it.name) }
+            FylzSearch.rank(base, parsedQuery, System.currentTimeMillis(), searchZone, library::tags)
+                .map { it.entry }
         }
-        val visible = if (showHidden) filtered else filtered.filterNot { it.name.startsWith(".") }
-        sortEntries(visible, sortSpec)
     }
 
-    val searchHits = remember(searchProgress, sortSpec) {
-        val hits = searchProgress?.hits.orEmpty()
-        val ordered = sortEntries(hits.map(SearchHit::entry), sortSpec)
-        val byUri = hits.associateBy { it.entry.uri }
-        ordered.mapNotNull { byUri[it.uri] }
-    }
+    // Already ranked and ordered by RecursiveSearchEngine (RANKING_ORDER, re-applied on every
+    // emit) -- re-sorting here by sortSpec would throw that ranking away for whatever the
+    // browser's own sort column says, which is exactly the ordering a live search must not use.
+    val searchHits = remember(searchProgress) { searchProgress?.hits.orEmpty() }
 
     fun toast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
@@ -629,28 +692,53 @@ private fun FylzV1Workspace(
 
     // Recursive search. Cancelled and restarted whenever the query, scope or folder changes --
     // LaunchedEffect's own cancellation is what makes an in-flight walk stop, and the engine
-    // checks for it at every folder and every entry.
+    // checks for it at every folder and every entry. Unlike in-folder filtering (visibleEntries,
+    // reacting every keystroke), a full-tree walk waits out a short settling period first --
+    // typing "phot", "photo", "photos" should start one walk, not three.
     LaunchedEffect(query, searchRecursive, activeTab?.current?.uri, refreshKey) {
         val tab = activeTab
         if (!searchRecursive || query.isBlank() || tab == null) {
             searchProgress = null
             return@LaunchedEffect
         }
-        val parsed = SearchQuery.parse(query)
-        if (parsed.isEmpty) {
+        if (parsedQuery.isEmptyQuery()) {
             searchProgress = null
             return@LaunchedEffect
         }
+        delay(SEARCH_DEBOUNCE_MILLIS)
         searchProgress = SearchProgress(emptyList(), 0, 0, complete = false)
         searchEngine
-            .search(tab.treeUri, tab.current.uri, tab.current.name, parsed)
+            .search(
+                treeUri = tab.treeUri,
+                rootUri = tab.current.uri,
+                rootName = tab.current.name,
+                parsed = parsedQuery,
+                registry = FylzSearch.registry(searchZone, library::tags),
+                matcher = FylzSearch.matcher(searchZone, library::tags),
+                ctx = EvalContext(System.currentTimeMillis()),
+            )
             .collectLatest { searchProgress = it }
+    }
+
+    // "Recent" means settled on, not every keystroke along the way -- its own debounce,
+    // independent of search scope, since an in-folder query never touches the effect above.
+    LaunchedEffect(query) {
+        if (query.isBlank()) return@LaunchedEffect
+        delay(SEARCH_DEBOUNCE_MILLIS)
+        preferencesStore.addRecentSearch(query)
+        recentSearches = preferencesStore.recentSearches()
     }
 
     LaunchedEffect(activeTab?.current?.uri, refreshKey) {
         selectedUris = emptySet()
-        focusedEntry = null
-        previewText = null
+        // An EXPANDED card is today's plain Quick Look and is torn down like the rest of the
+        // browse state below. ANCHORED and DOCKED exist precisely to survive this -- drilling
+        // into a subfolder or switching tabs while comparing against a docked/anchored preview
+        // must leave it on screen, not silently dismiss it out from under the user.
+        if (previewCardMode == PreviewCardMode.EXPANDED) {
+            focusedEntry = null
+            previewText = null
+        }
         // Folder peeks are keyed by uri, not by (uri, refreshKey) -- clearing here is what makes
         // a refresh (or a folder change) show newly-added thumbnails instead of a stale peek from
         // before the folder changed underneath it.
@@ -670,7 +758,14 @@ private fun FylzV1Workspace(
         previewText = null
         previewTruncated = false
         editorValue = ""
-        val entry = focusedEntry ?: return@LaunchedEffect
+        val entry = focusedEntry ?: run {
+            // No file focused means no card on screen, however it got dismissed -- Quick Look's
+            // own close/back/tap-away already resets this, but a quick action (rename, recycle)
+            // can clear focusedEntry directly, and the next file opened must still start
+            // EXPANDED rather than silently inheriting whatever mode the last card was left in.
+            previewCardMode = PreviewCardMode.EXPANDED
+            return@LaunchedEffect
+        }
         if (!FileType.isTextPreviewable(entry.kind)) return@LaunchedEffect
         previewLoading = true
         runCatching { repository.readText(entry.uri) }
@@ -691,8 +786,12 @@ private fun FylzV1Workspace(
                 tabs[index] = tab.copy(locations = tab.locations + FolderLocation(entry.uri, entry.name))
             }
         } else {
+            // Opening a file directly always starts a fresh EXPANDED Quick Look -- without this,
+            // tapping file B while file A's preview sits DOCKED or ANCHORED would hand B the same
+            // shrunk/scrim-less presentation, and B would silently overwrite A's docked preview
+            // instead of A being protected the way docking promises.
+            previewCardMode = PreviewCardMode.EXPANDED
             focusedEntry = entry
-            selectedUris = setOf(entry.uri)
         }
     }
 
@@ -1042,6 +1141,9 @@ private fun FylzV1Workspace(
             }
         },
     ) {
+    // Scoped to exactly what the workspace draws: the browser's thumbnails and the preview card
+    // below, and nothing above it (the rooms have no thumbnails of their own to animate).
+    ProvideAutoAnimate(autoAnimate) {
     // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
     // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
     // off the touch plane entirely — a deliberate shake needs no affordance, no instructional
@@ -1091,10 +1193,28 @@ private fun FylzV1Workspace(
                             // room. An overflow menu mixing "make a folder here" with "open the
                             // index manager" was why it had eleven items and no shape; splitting
                             // it by "does this touch my files" is what finally gave it one.
-                            IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
+                            IconButton(
+                                onClick = {
+                                    val next = when (viewMode) {
+                                        ViewMode.LIST -> ViewMode.GRID
+                                        ViewMode.GRID -> ViewMode.DETAILS
+                                        ViewMode.DETAILS -> ViewMode.LIST
+                                    }
+                                    viewMode = next
+                                    preferencesStore.setViewMode(next)
+                                },
+                            ) {
                                 Icon(
-                                    if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
-                                    contentDescription = "Change view",
+                                    when (viewMode) {
+                                        ViewMode.LIST -> Icons.Outlined.GridView
+                                        ViewMode.GRID -> Icons.Outlined.TableRows
+                                        ViewMode.DETAILS -> Icons.Outlined.List
+                                    },
+                                    contentDescription = when (viewMode) {
+                                        ViewMode.LIST -> "Switch to grid view"
+                                        ViewMode.GRID -> "Switch to details view"
+                                        ViewMode.DETAILS -> "Switch to list view"
+                                    },
                                 )
                             }
                             IconButton(onClick = { refresh() }) {
@@ -1174,7 +1294,17 @@ private fun FylzV1Workspace(
                             // quick-look chased the selection instead of showing what was opened.
                             selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
                         },
-                        onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
+                        onSelectAll = {
+                            // Select what is actually on screen: results while a recursive
+                            // search is showing them, the folder listing otherwise -- selecting
+                            // the underlying folder out from under a visible hit list would
+                            // pick things the user cannot even see.
+                            selectedUris = if (searchRecursive && query.isNotBlank()) {
+                                searchHits.map { it.entry.uri }.toSet()
+                            } else {
+                                visibleEntries.map { it.uri }.toSet()
+                            }
+                        },
                         listState = listState,
                         gridState = gridState,
                         cluster = ClusterGestureHooks(
@@ -1190,6 +1320,11 @@ private fun FylzV1Workspace(
                             onEnd = ::clusterReleased,
                             onCancel = clusterController::cancel,
                         ),
+                        chips = parsedQuery.chips,
+                        onRemoveChip = { chip -> query = (parsedQuery.chips - chip).toQueryText() },
+                        diagnostics = parsedQuery.diagnostics,
+                        recentSearches = recentSearches,
+                        onRecentSearchSelected = { query = it },
                         modifier = Modifier.weight(1f),
                     )
                     if (wide && previewMode == PreviewMode.DOCKED) {
@@ -1223,8 +1358,11 @@ private fun FylzV1Workspace(
         // somewhere else. It only appears when there is a listing to map: not on the storage
         // home surface, and not while a selection is live — with entries picked out, the next
         // move is an action on them, and a travel control down the edge of the list is an
-        // invitation to scroll away from what you just chose.
-        if (activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty()) {
+        // invitation to scroll away from what you just chose. Not during a live query either:
+        // an in-folder query ranks by match instead of sortSpec, so the stops' whole premise
+        // (consecutive entries share a sort key) is gone, and a recursive query replaces the
+        // listing with SearchResults — either way the strip would map a list nobody is seeing.
+        if (activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty() && query.isBlank()) {
             val stops = remember(visibleEntries, sortSpec) { entryStops(visibleEntries, sortSpec) }
             val grid = viewMode == ViewMode.GRID
             EdgeTimelineScrubber(
@@ -1273,6 +1411,8 @@ private fun FylzV1Workspace(
                 },
                 onAction = ::runQuickAction,
                 onDismiss = { focusedEntry = null },
+                mode = previewCardMode,
+                onModeChange = { previewCardMode = it },
             )
         }
 
@@ -1382,6 +1522,7 @@ private fun FylzV1Workspace(
         }
     }
     }
+    }
 
     // Composed after the shell's handler so it wins while a sheet is up: Back peels the
     // shred confirm, then a sheet, before it ever reaches a room.
@@ -1471,6 +1612,7 @@ private fun FylzV1Workspace(
             onDismiss = { tagDialog = false },
             onConfirm = { tags ->
                 selectedEntries.forEach { library.setTags(it.uri, tags.split(',')) }
+                tagsVersion += 1
                 tagDialog = false
                 toast("Tags saved")
             },
@@ -1670,6 +1812,13 @@ private fun FylzV1Workspace(
             onThemeModeChange = onThemeModeChange,
             showHidden = showHidden,
             onShowHiddenChange = onShowHiddenChange,
+            showExtensions = showExtensions,
+            onShowExtensionsChange = onShowExtensionsChange,
+            autoAnimate = autoAnimate,
+            onAutoAnimateChange = {
+                autoAnimate = it
+                preferencesStore.setAutoAnimate(it)
+            },
             iconStyle = iconStyle,
             onIconStyleChange = onIconStyleChange,
             quickActions = quickActions,
@@ -1765,6 +1914,11 @@ private fun FileBrowser(
     listState: LazyListState,
     gridState: LazyGridState,
     cluster: ClusterGestureHooks?,
+    chips: List<QueryChip>,
+    onRemoveChip: (QueryChip) -> Unit,
+    diagnostics: List<Diagnostic>,
+    recentSearches: List<String>,
+    onRecentSearchSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // With no tab open the browser shows the storage home surface, not an empty label. This is
@@ -1780,6 +1934,15 @@ private fun FileBrowser(
         return
     }
 
+    // Selection mode is de-facto, not a separate flag: any non-empty selection puts every row
+    // and card into it, which is what turns a tap from "open" into "toggle" below.
+    val selectionActive = selectedUris.isNotEmpty()
+
+    // Whether SearchResults, not the plain listing, is on screen -- read in two places below
+    // (which branch renders, and what "select all"/its enabled state mean) so they can never
+    // disagree about which list the user is actually looking at.
+    val searchActive = searchRecursive && query.isNotBlank()
+
     // The listing fills the surface and the pill floats over its foot, rather than a band of
     // chrome pushing the listing down. Everything the old top row held now rides the pill.
     Box(modifier) {
@@ -1794,7 +1957,7 @@ private fun FileBrowser(
             )
             HorizontalDivider()
 
-            if (searchRecursive && query.isNotBlank()) {
+            if (searchActive) {
                 SearchResults(
                     progress = searchProgress,
                     hits = searchHits,
@@ -1831,6 +1994,7 @@ private fun FileBrowser(
                             entry = entry,
                             selected = entry.uri in selectedUris,
                             focused = entry.uri == focusedEntry?.uri,
+                            selectionActive = selectionActive,
                             onOpen = onOpen,
                             onOpenExternal = onOpenExternal,
                             onToggleSelection = onToggleSelection,
@@ -1842,13 +2006,45 @@ private fun FileBrowser(
                         )
                     }
                 }
+            } else if (viewMode == ViewMode.DETAILS) {
+                Column(Modifier.fillMaxSize()) {
+                    DetailsHeaderRow(sortSpec, onSortSpecChange)
+                    HorizontalDivider()
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        items(entries, key = { it.uri.toString() }) { entry ->
+                            DetailsRow(
+                                entry = entry,
+                                selected = entry.uri in selectedUris,
+                                focused = entry.uri == focusedEntry?.uri,
+                                selectionActive = selectionActive,
+                                onOpen = onOpen,
+                                onOpenExternal = onOpenExternal,
+                                onToggleSelection = onToggleSelection,
+                                cluster = cluster,
+                            )
+                        }
+                    }
+                }
             } else {
                 LazyColumn(
                     state = listState,
                     contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
                 ) {
                     items(entries, key = { it.uri.toString() }) { entry ->
-                        FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, cluster)
+                        FileRowV1(
+                            entry = entry,
+                            selected = entry.uri in selectedUris,
+                            focused = entry.uri == focusedEntry?.uri,
+                            selectionActive = selectionActive,
+                            onOpen = onOpen,
+                            onOpenExternal = onOpenExternal,
+                            onToggleSelection = onToggleSelection,
+                            cluster = cluster,
+                        )
                     }
                 }
             }
@@ -1862,12 +2058,17 @@ private fun FileBrowser(
             searchRecursive = searchRecursive,
             onSearchRecursiveChange = onSearchRecursiveChange,
             searchBusy = searchRecursive && searchProgress?.complete == false,
+            chips = chips,
+            onRemoveChip = onRemoveChip,
+            diagnostics = diagnostics,
+            recentSearches = recentSearches,
+            onRecentSearchSelected = onRecentSearchSelected,
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             SortMenu(sortSpec, onSortSpecChange)
             IconButton(
                 onClick = onSelectAll,
-                enabled = entries.isNotEmpty(),
+                enabled = if (searchActive) searchHits.isNotEmpty() else entries.isNotEmpty(),
                 modifier = Modifier.size(44.dp),
             ) {
                 Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
@@ -1935,6 +2136,7 @@ private fun SearchResults(
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
 ) {
+    val selectionActive = selectedUris.isNotEmpty()
     Column(Modifier.fillMaxSize()) {
         Text(
             when {
@@ -1966,6 +2168,7 @@ private fun SearchResults(
                     entry = hit.entry,
                     selected = hit.entry.uri in selectedUris,
                     focused = hit.entry.uri == focusedEntry?.uri,
+                    selectionActive = selectionActive,
                     onOpen = onOpen,
                     onOpenExternal = onOpenExternal,
                     onToggleSelection = onToggleSelection,
@@ -1974,6 +2177,7 @@ private fun SearchResults(
                     overline = hit.relativePath,
                     detail = hit.snippet?.let { "\u201c$it\u201d" }
                         ?: if (hit.source == SearchMatchSource.CONTENT) "Matched file contents" else null,
+                    nameHighlights = hit.nameHighlights,
                 )
             }
         }
@@ -2001,14 +2205,23 @@ private fun FileRowV1(
     entry: FileEntry,
     selected: Boolean,
     focused: Boolean,
+    selectionActive: Boolean,
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     cluster: ClusterGestureHooks? = null,
     overline: String? = null,
     detail: String? = null,
+    nameHighlights: List<IntRange> = emptyList(),
 ) {
-    val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
+    val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
+    val label = if (entry.isDirectory) "Folder $shownName" else shownName
+    // Not read as `selected = selected` below: a local shadows a same-named extension property
+    // even inside that extension's own receiver lambda, so a bare `selected` in the semantics
+    // block resolves back to THIS parameter, not `SemanticsPropertyReceiver.selected` -- reaching
+    // the latter needs an explicit `this.selected`. Renaming this copy keeps the assignment's
+    // right-hand side from ever writing the ambiguous bare name.
+    val rowSelected = selected
     var originInRoot by remember { mutableStateOf(Offset.Zero) }
     Row(
         modifier = Modifier
@@ -2036,21 +2249,38 @@ private fun FileRowV1(
                 },
             )
             .combinedClickable(
-                onClick = { onOpen(entry) },
+                // At rest, a tap opens; once anything is selected, every row is in selection
+                // mode and a tap toggles membership instead — the checkbox's job, without a
+                // checkbox to carry it.
+                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
                 onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                // A selected row's long-press belongs to the cluster drag; deselecting is a
-                // checkbox tap away, so the two gestures never fight over one finger.
+                // A selected row's long-press belongs to the cluster drag; deselecting is a tap
+                // away, so the two gestures never fight over one finger.
                 onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
             )
-            .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .background(
+                when {
+                    selected -> MaterialTheme.colorScheme.secondaryContainer
+                    focused -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    else -> Color.Transparent
+                },
+            )
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .semantics { contentDescription = label },
+            .semantics {
+                contentDescription = label
+                this.selected = rowSelected
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = selected, onCheckedChange = { onToggleSelection(entry) })
         // Real image/video thumbnails; falls back to a per-type icon. Previously every file in
-        // the list rendered the same handful of static vectors.
-        EntryThumbnail(entry, size = 40.dp)
+        // the list rendered the same handful of static vectors. The selection mark rides its
+        // corner rather than a gutter column of its own -- at rest there is nothing here at all.
+        Box {
+            EntryThumbnail(entry, size = 40.dp)
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart))
+            }
+        }
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             if (overline != null) {
                 Text(
@@ -2061,7 +2291,11 @@ private fun FileRowV1(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (nameHighlights.isEmpty()) {
+                Text(shownName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            } else {
+                Text(highlightedName(shownName, nameHighlights), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             Text(
                 detail ?: listOfNotNull(
                     entry.sizeBytes?.let(::formatBytes),
@@ -2077,6 +2311,47 @@ private fun FileRowV1(
 }
 
 /**
+ * [text] with [ranges] bolded -- a search hit's name with its matched substrings called out, the
+ * same way Spotlight bolds a result's title.
+ *
+ * [ranges] arrive in the entry's own name coordinates (`SearchHit.nameHighlights`), not
+ * necessarily [text]'s -- the two agree everywhere except a stripped extension, so every bound is
+ * coerced into [text]'s length rather than trusted outright. A range that lands entirely in a
+ * suffix [text] no longer has (extensions hidden, a match on ".pdf") collapses to nothing instead
+ * of throwing.
+ */
+private fun highlightedName(text: String, ranges: List<IntRange>): AnnotatedString = buildAnnotatedString {
+    append(text)
+    ranges.forEach { range ->
+        val start = range.first.coerceIn(0, text.length)
+        val end = (range.last + 1).coerceIn(start, text.length)
+        if (start < end) addStyle(SpanStyle(fontWeight = FontWeight.Bold), start, end)
+    }
+}
+
+/**
+ * The confirmation mark for a selected item -- Photos-style, on the item, not a checkbox at
+ * rest. A surface-coloured disc first so the primary-tinted check reads against any thumbnail,
+ * however busy.
+ */
+@Composable
+private fun SelectionBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(18.dp)
+            .background(MaterialTheme.colorScheme.surface, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+/**
  * The directory grid card's folder-peek header: children fanned above the panel that names the
  * folder, once [FileCard] has learned the folder is not empty and has something thumbnailable to
  * show. Everything else about a directory card (loading, empty) stays the plain icon layout.
@@ -2085,8 +2360,6 @@ private fun FileRowV1(
 private fun FolderPeekHeader(
     name: String,
     peek: FolderPeek,
-    selected: Boolean,
-    onToggleSelection: () -> Unit,
 ) {
     // fillMaxSize, not fillMaxWidth: the top/bottom alignments below only spread the thumbnails
     // and the name panel apart if this Box actually claims the card's full content height rather
@@ -2104,11 +2377,6 @@ private fun FolderPeekHeader(
                     .offset(x = (index * 14).dp, y = (index * 6).dp),
             )
         }
-        Checkbox(
-            checked = selected,
-            onCheckedChange = { onToggleSelection() },
-            modifier = Modifier.align(Alignment.TopEnd),
-        )
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
             shape = MaterialTheme.shapes.small,
@@ -2132,6 +2400,7 @@ private fun FileCard(
     entry: FileEntry,
     selected: Boolean,
     focused: Boolean,
+    selectionActive: Boolean,
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
@@ -2168,8 +2437,18 @@ private fun FileCard(
     // uses below rely on the null check narrowing the type.
     val peek = peekState
 
+    val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
+    // See FileRowV1's identical local: a bare `selected` inside the semantics lambda below
+    // would resolve back to this parameter (a local shadows the receiver's own property of the
+    // same name), so the assignment there needs `this.selected` and this rename to read cleanly.
+    val cardSelected = selected
+
     Surface(
-        color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+        color = when {
+            selected -> MaterialTheme.colorScheme.secondaryContainer
+            focused -> MaterialTheme.colorScheme.surfaceContainerHigh
+            else -> MaterialTheme.colorScheme.surfaceContainer
+        },
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
             .height(164.dp)
@@ -2195,50 +2474,243 @@ private fun FileCard(
                 },
             )
             .combinedClickable(
-                onClick = { onOpen(entry) },
+                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
                 onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
                 onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
             )
-            .semantics { contentDescription = entry.name },
+            .semantics {
+                contentDescription = shownName
+                this.selected = cardSelected
+            },
     ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            if (peek != null && peek.thumbs.isNotEmpty()) {
-                // The panel below carries the name and count itself, so there is nothing left
-                // for a second text block underneath -- unlike the plain-icon layout below.
-                FolderPeekHeader(entry.name, peek, selected, onToggleSelection = { onToggleSelection(entry) })
-            } else {
-                Row(verticalAlignment = Alignment.Top) {
+        Box(Modifier.fillMaxSize()) {
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                if (peek != null && peek.thumbs.isNotEmpty()) {
+                    // The panel below carries the name and count itself, so there is nothing left
+                    // for a second text block underneath -- unlike the plain-icon layout below.
+                    FolderPeekHeader(shownName, peek)
+                } else {
                     // Grid cells get a larger thumbnail: it is the whole point of grid view. A
                     // directory with no peek yet (still loading) or nothing thumbnailable in it
                     // falls back to the same folder icon it always drew here.
                     EntryThumbnail(entry, size = 56.dp)
-                    Spacer(Modifier.weight(1f))
-                    Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
-                }
-                Column {
-                    Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                    // Grid used to show less than list once you looked past the icon -- no size,
-                    // no kind, nothing else at all for a folder. Non-directory cards catch up to
-                    // FileRowV1's caption; directories get a count once their peek resolves.
-                    val caption = when {
-                        peek != null -> if (peek.itemCount == 0) "Empty" else "${peek.itemCount} items"
-                        entry.isDirectory -> null
-                        else -> listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · ")
-                    }
-                    if (caption != null) {
-                        Text(
-                            caption,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    Column {
+                        Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                        // Grid used to show less than list once you looked past the icon -- no size,
+                        // no kind, nothing else at all for a folder. Non-directory cards catch up to
+                        // FileRowV1's caption; directories get a count once their peek resolves.
+                        val caption = when {
+                            peek != null -> if (peek.itemCount == 0) "Empty" else "${peek.itemCount} items"
+                            entry.isDirectory -> null
+                            else -> listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · ")
+                        }
+                        if (caption != null) {
+                            Text(
+                                caption,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
+            }
+            // The selection mark sits at the card's own top-right, the same corner the checkbox
+            // used to occupy -- composed only for a selected card, never at rest.
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopEnd).padding(6.dp))
             }
         }
     }
 }
+
+/**
+ * Finder's column header, tap to sort. Not a `stickyHeader` -- it sits above the [LazyColumn]
+ * rather than as its first item, so it never disturbs the row index the edge scrubber tracks.
+ */
+@Composable
+private fun DetailsHeaderRow(spec: SortSpec, onChange: (SortSpec) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 36.dp)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(Modifier.size(24.dp))
+        DetailsHeaderLabel(
+            text = "Name",
+            active = spec.field == SortField.NAME,
+            direction = spec.direction,
+            onClick = { onChange(spec.withField(SortField.NAME)) },
+            modifier = Modifier.weight(1f).padding(start = 10.dp),
+        )
+        DetailsHeaderLabel(
+            text = "Size",
+            active = spec.field == SortField.SIZE,
+            direction = spec.direction,
+            onClick = { onChange(spec.withField(SortField.SIZE)) },
+            modifier = Modifier.width(76.dp),
+        )
+        DetailsHeaderLabel(
+            text = "Modified",
+            active = spec.field == SortField.MODIFIED,
+            direction = spec.direction,
+            onClick = { onChange(spec.withField(SortField.MODIFIED)) },
+            modifier = Modifier.width(92.dp).padding(start = 8.dp),
+        )
+    }
+}
+
+/** One tappable header label. Direction shows as an arrow icon, never colour alone. */
+@Composable
+private fun DetailsHeaderLabel(
+    text: String,
+    active: Boolean,
+    direction: SortDirection,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier.clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (active) {
+            Icon(
+                if (direction == SortDirection.ASCENDING) Icons.Outlined.ArrowUpward else Icons.Outlined.ArrowDownward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+    }
+}
+
+/**
+ * The desktop-class row: Finder's Name | Size | Modified, one line each, the icon standing in
+ * for Kind rather than a fourth column. Selection and cluster-drag gestures are duplicated from
+ * [FileRowV1] verbatim rather than shared -- this row's whole point is a different shape, and a
+ * shared modifier would let the two drift out of sync silently the next time only one changes.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DetailsRow(
+    entry: FileEntry,
+    selected: Boolean,
+    focused: Boolean,
+    selectionActive: Boolean,
+    onOpen: (FileEntry) -> Unit,
+    onOpenExternal: (FileEntry) -> Unit,
+    onToggleSelection: (FileEntry) -> Unit,
+    cluster: ClusterGestureHooks? = null,
+) {
+    val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
+    val label = if (entry.isDirectory) "Folder $shownName" else shownName
+    // See FileRowV1's identical local: a bare `selected` inside the semantics lambda below
+    // would resolve back to this parameter (a local shadows the receiver's own property of the
+    // same name), so the assignment there needs `this.selected` and this rename to read cleanly.
+    val rowSelected = selected
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .onGloballyPositioned { coordinates ->
+                originInRoot = coordinates.positionInRoot()
+                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
+            }
+            .then(
+                if (selected && cluster != null) {
+                    Modifier.pointerInput(entry.uri) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                cluster.onDrag(originInRoot + change.position)
+                            },
+                            onDragEnd = { cluster.onEnd() },
+                            onDragCancel = { cluster.onCancel() },
+                        )
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .combinedClickable(
+                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
+                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
+            )
+            .background(
+                when {
+                    selected -> MaterialTheme.colorScheme.secondaryContainer
+                    focused -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    else -> Color.Transparent
+                },
+            )
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .semantics {
+                contentDescription = label
+                this.selected = rowSelected
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            EntryThumbnail(entry, size = 24.dp)
+            if (selected) {
+                SelectionBadge(Modifier.align(Alignment.TopStart))
+            }
+        }
+        Text(
+            shownName,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(start = 10.dp),
+        )
+        Text(
+            entry.sizeBytes?.let(::formatBytes) ?: "—",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(76.dp),
+        )
+        Text(
+            formatDetailsModified(entry.lastModifiedMillis) ?: "—",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(92.dp).padding(start = 8.dp),
+        )
+    }
+}
+
+/**
+ * A timestamp as a person would read it, or null when the provider had nothing to say. Zero is
+ * treated as nothing rather than 1970 -- `DocumentsProvider`s routinely report `0` for "unknown".
+ * Duplicated from [DetailsRoom]'s own formatter rather than shared: Details view's dense column
+ * and the details room's full-width fact list are free to diverge without one owning the other's
+ * layout.
+ */
+private fun formatDetailsModified(millis: Long?): String? = millis
+    ?.takeIf { it > 0L }
+    ?.let {
+        DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.getDefault())
+            .withZone(ZoneId.systemDefault())
+            .format(Instant.ofEpochMilli(it))
+    }
 
 /**
  * What a live selection looks like from the file list.

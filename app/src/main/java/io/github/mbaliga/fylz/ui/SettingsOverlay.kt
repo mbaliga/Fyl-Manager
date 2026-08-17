@@ -75,6 +75,10 @@ internal fun SettingsOverlay(
     onThemeModeChange: (ThemeMode) -> Unit,
     showHidden: Boolean,
     onShowHiddenChange: (Boolean) -> Unit,
+    showExtensions: Boolean = true,
+    onShowExtensionsChange: (Boolean) -> Unit = {},
+    autoAnimate: Boolean = true,
+    onAutoAnimateChange: (Boolean) -> Unit = {},
     iconStyle: IconStyle,
     onIconStyleChange: (IconStyle) -> Unit,
     quickActions: List<QuickAction>,
@@ -168,6 +172,42 @@ internal fun SettingsOverlay(
                         )
                     }
                     Switch(checked = showHidden, onCheckedChange = onShowHiddenChange)
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onShowExtensionsChange(!showExtensions) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Show file extensions", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Full names like report.pdf. Folders are never affected.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = showExtensions, onCheckedChange = onShowExtensionsChange)
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onAutoAnimateChange(!autoAnimate) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Auto-animate previews", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Video thumbnails and previews play quietly by themselves.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = autoAnimate, onCheckedChange = onAutoAnimateChange)
                 }
 
                 Spacer(Modifier.size(20.dp))

@@ -73,7 +73,11 @@ fun PreviewPane(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(entry.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                    Text(
+                        displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                    )
                     Text(
                         descriptor.label,
                         style = MaterialTheme.typography.labelMedium,
@@ -115,7 +119,10 @@ fun PreviewPane(
                     if (textTruncated) TruncationNotice()
                     MonospaceTextPreview(textContent, Modifier.fillMaxSize())
                 }
-                descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
+                // The pane keeps the inset the quick-look card dropped: the card resizes itself
+                // to the image's aspect, but this pane is a fixed panel, so Fit still needs a
+                // margin to keep the picture off a mismatched frame's edges.
+                descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize().padding(12.dp))
                 descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
                     MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())

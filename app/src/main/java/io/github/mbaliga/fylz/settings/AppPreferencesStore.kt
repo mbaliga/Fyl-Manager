@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.settings
 
 import android.content.Context
 import io.github.mbaliga.fylz.model.ThemeMode
+import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
 
@@ -52,6 +53,74 @@ class AppPreferencesStore(context: Context) {
         preferences.edit().putString(ICON_STYLE, style.name).commit()
     }
 
+    /** Which of LIST/GRID/DETAILS the browser last rendered, restored on the next launch. */
+    @Synchronized
+    fun viewMode(): ViewMode {
+        val raw = preferences.getString(VIEW_MODE, null) ?: return ViewMode.LIST
+        return runCatching { ViewMode.valueOf(raw) }.getOrDefault(ViewMode.LIST)
+    }
+
+    @Synchronized
+    fun setViewMode(mode: ViewMode) {
+        preferences.edit().putString(VIEW_MODE, mode.name).commit()
+    }
+
+    /**
+     * Whether display names carry their extension (`report.pdf`) or hide it (`report`). On by
+     * default — this is a file manager, not Finder with the Apple defaults. Folders are never
+     * affected regardless of this flag; that exemption lives with the call sites, not here.
+     */
+    @Synchronized
+    fun showExtensions(): Boolean = preferences.getBoolean(SHOW_EXTENSIONS, true)
+
+    @Synchronized
+    fun setShowExtensions(value: Boolean) {
+        preferences.edit().putBoolean(SHOW_EXTENSIONS, value).commit()
+    }
+
+    /**
+     * Whether video thumbnails cycle frames and previews autoplay, both muted. On by default;
+     * off restores the static, no-motion behaviour for anyone who finds the motion distracting.
+     */
+    @Synchronized
+    fun autoAnimate(): Boolean = preferences.getBoolean(AUTO_ANIMATE, true)
+
+    @Synchronized
+    fun setAutoAnimate(value: Boolean) {
+        preferences.edit().putBoolean(AUTO_ANIMATE, value).commit()
+    }
+
+    /**
+     * Recent search text, most-recent first, newline-joined. Capped at [MAX_RECENT_SEARCHES]
+     * and blank lines dropped, so a corrupted or hand-edited value can't hand back an unbounded
+     * or empty-entry list.
+     */
+    @Synchronized
+    fun recentSearches(): List<String> {
+        val raw = preferences.getString(RECENT_SEARCHES, null) ?: return emptyList()
+        return raw.split("\n").filter(String::isNotBlank).take(MAX_RECENT_SEARCHES)
+    }
+
+    /**
+     * Records a search as the most recent, moving it to the front if it was already present.
+     * The dedupe is case-insensitive ("Photos" and "photos" are the same recent search) but the
+     * newly-typed casing wins, since that's the text the user will recognise in the list.
+     */
+    @Synchronized
+    fun addRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
+        val deduped = listOf(trimmed) + recentSearches().filterNot { it.equals(trimmed, ignoreCase = true) }
+        preferences.edit()
+            .putString(RECENT_SEARCHES, deduped.take(MAX_RECENT_SEARCHES).joinToString("\n"))
+            .commit()
+    }
+
+    @Synchronized
+    fun clearRecentSearches() {
+        preferences.edit().remove(RECENT_SEARCHES).commit()
+    }
+
     /** The preview card's pinned actions, in rail order. */
     @Synchronized
     fun quickActions(): List<QuickAction> {
@@ -89,10 +158,15 @@ class AppPreferencesStore(context: Context) {
         const val THEME_MODE = "theme_mode"
         const val SHOW_HIDDEN = "show_hidden"
         const val ICON_STYLE = "icon_style"
+        const val VIEW_MODE = "view_mode"
+        const val SHOW_EXTENSIONS = "show_extensions"
+        const val AUTO_ANIMATE = "auto_animate"
+        const val RECENT_SEARCHES = "recent_searches"
         const val QUICK_ACTIONS = "quick_actions"
         const val PREVIEW_WIDTH = "preview_width_fraction"
         const val PREVIEW_HEIGHT = "preview_height_fraction"
         const val DEFAULT_PREVIEW_WIDTH = 0.86f
         const val DEFAULT_PREVIEW_HEIGHT = 0.62f
+        const val MAX_RECENT_SEARCHES = 8
     }
 }

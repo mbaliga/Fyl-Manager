@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.ui.components
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -26,28 +27,84 @@ class NotchedCardShapeTest {
     }
 
     @Test
-    fun `shapes compare by geometry so recomposition reuses one rail width`() {
-        assertEquals(NotchedCardShape(railSlots = 3), NotchedCardShape(railSlots = 3))
-        assertNotEquals(NotchedCardShape(railSlots = 3), NotchedCardShape(railSlots = 4))
-        assertEquals(NotchedCardShape(railSlots = 3).hashCode(), NotchedCardShape(railSlots = 3).hashCode())
+    fun `close-notch counts clamp into the anchor-dock-close range`() {
+        assertEquals(QUICK_LOOK_CLOSE_MIN_SLOTS, quickLookCloseSlots(0))
+        assertEquals(QUICK_LOOK_CLOSE_MIN_SLOTS, quickLookCloseSlots(-2))
+        assertEquals(2, quickLookCloseSlots(2))
+        assertEquals(QUICK_LOOK_CLOSE_MAX_SLOTS, quickLookCloseSlots(4))
+        assertEquals(3, QUICK_LOOK_CLOSE_MAX_SLOTS)
     }
 
     @Test
-    fun `a card is never allowed to be narrower than the notch it must cut`() {
-        // The shape refuses to cut a notch wider than `width - slot`, so the card's own minimum
-        // width has to cover the rail plus that reserved slot. Below this the icon row overhangs
-        // the cut and the actions land on the previewed picture — which is what the card exists
-        // to keep them off.
+    fun `shapes compare by geometry so recomposition reuses one rail width`() {
+        assertEquals(NotchedCardShape(railSlots = 3, closeSlots = 3), NotchedCardShape(railSlots = 3, closeSlots = 3))
+        assertNotEquals(NotchedCardShape(railSlots = 3, closeSlots = 3), NotchedCardShape(railSlots = 4, closeSlots = 3))
+        assertNotEquals(NotchedCardShape(railSlots = 3, closeSlots = 1), NotchedCardShape(railSlots = 3, closeSlots = 3))
+        assertEquals(
+            NotchedCardShape(railSlots = 3, closeSlots = 3).hashCode(),
+            NotchedCardShape(railSlots = 3, closeSlots = 3).hashCode(),
+        )
+    }
+
+    /**
+     * Mirrors [NotchedCardShape.createOutline]'s width math: each notch is capped by what the
+     * other needs at its own ideal size plus one bare slot of card between them. A card below
+     * that combined width would let the two notches' inner corners touch.
+     */
+    private fun railWidth(width: Float, slot: Float, railSlots: Int, closeSlots: Int): Float {
+        val railIdeal = slot * quickLookSlots(railSlots)
+        val closeIdeal = slot * quickLookCloseSlots(closeSlots)
+        return minOf(railIdeal, width - closeIdeal - slot)
+    }
+
+    private fun closeWidth(width: Float, slot: Float, railSlots: Int, closeSlots: Int): Float {
+        val railIdeal = slot * quickLookSlots(railSlots)
+        val closeIdeal = slot * quickLookCloseSlots(closeSlots)
+        return minOf(closeIdeal, width - railIdeal - slot)
+    }
+
+    @Test
+    fun `a card is never allowed to be narrower than the two notches it must cut`() {
+        // The shape refuses to cut a notch wider than what the other notch's own reservation
+        // leaves behind, so the card's minimum width has to cover both notches at their ideal
+        // size plus one spare slot of card between them -- below this, the icon rows overhang
+        // their cuts and actions land on the previewed picture, which is what the card exists to
+        // keep them off.
         val slot = QuickLookSlot.value
-        (QUICK_LOOK_MIN_SLOTS..QUICK_LOOK_MAX_SLOTS).forEach { slots ->
-            val minCardWidth = slot * (slots + 1)
-            val cut = minOf(slot * slots, minCardWidth - slot)
-            assertEquals(
-                "rail of $slots slots must fit its own notch at the minimum card width",
-                slot * slots,
-                cut,
-                0.001f,
-            )
+        (QUICK_LOOK_MIN_SLOTS..QUICK_LOOK_MAX_SLOTS).forEach { rail ->
+            (QUICK_LOOK_CLOSE_MIN_SLOTS..QUICK_LOOK_CLOSE_MAX_SLOTS).forEach { close ->
+                val minCardWidth = slot * (rail + close + 1)
+                assertEquals(
+                    "rail of $rail slots must fit its own notch at the minimum card width",
+                    slot * rail,
+                    railWidth(minCardWidth, slot, rail, close),
+                    0.001f,
+                )
+                assertEquals(
+                    "close notch of $close slots must fit its own notch at the minimum card width",
+                    slot * close,
+                    closeWidth(minCardWidth, slot, rail, close),
+                    0.001f,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the two notches never overlap at or above the minimum card width`() {
+        val slot = QuickLookSlot.value
+        (QUICK_LOOK_MIN_SLOTS..QUICK_LOOK_MAX_SLOTS).forEach { rail ->
+            (QUICK_LOOK_CLOSE_MIN_SLOTS..QUICK_LOOK_CLOSE_MAX_SLOTS).forEach { close ->
+                val minCardWidth = slot * (rail + close + 1)
+                listOf(minCardWidth, minCardWidth * 1.5f, minCardWidth * 3f).forEach { width ->
+                    val rw = railWidth(width, slot, rail, close)
+                    val cw = closeWidth(width, slot, rail, close)
+                    assertTrue(
+                        "rail ($rw) + close ($cw) + one slot ($slot) must not exceed width ($width)",
+                        rw + cw + slot <= width + 0.001f,
+                    )
+                }
+            }
         }
     }
 }

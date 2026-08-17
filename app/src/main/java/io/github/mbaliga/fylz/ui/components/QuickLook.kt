@@ -26,10 +26,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Anchor
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.PictureInPictureAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,6 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.browse.readableLabel
 import io.github.mbaliga.fylz.core.format.FileFormatRegistry
@@ -67,6 +71,33 @@ private val QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS = setOf(
     "zip", "zipx", "apk", "aab", "apks", "xapk", "apkm", "jar", "war", "ear",
     "cbz", "3mf", "kmz", "usdz", "vsdx", "nupkg", "whl",
 )
+
+/**
+ * How the preview card sits relative to the rest of the app. [EXPANDED] is Quick Look proper: a
+ * scrim, tap-away dismissal, the card front and centre. [ANCHORED] drops the scrim so the browser
+ * underneath stays fully interactive while the card stays put -- for comparing a preview against
+ * the folder it came from. [DOCKED] shrinks the card to a corner-parked mini and keeps its content
+ * alive (a playing video keeps playing) while the user goes back to browsing.
+ */
+enum class PreviewCardMode { EXPANDED, ANCHORED, DOCKED }
+
+/** [PreviewCardMode.DOCKED]'s fixed mini-card width. */
+private val QUICK_LOOK_DOCKED_WIDTH = 132.dp
+
+/** [PreviewCardMode.DOCKED]'s height ceiling when content reports an aspect ratio. */
+private val QUICK_LOOK_DOCKED_MAX_HEIGHT = 96.dp
+
+/** [PreviewCardMode.DOCKED]'s height when content never reports one (free-aspect previews). */
+private val QUICK_LOOK_DOCKED_DEFAULT_HEIGHT = 84.dp
+
+/** How short an aspect-locked card is allowed to get before it stops honouring width instead. */
+private val QUICK_LOOK_MIN_ASPECT_HEIGHT = 160.dp
+
+/** How much of the viewport height an aspect-locked card may claim. */
+private const val QUICK_LOOK_MAX_ASPECT_HEIGHT_FRACTION = 0.85f
+
+/** Anchor, dock and close now fill the bottom-right notch, always, regardless of the rail's size. */
+private const val QUICK_LOOK_CLOSE_SLOTS = 3
 
 /**
  * Everything [QuickLookContent] reads to pick and draw a preview, frozen together.
@@ -93,9 +124,18 @@ private data class QuickLookSnapshot(
  * a footer of buttons — spends the card's best pixels describing the card. Cutting two corners
  * away instead ([NotchedCardShape]) means the content genuinely stops there, and the actions sit
  * in space the card no longer occupies: a long rail top-left that grows a slot per action, and
- * close alone bottom-right, diagonally opposite so a reach for one is never a near-miss on the
- * other. The notch interiors are painted in the surface colour rather than cut through to the
+ * anchor/dock/close bottom-right, diagonally opposite so a reach for one is never a near-miss on
+ * the other. The notch interiors are painted in the surface colour rather than cut through to the
  * scrim, so an icon never has to survive whatever image happens to be behind it.
+ *
+ * ### Why the card's own shape, not a fixed frame
+ *
+ * The card takes its aspect ratio from the content once the content can report one (image pixel
+ * size, video frame size, a PDF's first page) — see [resolveFullCardSize]. A grey gutter either
+ * side of a portrait photo is the card disagreeing with its own picture about what shape the
+ * picture is; the fix is to let the picture win, clamped to sane bounds so a panorama doesn't fill
+ * the screen with a sliver. Content with no intrinsic shape (text, the universal inspector) never
+ * reports one, and the card falls back to the free two-axis size the user last left it at.
  *
  * The card is resizable from the free top-right corner and remembers the size it was left at.
  *
@@ -114,6 +154,8 @@ fun QuickLook(
     onScaleChange: (Float, Float) -> Unit,
     onAction: (QuickAction, FileEntry) -> Unit,
     onDismiss: () -> Unit,
+    mode: PreviewCardMode = PreviewCardMode.EXPANDED,
+    onModeChange: (PreviewCardMode) -> Unit = {},
 ) {
     var lastShown by remember { mutableStateOf<QuickLookSnapshot?>(null) }
     if (entry != null) {
@@ -121,9 +163,16 @@ fun QuickLook(
     }
     var moreOpen by remember(entry?.uri) { mutableStateOf(false) }
 
+    // Dismissal always leaves the mode at EXPANDED for the next open -- an anchored or docked
+    // card that reopened still anchored/docked next time would look like a bug, not a memory.
+    val dismiss = {
+        onModeChange(PreviewCardMode.EXPANDED)
+        onDismiss()
+    }
+
     // Back closes the "more" list before it closes the card: the list is the thing most recently
     // opened, and dismissing the whole preview to put it away would lose the file too.
-    BackHandler(enabled = entry != null) { if (moreOpen) moreOpen = false else onDismiss() }
+    BackHandler(enabled = entry != null) { if (moreOpen) moreOpen = false else dismiss() }
 
     AnimatedVisibility(
         visible = entry != null,
@@ -132,14 +181,27 @@ fun QuickLook(
     ) {
         val shown = lastShown ?: return@AnimatedVisibility
         val density = LocalDensity.current
+        // Reset per file, not per composition: a new entry starts free-aspect (today's box) until
+        // its own content reports a shape, rather than briefly inheriting the previous file's.
+        var contentAspect by remember(shown.entry.uri) { mutableStateOf<Float?>(null) }
+
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss,
+                .then(
+                    // Only EXPANDED scrims and eats taps: ANCHORED and DOCKED leave the browser
+                    // underneath fully interactive, which is the entire point of either mode.
+                    if (mode == PreviewCardMode.EXPANDED) {
+                        Modifier
+                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = dismiss,
+                            )
+                    } else {
+                        Modifier
+                    },
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -147,22 +209,42 @@ fun QuickLook(
             val viewportH = maxHeight
             val slots = quickLookSlots(rail.size + 1)
             // The card can never be dragged narrower than its own chrome. The shape refuses to cut
-            // a notch wider than `width - slot`, so a card below slot*(slots+1) gets a notch
-            // narrower than the icon row drawn on it and the actions spill onto the picture. The
-            // floor is derived from the rail, so pinning a fourth action widens it along with the
-            // notch rather than leaving a size that used to be legal and no longer is.
-            val minWidth = (QuickLookSlot * (slots + 1) / viewportW).coerceIn(0.4f, 1f)
+            // a notch wider than what the opposite notch's own reservation leaves behind, so the
+            // floor has to cover the rail, the anchor/dock/close trio, AND the one bare slot the
+            // shape keeps between them. It's derived from the rail, so pinning a fourth quick
+            // action widens the floor along with the notch rather than leaving a size that used to
+            // be legal and no longer is.
+            val minWidth = (QuickLookSlot * (slots + QUICK_LOOK_CLOSE_SLOTS + 1) / viewportW).coerceIn(0.4f, 1f)
             var w by remember { mutableStateOf(widthFraction) }
             var h by remember { mutableStateOf(heightFraction) }
-            val cardWidthFraction = w.coerceIn(minWidth, 1f)
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            val cardSize = if (mode == PreviewCardMode.DOCKED) {
+                resolveDockedSize(contentAspect)
+            } else {
+                resolveFullCardSize(w.coerceIn(minWidth, 1f), h, contentAspect, viewportW, viewportH)
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = if (mode == PreviewCardMode.DOCKED) {
+                    // Clear of the pill, the trash bulge (bottom-right) and the clipboard bulge
+                    // (top-left) -- BottomStart with this padding is the one corner none of those
+                    // three claim.
+                    Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = CommandPillReservedHeight + 8.dp)
+                } else {
+                    Modifier
+                },
+            ) {
                 QuickLookCard(
                     shown = shown,
                     rail = rail,
                     moreOpen = moreOpen,
-                    width = viewportW * cardWidthFraction,
-                    height = viewportH * h,
+                    mode = mode,
+                    width = cardSize.width,
+                    height = cardSize.height,
+                    onIntrinsicAspect = { contentAspect = it },
                     onResize = { dx, dy ->
                         // Dragging the top-right grip: right widens, up grows taller, which is the
                         // direction the corner itself moves.
@@ -172,24 +254,50 @@ fun QuickLook(
                         // the finger's speed and visibly leave it behind on a quick drag.
                         w = (w + CENTRED_DRAG * dx / with(density) { viewportW.toPx() })
                             .coerceIn(minWidth, 1f)
-                        h = (h - CENTRED_DRAG * dy / with(density) { viewportH.toPx() })
-                            .coerceIn(0.3f, 0.95f)
+                        // Aspect-locked content follows width; only free-aspect content gets the
+                        // second axis, matching the drag to what onResize's caller can actually see
+                        // change (a locked card's height never moves independently of its width).
+                        if (contentAspect == null) {
+                            h = (h - CENTRED_DRAG * dy / with(density) { viewportH.toPx() })
+                                .coerceIn(0.3f, 0.95f)
+                        }
                     },
-                    onResizeEnd = { onScaleChange(w.coerceIn(minWidth, 1f), h) },
+                    onResizeEnd = {
+                        // Recomputed here rather than closing over `cardSize`: the drag gesture's
+                        // coroutine is set up once and keeps calling this same lambda instance for
+                        // the whole gesture, so reading `w`/`h`/`contentAspect` live (through their
+                        // state delegates) rather than a frozen local is what makes the persisted
+                        // scale reflect where the drag actually ended.
+                        val finalWidthFraction = w.coerceIn(minWidth, 1f)
+                        val size = resolveFullCardSize(finalWidthFraction, h, contentAspect, viewportW, viewportH)
+                        onScaleChange(size.width.value / viewportW.value, size.height.value / viewportH.value)
+                    },
                     onToggleMore = { moreOpen = !moreOpen },
+                    onToggleAnchor = {
+                        onModeChange(if (mode == PreviewCardMode.ANCHORED) PreviewCardMode.EXPANDED else PreviewCardMode.ANCHORED)
+                    },
+                    onDock = {
+                        // Closed rather than left open-but-hidden: the overflow sheet has no rail
+                        // to hang off of at mini size, and leaving it "open" would only mean it
+                        // reappears mid-shrink at the mini card's width for one frame.
+                        moreOpen = false
+                        onModeChange(PreviewCardMode.DOCKED)
+                    },
+                    onExpand = { onModeChange(PreviewCardMode.EXPANDED) },
                     onAction = { onAction(it, shown.entry) },
-                    onDismiss = onDismiss,
+                    onDismiss = dismiss,
                 )
                 // The overflow list unrolls beneath the card, the same way a room reveals; the
-                // Column re-centres as it grows, so the card rides up to make room.
+                // Column re-centres as it grows, so the card rides up to make room. Docked has no
+                // rail to overflow from -- moreOpen simply never opens while the mode does.
                 AnimatedVisibility(
-                    visible = moreOpen,
+                    visible = moreOpen && mode != PreviewCardMode.DOCKED,
                     enter = fadeIn(tween(160)) + expandVertically(tween(200)),
                     exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
                 ) {
                     QuickLookOverflow(
                         actions = QuickAction.overflowFor(rail),
-                        maxWidth = viewportW * cardWidthFraction,
+                        maxWidth = cardSize.width,
                         onAction = {
                             moreOpen = false
                             onAction(it, shown.entry)
@@ -201,85 +309,178 @@ fun QuickLook(
     }
 }
 
+/**
+ * The full (EXPANDED/ANCHORED) card's width and height once any aspect lock is applied.
+ *
+ * A free function rather than inline math so [QuickLook]'s `onResizeEnd` can recompute it against
+ * whatever `w`/`h`/`contentAspect` hold at drag-end instead of a value captured when the drag
+ * began — duplicating the formula here, rather than closing over a precomputed [DpSize], is what
+ * lets that lambda read live state.
+ */
+private fun resolveFullCardSize(
+    widthFraction: Float,
+    heightFraction: Float,
+    aspect: Float?,
+    viewportW: Dp,
+    viewportH: Dp,
+): DpSize {
+    val rawWidth = viewportW * widthFraction
+    if (aspect == null) return DpSize(rawWidth, viewportH * heightFraction)
+    val rawHeight = rawWidth / aspect
+    val clampedHeight = rawHeight.coerceIn(QUICK_LOOK_MIN_ASPECT_HEIGHT, viewportH * QUICK_LOOK_MAX_ASPECT_HEIGHT_FRACTION)
+    // If the clamp bound the height, the width has to give up matching the drag exactly so the
+    // card keeps the content's aspect rather than reintroducing the gutter the clamp was there to
+    // avoid.
+    val width = if (clampedHeight != rawHeight) clampedHeight * aspect else rawWidth
+    return DpSize(width, clampedHeight)
+}
+
+/** The docked mini card's fixed-width, aspect-derived size. */
+private fun resolveDockedSize(aspect: Float?): DpSize {
+    val height = if (aspect != null) {
+        (QUICK_LOOK_DOCKED_WIDTH / aspect).coerceAtMost(QUICK_LOOK_DOCKED_MAX_HEIGHT)
+    } else {
+        QUICK_LOOK_DOCKED_DEFAULT_HEIGHT
+    }
+    return DpSize(QUICK_LOOK_DOCKED_WIDTH, height)
+}
+
 @Composable
 private fun QuickLookCard(
     shown: QuickLookSnapshot,
     rail: List<QuickAction>,
     moreOpen: Boolean,
+    mode: PreviewCardMode,
     width: Dp,
     height: Dp,
+    onIntrinsicAspect: (Float) -> Unit,
     onResize: (Float, Float) -> Unit,
     onResizeEnd: () -> Unit,
     onToggleMore: () -> Unit,
+    onToggleAnchor: () -> Unit,
+    onDock: () -> Unit,
+    onExpand: () -> Unit,
     onAction: (QuickAction) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val docked = mode == PreviewCardMode.DOCKED
     val slots = quickLookSlots(rail.size + 1)
-    Box(Modifier.width(width).height(height)) {
-        // The panel behind the cut. Everything the notches remove reveals this, which is what
-        // makes the notch interiors read as solid surface rather than as holes.
-        Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp,
-            shadowElevation = 10.dp,
-            modifier = Modifier.fillMaxSize(),
-        ) {}
+    // One call site for the content Surface regardless of mode: switching which composable calls
+    // QuickLookContent (rather than which VALUES it's called with) is what would tear down and
+    // rebuild whatever's inside -- an ExoPlayer mid-playback, a Coil request in flight -- every
+    // time the card docks or undocks. Keeping the call site fixed and varying shape/size/onClick
+    // as plain values is what lets a video keep playing across the transition.
+    val onCardClick: () -> Unit = if (docked) onExpand else NO_OP
 
-        // The content, clipped to the notched silhouette so the picture stops at the cut.
-        Surface(
-            onClick = {},
-            shape = NotchedCardShape(railSlots = slots),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            QuickLookContent(shown.entry, shown.textContent, shown.textTruncated, shown.loading)
+    Box(Modifier.width(width).height(height)) {
+        if (!docked) {
+            // The panel behind the cut. Everything the notches remove reveals this, which is what
+            // makes the notch interiors read as solid surface rather than as holes. The docked
+            // mini card has no notches to reveal it, so it carries its own elevation instead.
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                shadowElevation = 10.dp,
+                modifier = Modifier.fillMaxSize(),
+            ) {}
         }
 
-        // ── The rail, in the top-left notch ───────────────────────────────────────────
-        Row(Modifier.align(Alignment.TopStart).height(QuickLookSlot)) {
-            rail.forEach { action ->
-                QuickLookSlotButton(action.icon, action.label) { onAction(action) }
-            }
-            QuickLookSlotButton(
-                icon = Icons.Outlined.MoreHoriz,
-                label = if (moreOpen) "Fewer actions" else "More actions",
-                onClick = onToggleMore,
+        // The content, clipped to whichever silhouette the mode calls for.
+        Surface(
+            onClick = onCardClick,
+            shape = if (docked) RoundedCornerShape(16.dp) else NotchedCardShape(railSlots = slots, closeSlots = QUICK_LOOK_CLOSE_SLOTS),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            tonalElevation = if (docked) 6.dp else 0.dp,
+            shadowElevation = if (docked) 10.dp else 0.dp,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            QuickLookContent(
+                entry = shown.entry,
+                textContent = shown.textContent,
+                textTruncated = shown.textTruncated,
+                loading = shown.loading,
+                showCaption = !docked,
+                docked = docked,
+                onIntrinsicAspect = onIntrinsicAspect,
             )
         }
 
-        // ── Close, alone in the bottom-right notch ────────────────────────────────────
-        Box(Modifier.align(Alignment.BottomEnd)) {
-            QuickLookSlotButton(Icons.Outlined.Close, "Close preview", onDismiss)
-        }
+        if (docked) {
+            // One tiny close, nothing else -- the rail and the anchor/dock/close trio only make
+            // sense at a size where their own notches fit.
+            IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd).size(20.dp)) {
+                Icon(
+                    Icons.Outlined.Close,
+                    contentDescription = "Close preview",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        } else {
+            // ── The rail, in the top-left notch ───────────────────────────────────────
+            Row(Modifier.align(Alignment.TopStart).height(QuickLookSlot)) {
+                rail.forEach { action ->
+                    QuickLookSlotButton(action.icon, action.label, onClick = { onAction(action) })
+                }
+                QuickLookSlotButton(
+                    icon = Icons.Outlined.MoreHoriz,
+                    label = if (moreOpen) "Fewer actions" else "More actions",
+                    onClick = onToggleMore,
+                )
+            }
 
-        // ── Resize, in the corner the notches leave free ──────────────────────────────
-        ResizeGrip(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(QuickLookSlot)
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragEnd = onResizeEnd,
-                        onDrag = { change, drag ->
-                            change.consume()
-                            onResize(drag.x, drag.y)
-                        },
-                    )
-                },
-        )
+            // ── Anchor, dock and close, in the bottom-right notch ─────────────────────
+            // Anchor innermost, close at the very corner: a Row laid out left-to-right and
+            // aligned to the card's end edge puts its last child on that edge.
+            Row(Modifier.align(Alignment.BottomEnd).height(QuickLookSlot)) {
+                QuickLookSlotButton(
+                    icon = Icons.Outlined.Anchor,
+                    label = if (mode == PreviewCardMode.ANCHORED) "Release anchor" else "Anchor preview",
+                    active = mode == PreviewCardMode.ANCHORED,
+                    onClick = onToggleAnchor,
+                )
+                QuickLookSlotButton(Icons.Outlined.PictureInPictureAlt, "Dock preview", onClick = onDock)
+                QuickLookSlotButton(Icons.Outlined.Close, "Close preview", onClick = onDismiss)
+            }
+
+            // ── Resize, in the corner the notches leave free ──────────────────────────
+            ResizeGrip(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(QuickLookSlot)
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragEnd = onResizeEnd,
+                            onDrag = { change, drag ->
+                                change.consume()
+                                onResize(drag.x, drag.y)
+                            },
+                        )
+                    },
+            )
+        }
     }
 }
+
+private val NO_OP: () -> Unit = {}
 
 /** One 48dp action cell. Sized to the slot so the rail and the shape's notch cannot disagree. */
 @Composable
 private fun QuickLookSlotButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
+    active: Boolean = false,
     onClick: () -> Unit,
 ) {
     IconButton(onClick = onClick, modifier = Modifier.size(QuickLookSlot)) {
-        Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
+        if (active) {
+            Box(Modifier.size(32.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(22.dp))
+            }
+        } else {
+            Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
+        }
     }
 }
 
@@ -349,10 +550,14 @@ private fun QuickLookContent(
     textContent: String?,
     textTruncated: Boolean,
     loading: Boolean,
+    showCaption: Boolean,
+    docked: Boolean,
+    onIntrinsicAspect: (Float) -> Unit,
 ) {
     val descriptor = remember(entry.name, entry.mimeType, entry.kind) {
         FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
     }
+    val autoAnimate = LocalAutoAnimate.current
     Box(Modifier.fillMaxSize()) {
         when {
             loading -> Box(
@@ -371,10 +576,23 @@ private fun QuickLookContent(
                 // vanishes on the next tap elsewhere is the wrong place to hold unsaved text.
                 MonospaceTextPreview(textContent, Modifier.fillMaxSize())
             }
-            descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
-            descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
-            descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
-                MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.family == PreviewFamily.IMAGE ->
+                RichImagePreview(entry, Modifier.fillMaxSize(), onIntrinsicAspect = onIntrinsicAspect)
+            descriptor.family == PreviewFamily.PDF ->
+                PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize(), onIntrinsicAspect = onIntrinsicAspect)
+            // Autoplay is a video/GIF motion rule (HIG section 5): muted playback previews motion,
+            // and audio has no silent motion to preview -- autoplaying it muted would just start
+            // inaudible playback with no way to tell it apart from not having started at all.
+            descriptor.family == PreviewFamily.VIDEO ->
+                MediaFilePreview(
+                    entry, descriptor, Modifier.fillMaxSize(),
+                    autoPlay = autoAnimate, useController = !docked, onVideoSize = onIntrinsicAspect,
+                )
+            descriptor.family == PreviewFamily.AUDIO ->
+                MediaFilePreview(
+                    entry, descriptor, Modifier.fillMaxSize(),
+                    useController = !docked, onVideoSize = onIntrinsicAspect,
+                )
             descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
             descriptor.extension in QUICK_LOOK_SEMANTIC_ZIP_DOCUMENTS ->
                 ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
@@ -385,12 +603,21 @@ private fun QuickLookContent(
             else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())
         }
 
-        // The name rides a gradient scrim along the foot rather than a divider-and-header band:
-        // it has to be legible over an arbitrary image without stealing a strip of the content.
-        QuickLookCaption(
-            entry = entry,
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 18.dp, bottom = 12.dp, end = QuickLookSlot),
-        )
+        if (showCaption) {
+            // The name rides a gradient scrim along the foot rather than a divider-and-header
+            // band: it has to be legible over an arbitrary image without stealing a strip of the
+            // content. The end inset covers the anchor/dock/close trio's full three-slot notch,
+            // not just one slot, so a long name ellipsizes before the clip cuts it off rather than
+            // after.
+            QuickLookCaption(
+                entry = entry,
+                modifier = Modifier.align(Alignment.BottomStart).padding(
+                    start = 18.dp,
+                    bottom = 12.dp,
+                    end = QuickLookSlot * QUICK_LOOK_CLOSE_SLOTS,
+                ),
+            )
+        }
     }
 }
 
@@ -398,7 +625,7 @@ private fun QuickLookContent(
 private fun QuickLookCaption(entry: FileEntry, modifier: Modifier = Modifier) {
     Column(modifier) {
         Text(
-            entry.name,
+            displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,

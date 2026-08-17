@@ -3,14 +3,14 @@ package io.github.mbaliga.fylz.ui.components
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronLeft
@@ -19,6 +19,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -48,11 +49,12 @@ fun PdfPagerPreview(
     entry: FileEntry,
     descriptor: FileFormatDescriptor,
     modifier: Modifier = Modifier,
+    onIntrinsicAspect: ((Float) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var pageIndex by remember(entry.uri) { mutableIntStateOf(0) }
     val page by produceState<Result<RenderedPdfPage>?>(null, entry.uri, pageIndex) {
-        value = withContext(Dispatchers.IO) {
+        val result = withContext(Dispatchers.IO) {
             runCatching {
                 context.contentResolver.openFileDescriptor(entry.uri, "r")?.use { fd ->
                     PdfRenderer(fd).use { renderer ->
@@ -75,6 +77,15 @@ fun PdfPagerPreview(
                 } ?: error("The provider did not return a seekable PDF descriptor.")
             }
         }
+        // Reported on the first page only: the card locks to that shape for the whole viewing
+        // session, so paging through a document with mixed page sizes never resizes the card
+        // out from under the reader's thumb.
+        result.onSuccess { rendered ->
+            if (rendered.pageIndex == 0) {
+                onIntrinsicAspect?.invoke(rendered.bitmap.width.toFloat() / rendered.bitmap.height.toFloat())
+            }
+        }
+        value = result
     }
 
     when (val result = page) {
@@ -82,36 +93,69 @@ fun PdfPagerPreview(
         else -> result.fold(
             onSuccess = { rendered ->
                 if (pageIndex != rendered.pageIndex) pageIndex = rendered.pageIndex
-                Column(modifier.fillMaxSize()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = { pageIndex -= 1 }, enabled = rendered.pageIndex > 0) {
-                            Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous PDF page")
-                        }
-                        Text(
-                            "Page ${rendered.pageIndex + 1} of ${rendered.pageCount}",
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        )
-                        IconButton(onClick = { pageIndex += 1 }, enabled = rendered.pageIndex + 1 < rendered.pageCount) {
-                            Icon(Icons.Outlined.ChevronRight, contentDescription = "Next PDF page")
-                        }
-                    }
+                Box(modifier.fillMaxSize()) {
                     Box(
-                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                         contentAlignment = Alignment.TopCenter,
                     ) {
-                        Image(rendered.bitmap, contentDescription = "Page ${rendered.pageIndex + 1} of ${entry.name}")
+                        Image(
+                            rendered.bitmap,
+                            contentDescription = "Page ${rendered.pageIndex + 1} of ${entry.name}",
+                            modifier = Modifier.fillMaxWidth(),
+                        )
                     }
+                    PdfPagerPill(
+                        pageIndex = rendered.pageIndex,
+                        pageCount = rendered.pageCount,
+                        onPrevious = { pageIndex -= 1 },
+                        onNext = { pageIndex += 1 },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+                    )
                 }
             },
             onFailure = {
                 UniversalInspectorPreview(entry, descriptor, modifier, it.message ?: "Unable to render this PDF page.")
             },
         )
+    }
+}
+
+/**
+ * The prev/`n of m`/next chrome, floating over the page rather than claiming a header strip --
+ * the card is sized to the page's own shape now, so a fixed band across the top would put a
+ * grey bar exactly where content used to fill the card edge-to-edge.
+ */
+@Composable
+private fun PdfPagerPill(
+    pageIndex: Int,
+    pageCount: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.92f),
+        tonalElevation = 3.dp,
+        shadowElevation = 2.dp,
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onPrevious, enabled = pageIndex > 0, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous PDF page", modifier = Modifier.size(18.dp))
+            }
+            Text(
+                "${pageIndex + 1} of $pageCount",
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            IconButton(onClick = onNext, enabled = pageIndex + 1 < pageCount, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Outlined.ChevronRight, contentDescription = "Next PDF page", modifier = Modifier.size(18.dp))
+            }
+        }
     }
 }
 

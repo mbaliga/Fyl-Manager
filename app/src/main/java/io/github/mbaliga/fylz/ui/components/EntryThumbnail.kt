@@ -53,6 +53,10 @@ import kotlinx.coroutines.withContext
  * Provider thumbnails (step 1) are cached in [ThumbnailCache] by URI, so a row that recomposes --
  * or a folder-grid card asking for the same three thumbnails on every peek -- re-queries the
  * resolver once, not on every recomposition.
+ *
+ * A video entry hands off to [VideoMotionThumbnail] instead of steps 1-3 above when
+ * [LocalAutoAnimate] is on -- that composable reuses this same provider-thumbnail path as its own
+ * static fallback, so the two never disagree about what a still video thumbnail looks like.
  */
 @Composable
 fun EntryThumbnail(
@@ -60,6 +64,11 @@ fun EntryThumbnail(
     size: Dp = 40.dp,
     modifier: Modifier = Modifier,
 ) {
+    if (entry.kind == EntryKind.VIDEO && !entry.isDirectory && LocalAutoAnimate.current) {
+        VideoMotionThumbnail(entry, size, modifier)
+        return
+    }
+
     val context = LocalContext.current
     val thumbnailable = !entry.isDirectory &&
         (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO)
@@ -119,8 +128,11 @@ fun EntryThumbnail(
  * Asks the document provider for a bounded thumbnail. Returns null -- rather than throwing -- for
  * providers that do not implement `openDocumentThumbnail`, which is the common case for
  * third-party cloud providers.
+ *
+ * Internal rather than private: [VideoMotionThumbnail] reuses it verbatim for its own static
+ * frame, so a provider that changes how it thumbnails a video changes both places at once.
  */
-private fun loadProviderThumbnail(
+internal fun loadProviderThumbnail(
     resolver: android.content.ContentResolver,
     uri: Uri,
     pixels: Int,
@@ -137,7 +149,7 @@ private fun loadProviderThumbnail(
  * [LinkedHashMap.removeEldestEntry] is the standard bounded-LRU idiom; a plain `Map` would grow
  * without bound over a long browsing session.
  */
-private object ThumbnailCache {
+internal object ThumbnailCache {
     private const val MAX_ENTRIES = 64
     private val cache = object : LinkedHashMap<String, ImageBitmap>(MAX_ENTRIES, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>) = size > MAX_ENTRIES
@@ -168,5 +180,5 @@ fun ProvideIconStyle(style: IconStyle, content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalIconStyle provides style, content = content)
 }
 
-private const val THUMBNAIL_PIXELS = 192
-private const val ICON_SCALE = 0.7f
+internal const val THUMBNAIL_PIXELS = 192
+internal const val ICON_SCALE = 0.7f

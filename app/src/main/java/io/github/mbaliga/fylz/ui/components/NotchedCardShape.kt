@@ -25,10 +25,19 @@ const val QUICK_LOOK_MIN_SLOTS: Int = 2
 /** Clamps a requested rail size into what the shape will actually draw. */
 fun quickLookSlots(requested: Int): Int = requested.coerceIn(QUICK_LOOK_MIN_SLOTS, QUICK_LOOK_MAX_SLOTS)
 
+/** Below one there is no notch left to cut — the corner would have nothing to hold. */
+const val QUICK_LOOK_CLOSE_MIN_SLOTS: Int = 1
+
+/** Anchor, dock and close is as deep as the corner notch goes; past it it would rival the rail. */
+const val QUICK_LOOK_CLOSE_MAX_SLOTS: Int = 3
+
+/** Clamps a requested close-notch size into what the shape will actually draw. */
+fun quickLookCloseSlots(requested: Int): Int = requested.coerceIn(QUICK_LOOK_CLOSE_MIN_SLOTS, QUICK_LOOK_CLOSE_MAX_SLOTS)
+
 /**
  * The preview card's silhouette: a rounded rectangle with a rectangular bite taken out of two
- * diagonally opposite corners — a long one at the top-left for the action rail, a single-slot one
- * at the bottom-right for close.
+ * diagonally opposite corners — a long one at the top-left for the action rail, a shorter one at
+ * the bottom-right for anchor/dock/close.
  *
  * The notches are **subtracted**, not drawn over. That matters because the card's content bleeds
  * to its edges: an icon strip painted on top of a plain rectangle would sit on the image, whereas
@@ -37,17 +46,19 @@ fun quickLookSlots(requested: Int): Int = requested.coerceIn(QUICK_LOOK_MIN_SLOT
  *
  * Geometry is driven by [slotSize] rather than by proportion. The reference art puts a slot at
  * about a tenth of the card, which on a phone-sized card lands near 35dp — under the touch
- * minimum. Sizing from the slot instead keeps every action hittable and lets the rail widen by
+ * minimum. Sizing from the slot instead keeps every action hittable and lets either notch widen by
  * exactly one slot per action, which is what makes a 3-action and a 5-action card look related
  * rather than merely similar.
  *
  * @param railSlots how many actions the top-left notch holds; clamped by [quickLookSlots].
+ * @param closeSlots how many actions the bottom-right notch holds; clamped by [quickLookCloseSlots].
  * @param innerRadius the rounding where a notch meets the content. Deliberately smaller than
  *   [cornerRadius]: an inner corner rounded as hard as the outer ones reads as a bite out of a
  *   blob rather than a cut into a card.
  */
 class NotchedCardShape(
     private val railSlots: Int,
+    private val closeSlots: Int = 1,
     private val slotSize: Dp = QuickLookSlot,
     private val cornerRadius: Dp = 28.dp,
     private val innerRadius: Dp = 12.dp,
@@ -59,10 +70,16 @@ class NotchedCardShape(
             val outer = cornerRadius.toPx()
             val inner = innerRadius.toPx()
             val slots = quickLookSlots(railSlots)
+            val closeCount = quickLookCloseSlots(closeSlots)
 
-            // A notch can never eat more than the card has; on a very narrow card the rail is
-            // capped so the two notches cannot meet and split the silhouette in two.
-            val railWidth = minOf(slot * slots, size.width - slot)
+            // Each notch is capped by what the OTHER notch needs at its own full size, plus one
+            // bare slot of card between them — without that margin the two notches' inner corners
+            // would touch and the silhouette would read as a ring instead of two cuts. Below that
+            // combined width the rail (the one QuickLook.kt actually flexes) gives way first.
+            val railIdeal = slot * slots
+            val closeIdeal = slot * closeCount
+            val railWidth = minOf(railIdeal, size.width - closeIdeal - slot)
+            val closeWidth = minOf(closeIdeal, size.width - railIdeal - slot)
             val notchDepth = minOf(slot, size.height / 3f)
 
             val card = Path().apply {
@@ -86,7 +103,7 @@ class NotchedCardShape(
                 addRoundRect(
                     RoundRect(
                         rect = Rect(
-                            size.width - slot,
+                            size.width - closeWidth,
                             size.height - notchDepth,
                             size.width + bleed,
                             size.height + bleed,
@@ -110,10 +127,11 @@ class NotchedCardShape(
     override fun equals(other: Any?): Boolean =
         other is NotchedCardShape &&
             other.railSlots == railSlots &&
+            other.closeSlots == closeSlots &&
             other.slotSize == slotSize &&
             other.cornerRadius == cornerRadius &&
             other.innerRadius == innerRadius
 
     override fun hashCode(): Int =
-        (((railSlots * 31 + slotSize.hashCode()) * 31) + cornerRadius.hashCode()) * 31 + innerRadius.hashCode()
+        ((((railSlots * 31 + closeSlots) * 31 + slotSize.hashCode()) * 31) + cornerRadius.hashCode()) * 31 + innerRadius.hashCode()
 }

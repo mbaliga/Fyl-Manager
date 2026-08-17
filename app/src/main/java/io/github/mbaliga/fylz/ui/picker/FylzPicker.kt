@@ -54,6 +54,8 @@ import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.storage.StorageAccess
+import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
+import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
@@ -385,6 +387,7 @@ private fun EntryList(
     onOpenFolder: (FileEntry) -> Unit,
     onToggleFile: (FileEntry) -> Unit,
 ) {
+    val showExtensions = LocalShowExtensions.current
     // Folders first, then files. In folder and save modes the files are still drawn — greyed and
     // inert — because a folder shown empty when it is not is a folder the user distrusts.
     val ordered = remember(entries, showHidden) {
@@ -440,7 +443,7 @@ private fun EntryList(
                     Spacer(Modifier.size(16.dp))
                 }
                 Text(
-                    entry.name,
+                    displayName(entry.name, entry.isDirectory, showExtensions),
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (pickable) {
                         MaterialTheme.colorScheme.onSurface

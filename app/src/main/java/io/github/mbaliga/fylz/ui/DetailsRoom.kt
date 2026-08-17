@@ -45,6 +45,8 @@ import io.github.mbaliga.fylz.browse.locationTree
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
+import io.github.mbaliga.fylz.ui.components.displayName
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -116,6 +118,7 @@ internal fun DetailsRoom(
         // the more specific answer; with several selected, the room summarises instead but still
         // marks the last one touched in the tree, so "which of these did I just tap" is visible.
         val subject = focused ?: selection.singleOrNull()
+        val showExtensions = LocalShowExtensions.current
 
         // The tree lists folders — the structure — plus the one file being described, so a
         // selected file has a visible place in the hierarchy instead of only a path string.
@@ -126,10 +129,12 @@ internal fun DetailsRoom(
         val subjectIndex = subject
             ?.let { entry -> treeEntries.indexOfFirst { it.uri == entry.uri } }
             ?.takeIf { it >= 0 }
-        val rows = remember(ancestors, treeEntries, subjectIndex) {
+        val rows = remember(ancestors, treeEntries, subjectIndex, showExtensions) {
             locationTree(
                 ancestors = ancestors.map(FolderLocation::name),
-                children = treeEntries.map { TreeChild(it.name, it.isDirectory) },
+                children = treeEntries.map {
+                    TreeChild(displayName(it.name, it.isDirectory, showExtensions), it.isDirectory)
+                },
                 focusedChild = subjectIndex,
             )
         }
@@ -137,7 +142,7 @@ internal fun DetailsRoom(
         Text(
             when {
                 multiple -> "${selection.size} items selected"
-                subject != null -> subject.name
+                subject != null -> displayName(subject.name, subject.isDirectory, showExtensions)
                 else -> ancestors.last().name
             },
             style = MaterialTheme.typography.headlineSmall,

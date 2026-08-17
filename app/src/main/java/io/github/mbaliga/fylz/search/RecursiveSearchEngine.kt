@@ -4,6 +4,13 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import dev.aarso.search.EvalContext
+import dev.aarso.search.FacetEvaluator
+import dev.aarso.search.FieldRegistry
+import dev.aarso.search.Matcher
+import dev.aarso.search.Normalizer
+import dev.aarso.search.ParsedQuery
+import dev.aarso.search.QueryCompiler
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +20,26 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import java.io.InputStreamReader
 import kotlin.coroutines.coroutineContext
+
+/** Where a hit came from, so the results list can say why a file matched. */
+enum class SearchMatchSource {
+    NAME,
+    CONTENT,
+}
+
+data class SearchHit(
+    val entry: FileEntry,
+    val relativePath: String,
+    val source: SearchMatchSource,
+    /** One line of surrounding text for a content hit; null for name hits. */
+    val snippet: String? = null,
+    /** The matcher/scorer score -- 0.0 for a content-only hit, which has nothing lexical in its
+     *  own name to rank it by (the same "unranked" case `Matcher.score` documents). */
+    val score: Double = 0.0,
+    /** Ranges into [entry]'s name where a lexical query term matched, in original-text
+     *  coordinates (`Normalizer.findMatches`). Empty for a content hit or a facet-only query. */
+    val nameHighlights: List<IntRange> = emptyList(),
+)
 
 /** Progressive state of a running search, so the UI can show partial results as they arrive. */
 data class SearchProgress(
@@ -43,19 +70,31 @@ class RecursiveSearchEngine(context: Context) {
     /**
      * @param treeUri the tree that scopes the search (permission root)
      * @param rootUri the folder to start from; usually the current folder
+     * @param parsed the query -- `FylzSearch.parse`
+     * @param registry the facet vocabulary [parsed] was validated against -- `FylzSearch.registry`,
+     *   built over the same zone/tag lookup as [matcher]
+     * @param matcher `FylzSearch.matcher` built over [registry]
+     * @param ctx the clock this walk ranks recency against, held fixed for the whole search so a
+     *   long walk doesn't re-date itself mid-emit
      */
     fun search(
         treeUri: Uri,
         rootUri: Uri,
         rootName: String,
-        query: SearchQuery,
+        parsed: ParsedQuery,
+        registry: FieldRegistry<FileEntry>,
+        matcher: Matcher<FileEntry>,
+        ctx: EvalContext,
         maxResults: Int = DEFAULT_MAX_RESULTS,
         maxFolders: Int = DEFAULT_MAX_FOLDERS,
     ): Flow<SearchProgress> = flow {
-        if (query.isEmpty) {
+        if (parsed.isEmptyQuery()) {
             emit(SearchProgress(emptyList(), 0, 0, complete = true))
             return@flow
         }
+
+        val terms = QueryCompiler.lexicalTerms(parsed.root)
+        val contentPassEnabled = parsed.wantsContent() && terms.isNotEmpty()
 
         val hits = mutableListOf<SearchHit>()
         val queue = ArrayDeque(listOf(rootUri to ""))
@@ -88,18 +127,28 @@ class RecursiveSearchEngine(context: Context) {
                     filesScanned += 1
                 }
 
-                if (!query.matchesMetadata(child)) continue
+                // Facets first, independent of the lexical half -- a content candidate still has
+                // to satisfy `ext:`/`type:`/`size:` before its bytes are worth reading.
+                if (!FacetEvaluator.matches(child, parsed, registry, ctx)) continue
 
-                if (query.matchesName(child.name)) {
-                    hits += SearchHit(child, relativePath(rootName, childPath), SearchMatchSource.NAME)
+                val doc = FylzSearch.toDoc(child, path = folderPath.takeIf { it.isNotEmpty() })
+                val scored = matcher.score(child, doc, parsed, ctx)
+                if (scored != null) {
+                    hits += SearchHit(
+                        entry = child,
+                        relativePath = relativePath(rootName, childPath),
+                        source = SearchMatchSource.NAME,
+                        score = scored.score,
+                        nameHighlights = Normalizer.findMatches(child.name, terms),
+                    )
                     sinceLastEmit += 1
-                } else if (query.searchContent && !child.isDirectory && isContentSearchable(child)) {
-                    contentSnippet(child.uri, query)?.let { snippet ->
+                } else if (contentPassEnabled && !child.isDirectory && isContentSearchable(child)) {
+                    contentSnippet(child.uri, terms)?.let { snippet ->
                         hits += SearchHit(
-                            child,
-                            relativePath(rootName, childPath),
-                            SearchMatchSource.CONTENT,
-                            snippet,
+                            entry = child,
+                            relativePath = relativePath(rootName, childPath),
+                            source = SearchMatchSource.CONTENT,
+                            snippet = snippet,
                         )
                         sinceLastEmit += 1
                     }
@@ -112,14 +161,14 @@ class RecursiveSearchEngine(context: Context) {
             }
 
             if (sinceLastEmit > 0 || foldersScanned % FOLDERS_PER_EMIT == 0) {
-                emit(SearchProgress(hits.toList(), foldersScanned, filesScanned, complete = false))
+                emit(SearchProgress(hits.sortedWith(HIT_ORDER), foldersScanned, filesScanned, complete = false))
                 sinceLastEmit = 0
             }
         }
 
         emit(
             SearchProgress(
-                hits = hits.toList(),
+                hits = hits.sortedWith(HIT_ORDER),
                 foldersScanned = foldersScanned,
                 filesScanned = filesScanned,
                 complete = true,
@@ -189,14 +238,17 @@ class RecursiveSearchEngine(context: Context) {
             entry.mimeType in EXTRA_TEXT_MIME_TYPES
     }
 
-    private fun contentSnippet(uri: Uri, query: SearchQuery): String? = runCatching {
+    /** [terms] are already [Normalizer.normalize]d -- the same lexical terms the matcher scored
+     *  the name/path pass with, so a content hit and a name hit agree on what "contains" means. */
+    private fun contentSnippet(uri: Uri, terms: List<String>): String? = runCatching {
         resolver.openInputStream(uri)?.use { stream ->
             InputStreamReader(stream, Charsets.UTF_8).buffered().use { reader ->
                 var read = 0
                 reader.lineSequence().forEach { line ->
                     read += line.length
                     if (read > MAX_CONTENT_BYTES) return@use null
-                    if (query.terms.all { line.contains(it, ignoreCase = true) }) {
+                    val normalizedLine = Normalizer.normalize(line)
+                    if (terms.all { normalizedLine.contains(it) }) {
                         return@use line.trim().take(SNIPPET_LENGTH)
                     }
                 }
@@ -225,5 +277,13 @@ class RecursiveSearchEngine(context: Context) {
             "application/x-sh",
             "application/javascript",
         )
+
+        /** Mirrors search-core's `RANKING_ORDER` tiebreak chain (score desc, then recency desc,
+         *  then id asc) exactly, typed for [SearchHit] instead of `Scored` so re-sorting the
+         *  capped hit list on every emit doesn't need a full doc re-projection. */
+        private val HIT_ORDER: Comparator<SearchHit> =
+            compareByDescending<SearchHit> { it.score }
+                .thenByDescending { it.entry.lastModifiedMillis ?: 0L }
+                .thenBy { it.entry.uri.toString() }
     }
 }
