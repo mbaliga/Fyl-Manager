@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.RadioButton
@@ -58,6 +60,7 @@ import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.ui.components.FileTypeIcons
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
+import io.github.mbaliga.fylz.ui.landing.HomeMode
 
 /**
  * The app's own tools and settings, reached from the left room rather than a swipe-in edge.
@@ -83,6 +86,12 @@ internal fun SettingsOverlay(
     onIconStyleChange: (IconStyle) -> Unit,
     quickActions: List<QuickAction>,
     onQuickActionsChange: (List<QuickAction>) -> Unit,
+    homeMode: HomeMode = HomeMode.LOCATIONS,
+    onHomeModeChange: (HomeMode) -> Unit = {},
+    landingSubjectName: String? = null,
+    onPickLandingSubject: () -> Unit = {},
+    landingSplash: Boolean = true,
+    onLandingSplashChange: (Boolean) -> Unit = {},
     onOpenRecycleBin: () -> Unit,
     onOpenRemotes: () -> Unit,
     onOpenWebDav: () -> Unit,
@@ -211,6 +220,67 @@ internal fun SettingsOverlay(
                 }
 
                 Spacer(Modifier.size(20.dp))
+                RoomHeading("Landing")
+                Text(
+                    "What opens the app -- today's location list, or one folder arranged your way.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Column(Modifier.selectableGroup()) {
+                    HomeMode.entries.forEach { mode ->
+                        val selected = mode == homeMode
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .selectable(
+                                    selected = selected,
+                                    onClick = { onHomeModeChange(mode) },
+                                    role = Role.RadioButton,
+                                )
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                if (selected) {
+                                    Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
+                                }
+                            }
+                            Text(
+                                mode.readableLabel(),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
+                            )
+                        }
+                    }
+                }
+                LandingSubjectRow(
+                    label = "Landing folder",
+                    valueText = landingSubjectName ?: "None",
+                    onClick = onPickLandingSubject,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onLandingSplashChange(!landingSplash) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Show the Fylz landing", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "A moment of brand when the app opens. Off goes straight to work.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = landingSplash, onCheckedChange = onLandingSplashChange)
+                }
+
+                Spacer(Modifier.size(20.dp))
                 RoomHeading("Preview actions")
                 QuickActionEditor(
                     rail = quickActions,
@@ -244,6 +314,44 @@ internal fun SettingsOverlay(
                 SettingsToolRow(Icons.Outlined.Search, "Index manager", onOpenIndexManager)
             }
         }
+    }
+}
+
+private fun HomeMode.readableLabel(): String = when (this) {
+    HomeMode.LOCATIONS -> "Locations list"
+    HomeMode.LIST -> "List"
+    HomeMode.BENTO -> "Bento"
+    HomeMode.CANVAS -> "Canvas"
+}
+
+/**
+ * The "Landing folder" row: [SettingsToolRow]'s exact silhouette, plus a trailing value so the
+ * current pick (or its absence) is legible without opening the picker to find out.
+ */
+@Composable
+private fun LandingSubjectRow(label: String, valueText: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(start = 16.dp).weight(1f),
+        )
+        Text(
+            valueText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 

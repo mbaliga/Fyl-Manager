@@ -53,6 +53,21 @@ private fun AccentPreset.colors(): AccentColors = when (this) {
 }
 
 private val FylzTypography = Typography(
+    // No display-sized surface used these before the landing hero; the wordmark itself stays on
+    // its own bundled Hyle face local to LandingSplash.kt rather than riding these -- what these
+    // give the rest of the app is a display register that isn't just the stock Material default.
+    displayLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 57.sp,
+        lineHeight = 64.sp,
+    ),
+    displayMedium = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 45.sp,
+        lineHeight = 52.sp,
+    ),
     headlineSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,

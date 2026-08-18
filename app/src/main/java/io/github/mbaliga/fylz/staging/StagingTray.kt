@@ -2,12 +2,20 @@ package io.github.mbaliga.fylz.staging
 
 import android.net.Uri
 import io.github.mbaliga.fylz.core.model.EntryKind
+import io.github.mbaliga.fylz.model.FileEntry
 
-/** One file riding a tray, reduced to what the bulge needs to draw and act on it. */
+/**
+ * One file riding a tray, reduced to what the bulge needs to draw and act on it.
+ *
+ * @param entry the live metadata behind [uri], when the caller has it -- lets a card show a real
+ *   thumbnail instead of a type icon. Defaulted and nullable so every existing staging site keeps
+ *   compiling unchanged; it stays null until seeded.
+ */
 data class StagedItem(
     val uri: Uri,
     val displayName: String,
     val kind: EntryKind,
+    val entry: FileEntry? = null,
 )
 
 /**

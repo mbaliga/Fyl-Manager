@@ -1,9 +1,12 @@
 package io.github.mbaliga.fylz.settings
 
 import android.content.Context
+import android.net.Uri
 import io.github.mbaliga.fylz.model.ViewMode
+import io.github.mbaliga.fylz.ui.landing.HomeMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -122,5 +125,91 @@ class AppPreferencesStoreTest {
         store.clearRecentSearches()
 
         assertEquals(emptyList<String>(), store.recentSearches())
+    }
+
+    @Test
+    fun `landing splash defaults to true`() {
+        assertTrue(store().landingSplash())
+    }
+
+    @Test
+    fun `landing splash round-trips through the store`() {
+        val store = store()
+        store.setLandingSplash(false)
+        assertFalse(store().landingSplash())
+    }
+
+    @Test
+    fun `home mode defaults to LOCATIONS`() {
+        assertEquals(HomeMode.LOCATIONS, store().homeMode())
+    }
+
+    @Test
+    fun `home mode round-trips through the store`() {
+        val store = store()
+        store.setHomeMode(HomeMode.CANVAS)
+        assertEquals(HomeMode.CANVAS, store().homeMode())
+    }
+
+    @Test
+    fun `home mode falls back to LOCATIONS on a corrupted value`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("landing_view", "NOT_A_HOME_MODE").commit()
+
+        assertEquals(HomeMode.LOCATIONS, store.homeMode())
+    }
+
+    @Test
+    fun `landing subject is null until one is picked`() {
+        assertNull(store().landingSubject())
+    }
+
+    @Test
+    fun `landing subject round-trips through the store`() {
+        val store = store()
+        store.setLandingSubject("content://tree/primary", "content://tree/primary/document/primary%3APhotos")
+
+        assertEquals(
+            "content://tree/primary" to "content://tree/primary/document/primary%3APhotos",
+            store().landingSubject(),
+        )
+    }
+
+    @Test
+    fun `setting landing subject to null clears it`() {
+        val store = store()
+        store.setLandingSubject("content://tree/primary", "content://tree/primary/document/primary%3APhotos")
+
+        store.setLandingSubject(null, null)
+
+        assertNull(store().landingSubject())
+    }
+
+    @Test
+    fun `migrating the landing subject rewrites the folder on a hit`() {
+        val store = store()
+        val old = Uri.parse("content://tree/primary/document/primary%3APhotos")
+        val new = Uri.parse("content://tree/primary/document/primary%3ACamera")
+        store.setLandingSubject("content://tree/primary", old.toString())
+
+        val migrated = store.migrateLandingSubject(old, new)
+
+        assertTrue(migrated)
+        assertEquals("content://tree/primary" to new.toString(), store().landingSubject())
+    }
+
+    @Test
+    fun `migrating the landing subject is a no-op on a miss`() {
+        val store = store()
+        val current = Uri.parse("content://tree/primary/document/primary%3APhotos")
+        val unrelated = Uri.parse("content://tree/primary/document/primary%3AOther")
+        val new = Uri.parse("content://tree/primary/document/primary%3ACamera")
+        store.setLandingSubject("content://tree/primary", current.toString())
+
+        val migrated = store.migrateLandingSubject(unrelated, new)
+
+        assertFalse(migrated)
+        assertEquals("content://tree/primary" to current.toString(), store().landingSubject())
     }
 }

@@ -1,10 +1,12 @@
 package io.github.mbaliga.fylz.settings
 
 import android.content.Context
+import android.net.Uri
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
+import io.github.mbaliga.fylz.ui.landing.HomeMode
 
 /**
  * App-wide display preferences: theme mode and whether dotfiles show up in listings.
@@ -153,6 +155,67 @@ class AppPreferencesStore(context: Context) {
             .commit()
     }
 
+    /** Whether the landing hero shows on cold start. On by default -- it is meant to be seen. */
+    @Synchronized
+    fun landingSplash(): Boolean = preferences.getBoolean(LANDING_SPLASH, true)
+
+    @Synchronized
+    fun setLandingSplash(value: Boolean) {
+        preferences.edit().putBoolean(LANDING_SPLASH, value).commit()
+    }
+
+    /** Which surface the landing home renders once past the hero. [HomeMode.LOCATIONS] by default. */
+    @Synchronized
+    fun homeMode(): HomeMode {
+        val raw = preferences.getString(LANDING_VIEW, null) ?: return HomeMode.LOCATIONS
+        return runCatching { HomeMode.valueOf(raw) }.getOrDefault(HomeMode.LOCATIONS)
+    }
+
+    @Synchronized
+    fun setHomeMode(mode: HomeMode) {
+        preferences.edit().putString(LANDING_VIEW, mode.name).commit()
+    }
+
+    /**
+     * The folder LIST/BENTO/CANVAS list, as its raw tree and folder URI strings -- parsing and
+     * grant validation happen at the boot call site, not here, so a store read never itself
+     * throws on a URI that no longer resolves. Null when either half is missing.
+     */
+    @Synchronized
+    fun landingSubject(): Pair<String, String>? {
+        val tree = preferences.getString(LANDING_SUBJECT_TREE, null) ?: return null
+        val folder = preferences.getString(LANDING_SUBJECT_FOLDER, null) ?: return null
+        return tree to folder
+    }
+
+    /** Pass null for both to clear the subject and fall back to [HomeMode.LOCATIONS]. */
+    @Synchronized
+    fun setLandingSubject(treeUri: String?, folderUri: String?) {
+        val editor = preferences.edit()
+        if (treeUri == null || folderUri == null) {
+            editor.remove(LANDING_SUBJECT_TREE).remove(LANDING_SUBJECT_FOLDER)
+        } else {
+            editor.putString(LANDING_SUBJECT_TREE, treeUri).putString(LANDING_SUBJECT_FOLDER, folderUri)
+        }
+        editor.commit()
+    }
+
+    /**
+     * Rewrites the stored subject's folder URI when a move or rename carries it away from under
+     * the pref -- the same relocation seam [io.github.mbaliga.fylz.library.LibraryStore] and
+     * [io.github.mbaliga.fylz.history.FileHistoryStore] already answer to. Only the folder half
+     * is ever rewritten; the tree grant itself does not change from an in-app move. Returns
+     * whether the stored subject matched (and was rewritten), so the caller can tell a hit from
+     * a miss without a redundant read of its own.
+     */
+    @Synchronized
+    fun migrateLandingSubject(oldUri: Uri, newUri: Uri): Boolean {
+        val folder = preferences.getString(LANDING_SUBJECT_FOLDER, null) ?: return false
+        if (folder != oldUri.toString()) return false
+        preferences.edit().putString(LANDING_SUBJECT_FOLDER, newUri.toString()).commit()
+        return true
+    }
+
     private companion object {
         const val PREFERENCES_NAME = "fylz_app_settings"
         const val THEME_MODE = "theme_mode"
@@ -168,5 +231,9 @@ class AppPreferencesStore(context: Context) {
         const val DEFAULT_PREVIEW_WIDTH = 0.86f
         const val DEFAULT_PREVIEW_HEIGHT = 0.62f
         const val MAX_RECENT_SEARCHES = 8
+        const val LANDING_SPLASH = "landing_splash"
+        const val LANDING_VIEW = "landing_view"
+        const val LANDING_SUBJECT_TREE = "landing_subject_tree"
+        const val LANDING_SUBJECT_FOLDER = "landing_subject_folder"
     }
 }

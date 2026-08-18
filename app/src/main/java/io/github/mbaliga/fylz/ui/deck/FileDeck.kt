@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -38,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
@@ -48,22 +48,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import coil3.compose.AsyncImage
-import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.staging.LoopedCarousel
 import io.github.mbaliga.fylz.staging.ShelfItem
 import io.github.mbaliga.fylz.storage.toUri
-import io.github.mbaliga.fylz.ui.components.EntryThumbnail
-import io.github.mbaliga.fylz.ui.components.FileTypeIcons
 import io.github.mbaliga.fylz.ui.components.ICON_SCALE
-import io.github.mbaliga.fylz.ui.components.LocalIconStyle
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
+import io.github.mbaliga.fylz.ui.components.StackCard
 import io.github.mbaliga.fylz.ui.components.displayName
 import kotlin.math.abs
 import kotlin.math.pow
@@ -357,6 +352,7 @@ private fun DeckCard(
         shape = MaterialTheme.shapes.large,
         tonalElevation = 4.dp,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(3.dp, MaterialTheme.colorScheme.surfaceBright),
         modifier = Modifier
             .size(width = CARD_WIDTH, height = CARD_HEIGHT)
             .then(modifier)
@@ -383,15 +379,24 @@ private fun DeckCard(
             modifier = Modifier.fillMaxSize().padding(16.dp),
         ) {
             Box(Modifier.size(CARD_ICON_SIZE), contentAlignment = Alignment.Center) {
-                when {
-                    item.missing -> Icon(
+                if (item.missing) {
+                    Icon(
                         Icons.Outlined.BrokenImage,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(CARD_ICON_SIZE * ICON_SCALE),
                     )
-                    item.entry != null -> EntryThumbnail(item.entry, size = CARD_ICON_SIZE)
-                    else -> DeckTypeIcon(item, size = CARD_ICON_SIZE)
+                } else {
+                    // liveContent: the deck recomposes per shuffle, not per frame, so its
+                    // cards can afford the full thumbnail path -- and a video card keeps the
+                    // motion the auto-animate setting promises it.
+                    StackCard(
+                        entry = item.entry,
+                        fallbackName = item.displayName,
+                        kind = item.kind,
+                        size = CARD_ICON_SIZE,
+                        liveContent = true,
+                    )
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -426,22 +431,6 @@ private fun DeckCard(
             }
         }
     }
-}
-
-/** The un-probed / un-thumbnailable fallback: same resolution order as [EntryThumbnail]'s own. */
-@Composable
-private fun DeckTypeIcon(item: DeckItem, size: Dp) {
-    val style = LocalIconStyle.current
-    val asset = remember(item.displayName, item.kind, style) {
-        val descriptor = FileFormatRegistry.describe(item.displayName, "", item.kind)
-        "file:///android_asset/" + FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
-    }
-    AsyncImage(
-        model = asset,
-        contentDescription = null,
-        contentScale = ContentScale.Fit,
-        modifier = Modifier.size(size * ICON_SCALE),
-    )
 }
 
 /** How many cards ever fan out behind the front one, whatever the deck's real size. */

@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Add
@@ -122,6 +123,7 @@ import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.browse.readableLabel
 import io.github.mbaliga.fylz.browse.sortEntries
+import io.github.mbaliga.fylz.canvas.CanvasLayoutStore
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.library.LibraryStore
@@ -233,19 +235,32 @@ import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
 import io.github.mbaliga.fylz.staging.TrayKind
+import io.github.mbaliga.fylz.ui.canvas.BentoMosaic
+import io.github.mbaliga.fylz.ui.canvas.SubjectCanvas
+import io.github.mbaliga.fylz.ui.canvas.SubjectList
 import io.github.mbaliga.fylz.ui.cluster.BulgeCorner
 import io.github.mbaliga.fylz.ui.cluster.ClusterDragController
 import io.github.mbaliga.fylz.ui.cluster.ClusterDragLayer
+import io.github.mbaliga.fylz.ui.cluster.InkContent
+import io.github.mbaliga.fylz.ui.cluster.InkSurface
 import io.github.mbaliga.fylz.ui.cluster.RestingBulge
 import io.github.mbaliga.fylz.ui.cluster.ShredConfirmOverlay
 import io.github.mbaliga.fylz.ui.cluster.TrashBrowserSheet
 import io.github.mbaliga.fylz.ui.cluster.TrashGlyph
 import io.github.mbaliga.fylz.ui.cluster.TrayBrowserSheet
+import io.github.mbaliga.fylz.ui.components.warmThumbnails
+import io.github.mbaliga.fylz.ui.landing.HomeMode
+import io.github.mbaliga.fylz.ui.landing.LandingGate
+import io.github.mbaliga.fylz.ui.landing.LandingSplash
+import io.github.mbaliga.fylz.ui.landing.LandingSubject
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
+
+/** How many of the landing subject's own media entries the splash's content peek ever shows. */
+private const val MAX_SUBJECT_PEEK = 3
 
 /** How long a settled query has to hold still before it restarts the recursive walk or is
  *  recorded as a recent search -- long enough that a word typed at normal speed reads as one
@@ -272,7 +287,10 @@ private const val SHELF_PROBE_PARALLELISM = 6
  * [recoverySection] and [overlays] are composed *inside* [FylzTheme] on purpose. Recovery used to
  * be a sibling screen under a bare `MaterialTheme`, which is why it — like the Tools and Index
  * activities — arrived light inside an otherwise dark app. Content that belongs to Fylz is
- * rendered by Fylz's theme; there is no second place for that decision to be made.
+ * rendered by Fylz's theme; there is no second place for that decision to be made. The cold-start
+ * [LandingSplash] joins them here too, mounted last so it draws over the workspace and the
+ * overlays alike, and gated on [io.github.mbaliga.fylz.ui.landing.LandingGate] so it never
+ * replays once its own dismissal has set that flag.
  *
  * @param recoverySection the storage-and-recovery surface. It is no longer the whole bottom room:
  *   the bottom room is Actions now, and recovery is its last section — still the same edge, the
@@ -289,9 +307,11 @@ fun FylzV1App(
     overlays: @Composable (showHidden: Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     // Both prefs live here, not inside the workspace: theme mode has to be known before
     // FylzTheme opens, and show-hidden rides along on the same small store rather than opening a
-    // second one for one more boolean.
+    // second one for one more boolean. The landing prefs join them for the same shape of reason:
+    // the splash mounted below is a sibling of the workspace, not something inside it.
     val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
     var themeMode by remember { mutableStateOf(preferencesStore.themeMode()) }
     var showHidden by remember { mutableStateOf(preferencesStore.showHidden()) }
@@ -300,6 +320,80 @@ fun FylzV1App(
     // before it draws anything, so it rides down as a CompositionLocal rather than a parameter
     // threaded through the row, the card, the preview header, the details room and the picker.
     var showExtensions by remember { mutableStateOf(preferencesStore.showExtensions()) }
+    var landingSplash by remember { mutableStateOf(preferencesStore.landingSplash()) }
+    var homeMode by remember { mutableStateOf(preferencesStore.homeMode()) }
+    // Resolved from the stored pref by the boot effect below; null while unresolved, absent, or
+    // the grant it names has gone stale. A raw Pair<String, String> here would make every reader
+    // re-parse and re-validate it -- resolving once into the real type is what that effect is for.
+    var landingSubject by remember { mutableStateOf<LandingSubject?>(null) }
+    // Up to three real media entries from the subject's own folder, for the splash's content
+    // peek -- independent of homeMode, since the peek is worth showing even when Locations (the
+    // default) is the chosen home.
+    var subjectPeek by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
+    // A repository handle of its own, shelf-less on purpose (only DocumentRepository.rename()
+    // ever reads the shelf argument): resolving and peeking the landing subject both have to
+    // happen here, before FylzTheme opens, which is earlier than the workspace's own
+    // shelf-aware repository exists.
+    val homeRepository = remember { DocumentRepository(context.applicationContext) }
+    // The pref exactly as read at cold start, independent of `landingSplash` above -- the user
+    // can flip that live from Settings mid-session, but whether THIS process is still inside the
+    // cold-start window the splash owns has to be decided once, from the value that was true (or
+    // wasn't) before any such flip could happen.
+    val landingSplashAtColdStart = remember { preferencesStore.landingSplash() }
+    // LandingGate itself carries no Compose state -- flipping its flag alone would never trigger
+    // the recomposition that actually takes the splash out of the tree once it finishes. Seeded
+    // from the object's current value on every composition start, not hardcoded false: a genuine
+    // process start reads false, while a rotation mid-splash re-reads whatever the flag already
+    // says, which is what lets a rotation before dismissal legitimately re-show the splash while
+    // one after it never does. Also seeded true when the pref was already off at cold start, so
+    // turning it on later in Settings opens the window for the NEXT cold start, not this one.
+    var splashDismissed by remember { mutableStateOf(LandingGate.shownThisProcess || !landingSplashAtColdStart) }
+
+    LaunchedEffect(Unit) {
+        val (treeString, folderString) = preferencesStore.landingSubject() ?: return@LaunchedEffect
+        val treeUri = runCatching { Uri.parse(treeString) }.getOrNull()
+        val folderUri = runCatching { Uri.parse(folderString) }.getOrNull()
+        val hasGrant = treeUri != null &&
+            context.contentResolver.persistedUriPermissions.any { it.uri == treeUri && it.isReadPermission }
+        val root = treeUri
+            ?.takeIf { hasGrant }
+            ?.let { uri -> runCatching { homeRepository.rootLocation(uri) }.getOrNull() }
+        if (treeUri != null && folderUri != null && root != null) {
+            landingSubject = LandingSubject(treeUri, folderUri, root.name)
+        } else {
+            // Either half missing, the grant gone, or the tree no longer resolves -- forget the
+            // subject rather than let the routing below re-fail this same check every time home
+            // is revisited. Falling back to Locations happens naturally: no subject is exactly
+            // what home shows Locations for regardless of the chosen mode.
+            preferencesStore.setLandingSubject(null, null)
+        }
+    }
+
+    LaunchedEffect(landingSubject) {
+        val subject = landingSubject
+        subjectPeek = if (subject == null) {
+            emptyList()
+        } else {
+            runCatching { homeRepository.listChildren(subject.treeUri, subject.folderUri) }
+                .getOrDefault(emptyList())
+                .filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }
+                .take(MAX_SUBJECT_PEEK)
+        }
+    }
+
+    val landingSubjectPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            homeRepository.persistTreePermission(uri)
+            scope.launch {
+                runCatching { homeRepository.rootLocation(uri) }
+                    .onSuccess { root ->
+                        preferencesStore.setLandingSubject(uri.toString(), root.uri.toString())
+                        landingSubject = LandingSubject(uri, root.uri, root.name)
+                    }
+            }
+        }
+    }
+
     FylzTheme(
         themeMode = themeMode,
         accentPreset = AccentPreset.MOSS,
@@ -328,9 +422,38 @@ fun FylzV1App(
                   showExtensions = it
                   preferencesStore.setShowExtensions(it)
               },
+              homeMode = homeMode,
+              onHomeModeChange = {
+                  homeMode = it
+                  preferencesStore.setHomeMode(it)
+              },
+              landingSubject = landingSubject,
+              onPickLandingSubject = { landingSubjectPicker.launch(null) },
+              onLandingSubjectRelocated = { folderUri ->
+                  landingSubject = landingSubject?.copy(folderUri = folderUri)
+              },
+              landingSplash = landingSplash,
+              onLandingSplashChange = {
+                  landingSplash = it
+                  preferencesStore.setLandingSplash(it)
+              },
               recoverySection = recoverySection,
           )
           overlays(showHidden)
+          // Mounted last of all, so it draws above everything -- rooms, bulges, the drag layer,
+          // QuickLook, the deck, the overlays' own dialogs. Cold-start only: splashDismissed is
+          // what keeps it from ever re-showing once its own dismissal sets the flag, and
+          // re-entering home from a folder never touches that flag, so it never re-fires there
+          // either.
+          if (landingSplash && !splashDismissed) {
+              LandingSplash(
+                  peekEntries = subjectPeek,
+                  onFinished = {
+                      LandingGate.shownThisProcess = true
+                      splashDismissed = true
+                  },
+              )
+          }
         }
       }
     }
@@ -346,6 +469,13 @@ private fun FylzV1Workspace(
     onIconStyleChange: (IconStyle) -> Unit,
     showExtensions: Boolean,
     onShowExtensionsChange: (Boolean) -> Unit,
+    homeMode: HomeMode,
+    onHomeModeChange: (HomeMode) -> Unit,
+    landingSubject: LandingSubject?,
+    onPickLandingSubject: () -> Unit,
+    onLandingSubjectRelocated: (Uri) -> Unit = {},
+    landingSplash: Boolean,
+    onLandingSplashChange: (Boolean) -> Unit,
     recoverySection: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -363,6 +493,17 @@ private fun FylzV1Workspace(
     // shelfItems (below) recompute the same way tagsVersion makes a tag-derived read recompute.
     var shelfVersion by remember { mutableIntStateOf(0) }
     val shelfItems = remember(shelfVersion) { shelf.items() }
+    // A second handle on the same SharedPreferences the root holds. Theme and show-hidden have
+    // to be known before FylzTheme opens so they are threaded down; the preview's own settings
+    // are read and written only here and in the settings sheet this composable renders, so
+    // routing them through the root would be parameters carrying nothing the root itself uses.
+    // Declared up here, ahead of where the rest of this composable's own state lives, only
+    // because onItemRelocated (just below) needs it before that point.
+    val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
+    // Own handle onto the freeform-canvas layout store -- ShelfStore-modelled, its own
+    // SharedPreferences file. onItemRelocated below is the only thing this composable ever asks
+    // of it; SubjectCanvas opens its own handle onto the same file when the canvas itself renders.
+    val canvasLayoutStore = remember { CanvasLayoutStore(context.applicationContext) }
     // Fired once per item a move or a batch rename actually relocates -- the one seam where all
     // three identity-keyed stores learn about a URI that changed out from under them. No store
     // type leaks past this lambda into operations/; each store translates the raw Uri pair
@@ -371,6 +512,8 @@ private fun FylzV1Workspace(
         library.migrateUri(old, new)
         history.migrateSource(old, new)
         shelf.migrateRef(old, new)
+        canvasLayoutStore.migrateUri(old, new)
+        if (preferencesStore.migrateLandingSubject(old, new)) onLandingSubjectRelocated(new)
         shelfVersion += 1
     }
     val repository = remember { DocumentRepository(context.applicationContext, shelf) }
@@ -386,11 +529,6 @@ private fun FylzV1Workspace(
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
     val pdfTools = remember { PdfToolService(context.applicationContext) }
-    // A second handle on the same SharedPreferences the root holds. Theme and show-hidden have
-    // to be known before FylzTheme opens so they are threaded down; the preview's own settings are
-    // read and written only here and in the settings sheet this composable renders, so routing
-    // them through the root would be four parameters carrying nothing the root uses.
-    val preferencesStore = remember { AppPreferencesStore(context.applicationContext) }
     var quickActions by remember { mutableStateOf(preferencesStore.quickActions()) }
     var previewScale by remember { mutableStateOf(preferencesStore.previewScale()) }
     // Read and written only here and in the settings sheet, same as quickActions/previewScale
@@ -1137,10 +1275,7 @@ private fun FylzV1Workspace(
             }
             DropTarget.SHELF -> {
                 clusterController.settle()
-                // The cluster's cargo carries only uri/name/kind; the full metadata addToShelf
-                // wants rides on selectedEntries, which seeded the cargo at drag-start and (the
-                // drag being over in one gesture) still names the same files.
-                addToShelf(cargo.mapNotNull { staged -> selectedEntries.firstOrNull { it.uri == staged.uri } })
+                addToShelf(cargo.mapNotNull { it.entry })
                 selectedUris = emptySet()
             }
             // NONE returns home, the rest fly; the layer commits them on landing.
@@ -1534,6 +1669,11 @@ private fun FylzV1Workspace(
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
+                        homeMode = homeMode,
+                        landingSubject = landingSubject,
+                        onOpenHomeFolder = { location ->
+                            landingSubject?.let { subject -> openTabAt(subject.treeUri, location) }
+                        },
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -1566,8 +1706,12 @@ private fun FylzV1Workspace(
                         cluster = ClusterGestureHooks(
                             onPositioned = { uri, centre -> clusterOrigins[uri] = centre },
                             onStart = { at ->
+                                // Fire-and-forget: primes the thumbnail cache for the cards the
+                                // drag layer is about to draw so its per-frame physics loop never
+                                // has to touch IO itself.
+                                warmThumbnails(selectedEntries.take(5), context.contentResolver)
                                 clusterController.start(
-                                    items = selectedEntries.map { StagedItem(it.uri, it.name, it.kind) },
+                                    items = selectedEntries.map { StagedItem(it.uri, it.name, it.kind, it) },
                                     origins = clusterOrigins.toMap(),
                                     at = at,
                                 )
@@ -1691,7 +1835,7 @@ private fun FylzV1Workspace(
                     Icon(
                         Icons.Outlined.ContentPaste,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = InkContent,
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -1707,7 +1851,7 @@ private fun FylzV1Workspace(
                 ) {
                     TrashGlyph(
                         proximity = 0f,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = InkContent,
                         modifier = Modifier.size(26.dp),
                     )
                 }
@@ -2172,6 +2316,12 @@ private fun FylzV1Workspace(
                 quickActions = it
                 preferencesStore.setQuickActions(it)
             },
+            homeMode = homeMode,
+            onHomeModeChange = onHomeModeChange,
+            landingSubjectName = landingSubject?.name,
+            onPickLandingSubject = onPickLandingSubject,
+            landingSplash = landingSplash,
+            onLandingSplashChange = onLandingSplashChange,
             onOpenRecycleBin = { settingsOpen = false; recycleDialog = true },
             onOpenRemotes = { settingsOpen = false; remoteDialog = true },
             onOpenWebDav = { settingsOpen = false; webDavDialog = true },
@@ -2251,6 +2401,9 @@ private fun FileBrowser(
     onPickFolder: (StorageRoot?) -> Unit,
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
+    homeMode: HomeMode = HomeMode.LOCATIONS,
+    landingSubject: LandingSubject? = null,
+    onOpenHomeFolder: (FolderLocation) -> Unit = {},
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
@@ -2267,16 +2420,46 @@ private fun FileBrowser(
     onRecentSearchSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // With no tab open the browser shows the storage home surface, not an empty label. This is
-    // the single change that answers "the app doesn't show any folders on launch".
+    // With no tab open the browser shows the storage home surface -- or, once Settings has
+    // picked a subject and a view other than Locations, that subject arranged the chosen way.
+    // This is the change that originally answered "the app doesn't show any folders on launch",
+    // now with three more ways to answer it.
     if (activeTab == null) {
-        StorageHomeScreen(
-            onOpenRoot = onOpenStorageRoot,
-            onPickFolder = onPickFolder,
-            onOpenRemotes = onOpenRemotes,
-            refreshKey = homeRefreshKey,
-            modifier = modifier,
-        )
+        val subject = landingSubject
+        when {
+            subject != null && homeMode == HomeMode.LIST -> SubjectList(
+                subject = subject,
+                repository = repository,
+                refreshKey = homeRefreshKey,
+                onOpenFolder = onOpenHomeFolder,
+                onOpenFile = onOpen,
+                modifier = modifier,
+            )
+            subject != null && homeMode == HomeMode.BENTO -> BentoMosaic(
+                subject = subject,
+                repository = repository,
+                refreshKey = homeRefreshKey,
+                onOpenFolder = onOpenHomeFolder,
+                onOpenFile = onOpen,
+                modifier = modifier,
+            )
+            subject != null && homeMode == HomeMode.CANVAS -> SubjectCanvas(
+                subject = subject,
+                repository = repository,
+                refreshKey = homeRefreshKey,
+                onOpenFolder = onOpenHomeFolder,
+                onOpenFile = onOpen,
+                modifier = modifier,
+            )
+            // Locations, or a chosen mode with no valid subject to show it against.
+            else -> StorageHomeScreen(
+                onOpenRoot = onOpenStorageRoot,
+                onPickFolder = onPickFolder,
+                onOpenRemotes = onOpenRemotes,
+                refreshKey = homeRefreshKey,
+                modifier = modifier,
+            )
+        }
         return
     }
 
@@ -3027,11 +3210,15 @@ private fun formatDetailsModified(millis: Long?): String? = millis
  * read, and the actions past the fourth were effectively hidden. All of them are rows in the
  * actions room now.
  *
- * What survives here is only what the file list itself has to say — how many are selected, and
- * the ways out of that state. "Actions" opens the bottom room by tap, because a control the app
- * draws may open a room directly; the drag from the bottom edge does the same thing and is the
- * gesture this bar is teaching. The count itself is the fourth way: tapping it opens the deck to
- * riffle and prune the very selection it is counting.
+ * What survives here is only what the file list itself has to say — the count, one way out, one
+ * way up. The count rides the same dark pill family the cluster's bulges and drag-time cards
+ * wear ([InkSurface]/[InkContent]), so a selection reads as one steady idiom whether it is being
+ * dragged or just sitting there; "Actions" stays a Material button beside it, on purpose, since
+ * that is the one action that leaves this bar for a whole different surface rather than acting on
+ * the selection directly. "Actions" opens the bottom room by tap, because a control the app draws
+ * may open a room directly; the drag from the bottom edge does the same thing and is the gesture
+ * this bar is teaching. The count itself is the other way in: tapping it opens the deck to riffle
+ * and prune the very selection it is counting.
  */
 @Composable
 private fun SelectionSummaryBar(
@@ -3040,28 +3227,40 @@ private fun SelectionSummaryBar(
     onOpenDeck: () -> Unit,
     onClear: () -> Unit,
 ) {
-    Surface(tonalElevation = 8.dp) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                if (count == 1) "1 selected" else "$count selected",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier
-                    .clickable(onClick = onOpenDeck)
-                    .semantics {
-                        role = Role.Button
-                        contentDescription = "Review $count selected"
-                    },
-            )
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = onClear) { Text("Clear") }
-            FilledTonalButton(onClick = onOpenActions) {
-                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
-                Text("Actions", Modifier.padding(start = 6.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Surface(color = InkSurface, shape = RoundedCornerShape(50)) {
+            Row(
+                modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (count == 1) "1 SELECTED" else "$count SELECTED",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = InkContent,
+                    modifier = Modifier
+                        .clickable(onClick = onOpenDeck)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Review $count selected"
+                        },
+                )
+                IconButton(onClick = onClear, modifier = Modifier.size(32.dp).padding(start = 4.dp)) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "Clear selection",
+                        tint = InkContent,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
+        }
+        Spacer(Modifier.weight(1f))
+        FilledTonalButton(onClick = onOpenActions) {
+            Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Actions", Modifier.padding(start = 6.dp))
         }
     }
 }

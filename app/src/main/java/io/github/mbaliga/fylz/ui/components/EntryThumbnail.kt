@@ -57,12 +57,20 @@ import kotlinx.coroutines.withContext
  * A video entry hands off to [VideoMotionThumbnail] instead of steps 1-3 above when
  * [LocalAutoAnimate] is on -- that composable reuses this same provider-thumbnail path as its own
  * static fallback, so the two never disagree about what a still video thumbnail looks like.
+ *
+ * @param pixels the square side requested from [loadProviderThumbnail], [THUMBNAIL_PIXELS] by
+ *   default. A caller drawing a tile well past that default's native size (the canvas and bento
+ *   surfaces) can ask for more so the provider decodes at the size it is actually shown, instead
+ *   of a 192px thumbnail stretched soft across a much larger tile. Folded into the cache key only
+ *   when it differs from the default, so every existing call site keeps sharing the plain
+ *   bare-URI cache entries it always has.
  */
 @Composable
 fun EntryThumbnail(
     entry: FileEntry,
     size: Dp = 40.dp,
     modifier: Modifier = Modifier,
+    pixels: Int = THUMBNAIL_PIXELS,
 ) {
     if (entry.kind == EntryKind.VIDEO && !entry.isDirectory && LocalAutoAnimate.current) {
         VideoMotionThumbnail(entry, size, modifier)
@@ -73,19 +81,24 @@ fun EntryThumbnail(
     val thumbnailable = !entry.isDirectory &&
         (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO)
 
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = entry.uri, key2 = thumbnailable) {
+    val bitmap by produceState<ImageBitmap?>(
+        initialValue = null,
+        key1 = entry.uri,
+        key2 = thumbnailable,
+        key3 = pixels,
+    ) {
         if (!thumbnailable) {
             value = null
             return@produceState
         }
-        val cacheKey = entry.uri.toString()
+        val cacheKey = if (pixels != THUMBNAIL_PIXELS) "${entry.uri}@$pixels" else entry.uri.toString()
         val cached = ThumbnailCache.get(cacheKey)
         if (cached != null) {
             value = cached
             return@produceState
         }
         value = withContext(Dispatchers.IO) {
-            loadProviderThumbnail(context.contentResolver, entry.uri, THUMBNAIL_PIXELS)?.asImageBitmap()
+            loadProviderThumbnail(context.contentResolver, entry.uri, pixels)?.asImageBitmap()
         }?.also { ThumbnailCache.put(cacheKey, it) }
     }
 

@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
@@ -88,14 +89,21 @@ private fun QuietFolderFace(
     }
 }
 
-/** How much of the card height the frosted pane claims, bottom-anchored; the rest is where documents peek. */
-private const val FROSTED_PANE_HEIGHT_FRACTION = 0.8f
+/** How much of the card height the frosted pane claims, bottom-anchored; the rest is where the stack peeks. */
+private const val FROSTED_PANE_HEIGHT_FRACTION = 0.7f
+
+/** Size each real thumbnail draws at in the peek band -- the ~49dp of headroom the 0.7 fraction leaves in a 164dp card. */
+private val PEEK_THUMB_SIZE = 40.dp
+
+/** Where the stack's front card starts, so it straddles the pane's top edge instead of sitting wholly above or below it. */
+private val PEEK_TOP = 20.dp
 
 /**
  * The frosted-glass register: the folder's own first media thumb, blurred full-bleed behind a
  * translucent wash, with a sharp name panel over the bottom -- same copy and colors as the header
- * this replaces. Drawn above it, tucked half behind the pane's top edge, up to two small paper
- * "sheets" stand in for the folder's other, non-photographic contents.
+ * this replaces. Emerging from behind the pane's top edge, up to three of the folder's own real
+ * thumbnails cascade like a small print stack; if the folder also holds non-photographic files,
+ * one blank [DocumentSheet] joins as the rearmost leaf of that same cascade.
  */
 @Composable
 private fun FrostedFolderFace(
@@ -108,20 +116,26 @@ private fun FrostedFolderFace(
     // draw a document sheet, which comparing itemCount against the capped thumb list can't tell
     // apart from a folder of three photos and seven documents.
     val hasDocuments = peek.hasNonMedia
+    val specs = peek.thumbs.map { StackSpec(it, it.name, it.kind) }
 
     Box(modifier.fillMaxSize()) {
         if (hasDocuments) {
+            // One slot further back than the cascade's own last card -- same offset step, so it
+            // reads as one more leaf in the stack rather than a second, competing motif.
             DocumentSheet(
                 rotation = -4f,
                 tonalElevation = 1.dp,
-                modifier = Modifier.align(Alignment.TopCenter).offset(x = (-9).dp, y = 10.dp),
-            )
-            DocumentSheet(
-                rotation = 4f,
-                tonalElevation = 2.dp,
-                modifier = Modifier.align(Alignment.TopCenter).offset(x = 9.dp, y = 16.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(x = (specs.size * 6).dp - 6.dp, y = PEEK_TOP + (specs.size * 4).dp)
+                    .zIndex(-1f),
             )
         }
+        StackedThumbs(
+            items = specs,
+            size = PEEK_THUMB_SIZE,
+            modifier = Modifier.align(Alignment.TopCenter).offset(x = (-6).dp, y = PEEK_TOP),
+        )
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
@@ -154,7 +168,8 @@ private fun FrostedFolderFace(
 
 /**
  * One drawn "sheet" peeking from behind the frosted pane -- a rounded rectangle only, no asset.
- * Two of these at different [tonalElevation]s read as separate leaves stacked a shade apart.
+ * Stands in for a folder's non-photographic files as the rearmost leaf of the real-thumbnail
+ * cascade [FrostedFolderFace] draws above it.
  */
 @Composable
 private fun DocumentSheet(rotation: Float, tonalElevation: Dp, modifier: Modifier) {

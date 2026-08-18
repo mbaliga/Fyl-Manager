@@ -21,9 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -49,12 +47,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
-import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.operations.RecycleRecord
 import io.github.mbaliga.fylz.staging.LoopedCarousel
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
 import io.github.mbaliga.fylz.staging.TrayKind
+import io.github.mbaliga.fylz.ui.components.StackCard
 
 /**
  * The expanded clipboard/move bulge: the tray's contents, browsable.
@@ -134,7 +132,11 @@ internal fun TrayBrowserSheet(
                 LoopedTrayRow(
                     tray = tray,
                     onRemove = onRemove,
-                    modifier = Modifier.fillMaxWidth().height(132.dp).padding(top = 12.dp),
+                    // Matches PullableTrayCard's own 138dp height -- LazyRow measures each card
+                    // with this as its cross-axis MAX, so leaving this at the card's old height
+                    // would silently coerce the taller card back down regardless of its own
+                    // `.size()`.
+                    modifier = Modifier.fillMaxWidth().height(138.dp).padding(top = 12.dp),
                 )
                 Text(
                     "Pull a file down to take it off the ${tray.kind.title().lowercase()}.",
@@ -211,7 +213,10 @@ private fun PullableTrayCard(item: StagedItem, onRemove: () -> Unit) {
         shape = RoundedCornerShape(14.dp),
         tonalElevation = 3.dp,
         modifier = Modifier
-            .size(width = 104.dp, height = 116.dp)
+            // Sized for its real content now: an 84dp StackCard plus a 2-line caption needs more
+            // than the old icon-and-name card did, or both clip against this Surface's own
+            // rounded-corner shape.
+            .size(width = 116.dp, height = 138.dp)
             .graphicsLayer {
                 translationY = pull
                 alpha = 1f - (pull / (threshold * 1.6f)).coerceIn(0f, 0.55f)
@@ -244,11 +249,11 @@ private fun PullableTrayCard(item: StagedItem, onRemove: () -> Unit) {
             verticalArrangement = Arrangement.Center,
             modifier = Modifier.fillMaxSize().padding(8.dp),
         ) {
-            Icon(
-                if (item.kind == EntryKind.DIRECTORY) Icons.Outlined.Folder else Icons.AutoMirrored.Outlined.InsertDriveFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(30.dp),
+            StackCard(
+                entry = item.entry,
+                fallbackName = item.displayName,
+                kind = item.kind,
+                size = 84.dp,
             )
             Text(
                 item.displayName,

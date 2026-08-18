@@ -20,7 +20,6 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +45,7 @@ import io.github.mbaliga.fylz.staging.DropTarget
 import io.github.mbaliga.fylz.staging.DropTargetPolicy
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.TargetReaction
+import io.github.mbaliga.fylz.ui.components.StackCard
 import kotlinx.coroutines.isActive
 import kotlin.math.PI
 import kotlin.math.min
@@ -223,7 +223,7 @@ internal fun ClusterDragLayer(
                     clip = true
                     shape = CornerBulgeShape(BulgeCorner.TOP_LEFT, 0.88f + 0.12f * actionsSwell)
                 }
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                .background(InkSurface),
         ) {
             // One caption, in the corner the arc encloses. Four labels under four glyphs is what
             // made the old bulge unreadable at any size small enough to be discreet.
@@ -256,11 +256,14 @@ internal fun ClusterDragLayer(
                     clip = true
                     shape = CornerBulgeShape(BulgeCorner.BOTTOM_RIGHT, 0.88f + 0.12f * trashReaction.proximity)
                 }
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                .background(InkSurface)
+                // The hot wash: invisible at rest, a soft red fill once the drop would commit --
+                // the same "release here" cue the swell already gives, doubled in colour.
+                .background(InkDanger.copy(alpha = if (trashReaction.hit) 0.24f else 0f)),
         ) {
             TrashGlyph(
                 proximity = trashReaction.proximity,
-                tint = if (trashReaction.hit) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (trashReaction.hit) InkDanger else InkContent,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp)
@@ -403,36 +406,38 @@ internal fun ClusterDragLayer(
 
 @Composable
 private fun ClusterCard(item: StagedItem, badge: String?, modifier: Modifier) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        tonalElevation = 6.dp,
-        shadowElevation = 8.dp,
-        modifier = modifier.size(72.dp),
-    ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Icon(
-                Icons.AutoMirrored.Outlined.InsertDriveFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    Box(modifier.size(72.dp), contentAlignment = Alignment.Center) {
+        StackCard(
+            entry = item.entry,
+            fallbackName = item.displayName,
+            kind = item.kind,
+            size = 72.dp,
+        )
+        Text(
+            item.displayName,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            // StackCard's face is a real thumbnail now, not a flat surface -- the label needs its
+            // own scrim (the badge's own background treatment, just dark instead of tonal) to stay
+            // legible over a bright or busy photo, not just sit bare on top of it.
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(4.dp)
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+        if (badge != null) {
             Text(
-                item.displayName,
+                badge,
                 style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(4.dp),
+                color = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 5.dp, vertical = 1.dp),
             )
-            if (badge != null) {
-                Text(
-                    badge,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
-                        .padding(horizontal = 5.dp, vertical = 1.dp),
-                )
-            }
         }
     }
 }

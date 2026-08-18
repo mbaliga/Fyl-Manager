@@ -76,6 +76,19 @@ internal class CornerBulgeShape(
 internal enum class BulgeCorner { TOP_LEFT, BOTTOM_RIGHT }
 
 /**
+ * The dark pill family: one fixed, theme-independent palette for every bulge surface (resting
+ * and drag-time alike) and the selection count pill, modelled on the "9999 SELECTED" reference.
+ *
+ * Deliberately not scheme tokens -- [FylzTheme]'s dynamic colour is always wallpaper-derived, and
+ * a bulge that inherits the wallpaper's hue reads as chrome that changes under the user rather
+ * than as the one steady surface a drag always lands on. [InkContent] on [InkSurface] clears
+ * DESIGN.md's 4.5:1 text gate; [InkDanger] is the trash's hot colour, reserved for that one cue.
+ */
+internal val InkSurface = Color(0xF2141417)
+internal val InkContent = Color(0xFFF3F3F5)
+internal val InkDanger = Color(0xFFE5484D)
+
+/**
  * How big a resting tab is. Small enough to sit in the corner of a listing without becoming
  * part of it — the reference is a hibernation tab peeling off a panel edge, not a FAB.
  */
@@ -105,7 +118,7 @@ internal fun RestingBulge(
         modifier
             .size(sizeDp)
             .graphicsLayer { clip = true; shape = CornerBulgeShape(corner, 0.96f + 0.04f * swell) }
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .background(InkSurface)
             .clickable(onClick = onTap)
             .semantics { this.contentDescription = contentDescription },
     ) {
@@ -173,7 +186,7 @@ internal fun ReactiveSlot(
     val tint = if (hit) {
         MaterialTheme.colorScheme.primary
     } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
+        InkContent
     }
     Box(
         modifier.graphicsLayer {
@@ -200,7 +213,7 @@ internal fun ReactiveSlot(
 internal fun SlotCaption(text: String, strength: Float, modifier: Modifier = Modifier) {
     if (text.isEmpty()) return
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        color = InkSurface,
         shape = RoundedCornerShape(50),
         modifier = modifier.graphicsLayer { alpha = strength },
     ) {
@@ -208,7 +221,7 @@ internal fun SlotCaption(text: String, strength: Float, modifier: Modifier = Mod
             text,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = InkContent,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
         )
     }

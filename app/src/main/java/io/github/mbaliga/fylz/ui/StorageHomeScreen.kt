@@ -96,15 +96,19 @@ fun StorageHomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val groups by produceState(
-        initialValue = emptyList<StorageRootGroup>(),
+    // Null means "haven't heard back yet"; an empty list is a real, resolved answer -- collapsing
+    // the two into one boolean is what used to spin the loading indicator forever on a location
+    // that genuinely has nothing to show.
+    val groups by produceState<List<StorageRootGroup>?>(
+        initialValue = null,
         key1 = refreshKey,
         key2 = ready,
     ) {
         value = StorageAccess.available(context).flatMap { it.rootGroups(context) }
     }
 
-    val loading = groups.isEmpty() && ready
+    val loading = groups == null && ready
+    val resolvedGroups = groups.orEmpty()
 
     Column(modifier.fillMaxSize()) {
         if (!ready) {
@@ -135,7 +139,7 @@ fun StorageHomeScreen(
         // gesture nav bar's device-dependent inset, which is why the footer below also carries
         // navigationBarsPadding() -- without it the caption clips under the gesture bar.
         LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)) {
-            groups.forEach { group ->
+            resolvedGroups.forEach { group ->
                 item(key = "header:${group.title}") {
                     Text(
                         group.title.uppercase(),
@@ -148,6 +152,17 @@ fun StorageHomeScreen(
                     StorageRootRow(
                         root = root,
                         onClick = { if (root.opensDirectly) onOpenRoot(root) else onPickFolder(root) },
+                    )
+                }
+            }
+
+            if (resolvedGroups.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        stringResource(R.string.storage_home_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
                     )
                 }
             }
