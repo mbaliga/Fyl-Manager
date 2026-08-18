@@ -40,9 +40,13 @@ import kotlinx.coroutines.launch
  * There is no chrome left. Recovery used to be one of two `NavigationBarItem`s across the
  * bottom of the app; it became a **room** — a surface parked off the bottom edge that the file
  * workspace lifts and parts to reveal — and it is now the last *section* of that room, which is
- * Actions. Tabs went for the reason the owner gave after the first test build: a bottom tab bar
- * is not the fonebrew pattern, and two permanent tabs for a screen most sessions never open is
- * chrome charging rent.
+ * Actions. That verdict was about screens, not folders: a bottom `NavigationBar` picking between
+ * Files and Recovery is still gone, and stays gone, for the reason the owner gave after the first
+ * test build (not the fonebrew pattern, and two permanent tabs for a screen most sessions never
+ * open is chrome charging rent). Folder tabs are a different thing wearing the same word — opened
+ * and closed by what the session is actually doing, not two fixed destinations nobody chooses
+ * between — and now live in their own strip inside [io.github.mbaliga.fylz.ui.components.CommandPill],
+ * not a second app-level nav surface.
  *
  * The edge did not move and neither did the gesture; what changed is what shares it. Finishing
  * an interrupted move is an action on files, so it sits with the other actions on files rather

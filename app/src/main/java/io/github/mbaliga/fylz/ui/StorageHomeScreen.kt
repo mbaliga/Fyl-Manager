@@ -66,6 +66,15 @@ import io.github.mbaliga.fylz.storage.StorageRootKind
  *
  * Rows are 56dp tall with 8dp vertical padding around a 40dp icon, clearing DESIGN.md's 48dp
  * minimum touch target, and every icon-only affordance carries a semantic label.
+ *
+ * Deliberately the one home surface with no selection: [StorageRootRow] renders a
+ * [io.github.mbaliga.fylz.storage.StorageRoot] -- internal storage, a removable volume, a
+ * standard folder shortcut, a remote -- never a [io.github.mbaliga.fylz.model.FileEntry]. A root
+ * is a place you navigate into, not a member of a cut/copy/delete selection, so there is nothing
+ * here for a long-press to add to one. [io.github.mbaliga.fylz.ui.canvas.SubjectList],
+ * [io.github.mbaliga.fylz.ui.canvas.BentoMosaic] and [io.github.mbaliga.fylz.ui.canvas.SubjectCanvas]
+ * carry the selection this build restores; this screen is upstream of all three and stays out of
+ * it on purpose.
  */
 @Composable
 fun StorageHomeScreen(

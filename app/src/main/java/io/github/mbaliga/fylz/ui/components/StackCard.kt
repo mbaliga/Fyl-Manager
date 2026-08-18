@@ -25,6 +25,8 @@ import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.cluster.MAX_CARDS
+import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
+import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -66,6 +68,7 @@ fun StackCard(
     liveContent: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val printBorder = LocalThemeStyle.current.printBorder()
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceBright,
@@ -73,11 +76,11 @@ fun StackCard(
             .size(size)
             .graphicsLayer { rotationZ = rotation },
     ) {
-        val faceSize = size - PRINT_BORDER * 2
+        val faceSize = size - printBorder * 2
         // Same cache key EntryThumbnail/warmThumbnails use for the default thumbnail size --
         // a bare URI string, never re-derived from a cold fetch here.
         val cached = entry?.let { ThumbnailCache.get(it.uri.toString()) }
-        Box(Modifier.padding(PRINT_BORDER), contentAlignment = Alignment.Center) {
+        Box(Modifier.padding(printBorder), contentAlignment = Alignment.Center) {
             if (liveContent && entry != null) {
                 EntryThumbnail(entry, size = faceSize)
             } else if (cached != null) {
@@ -113,8 +116,16 @@ private fun StackCardTypeIcon(name: String, kind: EntryKind, size: Dp) {
     )
 }
 
-/** The white print margin's width, on every edge. */
-private val PRINT_BORDER = 3.dp
+/**
+ * The white print margin's width, on every edge -- 3dp for Neo/Glass/Retro's photo-print look,
+ * a 1dp hairline for Vintage's line-art register, and none at all for CLI, which never shows a
+ * [StackCard] in its own listing but should draw a bare thumbnail if one ever ends up here anyway.
+ */
+private fun ThemeStyle.printBorder(): Dp = when (this) {
+    ThemeStyle.VINTAGE -> 1.dp
+    ThemeStyle.CLI -> 0.dp
+    ThemeStyle.NEO, ThemeStyle.GLASS, ThemeStyle.RETRO -> 3.dp
+}
 
 /**
  * One card's content for [StackedThumbs] -- the same trio [StackCard] itself takes, bundled so a

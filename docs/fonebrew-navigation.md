@@ -46,7 +46,14 @@ These are the things the first test builds got wrong. Do not reintroduce them:
 - **No hamburger menu** as the primary way into navigation. The rail is reachable by edge
   swipe and lives *over the content*; a small header affordance may open it but must not be
   a `Menu` icon opening a drawer-style list.
-- **No bottom `NavigationBar` / tab bar.** (Fylz shipped "Files / Recovery" tabs — wrong.)
+- **No bottom `NavigationBar` / tab bar picking between app sections.** (Fylz shipped
+  "Files / Recovery" tabs — wrong; Recovery is a room now.) This is about a *second*,
+  app-level nav surface competing with the rail — it is not a ban on tabs as a word. Build 9
+  gave the browser folder tabs (multiple open folders, opened and closed by what the session
+  is doing) living in a strip inside the command pill, which already floats over the content
+  at the bottom of the one room that has folders open. That is content-scoped navigation for
+  a place you're already in, the same category as the up-arrow beside it — not a rival to the
+  rail for "which section of the app am I in."
 - **No full-screen Material settings dialogs.** Settings slide in as a panel over the room
   (Foto Xplorr's `SlideInPanel` from the right is the shape); a centered `AlertDialog`-style
   "Gallery settings" card is wrong.

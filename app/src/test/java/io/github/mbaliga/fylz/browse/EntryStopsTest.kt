@@ -162,4 +162,38 @@ class EntryStopsTest {
         assertEquals(listOf("A", "B", "C"), stops(ascending, SortField.NAME).map { it.label })
         assertEquals(listOf("C", "B", "A"), stops(descending, SortField.NAME).map { it.label })
     }
+
+    // ── refactor guard ───────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `entryStops output is unchanged now that its bucket functions are shared with GroupedListing`() {
+        // keyFor used to inline every bucket rule; initialOf, monthBand, sizeBand and
+        // extensionBand now also back GroupedListing's Stacks grouper. This pins entryStops'
+        // own output across every field against that extraction, so a change meant for one
+        // caller cannot silently retune the other's boundaries.
+        fun at(year: Int, month: Int) = LocalDateTime.of(year, month, 5, 9, 0).toInstant(utc).toEpochMilli()
+        val entries = listOf(
+            entry("Report.pdf", sizeBytes = 2_500_000L, modified = at(2024, 6)),
+            entry("readme.txt", sizeBytes = 512L, modified = at(2024, 6)),
+            entry("archive", modified = at(2024, 3), directory = true),
+            entry("2024-log.csv", sizeBytes = 2_000_000_000L, modified = null),
+        )
+
+        assertEquals(
+            listOf("R" to 0, "A" to 2, "#" to 3),
+            stops(entries, SortField.NAME).map { it.label to it.itemIndex },
+        )
+        assertEquals(
+            listOf("MB" to 0, "B" to 1, "dir" to 2, "GB" to 3),
+            stops(entries, SortField.SIZE).map { it.label to it.itemIndex },
+        )
+        assertEquals(
+            listOf("Jun 24" to 0, "Mar 24" to 2, "—" to 3),
+            stops(entries, SortField.MODIFIED).map { it.label to it.itemIndex },
+        )
+        assertEquals(
+            listOf("PDF" to 0, "TXT" to 1, "·" to 2, "CSV" to 3),
+            stops(entries, SortField.TYPE).map { it.label to it.itemIndex },
+        )
+    }
 }

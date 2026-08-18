@@ -2,8 +2,10 @@ package io.github.mbaliga.fylz.settings
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.landing.HomeMode
+import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -40,6 +42,48 @@ class AppPreferencesStoreTest {
             .edit().putString("view_mode", "NOT_A_VIEW_MODE").commit()
 
         assertEquals(ViewMode.LIST, store.viewMode())
+    }
+
+    @Test
+    fun `theme style defaults to NEO`() {
+        assertEquals(ThemeStyle.NEO, store().themeStyle())
+    }
+
+    @Test
+    fun `theme style round-trips through the store`() {
+        val store = store()
+        store.setThemeStyle(ThemeStyle.CLI)
+        assertEquals(ThemeStyle.CLI, store().themeStyle())
+    }
+
+    @Test
+    fun `theme style falls back to NEO on a corrupted value`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("theme_style", "NOT_A_THEME_STYLE").commit()
+
+        assertEquals(ThemeStyle.NEO, store.themeStyle())
+    }
+
+    @Test
+    fun `density defaults to COMFORTABLE`() {
+        assertEquals(DensityMode.COMFORTABLE, store().density())
+    }
+
+    @Test
+    fun `density round-trips through the store`() {
+        val store = store()
+        store.setDensity(DensityMode.COMPACT)
+        assertEquals(DensityMode.COMPACT, store().density())
+    }
+
+    @Test
+    fun `density falls back to COMFORTABLE on a corrupted value`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("density", "NOT_A_DENSITY").commit()
+
+        assertEquals(DensityMode.COMFORTABLE, store.density())
     }
 
     @Test

@@ -27,6 +27,7 @@ import io.github.mbaliga.fylz.model.FileEntry
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.media3.common.util.UnstableApi
 import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
+import io.github.mbaliga.fylz.core.format.PreviewFamily
 
 // AspectRatioFrameLayout.RESIZE_MODE_FIT is one of Media3's UnstableApi-annotated surfaces --
 // stable in practice (it's been part of ExoPlayer/Media3's UI module for years) but formally
@@ -44,6 +45,13 @@ fun MediaFilePreview(
     val context = LocalContext.current
     var error by remember(entry.uri) { mutableStateOf<String?>(null) }
     var ready by remember(entry.uri) { mutableStateOf(false) }
+    // Audio has no video track, so onVideoSizeChanged below never fires for it -- without this the
+    // card falls back to its free-aspect box, which is whatever shape the user last left it at
+    // rather than a deliberate one. Reported once per file rather than left for the player to
+    // discover on its own timeline.
+    LaunchedEffect(entry.uri, descriptor.family) {
+        if (descriptor.family == PreviewFamily.AUDIO) onVideoSize?.invoke(1f)
+    }
     val player = remember(entry.uri) {
         ExoPlayer.Builder(context.applicationContext).build().apply {
             setMediaItem(MediaItem.Builder().setUri(entry.uri).setMimeType(entry.mimeType).build())

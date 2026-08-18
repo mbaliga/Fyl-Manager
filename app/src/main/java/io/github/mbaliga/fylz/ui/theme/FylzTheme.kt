@@ -52,42 +52,47 @@ private fun AccentPreset.colors(): AccentColors = when (this) {
     )
 }
 
-private val FylzTypography = Typography(
+/**
+ * Builds the six roles the app actually styles, all riding [family] -- the one seam that lets
+ * CLI and Vintage pull every label onto a monospace face without six separate call sites each
+ * deciding that for themselves.
+ */
+private fun fylzTypography(family: FontFamily) = Typography(
     // No display-sized surface used these before the landing hero; the wordmark itself stays on
     // its own bundled Hyle face local to LandingSplash.kt rather than riding these -- what these
     // give the rest of the app is a display register that isn't just the stock Material default.
     displayLarge = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.SemiBold,
         fontSize = 57.sp,
         lineHeight = 64.sp,
     ),
     displayMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.SemiBold,
         fontSize = 45.sp,
         lineHeight = 52.sp,
     ),
     headlineSmall = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.SemiBold,
         fontSize = 24.sp,
         lineHeight = 30.sp,
     ),
     titleMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         lineHeight = 22.sp,
     ),
     bodyMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
         lineHeight = 20.sp,
     ),
     labelMedium = TextStyle(
-        fontFamily = FontFamily.SansSerif,
+        fontFamily = family,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
@@ -99,6 +104,7 @@ fun FylzTheme(
     themeMode: ThemeMode,
     accentPreset: AccentPreset,
     dynamicColor: Boolean,
+    themeStyle: ThemeStyle = ThemeStyle.NEO,
     content: @Composable () -> Unit,
 ) {
     val darkTheme = when (themeMode) {
@@ -109,7 +115,9 @@ fun FylzTheme(
     val context = LocalContext.current
     val accent = accentPreset.colors()
 
-    val colorScheme = when {
+    // themeStyle.scheme() wins outright when it returns one -- Vintage/Retro/CLI are a fixed
+    // palette, not a wallpaper-derived accent, so they never reach the dynamic-colour arms below.
+    val colorScheme = themeStyle.scheme(darkTheme) ?: when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme ->
             dynamicDarkColorScheme(context)
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
@@ -134,7 +142,7 @@ fun FylzTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = FylzTypography,
+        typography = fylzTypography(if (themeStyle.monospace) FontFamily.Monospace else FontFamily.SansSerif),
         content = content,
     )
 }

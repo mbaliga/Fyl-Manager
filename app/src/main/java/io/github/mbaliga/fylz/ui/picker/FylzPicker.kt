@@ -18,14 +18,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -44,6 +45,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +56,7 @@ import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.storage.StorageAccess
+import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.storage.StorageRoot
@@ -427,21 +430,15 @@ private fun EntryList(
                     .padding(horizontal = 20.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (mode == PickerMode.FILES && !entry.isDirectory) {
-                    Checkbox(checked = checked, onCheckedChange = { onToggleFile(entry) })
-                    Spacer(Modifier.size(4.dp))
-                } else {
-                    Icon(
-                        Icons.Outlined.Folder,
-                        contentDescription = null,
-                        tint = if (entry.isDirectory) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                        },
-                    )
-                    Spacer(Modifier.size(16.dp))
-                }
+                // The same themed thumbnail/icon every other listing draws -- a folder here used
+                // to be a static outlined glyph regardless of theme, the one surface that never
+                // joined the rest of the app's icon seam.
+                EntryThumbnail(
+                    entry,
+                    size = 40.dp,
+                    modifier = if (pickable) Modifier else Modifier.alpha(0.4f),
+                )
+                Spacer(Modifier.size(16.dp))
                 Text(
                     displayName(entry.name, entry.isDirectory, showExtensions),
                     style = MaterialTheme.typography.bodyMedium,
@@ -454,8 +451,33 @@ private fun EntryList(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                if (mode == PickerMode.FILES && !entry.isDirectory && checked) {
+                    PickerSelectionMark()
+                }
             }
         }
+    }
+}
+
+/**
+ * The confirmation mark for a selected file -- Photos-style, on the row, not a checkbox at rest.
+ * Only mode this picker shows a mark in: FOLDER and SAVE modes pick a destination, not a set of
+ * files, so there is nothing here to mark. Mirrors the disc-and-check the rest of the app uses
+ * for the same job, so "selected" reads the same whether the surface is a grid, a list or this
+ * picker.
+ */
+@Composable
+private fun PickerSelectionMark() {
+    Box(
+        Modifier.size(18.dp).background(MaterialTheme.colorScheme.surface, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.CheckCircle,
+            contentDescription = "Selected",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
     }
 }
 

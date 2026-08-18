@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,17 +34,22 @@ import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.FolderPeek
+import io.github.mbaliga.fylz.ui.theme.FolderMaterial
+import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
  * The directory grid card's face -- replaces the old folder-peek header's role in `FileCard`.
  * Every resolved directory (a [peek], loading or empty alike) hands its [FolderPeek] here; which
- * register it draws is this composable's call, not the caller's, so a folder that resolves from
- * empty to media-bearing (or back, on a rescan) never needs its call site to branch.
+ * register it draws is [LocalThemeStyle]'s [FolderMaterial], not the caller's or the peek's own
+ * media-bearing-ness, so a folder that resolves from empty to media-bearing (or back, on a
+ * rescan) never needs its call site to branch, and every folder in a theme draws the same way.
  *
- * Two registers, per the reference stills: a frosted-glass preview of the folder's own first
- * photo or clip when it has one, or a quiet flat-icon card when it doesn't.
+ * Four registers, one per [FolderMaterial]: an opaque body+tab for [FolderMaterial.SOLID], a
+ * frosted-glass preview of the folder's own first photo or clip (or, absent one, a plain glass
+ * pane) for [FolderMaterial.FROSTED], the bare file-type icon for [FolderMaterial.ICONIC], and
+ * nothing at all for [FolderMaterial.TEXT] -- that theme draws folders as listing rows instead.
  *
  * internal, not public: [FolderPeek] itself is internal (FylzV1App.kt owns it, scoped no wider
  * than the app module needs), and a public function cannot expose an internal parameter type.
@@ -56,18 +62,23 @@ internal fun FolderFace(
     modifier: Modifier = Modifier,
 ) {
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
-    if (peek.thumbs.isEmpty()) {
-        QuietFolderFace(entry, shownName, peek.itemCount, modifier)
-    } else {
-        FrostedFolderFace(shownName, peek, modifier)
+    when (LocalThemeStyle.current.folderMaterial) {
+        FolderMaterial.SOLID -> SolidFolderFace(shownName, peek, modifier)
+        FolderMaterial.FROSTED -> FrostedFolderFace(shownName, peek, modifier)
+        FolderMaterial.ICONIC -> QuietFolderFace(entry, shownName, peek.itemCount, modifier)
+        FolderMaterial.TEXT -> Box(modifier)
     }
 }
 
+/** "1 item" vs "12 items" -- shared by every register that still shows a count. */
+private fun itemCountLabel(itemCount: Int): String = if (itemCount == 1) "1 item" else "$itemCount items"
+
 /**
- * The dark minimal register: a folder with nothing thumbnailable in it (still loading, or truly
- * empty of photos and clips) stays the plain flat icon -- the stills' quiet file-card treatment,
- * and identical to what `FileCard` drew inline for every non-peek directory before this file
- * existed.
+ * The dark minimal register: nothing but the file-type icon and the name -- [FolderMaterial.ICONIC]
+ * (Vintage/Retro, where the pixel-art folder mark is meant to carry the whole read) and, before the
+ * theme system existed, every folder with nothing thumbnailable in it (still loading, or truly
+ * empty of photos and clips). Identical to what `FileCard` drew inline for every non-peek
+ * directory before this file existed.
  */
 @Composable
 private fun QuietFolderFace(
@@ -81,10 +92,56 @@ private fun QuietFolderFace(
         Column {
             Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
             Text(
-                if (itemCount == 1) "1 item" else "$itemCount items",
+                itemCountLabel(itemCount),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/** How much of the card's top the tab claims and how wide it runs -- the landing hero fan folder's own proportions. */
+private const val FOLDER_TAB_WIDTH_FRACTION = 0.44f
+private const val FOLDER_TAB_HEIGHT_FRACTION = 0.18f
+
+/** How much of the card the body claims, bottom-anchored -- the same 0.85 the landing hero's fan folder uses. */
+private const val FOLDER_BODY_HEIGHT_FRACTION = 0.85f
+
+/**
+ * The opaque register: a folder is furniture here, not a window, so nothing inside it ever bleeds
+ * through no matter what the peek found. Same two-Surface tab+body vocabulary as the landing
+ * hero's fan folder, so a folder in the grid and a folder on the splash read as one object.
+ */
+@Composable
+private fun SolidFolderFace(name: String, peek: FolderPeek, modifier: Modifier) {
+    val tone = MaterialTheme.colorScheme.primaryContainer
+    Box(modifier.fillMaxSize()) {
+        Surface(
+            color = tone,
+            shape = RoundedCornerShape(topStart = 2.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(FOLDER_BODY_HEIGHT_FRACTION),
+        ) {}
+        Surface(
+            color = tone,
+            shape = RoundedCornerShape(topStart = 6.dp, topEnd = 10.dp),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .fillMaxWidth(FOLDER_TAB_WIDTH_FRACTION)
+                .fillMaxHeight(FOLDER_TAB_HEIGHT_FRACTION),
+        ) {}
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    itemCountLabel(peek.itemCount),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -104,6 +161,10 @@ private val PEEK_TOP = 20.dp
  * this replaces. Emerging from behind the pane's top edge, up to three of the folder's own real
  * thumbnails cascade like a small print stack; if the folder also holds non-photographic files,
  * one blank [DocumentSheet] joins as the rearmost leaf of that same cascade.
+ *
+ * Generalised to every folder, not just media-bearing ones: a folder with nothing to blur still
+ * gets the glass pane, just without a photo behind it -- a folder in this theme is a window, and
+ * an empty room still has a window.
  */
 @Composable
 private fun FrostedFolderFace(
@@ -142,7 +203,14 @@ private fun FrostedFolderFace(
                 .fillMaxWidth()
                 .fillMaxHeight(FROSTED_PANE_HEIGHT_FRACTION),
         ) {
-            FrostedBackdrop(peek.thumbs.first(), Modifier.fillMaxSize())
+            // peek.thumbs can be empty here (a folder with no media, or none loaded yet) now that
+            // every folder reaches this register under Glass -- fall back to a plain tinted pane
+            // instead of `.first()`ing an empty list.
+            if (peek.thumbs.isNotEmpty()) {
+                FrostedBackdrop(peek.thumbs.first(), Modifier.fillMaxSize())
+            } else {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -156,7 +224,7 @@ private fun FrostedFolderFace(
                 Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                     Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                     Text(
-                        if (peek.itemCount == 1) "1 item" else "${peek.itemCount} items",
+                        itemCountLabel(peek.itemCount),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

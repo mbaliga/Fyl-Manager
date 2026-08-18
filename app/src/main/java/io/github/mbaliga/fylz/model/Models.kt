@@ -34,8 +34,17 @@ enum class ViewMode {
     LIST,
     GRID,
     DETAILS,
+    STACKS,
+    CANVAS,
 }
 
+/**
+ * The S/M/L icon-size axis (COMPACT/COMFORTABLE/DETAILED), independent of [ViewMode] -- any
+ * render branch can be asked to run denser or roomier without changing what it renders.
+ * [io.github.mbaliga.fylz.browse.Density] turns a mode into the actual scale and sizes; nothing
+ * here does that math so the enum stays a plain preference value, storable the same
+ * enum-string way [ViewMode] already is.
+ */
 enum class DensityMode {
     COMPACT,
     COMFORTABLE,

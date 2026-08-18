@@ -1,6 +1,10 @@
 package io.github.mbaliga.fylz.ui.canvas
 
-import androidx.compose.foundation.clickable
+import android.net.Uri
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,23 +26,42 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.ui.ClusterGestureHooks
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.landing.LandingSubject
+import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.util.formatBytes
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * The list home surface: [subject]'s children as lightweight rows -- not `FileRowV1`, which
- * carries selection and the cluster drag this home never joins.
+ * The list home surface: [subject]'s children as lightweight rows -- not `FileRowV1`, but now
+ * carrying the same selection and cluster-drag discipline that composable uses: long-press
+ * toggles, tap opens unless [selectionActive], and the cluster drag only ever attaches to an
+ * already-selected row. [selectedUris], [selectionActive], [onToggleSelection] and [cluster] are
+ * all optional so a caller that hasn't wired them yet gets exactly today's behaviour.
  */
 @Composable
 fun SubjectList(
@@ -48,6 +71,10 @@ fun SubjectList(
     onOpenFolder: (FolderLocation) -> Unit,
     onOpenFile: (FileEntry) -> Unit,
     modifier: Modifier = Modifier,
+    selectedUris: Set<Uri> = emptySet(),
+    selectionActive: Boolean = false,
+    onToggleSelection: ((FileEntry) -> Unit)? = null,
+    cluster: ClusterGestureHooks? = null,
 ) {
     var failure by remember { mutableStateOf<String?>(null) }
 
@@ -92,13 +119,17 @@ fun SubjectList(
                     items(listing, key = { it.uri.toString() }) { entry ->
                         SubjectListRow(
                             entry = entry,
-                            onClick = {
+                            selected = entry.uri in selectedUris,
+                            selectionActive = selectionActive,
+                            onOpen = {
                                 if (entry.isDirectory) {
                                     onOpenFolder(FolderLocation(entry.uri, entry.name))
                                 } else {
                                     onOpenFile(entry)
                                 }
                             },
+                            onToggleSelection = onToggleSelection?.let { toggle -> { toggle(entry) } },
+                            cluster = cluster,
                         )
                     }
                 }
@@ -125,20 +156,101 @@ private fun SubjectListHeader(subjectName: String, onOpenAsFolder: () -> Unit) {
 }
 
 @Composable
-private fun SubjectListRow(entry: FileEntry, onClick: () -> Unit) {
+private fun SubjectListRow(
+    entry: FileEntry,
+    selected: Boolean,
+    selectionActive: Boolean,
+    onOpen: () -> Unit,
+    onToggleSelection: (() -> Unit)?,
+    cluster: ClusterGestureHooks?,
+) {
     val showExtensions = LocalShowExtensions.current
+    val themeStyle = LocalThemeStyle.current
+    val haptics = LocalHapticFeedback.current
+    // A bare `selected` inside the semantics block below would resolve back to this parameter on
+    // both sides of an assignment (it shadows `SemanticsPropertyReceiver.selected` even in that
+    // extension's own receiver lambda), so the read gets its own name up front.
+    val rowSelected = selected
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    // Read fresh inside the long-lived pointerInput coroutine below -- see CanvasTile's own
+    // KDoc for why: plain parameters would freeze at whatever they were the one time this key
+    // launched the coroutine, and `entry.uri` is the only thing that key is allowed to change on.
+    val selectedState = rememberUpdatedState(selected)
+    val selectionActiveState = rememberUpdatedState(selectionActive)
+    val onOpenState = rememberUpdatedState(onOpen)
+    val toggleSelectionState = rememberUpdatedState(onToggleSelection)
+    val clusterState = rememberUpdatedState(cluster)
+
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 6.dp),
+            .onGloballyPositioned { coordinates ->
+                originInRoot = coordinates.positionInRoot()
+                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
+            }
+            // One pointerInput owns this row for its whole lifetime -- CanvasTile's own KDoc
+            // explains why: a combinedClickable stacked alongside a raw drag pointerInput are
+            // two independently-suspended gesture consumers racing the same up event, so a long
+            // press held past the timeout and released without moving could fire BOTH a
+            // selection toggle AND a (cancelled) cluster-drag start off one finger. Racing
+            // long-press-vs-lift exactly once, here, is what keeps that from happening.
+            .pointerInput(entry.uri) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // `true` = up arrived first (a tap), `false` = the wait was cancelled some
+                    // other way, `null` = the timeout won while still down.
+                    val liftedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation() != null
+                    }
+                    when (liftedEarly) {
+                        true -> if (selectionActiveState.value) toggleSelectionState.value?.invoke() else onOpenState.value()
+                        false -> Unit
+                        null -> {
+                            val liveCluster = clusterState.value
+                            if (selectedState.value && liveCluster != null) {
+                                // Already part of the live selection: hand off to the
+                                // whole-selection cluster drag, never a toggle -- the two must
+                                // not both claim this finger.
+                                liveCluster.onStart(originInRoot + down.position)
+                                val completed = drag(down.id) { change ->
+                                    change.consume()
+                                    liveCluster.onDrag(originInRoot + change.position)
+                                }
+                                if (completed) liveCluster.onEnd() else liveCluster.onCancel()
+                            } else {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                toggleSelectionState.value?.invoke()
+                                waitForUpOrCancellation()
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(horizontal = 20.dp, vertical = 6.dp)
+            .semantics {
+                this.selected = rowSelected
+                onClick(label = if (selectionActive) "Toggle selection" else "Open") {
+                    if (selectionActive) onToggleSelection?.invoke() else onOpen()
+                    true
+                }
+                onToggleSelection?.let { toggle ->
+                    customActions = listOf(CustomAccessibilityAction("Toggle selection") { toggle(); true })
+                }
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        EntryThumbnail(entry, size = 40.dp)
+        Box {
+            EntryThumbnail(entry, size = 40.dp)
+            if (selected && !themeStyle.marksSelectionInline()) {
+                SelectionMark(themeStyle, Modifier.align(Alignment.TopStart))
+            }
+        }
         Column(Modifier.weight(1f).padding(start = 16.dp)) {
             Text(
-                displayName(entry.name, entry.isDirectory, showExtensions),
+                (if (selected && themeStyle.marksSelectionInline()) "> " else "") +
+                    displayName(entry.name, entry.isDirectory, showExtensions),
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

@@ -30,6 +30,7 @@ import io.github.mbaliga.fylz.canvas.CanvasLayoutStore
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.ui.ClusterGestureHooks
 import io.github.mbaliga.fylz.ui.landing.LandingSubject
 
 /**
@@ -41,7 +42,10 @@ import io.github.mbaliga.fylz.ui.landing.LandingSubject
  * loading, an empty list rendered rather than spun on forever, a caught failure shown in place.
  * This is deliberately not the workspace tab's own `loading` flag: home has no tab open yet.
  *
- * The canvas gets no cluster and no selection; [CanvasTile] documents its own gesture table.
+ * Selection and the cluster drag now reach the canvas too -- [selectedUris], [selectionActive],
+ * [onToggleSelection] and [cluster] are all optional and default to "no selection", so a caller
+ * that hasn't wired them yet gets exactly today's behaviour. [CanvasTile] documents the hard-swap
+ * gesture table that keeps arrange and selection from ever claiming the same finger.
  */
 @Composable
 fun SubjectCanvas(
@@ -51,6 +55,10 @@ fun SubjectCanvas(
     onOpenFolder: (FolderLocation) -> Unit,
     onOpenFile: (FileEntry) -> Unit,
     modifier: Modifier = Modifier,
+    selectedUris: Set<Uri> = emptySet(),
+    selectionActive: Boolean = false,
+    onToggleSelection: ((FileEntry) -> Unit)? = null,
+    cluster: ClusterGestureHooks? = null,
 ) {
     val context = LocalContext.current
     val store = remember { CanvasLayoutStore(context) }
@@ -154,6 +162,10 @@ fun SubjectCanvas(
                                     placements = placements + (entry.uri to updated)
                                     store.place(subject.folderUri, entry.uri, updated)
                                 },
+                                selected = entry.uri in selectedUris,
+                                selectionActive = selectionActive,
+                                onToggleSelection = onToggleSelection?.let { toggle -> { toggle(entry) } },
+                                cluster = cluster,
                             )
                         }
                     }

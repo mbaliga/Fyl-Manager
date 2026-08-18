@@ -2,11 +2,13 @@ package io.github.mbaliga.fylz.settings
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.landing.HomeMode
+import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 
 /**
  * App-wide display preferences: theme mode and whether dotfiles show up in listings.
@@ -40,6 +42,23 @@ class AppPreferencesStore(context: Context) {
     }
 
     /**
+     * Which of the five owner-named looks the app draws in — icon pack, folder material, and for
+     * three of the five, a fixed palette and monospace type on top. [ThemeStyle.NEO] because it
+     * is today's app: dynamic wallpaper colour, solid folders, unchanged for anyone who never
+     * opens this screen.
+     */
+    @Synchronized
+    fun themeStyle(): ThemeStyle {
+        val raw = preferences.getString(THEME_STYLE, null) ?: return ThemeStyle.NEO
+        return runCatching { ThemeStyle.valueOf(raw) }.getOrDefault(ThemeStyle.NEO)
+    }
+
+    @Synchronized
+    fun setThemeStyle(style: ThemeStyle) {
+        preferences.edit().putString(THEME_STYLE, style.name).commit()
+    }
+
+    /**
      * Which treatment the file-type icons are drawn in. [IconStyle.DEFAULT] because it is the
      * quietest of the four; the pack does not ship Default artwork for every icon, and
      * [io.github.mbaliga.fylz.ui.components.FileTypeIcons] absorbs that.
@@ -55,7 +74,7 @@ class AppPreferencesStore(context: Context) {
         preferences.edit().putString(ICON_STYLE, style.name).commit()
     }
 
-    /** Which of LIST/GRID/DETAILS the browser last rendered, restored on the next launch. */
+    /** Which [ViewMode] the browser last rendered, restored on the next launch. */
     @Synchronized
     fun viewMode(): ViewMode {
         val raw = preferences.getString(VIEW_MODE, null) ?: return ViewMode.LIST
@@ -65,6 +84,21 @@ class AppPreferencesStore(context: Context) {
     @Synchronized
     fun setViewMode(mode: ViewMode) {
         preferences.edit().putString(VIEW_MODE, mode.name).commit()
+    }
+
+    /**
+     * The S/M/L icon-size axis, independent of [ViewMode]. [DensityMode.COMFORTABLE] is today's
+     * fixed sizing, so nobody who never opens this screen sees anything change.
+     */
+    @Synchronized
+    fun density(): DensityMode {
+        val raw = preferences.getString(DENSITY, null) ?: return DensityMode.COMFORTABLE
+        return runCatching { DensityMode.valueOf(raw) }.getOrDefault(DensityMode.COMFORTABLE)
+    }
+
+    @Synchronized
+    fun setDensity(mode: DensityMode) {
+        preferences.edit().putString(DENSITY, mode.name).commit()
     }
 
     /**
@@ -219,9 +253,11 @@ class AppPreferencesStore(context: Context) {
     private companion object {
         const val PREFERENCES_NAME = "fylz_app_settings"
         const val THEME_MODE = "theme_mode"
+        const val THEME_STYLE = "theme_style"
         const val SHOW_HIDDEN = "show_hidden"
         const val ICON_STYLE = "icon_style"
         const val VIEW_MODE = "view_mode"
+        const val DENSITY = "density"
         const val SHOW_EXTENSIONS = "show_extensions"
         const val AUTO_ANIMATE = "auto_animate"
         const val RECENT_SEARCHES = "recent_searches"

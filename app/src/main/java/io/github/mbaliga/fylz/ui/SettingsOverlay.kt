@@ -56,11 +56,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mbaliga.fylz.core.format.PreviewFamily
+import io.github.mbaliga.fylz.model.AccentPreset
+import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.ui.components.FileTypeIcons
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.landing.HomeMode
+import io.github.mbaliga.fylz.ui.theme.FolderMaterial
+import io.github.mbaliga.fylz.ui.theme.FylzTheme
+import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 
 /**
  * The app's own tools and settings, reached from the left room rather than a swipe-in edge.
@@ -84,6 +89,10 @@ internal fun SettingsOverlay(
     onAutoAnimateChange: (Boolean) -> Unit = {},
     iconStyle: IconStyle,
     onIconStyleChange: (IconStyle) -> Unit,
+    themeStyle: ThemeStyle = ThemeStyle.NEO,
+    onThemeStyleChange: (ThemeStyle) -> Unit = {},
+    density: DensityMode = DensityMode.COMFORTABLE,
+    onDensityChange: (DensityMode) -> Unit = {},
     quickActions: List<QuickAction>,
     onQuickActionsChange: (List<QuickAction>) -> Unit,
     homeMode: HomeMode = HomeMode.LOCATIONS,
@@ -289,10 +298,62 @@ internal fun SettingsOverlay(
                 )
 
                 Spacer(Modifier.size(20.dp))
+                RoomHeading("Theme")
+                Text(
+                    "Icons, folder material, and for three of these five, the whole colour scheme and " +
+                        "type \u2014 shown as each will actually draw, not described.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                ThemeStyle.entries.forEach { style ->
+                    ThemeSwatchRow(
+                        style = style,
+                        selected = style == themeStyle,
+                        onSelect = { onThemeStyleChange(style) },
+                    )
+                }
+                Spacer(Modifier.size(12.dp))
+                Text(
+                    "Icon size",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+                Column(Modifier.selectableGroup()) {
+                    DensityMode.entries.forEach { mode ->
+                        val selected = mode == density
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                .selectable(
+                                    selected = selected,
+                                    onClick = { onDensityChange(mode) },
+                                    role = Role.RadioButton,
+                                )
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
+                                if (selected) {
+                                    Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
+                                }
+                            }
+                            Text(
+                                mode.readableLabel(),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.size(20.dp))
                 RoomHeading("File icons")
                 Text(
-                    "Every style is shown as it will actually be drawn \u2014 the four treatments differ " +
-                        "enough that naming them tells you very little.",
+                    "An advanced override, under whatever the theme above already set \u2014 every style " +
+                        "is shown as it will actually be drawn, since naming the four tells you very little.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp),
@@ -322,6 +383,20 @@ private fun HomeMode.readableLabel(): String = when (this) {
     HomeMode.LIST -> "List"
     HomeMode.BENTO -> "Bento"
     HomeMode.CANVAS -> "Canvas"
+}
+
+private fun DensityMode.readableLabel(): String = when (this) {
+    DensityMode.COMPACT -> "Small"
+    DensityMode.COMFORTABLE -> "Medium"
+    DensityMode.DETAILED -> "Large"
+}
+
+private fun ThemeStyle.readableLabel(): String = when (this) {
+    ThemeStyle.NEO -> "Neo"
+    ThemeStyle.GLASS -> "Glass"
+    ThemeStyle.VINTAGE -> "Vintage"
+    ThemeStyle.RETRO -> "Retro"
+    ThemeStyle.CLI -> "CLI"
 }
 
 /**
@@ -420,6 +495,142 @@ private fun IconStyleRow(style: IconStyle, selected: Boolean, onSelect: () -> Un
                 }
             }
         }
+    }
+}
+
+/**
+ * One selectable theme, previewed as it will actually draw rather than as four sample glyphs: a
+ * nested [FylzTheme] picks up the real colour scheme (dynamic wallpaper colour for Neo and Glass,
+ * the fixed palette for the other three) and type around a miniature folder-then-file listing —
+ * the same "don't describe it, draw it" answer [QuickActionEditor] gives the preview rail below.
+ * A row of icons alone would have shown the icon pack and nothing else; folder material, and for
+ * three of these five styles the whole palette, never show up in an icon.
+ */
+@Composable
+private fun ThemeSwatchRow(style: ThemeStyle, selected: Boolean, onSelect: () -> Unit) {
+    Surface(
+        onClick = onSelect,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+    ) {
+        Row(
+            Modifier.heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            RadioButton(selected = selected, onClick = onSelect)
+            Text(
+                style.readableLabel(),
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.padding(start = 4.dp).width(64.dp),
+            )
+            ThemeMiniature(style, Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * A small folder and a small file, drawn under [style]'s own [FylzTheme] rather than the
+ * screen's — every colour, the type, and which [FolderMaterial] register the folder draws in are
+ * the real ones, not a description of them.
+ */
+@Composable
+private fun ThemeMiniature(style: ThemeStyle, modifier: Modifier = Modifier) {
+    // accentPreset is passed only to satisfy the signature -- dynamicColor = true wins outright
+    // on every device this app runs on (minSdk 31), the same as the app's own four call sites, so
+    // the swatch's Neo/Glass rows pick up this device's real wallpaper colour, not a stand-in.
+    FylzTheme(themeMode = ThemeMode.SYSTEM, accentPreset = AccentPreset.MOSS, dynamicColor = true, themeStyle = style) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = MaterialTheme.shapes.small,
+            tonalElevation = 1.dp,
+            modifier = modifier.height(64.dp),
+        ) {
+            if (style.folderMaterial == FolderMaterial.TEXT) {
+                // CLI draws no folder face at all -- the listing row itself, box-drawn, is the read.
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 10.dp)) {
+                    Text("├─ Photos/", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+                    Text("└─ sunset.heic", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface)
+                }
+            } else {
+                Column(
+                    Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    MiniatureFolder(style)
+                    MiniatureFile(style)
+                }
+            }
+        }
+    }
+}
+
+/** The folder half of [ThemeMiniature]. Never called for [FolderMaterial.TEXT] -- that register draws no face, see the caller. */
+@Composable
+private fun MiniatureFolder(style: ThemeStyle) {
+    when (style.folderMaterial) {
+        FolderMaterial.SOLID -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(width = 22.dp, height = 16.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(3.dp)),
+            )
+            Text("Photos", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
+        }
+        FolderMaterial.FROSTED -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(width = 22.dp, height = 16.dp)) {
+                // A saturated tile standing in for whatever the folder holds, showing through the
+                // translucent wash on top -- the same read as the real frosted face, at swatch scale.
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.tertiary, RoundedCornerShape(3.dp)))
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f), RoundedCornerShape(3.dp)),
+                )
+            }
+            Text("Photos", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
+        }
+        FolderMaterial.ICONIC -> Row(verticalAlignment = Alignment.CenterVertically) {
+            AsyncImage(
+                model = "file:///android_asset/" + FileTypeIcons.assetPath("", PreviewFamily.DIRECTORY, style.iconStyle),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(18.dp),
+            )
+            Text("Photos", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
+        }
+        FolderMaterial.TEXT -> Unit
+    }
+}
+
+/**
+ * The file half of [ThemeMiniature] -- also stands in for [ThemeStyle.forcesExtensions], since
+ * Vintage/Retro/CLI never hide one.
+ *
+ * The sample is deliberately an extension with no artwork of its own (`heic`, unlike `jpg`, is
+ * not in [FileTypeIcons]'s exact set): every style resolves it through the generic family mark,
+ * which is exactly where [IconStyle.VINTAGE] and [IconStyle.RETRO]'s pixel art actually lives —
+ * a sample the pack has bespoke art for would fall back to Filled for both and show nothing
+ * theme-specific at all.
+ */
+@Composable
+private fun MiniatureFile(style: ThemeStyle) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        AsyncImage(
+            model = "file:///android_asset/" + FileTypeIcons.assetPath("heic", PreviewFamily.IMAGE, style.iconStyle),
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            if (style.forcesExtensions) "sunset.heic" else "sunset",
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 

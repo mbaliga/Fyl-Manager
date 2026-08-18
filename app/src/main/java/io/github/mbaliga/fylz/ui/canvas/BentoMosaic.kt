@@ -1,6 +1,10 @@
 package io.github.mbaliga.fylz.ui.canvas
 
 import android.net.Uri
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,9 +29,22 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.canvas.CanvasLayoutPolicy
@@ -35,6 +52,7 @@ import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.ui.ClusterGestureHooks
 import io.github.mbaliga.fylz.ui.FolderPeek
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.FolderFace
@@ -42,6 +60,8 @@ import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.THUMBNAIL_PIXELS
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.landing.LandingSubject
+import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
+import kotlinx.coroutines.withTimeoutOrNull
 
 private val TALL_CELL_HEIGHT = 176.dp
 private val SHORT_CELL_HEIGHT = 84.dp
@@ -51,6 +71,11 @@ private val SHORT_CELL_HEIGHT = 84.dp
  * every directory and the two most recently modified media files get a 2x2 cell, everything else
  * a 1x1 one ([CanvasLayoutPolicy.bentoSpans]). No dragging: unlike [SubjectCanvas], arrangement
  * here is the grid's own job, not the user's.
+ *
+ * Selection now reaches this grid too, under the same discipline every other listing surface
+ * uses: long-press toggles, tap opens unless [selectionActive], and the cluster drag only ever
+ * attaches to an already-selected cell. [selectedUris], [selectionActive], [onToggleSelection] and
+ * [cluster] default to "no selection", so a caller that hasn't wired them yet is unaffected.
  */
 @Composable
 fun BentoMosaic(
@@ -60,6 +85,10 @@ fun BentoMosaic(
     onOpenFolder: (FolderLocation) -> Unit,
     onOpenFile: (FileEntry) -> Unit,
     modifier: Modifier = Modifier,
+    selectedUris: Set<Uri> = emptySet(),
+    selectionActive: Boolean = false,
+    onToggleSelection: ((FileEntry) -> Unit)? = null,
+    cluster: ClusterGestureHooks? = null,
 ) {
     var failure by remember { mutableStateOf<String?>(null) }
 
@@ -111,6 +140,8 @@ fun BentoMosaic(
                         repository = repository,
                         folderPeeks = folderPeeks,
                         tall = spans[index] == 2,
+                        selected = entry.uri in selectedUris,
+                        selectionActive = selectionActive,
                         onOpen = {
                             if (entry.isDirectory) {
                                 onOpenFolder(FolderLocation(entry.uri, entry.name))
@@ -118,6 +149,8 @@ fun BentoMosaic(
                                 onOpenFile(entry)
                             }
                         },
+                        onToggleSelection = onToggleSelection?.let { toggle -> { toggle(entry) } },
+                        cluster = cluster,
                     )
                 }
             }
@@ -132,42 +165,121 @@ private fun BentoCell(
     repository: DocumentRepository,
     folderPeeks: MutableMap<Uri, FolderPeek>,
     tall: Boolean,
+    selected: Boolean,
+    selectionActive: Boolean,
     onOpen: () -> Unit,
+    onToggleSelection: (() -> Unit)?,
+    cluster: ClusterGestureHooks?,
 ) {
+    val themeStyle = LocalThemeStyle.current
+    val haptics = LocalHapticFeedback.current
+    // See SubjectList's SubjectListRow: a bare `selected` inside the semantics block would
+    // resolve back to this parameter rather than the extension property it is meant to set.
+    val cellSelected = selected
+    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     val height = if (tall) TALL_CELL_HEIGHT else SHORT_CELL_HEIGHT
+
+    // Read fresh inside the long-lived pointerInput coroutine below -- see CanvasTile's own
+    // KDoc for why: plain parameters would freeze at whatever they were the one time this
+    // key launched the coroutine, and `entry.uri` is the only thing that key is allowed to
+    // change on.
+    val selectedState = rememberUpdatedState(selected)
+    val selectionActiveState = rememberUpdatedState(selectionActive)
+    val onOpenState = rememberUpdatedState(onOpen)
+    val toggleSelectionState = rememberUpdatedState(onToggleSelection)
+    val clusterState = rememberUpdatedState(cluster)
+
     Surface(
-        onClick = onOpen,
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 1.dp,
-        modifier = Modifier.fillMaxWidth().height(height),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(height)
+            .onGloballyPositioned { coordinates ->
+                originInRoot = coordinates.positionInRoot()
+                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
+            }
+            // One pointerInput owns this cell for its whole lifetime -- CanvasTile's own KDoc
+            // explains why: a combinedClickable stacked alongside a raw drag pointerInput are
+            // two independently-suspended gesture consumers racing the same up event, so a long
+            // press held past the timeout and released without moving could fire BOTH a
+            // selection toggle AND a (cancelled) cluster-drag start off one finger. Racing
+            // long-press-vs-lift exactly once, here, is what keeps that from happening.
+            .pointerInput(entry.uri) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    // `true` = up arrived first (a tap), `false` = the wait was cancelled some
+                    // other way, `null` = the timeout won while still down.
+                    val liftedEarly = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation() != null
+                    }
+                    when (liftedEarly) {
+                        true -> if (selectionActiveState.value) toggleSelectionState.value?.invoke() else onOpenState.value()
+                        false -> Unit
+                        null -> {
+                            val liveCluster = clusterState.value
+                            if (selectedState.value && liveCluster != null) {
+                                // Already part of the live selection: hand off to the
+                                // whole-selection cluster drag, never a toggle -- the two must
+                                // not both claim this finger.
+                                liveCluster.onStart(originInRoot + down.position)
+                                val completed = drag(down.id) { change ->
+                                    change.consume()
+                                    liveCluster.onDrag(originInRoot + change.position)
+                                }
+                                if (completed) liveCluster.onEnd() else liveCluster.onCancel()
+                            } else {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                toggleSelectionState.value?.invoke()
+                                waitForUpOrCancellation()
+                            }
+                        }
+                    }
+                }
+            }
+            .semantics {
+                this.selected = cellSelected
+                onClick(label = if (selectionActive) "Toggle selection" else "Open") {
+                    if (selectionActive) onToggleSelection?.invoke() else onOpen()
+                    true
+                }
+                onToggleSelection?.let { toggle ->
+                    customActions = listOf(CustomAccessibilityAction("Toggle selection") { toggle(); true })
+                }
+            },
     ) {
-        if (entry.isDirectory) {
-            // Cache-first, `FileCard`'s own shape: a cell that already has an entry in
-            // `folderPeeks` (e.g. it scrolled off-screen and back) skips `listChildren`
-            // entirely instead of re-issuing it on every recomposition the grid throws away.
-            LaunchedEffect(entry.uri) {
-                if (folderPeeks.containsKey(entry.uri)) return@LaunchedEffect
-                val peekChildren = runCatching { repository.listChildren(subject.treeUri, entry.uri) }
-                    .getOrDefault(emptyList())
-                val thumbs = peekChildren.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
-                val hasNonMedia = peekChildren.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
-                folderPeeks[entry.uri] = FolderPeek(peekChildren.size, thumbs, hasNonMedia)
+        Box(Modifier.fillMaxSize()) {
+            if (entry.isDirectory) {
+                // Cache-first, `FileCard`'s own shape: a cell that already has an entry in
+                // `folderPeeks` (e.g. it scrolled off-screen and back) skips `listChildren`
+                // entirely instead of re-issuing it on every recomposition the grid throws away.
+                LaunchedEffect(entry.uri) {
+                    if (folderPeeks.containsKey(entry.uri)) return@LaunchedEffect
+                    val peekChildren = runCatching { repository.listChildren(subject.treeUri, entry.uri) }
+                        .getOrDefault(emptyList())
+                    val thumbs = peekChildren.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
+                    val hasNonMedia = peekChildren.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
+                    folderPeeks[entry.uri] = FolderPeek(peekChildren.size, thumbs, hasNonMedia)
+                }
+                // derivedStateOf so this cell only recomposes when its OWN key changes, not on every
+                // other cell's peek arriving into the same SnapshotStateMap.
+                val peek by remember(entry.uri, folderPeeks) {
+                    derivedStateOf { folderPeeks[entry.uri] ?: FolderPeek(0, emptyList(), false) }
+                }
+                FolderFace(entry, peek, Modifier.fillMaxSize().padding(8.dp))
+            } else {
+                BentoFileCell(entry, tall, selected && themeStyle.marksSelectionInline())
             }
-            // derivedStateOf so this cell only recomposes when its OWN key changes, not on every
-            // other cell's peek arriving into the same SnapshotStateMap.
-            val peek by remember(entry.uri, folderPeeks) {
-                derivedStateOf { folderPeeks[entry.uri] ?: FolderPeek(0, emptyList(), false) }
+            if (selected && !themeStyle.marksSelectionInline()) {
+                SelectionMark(themeStyle, Modifier.align(Alignment.TopStart).padding(8.dp))
             }
-            FolderFace(entry, peek, Modifier.fillMaxSize().padding(8.dp))
-        } else {
-            BentoFileCell(entry, tall)
         }
     }
 }
 
 @Composable
-private fun BentoFileCell(entry: FileEntry, tall: Boolean) {
+private fun BentoFileCell(entry: FileEntry, tall: Boolean, markInline: Boolean) {
     Column(
         Modifier.fillMaxSize().padding(8.dp),
         verticalArrangement = Arrangement.SpaceBetween,
@@ -180,7 +292,7 @@ private fun BentoFileCell(entry: FileEntry, tall: Boolean) {
             EntryThumbnail(entry, size = 40.dp, pixels = THUMBNAIL_PIXELS)
         }
         Text(
-            displayName(entry.name, false, LocalShowExtensions.current),
+            (if (markInline) "> " else "") + displayName(entry.name, false, LocalShowExtensions.current),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,

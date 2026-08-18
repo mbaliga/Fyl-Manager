@@ -77,4 +77,61 @@ class FileTypeIconsTest {
             FileTypeIcons.assetPath("pdf", PreviewFamily.PDF, IconStyle.DEFAULT),
         )
     }
+
+    @Test
+    fun `every generic family has real Vintage and Retro artwork`() {
+        val missing = mutableListOf<String>()
+        PreviewFamily.entries.forEach { family ->
+            listOf(IconStyle.VINTAGE, IconStyle.RETRO).forEach { style ->
+                val path = FileTypeIcons.assetPath(extension = "", family = family, style = style)
+                if (!exists(path)) missing += "$family/$style -> $path"
+            }
+        }
+        assertTrue("unresolved pixel-pack icons: $missing", missing.isEmpty())
+    }
+
+    @Test
+    fun `every key in the pixel pack has real Vintage and Retro artwork on disk`() {
+        // simple-code ships artwork but no family maps to it (same gap the four-style pack has
+        // always had) — checked here directly rather than through assetPath for that reason.
+        val pixelKeys = setOf(
+            "simple-folder", "simple-empty", "simple-image", "simple-video",
+            "simple-audio", "simple-document", "simple-code", "simple-pdf",
+            "zip", "sql", "exe",
+        )
+        val missing = mutableListOf<String>()
+        pixelKeys.forEach { key ->
+            listOf("vintage", "retro").forEach { slug ->
+                if (!exists("filetype/${key}_$slug.svg")) missing += "${key}_$slug.svg"
+            }
+        }
+        assertTrue("missing pixel-pack artwork: $missing", missing.isEmpty())
+    }
+
+    @Test
+    fun `Vintage and Retro resolve their own generic families directly, not through fallback`() {
+        assertEquals(
+            "filetype/simple-folder_vintage.svg",
+            FileTypeIcons.assetPath("", PreviewFamily.DIRECTORY, IconStyle.VINTAGE),
+        )
+        assertEquals(
+            "filetype/simple-image_retro.svg",
+            FileTypeIcons.assetPath("", PreviewFamily.IMAGE, IconStyle.RETRO),
+        )
+        assertEquals("filetype/zip_vintage.svg", FileTypeIcons.assetPath("zip", PreviewFamily.ARCHIVE, IconStyle.VINTAGE))
+        assertEquals("filetype/sql_retro.svg", FileTypeIcons.assetPath("sql", PreviewFamily.DATABASE, IconStyle.RETRO))
+        assertEquals("filetype/exe_vintage.svg", FileTypeIcons.assetPath("exe", PreviewFamily.EXECUTABLE, IconStyle.VINTAGE))
+    }
+
+    @Test
+    fun `a format outside the pixel pack falls back to filled under Vintage and Retro`() {
+        assertEquals(
+            "filetype/docx_filled.svg",
+            FileTypeIcons.assetPath("docx", PreviewFamily.OFFICE, IconStyle.VINTAGE),
+        )
+        assertEquals(
+            "filetype/psd_filled.svg",
+            FileTypeIcons.assetPath("psd", PreviewFamily.IMAGE, IconStyle.RETRO),
+        )
+    }
 }

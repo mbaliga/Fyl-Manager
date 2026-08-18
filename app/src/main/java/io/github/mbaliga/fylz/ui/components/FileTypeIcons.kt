@@ -3,17 +3,21 @@ package io.github.mbaliga.fylz.ui.components
 import io.github.mbaliga.fylz.core.format.PreviewFamily
 
 /**
- * Which visual treatment the file-type icons are drawn in. Chosen in Settings.
+ * Which visual treatment the file-type icons are drawn in. Chosen in Settings, or set by
+ * [io.github.mbaliga.fylz.ui.theme.ThemeStyle] as a default the user may still override.
  *
- * The pack ships four; [DEFAULT] is the app default, but the Design formats and every generic
- * `simple-*` fallback have no Default artwork — those resolve to [FILLED], which is the closest
- * treatment. See [FileTypeIcons.assetPath].
+ * [DEFAULT], [FILLED], [GRADIENT] and [GRAY] cover the whole catalog (minus the Design formats,
+ * which have no Default artwork and fall back to [FILLED]). [VINTAGE] and [RETRO] are pixel-art
+ * packs drawn for the theme system and cover only the generic families -- an exact format with
+ * no pixel artwork of its own falls back to [FILLED] too. See [FileTypeIcons.assetPath].
  */
 enum class IconStyle(val slug: String) {
     DEFAULT("default"),
     FILLED("filled"),
     GRADIENT("gradient"),
     GRAY("gray"),
+    VINTAGE("vintage"),
+    RETRO("retro"),
 }
 
 /**
@@ -96,6 +100,40 @@ object FileTypeIcons {
         "simple-video",
     )
 
+    /**
+     * Every key [IconStyle.VINTAGE] and [IconStyle.RETRO] ship artwork for -- the generic marks
+     * [GENERIC] actually names, plus zip/sql/exe, drawn as hand-authored pixel art rather than
+     * generated for all 47 formats. An extension outside this set (a `.docx`, a `.psd`) still
+     * resolves correctly; it just does it in [IconStyle.FILLED] instead, via [STYLE_FALLBACK].
+     */
+    private val PIXEL_KEYS: Set<String> = setOf(
+        "simple-folder",
+        "simple-empty",
+        "simple-image",
+        "simple-video",
+        "simple-audio",
+        "simple-document",
+        "simple-code",
+        "simple-pdf",
+        "zip",
+        "sql",
+        "exe",
+    )
+
+    /** Where a style falls back once a key isn't in its own coverage. */
+    private val STYLE_FALLBACK: Map<IconStyle, IconStyle> = mapOf(
+        IconStyle.DEFAULT to IconStyle.FILLED,
+        IconStyle.VINTAGE to IconStyle.FILLED,
+        IconStyle.RETRO to IconStyle.FILLED,
+    )
+
+    /** Whether [style] ships its own artwork for [key], rather than needing [STYLE_FALLBACK]. */
+    private fun IconStyle.covers(key: String): Boolean = when (this) {
+        IconStyle.VINTAGE, IconStyle.RETRO -> key in PIXEL_KEYS
+        IconStyle.DEFAULT -> key !in NO_DEFAULT
+        IconStyle.FILLED, IconStyle.GRADIENT, IconStyle.GRAY -> true
+    }
+
     /** The generic mark for each family, used when the exact format has no artwork. */
     private val GENERIC: Map<PreviewFamily, String> = mapOf(
         PreviewFamily.DIRECTORY to "simple-folder",
@@ -131,7 +169,7 @@ object FileTypeIcons {
         val key = extension.lowercase().takeIf { it in EXACT }
             ?: GENERIC[family]
             ?: FALLBACK
-        val resolved = if (key in NO_DEFAULT && style == IconStyle.DEFAULT) IconStyle.FILLED else style
+        val resolved = if (style.covers(key)) style else STYLE_FALLBACK[style] ?: style
         return "filetype/${key}_${resolved.slug}.svg"
     }
 
