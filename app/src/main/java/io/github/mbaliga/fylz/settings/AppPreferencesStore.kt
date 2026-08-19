@@ -50,6 +50,14 @@ class AppPreferencesStore(context: Context) {
     @Synchronized
     fun themeStyle(): ThemeStyle {
         val raw = preferences.getString(THEME_STYLE, null) ?: return ThemeStyle.NEO
+        if (raw == LEGACY_GLASS_STYLE) {
+            // GLASS was renamed to FYLZ after ship; a bare valueOf on the stored name would miss,
+            // fall through to getOrDefault, and silently downgrade every existing Glass user to
+            // Neo with no error. Resolve it explicitly and rewrite the stored value in place, so
+            // every read after this first one is a plain valueOf again, not a second migration.
+            preferences.edit().putString(THEME_STYLE, ThemeStyle.FYLZ.name).commit()
+            return ThemeStyle.FYLZ
+        }
         return runCatching { ThemeStyle.valueOf(raw) }.getOrDefault(ThemeStyle.NEO)
     }
 
@@ -254,6 +262,7 @@ class AppPreferencesStore(context: Context) {
         const val PREFERENCES_NAME = "fylz_app_settings"
         const val THEME_MODE = "theme_mode"
         const val THEME_STYLE = "theme_style"
+        const val LEGACY_GLASS_STYLE = "GLASS"
         const val SHOW_HIDDEN = "show_hidden"
         const val ICON_STYLE = "icon_style"
         const val VIEW_MODE = "view_mode"

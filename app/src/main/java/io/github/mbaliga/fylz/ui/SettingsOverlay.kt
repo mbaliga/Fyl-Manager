@@ -1,7 +1,10 @@
 package io.github.mbaliga.fylz.ui
 
+import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Build
@@ -31,10 +35,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,14 +66,26 @@ import io.github.mbaliga.fylz.ui.components.quickLookSlots
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import io.github.mbaliga.fylz.appearance.FolderAppearance
+import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
+import io.github.mbaliga.fylz.appearance.FolderPalette
+import io.github.mbaliga.fylz.appearance.FolderStickers
+import io.github.mbaliga.fylz.appearance.MAX_FOLDER_STICKERS
 import io.github.mbaliga.fylz.core.format.PreviewFamily
+import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.ThemeMode
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionPeriod
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionStore
 import io.github.mbaliga.fylz.ui.components.FileTypeIcons
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.landing.HomeMode
+import io.github.mbaliga.fylz.ui.picker.FylzPicker
+import io.github.mbaliga.fylz.ui.picker.PickerMode
+import io.github.mbaliga.fylz.ui.picker.PickerOutcome
 import io.github.mbaliga.fylz.ui.theme.FolderMaterial
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
@@ -106,6 +129,7 @@ internal fun SettingsOverlay(
     onOpenWebDav: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenIndexManager: () -> Unit,
+    onFolderAppearanceChanged: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     Dialog(
@@ -350,6 +374,10 @@ internal fun SettingsOverlay(
                 }
 
                 Spacer(Modifier.size(20.dp))
+                RoomHeading("Folder appearance")
+                FolderAppearanceSection(themeStyle, onFolderAppearanceChanged)
+
+                Spacer(Modifier.size(20.dp))
                 RoomHeading("File icons")
                 Text(
                     "An advanced override, under whatever the theme above already set \u2014 every style " +
@@ -367,6 +395,10 @@ internal fun SettingsOverlay(
                 }
 
                 Spacer(Modifier.size(20.dp))
+                RoomHeading("Recycle bin retention")
+                RecycleBinRetentionSection()
+
+                Spacer(Modifier.size(20.dp))
                 RoomHeading("Storage & tools")
                 SettingsToolRow(Icons.Outlined.RestoreFromTrash, "Recycle Bin", onOpenRecycleBin)
                 SettingsToolRow(Icons.Outlined.Cloud, "Remotes", onOpenRemotes)
@@ -380,6 +412,7 @@ internal fun SettingsOverlay(
 
 private fun HomeMode.readableLabel(): String = when (this) {
     HomeMode.LOCATIONS -> "Locations list"
+    HomeMode.OVERVIEW -> "Overview"
     HomeMode.LIST -> "List"
     HomeMode.BENTO -> "Bento"
     HomeMode.CANVAS -> "Canvas"
@@ -393,7 +426,7 @@ private fun DensityMode.readableLabel(): String = when (this) {
 
 private fun ThemeStyle.readableLabel(): String = when (this) {
     ThemeStyle.NEO -> "Neo"
-    ThemeStyle.GLASS -> "Glass"
+    ThemeStyle.FYLZ -> "Fylz"
     ThemeStyle.VINTAGE -> "Vintage"
     ThemeStyle.RETRO -> "Retro"
     ThemeStyle.CLI -> "CLI"
@@ -500,7 +533,7 @@ private fun IconStyleRow(style: IconStyle, selected: Boolean, onSelect: () -> Un
 
 /**
  * One selectable theme, previewed as it will actually draw rather than as four sample glyphs: a
- * nested [FylzTheme] picks up the real colour scheme (dynamic wallpaper colour for Neo and Glass,
+ * nested [FylzTheme] picks up the real colour scheme (dynamic wallpaper colour for Neo and Fylz,
  * the fixed palette for the other three) and type around a miniature folder-then-file listing —
  * the same "don't describe it, draw it" answer [QuickActionEditor] gives the preview rail below.
  * A row of icons alone would have shown the icon pack and nothing else; folder material, and for
@@ -542,7 +575,7 @@ private fun ThemeSwatchRow(style: ThemeStyle, selected: Boolean, onSelect: () ->
 private fun ThemeMiniature(style: ThemeStyle, modifier: Modifier = Modifier) {
     // accentPreset is passed only to satisfy the signature -- dynamicColor = true wins outright
     // on every device this app runs on (minSdk 31), the same as the app's own four call sites, so
-    // the swatch's Neo/Glass rows pick up this device's real wallpaper colour, not a stand-in.
+    // the swatch's Neo/Fylz rows pick up this device's real wallpaper colour, not a stand-in.
     FylzTheme(themeMode = ThemeMode.SYSTEM, accentPreset = AccentPreset.MOSS, dynamicColor = true, themeStyle = style) {
         Surface(
             color = MaterialTheme.colorScheme.surface,
@@ -591,6 +624,16 @@ private fun MiniatureFolder(style: ThemeStyle) {
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f), RoundedCornerShape(3.dp)),
                 )
+                // Fylz alone puts a sticker on the glass -- the swatch would otherwise claim the
+                // same customisability for every FROSTED style, and only this one has it.
+                if (style == ThemeStyle.FYLZ) {
+                    AsyncImage(
+                        model = "file:///android_asset/stickers/star.svg",
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.align(Alignment.TopEnd).size(9.dp),
+                    )
+                }
             }
             Text("Photos", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp))
         }
@@ -790,5 +833,264 @@ private fun QuickActionEditorRow(
             tint = tint,
             modifier = Modifier.size(20.dp),
         )
+    }
+}
+
+/**
+ * How long a recycled item sits before [io.github.mbaliga.fylz.operations.RecycleBinRetentionWorker]
+ * is allowed to remove it for good -- the one preference
+ * [io.github.mbaliga.fylz.operations.RecycleBinRetentionStore] and
+ * [io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler] exist to serve, and the only
+ * place a user can actually reach it.
+ *
+ * Builds its own store the same way [FolderAppearanceSection] builds its own
+ * [FolderAppearanceStore]: SharedPreferences is keyed by file name, not object identity, so a
+ * second instance here reads and writes the same record [RecycleBinRetentionWorker] reads from a
+ * WorkManager job. [io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler.reconcile] is
+ * called right after every write so the periodic purge job updates immediately rather than only
+ * at next app launch.
+ */
+@Composable
+private fun RecycleBinRetentionSection() {
+    val context = LocalContext.current
+    val store = remember { RecycleBinRetentionStore(context.applicationContext) }
+    var period by remember { mutableStateOf(store.period()) }
+    Text(
+        "How long a deleted file waits in the bin before an automatic purge is allowed to " +
+            "remove it for good.",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 4.dp),
+    )
+    Column(Modifier.selectableGroup()) {
+        RecycleBinRetentionPeriod.entries.forEach { option ->
+            val selected = option == period
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .selectable(
+                        selected = selected,
+                        onClick = {
+                            period = option
+                            store.setPeriod(option)
+                            RecycleBinRetentionScheduler(context.applicationContext).reconcile(option)
+                        },
+                        role = Role.RadioButton,
+                    )
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
+                    if (selected) {
+                        Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
+                    }
+                }
+                Text(
+                    option.readableLabel(),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
+                )
+            }
+        }
+    }
+}
+
+private fun RecycleBinRetentionPeriod.readableLabel(): String = when (this) {
+    RecycleBinRetentionPeriod.KEEP_UNTIL_EMPTIED -> "Keep until I empty the bin"
+    RecycleBinRetentionPeriod.SEVEN_DAYS -> "7 days"
+    RecycleBinRetentionPeriod.THIRTY_DAYS -> "30 days"
+    RecycleBinRetentionPeriod.SIXTY_DAYS -> "60 days"
+}
+
+/**
+ * Pick a folder, then give it its own icon, colour and (Fylz only) stickers -- the owner's ask
+ * verbatim, and [ThemeStyle.FYLZ]'s claim to "the greatest customizability" made concrete.
+ *
+ * Builds its own [FolderAppearanceStore] and [DocumentRepository] the same way
+ * [io.github.mbaliga.fylz.ui.ArchiveToolsOverlay] and [io.github.mbaliga.fylz.ui.FileHistoryOverlay]
+ * build their own store instances -- SharedPreferences is keyed by file name, not by object
+ * identity, so a second instance here reads and writes the exact same records
+ * [io.github.mbaliga.fylz.ui.components.LocalFolderAppearance] resolves elsewhere, with no
+ * instance needing to be threaded down from the composition root for this screen alone.
+ */
+@Composable
+private fun FolderAppearanceSection(themeStyle: ThemeStyle, onAppearanceChanged: () -> Unit) {
+    val context = LocalContext.current
+    val store = remember { FolderAppearanceStore(context.applicationContext) }
+    val repository = remember { DocumentRepository(context.applicationContext) }
+    var pickerOpen by remember { mutableStateOf(false) }
+    var target by remember { mutableStateOf<Uri?>(null) }
+    // Re-reads from the store whenever the target changes, so switching folders never carries the
+    // previous one's icon/colour/stickers into view for a frame.
+    var appearance by remember(target) { mutableStateOf(target?.let(store::get) ?: FolderAppearance()) }
+    val targetName by produceState<String?>(initialValue = null, key1 = target) {
+        value = target?.let { repository.resolveDisplayName(it) }
+    }
+
+    fun persist(next: FolderAppearance) {
+        appearance = next
+        target?.let { store.set(it, next) }
+        // LocalFolderAppearance's readers are invalidated by appearanceVersion, not by this
+        // store write itself -- without this call already-composed folder cards keep their old
+        // look until something unrelated forces recomposition.
+        onAppearanceChanged()
+    }
+
+    Text(
+        "Pick a folder, then give it its own icon and colour" +
+            (if (themeStyle == ThemeStyle.FYLZ) " -- and stickers on the glass." else "."),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+    LandingSubjectRow(
+        label = "Folder to customise",
+        valueText = target?.let { targetName ?: "…" } ?: "None chosen",
+        onClick = { pickerOpen = true },
+    )
+
+    if (target != null) {
+        Spacer(Modifier.size(10.dp))
+        Text("Icon", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
+        FolderIconPicker(
+            style = themeStyle.iconStyle,
+            selectedKey = appearance.iconKey,
+            onSelect = { key -> persist(appearance.copy(iconKey = key)) },
+        )
+
+        Spacer(Modifier.size(12.dp))
+        Text("Colour", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
+        FolderColorPicker(
+            // The flagship alone reaches the full FolderPalette catalogue -- "a much wider range
+            // of colours" is this list being twice as long, not a different mechanism.
+            flagship = themeStyle == ThemeStyle.FYLZ,
+            selectedSlug = appearance.colorSlug,
+            onSelect = { slug -> persist(appearance.copy(colorSlug = slug)) },
+        )
+
+        if (themeStyle == ThemeStyle.FYLZ) {
+            Spacer(Modifier.size(12.dp))
+            Text("Stickers", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
+            FolderStickerPicker(
+                selected = appearance.stickers,
+                onChange = { stickers -> persist(appearance.copy(stickers = stickers)) },
+            )
+        }
+
+        TextButton(
+            onClick = {
+                target?.let(store::clear)
+                appearance = FolderAppearance()
+                onAppearanceChanged()
+            },
+            modifier = Modifier.padding(top = 4.dp),
+        ) {
+            Text("Reset to theme default")
+        }
+    }
+
+    if (pickerOpen) {
+        FylzPicker(
+            mode = PickerMode.FOLDER,
+            title = "Choose a folder",
+            confirmLabel = "Select",
+            repository = repository,
+            onDismiss = { pickerOpen = false },
+            onResult = { outcome ->
+                pickerOpen = false
+                (outcome as? PickerOutcome.Folder)?.let { target = it.folderUri }
+            },
+        )
+    }
+}
+
+/** How many icon swatches sit on one row before wrapping -- not a lazy grid, this already lives inside a scrolling Column. */
+private const val ICON_GRID_COLUMNS = 6
+
+/**
+ * Every key [FileTypeIcons.allKeys] names, drawn in [style] and hand-wrapped into rows: a
+ * [androidx.compose.foundation.lazy.grid.LazyVerticalGrid] would ask its host for an unbounded
+ * height, which [SettingsOverlay]'s own `verticalScroll` Column can't give it.
+ */
+@Composable
+private fun FolderIconPicker(style: IconStyle, selectedKey: String?, onSelect: (String?) -> Unit) {
+    val keys = remember { FileTypeIcons.allKeys().sorted() }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        keys.chunked(ICON_GRID_COLUMNS).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { key ->
+                    val selected = key == selectedKey
+                    FolderIconSwatch(key, style, selected) { onSelect(if (selected) null else key) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderIconSwatch(key: String, style: IconStyle, selected: Boolean, onClick: () -> Unit) {
+    val asset = remember(key, style) { "file:///android_asset/" + FileTypeIcons.assetPath(key, style) }
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.small,
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.size(38.dp),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            AsyncImage(model = asset, contentDescription = key, contentScale = ContentScale.Fit, modifier = Modifier.size(24.dp))
+        }
+    }
+}
+
+/** [FolderPalette.slugsFor] under [flagship], as tappable swatches -- a ring marks the selected one, tapping it again clears the override. */
+@Composable
+private fun FolderColorPicker(flagship: Boolean, selectedSlug: String?, onSelect: (String?) -> Unit) {
+    val slugs = remember(flagship) { FolderPalette.slugsFor(flagship) }
+    val dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        slugs.forEach { slug ->
+            val tone = FolderPalette.colorFor(slug, dark) ?: return@forEach
+            val selected = slug == selectedSlug
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .background(tone, CircleShape)
+                    .then(
+                        if (selected) {
+                            Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .clickable { onSelect(if (selected) null else slug) },
+            )
+        }
+    }
+}
+
+/** [FolderStickers.ALL], as tappable swatches -- multi-select up to [MAX_FOLDER_STICKERS], each toggled independently. */
+@Composable
+private fun FolderStickerPicker(selected: List<String>, onChange: (List<String>) -> Unit) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FolderStickers.ALL.forEach { key ->
+            val on = key in selected
+            Surface(
+                onClick = { onChange(if (on) selected - key else (selected + key).take(MAX_FOLDER_STICKERS)) },
+                shape = CircleShape,
+                color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.size(38.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    AsyncImage(
+                        model = "file:///android_asset/stickers/$key.svg",
+                        contentDescription = key,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
+        }
     }
 }

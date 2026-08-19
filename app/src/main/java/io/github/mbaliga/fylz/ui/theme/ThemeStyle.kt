@@ -28,7 +28,7 @@ enum class FolderMaterial {
 }
 
 /**
- * The five-theme axis the owner asked for by name -- CLI, Vintage, Retro, Neo, Glass -- each
+ * The five-theme axis the owner asked for by name -- CLI, Vintage, Retro, Neo, Fylz -- each
  * bundling every visual decision a "theme" makes (icon artwork, folder material, type, palette)
  * so callers dispatch on one value instead of five unrelated preferences that happen to travel
  * together. [FylzTheme] reads [scheme] and [monospace]; [FolderFace] and [StackCard] read
@@ -50,8 +50,15 @@ enum class ThemeStyle(
         overridesScheme = false,
     ),
 
-    /** Transparent folder material, contents showing through -- still dynamic wallpaper colour. */
-    GLASS(
+    /**
+     * Transparent folder material, contents showing through -- still dynamic wallpaper colour.
+     * The flagship: the only style whose folders take stickers, and the only one whose colour
+     * override reaches [io.github.mbaliga.fylz.appearance.FolderPalette]'s full catalogue rather
+     * than its six-tone core. Named for the app itself, not the material -- "Glass" was the
+     * material's own name wearing the whole theme's name, which stopped fitting once a folder
+     * here could hold more than translucency (a colour, a sticker).
+     */
+    FYLZ(
         iconStyle = IconStyle.GRADIENT,
         folderMaterial = FolderMaterial.FROSTED,
         monospace = false,
@@ -88,16 +95,29 @@ enum class ThemeStyle(
 
     /**
      * The fixed [ColorScheme] this style imposes, or null to keep whatever [FylzTheme] would
-     * otherwise pick (dynamic wallpaper colour for Neo and Glass). [overridesScheme] mirrors the
+     * otherwise pick (dynamic wallpaper colour for Neo and Fylz). [overridesScheme] mirrors the
      * nullability here so a caller can branch without invoking this for the null-returning styles.
      */
     fun scheme(dark: Boolean): ColorScheme? = when (this) {
-        NEO, GLASS -> null
+        NEO, FYLZ -> null
         VINTAGE -> if (dark) vintageDarkScheme else vintageLightScheme
         RETRO -> if (dark) retroDarkScheme else retroLightScheme
         // Deliberately ignores `dark`: a phosphor terminal doesn't have a light mode, and
         // flipping to a bright background for CLI would undercut the one thing the style is for.
         CLI -> cliScheme
+    }
+
+    companion object {
+        /**
+         * Source-compatible alias for the pre-rename entry name, resolved to [FYLZ]. Not every
+         * `ThemeStyle.GLASS` call site in the tree is this rename's to rewrite in one pass; this
+         * keeps a stray one compiling (and behaving identically -- `GLASS` and [FYLZ] are the
+         * same instance) until it is. [io.github.mbaliga.fylz.settings.AppPreferencesStore]
+         * handles the *persisted* legacy spelling separately, since that one never sees Kotlin's
+         * type system at all.
+         */
+        @Deprecated("Renamed to FYLZ.", ReplaceWith("ThemeStyle.FYLZ"))
+        val GLASS: ThemeStyle get() = FYLZ
     }
 }
 

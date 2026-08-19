@@ -311,7 +311,7 @@ internal fun TrashBrowserSheet(
                     }
                 }
                 Text(
-                    "These went in during this visit. Everything else lives in the Recycle Bin, in the tools room.",
+                    "Everything currently in the Recycle Bin.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp),

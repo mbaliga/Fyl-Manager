@@ -283,14 +283,14 @@ internal fun ThemeStyle.marksSelectionInline(): Boolean = this == ThemeStyle.CLI
 
 /**
  * The on-item selection mark for every style except CLI (see [marksSelectionInline]): Neo and
- * Glass get the disc-and-checkmark the browse rows already draw on selected `FileRowV1`s. Vintage
+ * Fylz get the disc-and-checkmark the browse rows already draw on selected `FileRowV1`s. Vintage
  * and Retro swap it for a flat, single-colour square -- no icon glyph, no curve -- matching the
  * integer-grid pixel art those two styles draw everywhere else.
  */
 @Composable
 internal fun SelectionMark(themeStyle: ThemeStyle, modifier: Modifier = Modifier) {
     when (themeStyle) {
-        ThemeStyle.NEO, ThemeStyle.GLASS -> Box(
+        ThemeStyle.NEO, ThemeStyle.FYLZ -> Box(
             modifier
                 .size(18.dp)
                 .background(MaterialTheme.colorScheme.surface, CircleShape),

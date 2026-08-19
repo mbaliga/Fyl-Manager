@@ -9,12 +9,15 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
 
@@ -53,9 +56,15 @@ private fun AccentPreset.colors(): AccentColors = when (this) {
 }
 
 /**
- * Builds the six roles the app actually styles, all riding [family] -- the one seam that lets
- * CLI and Vintage pull every label onto a monospace face without six separate call sites each
- * deciding that for themselves.
+ * Builds the ten roles the app actually styles, all riding [family] -- the one seam that lets
+ * CLI and Vintage pull every label onto a monospace face without every call site deciding that
+ * for themselves.
+ *
+ * Widened from the original six: [labelLarge], [labelSmall], [bodySmall] and [titleLarge] used to
+ * fall through to Compose's own default type scale, which is why the selection pill, room
+ * headings, the breadcrumb and the search hint kept reading in the system font even once [family]
+ * carried the app's own look everywhere else. Sizes and line heights otherwise match Material 3's
+ * own scale for these roles -- only the family and weight are the app's.
  */
 private fun fylzTypography(family: FontFamily) = Typography(
     // No display-sized surface used these before the landing hero; the wordmark itself stays on
@@ -79,6 +88,12 @@ private fun fylzTypography(family: FontFamily) = Typography(
         fontSize = 24.sp,
         lineHeight = 30.sp,
     ),
+    titleLarge = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Normal,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+    ),
     titleMedium = TextStyle(
         fontFamily = family,
         fontWeight = FontWeight.Medium,
@@ -91,10 +106,28 @@ private fun fylzTypography(family: FontFamily) = Typography(
         fontSize = 14.sp,
         lineHeight = 20.sp,
     ),
+    bodySmall = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+    ),
+    labelLarge = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+    ),
     labelMedium = TextStyle(
         fontFamily = family,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
+        lineHeight = 16.sp,
+    ),
+    labelSmall = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
         lineHeight = 16.sp,
     ),
 )
@@ -140,9 +173,21 @@ fun FylzTheme(
         )
     }
 
+    // Bundled rather than the platform's stock sans -- Space Grotesk's geometric forms are what
+    // the rest of the chrome (tab band, selection row, actions bar) is built around, and a system
+    // font substitution here would make every other role in this Typography visibly disagree with
+    // them. VINTAGE/CLI still win outright via themeStyle.monospace, unchanged from before.
+    val spaceGrotesk = remember {
+        FontFamily(
+            Font(R.font.space_grotesk_regular, FontWeight.Normal),
+            Font(R.font.space_grotesk_medium, FontWeight.Medium),
+            Font(R.font.space_grotesk_bold, FontWeight.Bold),
+        )
+    }
+
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = fylzTypography(if (themeStyle.monospace) FontFamily.Monospace else FontFamily.SansSerif),
+        typography = fylzTypography(if (themeStyle.monospace) FontFamily.Monospace else spaceGrotesk),
         content = content,
     )
 }

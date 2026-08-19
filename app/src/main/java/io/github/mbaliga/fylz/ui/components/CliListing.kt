@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -124,6 +126,10 @@ internal fun CliRow.line(zoneId: ZoneId = ZoneId.systemDefault()): String = buil
  * @param selected marks a row with a `>` in the gutter column instead of a badge -- CLI's own
  *   answer to the rest of the app's selection mark, cheap enough to read at a glance in a
  *   text-dense listing.
+ * @param listState hoisted rather than internal, the same reason LIST/DETAILS/GRID already
+ *   hoist theirs -- a caller outside this composable (a scroll-position gate, an edge scrubber)
+ *   needs to read or drive where this listing sits without this function growing a second
+ *   signature for every such reader.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -137,6 +143,7 @@ fun CliListing(
     onOpenFile: (FileEntry) -> Unit,
     onToggleSelect: (FileEntry) -> Unit,
     modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
 ) {
     var expanded by remember(treeUri) { mutableStateOf(emptySet<Uri>()) }
     val children = remember(treeUri, showHidden) { mutableStateMapOf<Uri, List<FileEntry>>() }
@@ -153,7 +160,7 @@ fun CliListing(
     val visible = if (showHidden) entries else entries.filterNot { it.name.startsWith(".") }
     val rows = remember(visible, expanded, children.toMap()) { buildCliRows(visible, expanded, children) }
 
-    LazyColumn(modifier.fillMaxWidth()) {
+    LazyColumn(modifier.fillMaxWidth(), state = listState) {
         items(rows, key = { it.entry.uri.toString() }) { row ->
             CliListingRow(
                 row = row,

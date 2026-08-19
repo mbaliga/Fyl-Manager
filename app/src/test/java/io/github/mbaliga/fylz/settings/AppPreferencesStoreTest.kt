@@ -66,6 +66,36 @@ class AppPreferencesStoreTest {
     }
 
     @Test
+    fun `a legacy stored GLASS value migrates to FYLZ rather than falling back to NEO`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("theme_style", "GLASS").commit()
+
+        assertEquals(ThemeStyle.FYLZ, store.themeStyle())
+    }
+
+    @Test
+    fun `reading a legacy GLASS value rewrites the preference in place`() {
+        val store = store()
+        val preferences = context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+        preferences.edit().putString("theme_style", "GLASS").commit()
+
+        store.themeStyle()
+
+        assertEquals("FYLZ", preferences.getString("theme_style", null))
+    }
+
+    @Test
+    fun `a fresh store instance reads the rewritten FYLZ value directly, no second migration needed`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("theme_style", "GLASS").commit()
+        store.themeStyle()
+
+        assertEquals(ThemeStyle.FYLZ, store().themeStyle())
+    }
+
+    @Test
     fun `density defaults to COMFORTABLE`() {
         assertEquals(DensityMode.COMFORTABLE, store().density())
     }

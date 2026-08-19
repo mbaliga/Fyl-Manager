@@ -92,20 +92,55 @@ class FileTypeIconsTest {
 
     @Test
     fun `every key in the pixel pack has real Vintage and Retro artwork on disk`() {
-        // simple-code ships artwork but no family maps to it (same gap the four-style pack has
-        // always had) — checked here directly rather than through assetPath for that reason.
-        val pixelKeys = setOf(
-            "simple-folder", "simple-empty", "simple-image", "simple-video",
-            "simple-audio", "simple-document", "simple-code", "simple-pdf",
-            "zip", "sql", "exe",
-        )
         val missing = mutableListOf<String>()
-        pixelKeys.forEach { key ->
+        FileTypeIcons.PIXEL_KEYS.forEach { key ->
             listOf("vintage", "retro").forEach { slug ->
                 if (!exists("filetype/${key}_$slug.svg")) missing += "${key}_$slug.svg"
             }
         }
         assertTrue("missing pixel-pack artwork: $missing", missing.isEmpty())
+    }
+
+    @Test
+    fun `a source-code extension resolves to the simple-code mark, not the generic document`() {
+        assertEquals(
+            "filetype/simple-code_filled.svg",
+            FileTypeIcons.assetPath("kt", PreviewFamily.TEXT, IconStyle.FILLED),
+        )
+        assertEquals(
+            "filetype/simple-code_vintage.svg",
+            FileTypeIcons.assetPath("py", PreviewFamily.TEXT, IconStyle.VINTAGE),
+        )
+    }
+
+    @Test
+    fun `simple-code is reachable from allKeys, not orphaned`() {
+        assertTrue("simple-code" in FileTypeIcons.allKeys())
+    }
+
+    @Test
+    fun `an exact format still wins over a source-code extension collision`() {
+        // json is in EXACT (its own artwork), not routed through CODE_EXTENSIONS.
+        assertEquals(
+            "filetype/json_gray.svg",
+            FileTypeIcons.assetPath("json", PreviewFamily.TEXT, IconStyle.GRAY),
+        )
+    }
+
+    @Test
+    fun `the two-arg override resolves the same key a caller already knows, style-fallback and all`() {
+        assertEquals(
+            FileTypeIcons.assetPath("pdf", PreviewFamily.PDF, IconStyle.VINTAGE),
+            FileTypeIcons.assetPath("pdf", IconStyle.VINTAGE),
+        )
+    }
+
+    @Test
+    fun `the two-arg override falls back to the blank mark for an unrecognised key`() {
+        assertEquals(
+            "filetype/simple-empty_filled.svg",
+            FileTypeIcons.assetPath("not-a-real-key", IconStyle.FILLED),
+        )
     }
 
     @Test

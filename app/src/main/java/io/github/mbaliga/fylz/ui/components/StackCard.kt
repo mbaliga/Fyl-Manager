@@ -91,22 +91,34 @@ fun StackCard(
                     modifier = Modifier.size(faceSize).clip(MaterialTheme.shapes.small),
                 )
             } else {
-                StackCardTypeIcon(fallbackName, kind, faceSize)
+                StackCardTypeIcon(entry, fallbackName, kind, faceSize)
             }
         }
     }
 }
 
 /**
- * The no-[FileEntry] fallback: the same asset lookup [EntryThumbnail]'s own type-icon branch
- * uses, reached without needing a real entry (and its URI) to get there.
+ * The cold-cache fallback: the same asset lookup [EntryThumbnail]'s own type-icon branch uses,
+ * reached without waiting on a bitmap. [entry] is nullable and only ever consulted for the
+ * directory-icon override -- [name] and [kind] alone are enough to pick a type icon otherwise, and
+ * are what [entry] being null falls back to (a card whose file hasn't resolved yet).
+ *
+ * Kept in step with [EntryThumbnail]'s own version by hand rather than sharing a helper: sharing
+ * one would need `remember`'s keys threaded across both call sites anyway, and this composable's
+ * doc comment is the thing that would catch it going stale.
  */
 @Composable
-private fun StackCardTypeIcon(name: String, kind: EntryKind, size: Dp) {
+private fun StackCardTypeIcon(entry: FileEntry?, name: String, kind: EntryKind, size: Dp) {
     val style = LocalIconStyle.current
-    val asset = remember(name, kind, style) {
-        val descriptor = FileFormatRegistry.describe(name, "", kind)
-        "file:///android_asset/" + FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
+    val overrideKey = if (entry?.isDirectory == true) LocalFolderAppearance.current(entry.uri)?.iconKey else null
+    val asset = remember(name, kind, style, overrideKey) {
+        val path = if (overrideKey != null) {
+            FileTypeIcons.assetPath(overrideKey, style)
+        } else {
+            val descriptor = FileFormatRegistry.describe(name, "", kind)
+            FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
+        }
+        "file:///android_asset/$path"
     }
     AsyncImage(
         model = asset,
@@ -117,14 +129,14 @@ private fun StackCardTypeIcon(name: String, kind: EntryKind, size: Dp) {
 }
 
 /**
- * The white print margin's width, on every edge -- 3dp for Neo/Glass/Retro's photo-print look,
+ * The white print margin's width, on every edge -- 3dp for Neo/Fylz/Retro's photo-print look,
  * a 1dp hairline for Vintage's line-art register, and none at all for CLI, which never shows a
  * [StackCard] in its own listing but should draw a bare thumbnail if one ever ends up here anyway.
  */
 private fun ThemeStyle.printBorder(): Dp = when (this) {
     ThemeStyle.VINTAGE -> 1.dp
     ThemeStyle.CLI -> 0.dp
-    ThemeStyle.NEO, ThemeStyle.GLASS, ThemeStyle.RETRO -> 3.dp
+    ThemeStyle.NEO, ThemeStyle.FYLZ, ThemeStyle.RETRO -> 3.dp
 }
 
 /**

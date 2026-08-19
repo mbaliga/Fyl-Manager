@@ -1,8 +1,6 @@
 package io.github.mbaliga.fylz.ui.components
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +15,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,45 +44,33 @@ import dev.aarso.search.ChipKind
 import dev.aarso.search.Diagnostic
 import dev.aarso.search.QueryChip
 import io.github.mbaliga.fylz.R
-import io.github.mbaliga.fylz.model.FolderTab
-
-/** The tab strip's own claim on the pill's height, added to [CommandPillReservedHeight] below. */
-private val TAB_STRIP_HEIGHT: Dp = 40.dp
+import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 
 /**
- * How much vertical room the pill and its margins claim at the bottom of the browser.
+ * How much vertical room the search surface claims when it is showing, for a listing that wants
+ * to reserve content padding beneath it.
  *
- * Exported so the listing can reserve it as content padding and the edge scrubber can stop
- * short of it. A floating control that hides the last row of the thing it controls is worse
- * than a docked one, and a travel strip that runs underneath it is a target you cannot hit.
- *
- * `88.dp` was sized for the search Surface alone; the tab strip is a permanent row above it now
- * (there is always at least the open tab), not a conditional one like the search-scope chips, so
- * its height is folded into the one constant every reader already trusts rather than left for
- * six call sites to each remember to add separately.
+ * This used to cover the pill's tab strip too; the tabs are [io.github.mbaliga.fylz.ui.chrome.TabBand]
+ * now, with their own [io.github.mbaliga.fylz.ui.chrome.TabBandHeight], and a live selection adds
+ * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight] on top of that -- three independent
+ * heights instead of one blanket constant, because the pill itself is no longer a permanent
+ * fixture a listing must always clear. A caller reserves whichever of the three is actually
+ * mounted, not all three unconditionally.
  */
-val CommandPillReservedHeight: Dp = 88.dp + TAB_STRIP_HEIGHT
+val CommandPillSearchHeight: Dp = 88.dp
 
 /**
- * The browser's command pill: a small floating bar above the bottom edge, holding search and
- * the two controls worth showing outright.
+ * The browser's command pill: search, its scope, and the parser's reading of a live query.
  *
- * This replaces a full-width row of chrome that sat directly under the app bar — a back button,
- * a boxed text field, a sort menu and a select-all button, stacked on top of the toolbar's own
- * two buttons, so the top of every folder was two bands of controls before a single file. The
- * pill is one band, it floats clear of the listing rather than pushing it down, and it sits
- * where the thumb already is.
+ * Tabs used to ride a strip along the top of this pill; they now live in their own bottom band
+ * ([io.github.mbaliga.fylz.ui.chrome.TabBand]), overlapping folder tabs on a black plinth rather
+ * than a row of chips, and the pill no longer needs to know tabs exist at all. What's left is a
+ * transient surface -- shown while search is actually in use, not a permanent fixture the browser
+ * always floats above -- and search plus sort plus select-all, and nothing else. Everything that
+ * *changes* a file lives in the actions room; a button that *does* something to the current file
+ * has no business here even now that the pill has more room to spare.
  *
- * It stays deliberately shallow: search plus sort plus select-all, and nothing else. Everything
- * that *changes* a file lives in the actions room, and the moment this pill starts collecting
- * "one more useful button" it becomes the row it replaced. The tab strip below is not an
- * exception carved into that rule — it is not a button. Multiple tabs open together don't make
- * sense without a place that shows which one you're in and lets you reach the others, the same
- * way the search box and the up-arrow already answer "where am I, how do I leave" for a single
- * folder. Navigation earns its rent here; a button that *does* something to the current file
- * still does not.
- *
- * The search-scope chips and the query-syntax hint appear above the pill only while a query is
+ * The search-scope chips and the query-syntax hint appear above the field only while a query is
  * live: the scope choice is meaningless with an empty box, and drawing both unconditionally is
  * how the old row ended up as tall as it was. Once the parser has an opinion about the query, its
  * reading appears the same way Spotlight's does: a row of removable [chips], one filter each, so
@@ -105,16 +90,6 @@ val CommandPillReservedHeight: Dp = 88.dp + TAB_STRIP_HEIGHT
  *   is focused and [query] is blank.
  * @param onRecentSearchSelected called with the tapped recent query; the caller sets it as the
  *   live query.
- * @param tabs every open tab, drawn as a chip strip above the search box — the pill's answer to
- *   "multiple tabs open together won't make sense otherwise". Defaulted to empty so a caller that
- *   hasn't wired tabs yet still compiles; a real browsing surface always has at least the one
- *   it's showing.
- * @param activeTabId which of [tabs] reads as selected.
- * @param onTabSelected called with the id of the tapped tab.
- * @param onTabClosed called with the tab whose close glyph was tapped — a separate target from
- *   the chip body, which selects instead.
- * @param onAddTab called from the strip's trailing "+" — the caller launches the same SAF folder
- *   picker a new tab already opens from elsewhere.
  * @param trailing the controls shown outright to the right of the box — sort and select-all.
  */
 @Composable
@@ -131,11 +106,6 @@ fun CommandPill(
     diagnostics: List<Diagnostic> = emptyList(),
     recentSearches: List<String> = emptyList(),
     onRecentSearchSelected: (String) -> Unit = {},
-    tabs: List<FolderTab> = emptyList(),
-    activeTabId: String? = null,
-    onTabSelected: (String) -> Unit = {},
-    onTabClosed: (FolderTab) -> Unit = {},
-    onAddTab: () -> Unit = {},
     modifier: Modifier = Modifier,
     trailing: @Composable () -> Unit,
 ) {
@@ -150,45 +120,6 @@ fun CommandPill(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Always drawn, not gated behind tabs.size > 1: the strip is where a tab is opened from
-        // as much as where it's switched between, and a lone tab's chip is still the answer to
-        // "which folder am I in" the search box alone doesn't give.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            tabs.forEach { tab ->
-                InputChip(
-                    selected = tab.id == activeTabId,
-                    onClick = { onTabSelected(tab.id) },
-                    label = {
-                        Text(tab.title.ifBlank { "Folder" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    },
-                    trailingIcon = {
-                        // Its own click target, independent of the chip body's onClick above: the
-                        // body selects the tab, this closes it, and a tap must only ever do one.
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "Close ${tab.title}",
-                            modifier = Modifier
-                                .size(14.dp)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                ) { onTabClosed(tab) },
-                        )
-                    },
-                )
-            }
-            IconButton(onClick = onAddTab, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Outlined.Add, contentDescription = "Open a new tab")
-            }
-        }
-
         if (query.isNotBlank()) {
             Row(
                 Modifier.padding(bottom = 8.dp),
@@ -331,10 +262,15 @@ fun CommandPill(
 }
 
 /**
- * The listing's content padding when the pill is floating over it: the caller's own padding
- * plus enough room at the bottom that the last row clears the pill.
+ * The listing's content padding when chrome floats over its bottom edge: the caller's own padding
+ * plus enough room at the bottom that the last row clears it.
+ *
+ * [reserve] defaults to [io.github.mbaliga.fylz.ui.chrome.TabBandHeight] alone -- the tab band is
+ * the one piece of bottom chrome that's always present. A caller with a live selection (adding
+ * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight]) or a revealed search field (adding
+ * [CommandPillSearchHeight]) passes the taller sum explicitly rather than relying on this default.
  */
-fun listingPaddingFor(base: Dp, reserve: Dp = CommandPillReservedHeight): PaddingValues =
+fun listingPaddingFor(base: Dp, reserve: Dp = TabBandHeight): PaddingValues =
     PaddingValues(start = base, top = base, end = base, bottom = base + reserve)
 
 /** Display plural for a `type:`/`kind:` facet value, matching `FylzSearch`'s kind vocabulary --

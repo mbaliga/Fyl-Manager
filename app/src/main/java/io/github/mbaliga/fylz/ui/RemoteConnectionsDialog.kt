@@ -54,6 +54,7 @@ import io.github.mbaliga.fylz.network.RemoteConnection
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.RemoteKind
 import io.github.mbaliga.fylz.network.RemoteObject
+import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -304,7 +305,7 @@ private fun RemoteListing(
                     Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     entry.sizeBytes?.let { size ->
                         Text(
-                            formatStorageBytes(size),
+                            formatBytes(size),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

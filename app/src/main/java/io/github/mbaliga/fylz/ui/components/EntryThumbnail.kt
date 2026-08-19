@@ -120,9 +120,17 @@ fun EntryThumbnail(
 
             else -> {
                 val style = LocalIconStyle.current
-                val asset = remember(entry.name, entry.mimeType, entry.kind, style) {
-                    val descriptor = FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
-                    "file:///android_asset/" + FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
+                // Only a directory can carry an icon override -- FolderAppearance is per-folder,
+                // not per-file, so a plain file never looks this up.
+                val overrideKey = if (entry.isDirectory) LocalFolderAppearance.current(entry.uri)?.iconKey else null
+                val asset = remember(entry.name, entry.mimeType, entry.kind, style, overrideKey) {
+                    val path = if (overrideKey != null) {
+                        FileTypeIcons.assetPath(overrideKey, style)
+                    } else {
+                        val descriptor = FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
+                        FileTypeIcons.assetPath(descriptor.extension, descriptor.family, style)
+                    }
+                    "file:///android_asset/$path"
                 }
                 AsyncImage(
                     model = asset,

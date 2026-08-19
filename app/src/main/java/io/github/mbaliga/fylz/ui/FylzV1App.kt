@@ -3,11 +3,11 @@ package io.github.mbaliga.fylz.ui
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -32,7 +32,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Add
@@ -42,7 +41,6 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Refresh
@@ -52,6 +50,7 @@ import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
@@ -95,7 +94,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -138,6 +136,7 @@ import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.canvas.CanvasLayoutStore
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.library.FavoriteLocation
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.library.SavedSearch
 import io.github.mbaliga.fylz.model.AccentPreset
@@ -155,7 +154,9 @@ import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionStore
 import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.operations.describe
 import io.github.mbaliga.fylz.operations.SelectionActionPolicy
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
@@ -175,20 +176,38 @@ import io.github.mbaliga.fylz.storage.toItemRef
 import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CliListing
 import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
 import io.github.mbaliga.fylz.ui.components.FolderFace
 import io.github.mbaliga.fylz.ui.components.IconStyle
+import io.github.mbaliga.fylz.ui.components.LocalFolderAppearance
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.ProvideAutoAnimate
 import io.github.mbaliga.fylz.ui.components.ProvideIconStyle
 import io.github.mbaliga.fylz.ui.components.ProvideShowExtensions
 import io.github.mbaliga.fylz.ui.components.QuickAction
-import io.github.mbaliga.fylz.ui.components.CommandPillReservedHeight
+import io.github.mbaliga.fylz.ui.components.entryGestures
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.PreviewCardMode
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.components.QuickLook
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
+import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
+import io.github.mbaliga.fylz.ui.chrome.ActionsBar
+import io.github.mbaliga.fylz.ui.chrome.SelectionRow
+import io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight
+import io.github.mbaliga.fylz.ui.chrome.TabBand
+import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
+import io.github.mbaliga.fylz.ui.chrome.TabBandItem
+import io.github.mbaliga.fylz.ui.overview.OverviewScreen
+import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
+import io.github.mbaliga.fylz.ui.tags.LocalTagsFor
+import io.github.mbaliga.fylz.ui.tags.TagBrowser
+import io.github.mbaliga.fylz.ui.tags.TagMark
+import io.github.mbaliga.fylz.ui.tags.tagSearchQuery
+import io.github.mbaliga.fylz.library.unionOfTags
+import io.github.mbaliga.fylz.library.applyTagDelta
+import io.github.mbaliga.fylz.storage.FullAccessPermission
 import io.github.mbaliga.fylz.ui.deck.DeckItem
 import io.github.mbaliga.fylz.ui.deck.DeckSource
 import io.github.mbaliga.fylz.ui.deck.FileDeckSurface
@@ -218,7 +237,6 @@ import java.util.Locale
 import java.util.UUID
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -238,10 +256,6 @@ import dev.aarso.cellshell.rememberSpatialController
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
 import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.operations.RecycleRecord
 import io.github.mbaliga.fylz.settings.AppPreferencesStore
@@ -259,11 +273,9 @@ import io.github.mbaliga.fylz.ui.cluster.BulgeCorner
 import io.github.mbaliga.fylz.ui.cluster.ClusterDragController
 import io.github.mbaliga.fylz.ui.cluster.ClusterDragLayer
 import io.github.mbaliga.fylz.ui.cluster.InkContent
-import io.github.mbaliga.fylz.ui.cluster.InkSurface
 import io.github.mbaliga.fylz.ui.cluster.RestingBulge
 import io.github.mbaliga.fylz.ui.cluster.ShredConfirmOverlay
 import io.github.mbaliga.fylz.ui.cluster.TrashBrowserSheet
-import io.github.mbaliga.fylz.ui.cluster.TrashGlyph
 import io.github.mbaliga.fylz.ui.cluster.TrayBrowserSheet
 import io.github.mbaliga.fylz.ui.components.warmThumbnails
 import io.github.mbaliga.fylz.ui.landing.HomeMode
@@ -551,8 +563,17 @@ private fun FylzV1Workspace(
     // SharedPreferences file. onItemRelocated below is the only thing this composable ever asks
     // of it; SubjectCanvas opens its own handle onto the same file when the canvas itself renders.
     val canvasLayoutStore = remember { CanvasLayoutStore(context.applicationContext) }
+    // A folder's chosen icon/colour/stickers -- FolderAppearanceStore-modelled the same as
+    // canvasLayoutStore above, one SharedPreferences file of its own. Settings' own folder-
+    // appearance picker opens a second handle onto this same file rather than reading this one
+    // (see SettingsOverlay's FolderAppearanceSection), so this instance's only jobs are serving
+    // LocalFolderAppearance below and following a folder through the relocation fan-out.
+    val folderAppearanceStore = remember { FolderAppearanceStore(context.applicationContext) }
+    // Bumped alongside shelfVersion by the same relocation fan-out, and read by LocalFolderAppearance
+    // below to force a fresh lookup -- the appearanceVersion counter FolderFace's own KDoc names.
+    var appearanceVersion by remember { mutableIntStateOf(0) }
     // Fired once per item a move or a batch rename actually relocates -- the one seam where all
-    // three identity-keyed stores learn about a URI that changed out from under them. No store
+    // four identity-keyed stores learn about a URI that changed out from under them. No store
     // type leaks past this lambda into operations/; each store translates the raw Uri pair
     // itself.
     val onItemRelocated: (Uri, Uri) -> Unit = { old, new ->
@@ -560,10 +581,16 @@ private fun FylzV1Workspace(
         history.migrateSource(old, new)
         shelf.migrateRef(old, new)
         canvasLayoutStore.migrateUri(old, new)
+        folderAppearanceStore.migrateUri(old, new)
         if (preferencesStore.migrateLandingSubject(old, new)) onLandingSubjectRelocated(new)
         shelfVersion += 1
+        appearanceVersion += 1
     }
-    val repository = remember { DocumentRepository(context.applicationContext, shelf) }
+    // onItemRelocated named explicitly (not the constructor's own fallback) so a plain rename
+    // notifies every identity-keyed store a move already does -- the same fan-out, one path,
+    // matching FileOperationService/FileTools below rather than the narrower three-store default
+    // DocumentRepository falls back to when this argument is omitted.
+    val repository = remember { DocumentRepository(context.applicationContext, shelf, onItemRelocated = onItemRelocated) }
     val fileOperations = remember {
         FileOperationService(context.applicationContext, onItemRelocated = onItemRelocated)
     }
@@ -629,8 +656,15 @@ private fun FylzV1Workspace(
     var createDialog by remember { mutableStateOf<String?>(null) }
     var renameDialog by remember { mutableStateOf(false) }
     var tagDialog by remember { mutableStateOf(false) }
+    // The tag browser (every known tag, with counts) and, once one is tapped, a device-wide
+    // result list for it -- reached from LocationsRoom's own "Tags" row and from the Overview's
+    // Tags card alike, neither of which requires a folder tab to be open (unlike the folder-
+    // scoped query box), so results are read straight off LibraryStore rather than routed
+    // through the query pipeline.
+    var tagBrowserOpen by remember { mutableStateOf(false) }
+    var tagResultsFor by remember { mutableStateOf<String?>(null) }
+    var tagResults by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     var batchRenameDialog by remember { mutableStateOf(false) }
-    var recycleDialog by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
@@ -669,8 +703,11 @@ private fun FylzV1Workspace(
     var clipboardTray by remember { mutableStateOf(StagingTray(TrayKind.CLIPBOARD)) }
     var moveTray by remember { mutableStateOf(StagingTray(TrayKind.MOVE)) }
     var openTray by remember { mutableStateOf<TrayKind?>(null) }
+    // The recycle bin sheet and its bulge/tab entry point both read recycleBin.records() directly
+    // now -- no more process-scoped sessionTrashIds tracking a narrower answer than the store
+    // itself gives. One store, one source of truth, for the sheet, the settings dialog's old
+    // separate route (now the same sheet), and the trash tab's own entry point alike.
     var trashSheetOpen by remember { mutableStateOf(false) }
-    val sessionTrashIds = remember { mutableStateListOf<String>() }
     var trashRefreshKey by remember { mutableIntStateOf(0) }
     var shredTargets by remember { mutableStateOf<List<RecycleRecord>?>(null) }
     var shredding by remember { mutableStateOf(false) }
@@ -719,6 +756,26 @@ private fun FylzV1Workspace(
     // written inline wherever a button happened to be drawn.
     val selectionActions = remember(selectedEntries) {
         SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
+    }
+
+    // Every known tag, cached once per write rather than re-scanned on every recomposition, per
+    // allTags()'s own caching obligation -- allTagsMap keeps its natural case-insensitive order
+    // for the browser dialog (TagBrowser's own KDoc contract), topTagsList reorders the same map
+    // by count for the Overview's chips, which want the most-used tags first.
+    val allTagsMap = remember(tagsVersion) { library.allTags() }
+    val topTagsList = remember(allTagsMap) {
+        allTagsMap.entries.sortedByDescending { it.value }.map { it.key to it.value }
+    }
+
+    /** A tag tapped from the browser or the Overview's own chips: closes the browser (if it was
+     *  the source) and probes every item carrying [tag], device-wide -- LibraryStore's own reverse
+     *  scan, not the folder-scoped query pipeline, since this is reachable with no folder tab open. */
+    fun openTagResults(tag: String) {
+        tagBrowserOpen = false
+        tagResultsFor = tag
+        scope.launch {
+            tagResults = library.itemsWithTag(tag).mapNotNull { uri -> repository.probe(uri) }
+        }
     }
 
     // Parsed once per keystroke, not once per consumer: the in-folder ranking below, the
@@ -874,6 +931,25 @@ private fun FylzV1Workspace(
         val treeUri = root.treeUri ?: return
         val documentUri = root.documentUri ?: return
         openTabAt(treeUri, FolderLocation(documentUri, root.title))
+    }
+
+    /**
+     * Opens a favourite from the Overview's Pinned card -- finally a real tap target, per the
+     * plan's own complaint that favourites had none on a phone. [FavoriteLocation] carries only
+     * the folder's own document uri, not the tree grant it was reached through (`toggleFavorite`
+     * never captured one), so this recovers it the only general way available: the persisted
+     * grant sharing the favourite's own authority. Good enough for the common case (one grant per
+     * provider authority) without a data-model change to a file this workstream does not own.
+     */
+    fun openFavorite(favorite: FavoriteLocation) {
+        val treeUri = context.contentResolver.persistedUriPermissions
+            .firstOrNull { it.isReadPermission && it.uri.authority == favorite.uri.authority }
+            ?.uri
+        if (treeUri == null) {
+            toast("${favorite.name} is no longer reachable -- its folder grant is gone")
+            return
+        }
+        openTabAt(treeUri, FolderLocation(favorite.uri, favorite.name))
     }
 
     val rootPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -1233,12 +1309,7 @@ private fun FylzV1Workspace(
                     ?.takeIf(DocumentFile::isDirectory)
                     ?: root.createDirectory(".fylz-trash")
                     ?: error("This provider cannot create a recycle location.")
-                uris.forEach { uri ->
-                    val record = recycleBin.recycle(uri, tab.current.uri, recycleRoot.uri)
-                    // Remembered so the trash bulge can offer put-back and shred for what went
-                    // in during this visit — however it went in, gesture or actions room.
-                    sessionTrashIds += record.itemId
-                }
+                uris.forEach { uri -> recycleBin.recycle(uri, tab.current.uri, recycleRoot.uri) }
             }.onSuccess {
                 toast("Moved to Recycle Bin")
                 selectedUris = emptySet()
@@ -1426,7 +1497,6 @@ private fun FylzV1Workspace(
             var failure: Throwable? = null
             records.forEach { record ->
                 runCatching { recycleBin.permanentlyDelete(record.itemId, confirmed = true) }
-                    .onSuccess { sessionTrashIds.remove(record.itemId) }
                     .onFailure { failure = it }
             }
             shredding = false
@@ -1557,6 +1627,19 @@ private fun FylzV1Workspace(
         }
     }
 
+    // A folder's chosen icon/colour/stickers and an item's own tags, both reachable from any
+    // surface below (rows, cards, tiles, the folder tree, Overview) without threading a store or
+    // a LibraryStore handle through every one of their signatures -- the same shape as
+    // LocalThemeStyle above, in this composable rather than the root because both stores
+    // (folderAppearanceStore, library) live here. Re-created whenever their version counter
+    // bumps so a write becomes visible the same recomposition, not a stale closure held from
+    // composition start.
+    val folderAppearanceLookup = remember(appearanceVersion) { { uri: Uri -> folderAppearanceStore.get(uri) } }
+    val tagsLookup = remember(tagsVersion) { { uri: Uri -> library.tags(uri) } }
+    CompositionLocalProvider(
+        LocalFolderAppearance provides folderAppearanceLookup,
+        LocalTagsFor provides tagsLookup,
+    ) {
     // The rungs below a folder's own back stack was always missing: an up-arrow tap could walk
     // it, but Back itself only ever reached the rooms handler and then finish(). Composed here,
     // immediately before that rooms handler, so BackHandler's own "last composed wins" order
@@ -1634,6 +1717,10 @@ private fun FylzV1Workspace(
                         shell.closeAll()
                         settingsOpen = true
                     },
+                    onOpenTags = {
+                        shell.closeAll()
+                        tagBrowserOpen = true
+                    },
                 )
             }
         },
@@ -1687,11 +1774,14 @@ private fun FylzV1Workspace(
     // Scoped to exactly what the workspace draws: the browser's thumbnails and the preview card
     // below, and nothing above it (the rooms have no thumbnails of their own to animate).
     ProvideAutoAnimate(autoAnimate) {
-    // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
-    // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
-    // off the touch plane entirely — a deliberate shake needs no affordance, no instructional
-    // copy, and competes with no scroll. The toolbar button stays for anyone who would rather
-    // tap than shake.
+    // Refresh is a shake, everywhere in the constellation. The pull-down space in a room's top
+    // 56dp belongs to the top-room reveal and no other gesture may claim it there — that part is
+    // unchanged. Below that band, pulling down on a listing already at rest reveals search
+    // (PullDownSearchHost) instead of nothing: a deliberate narrowing of the old "pull-down is
+    // reserved, full stop" rule, scoped so the shell's own top-edge claim still wins outright and
+    // is never contested. Refresh itself stays off the touch plane regardless — a deliberate shake
+    // needs no affordance, no instructional copy, and competes with no scroll. The toolbar button
+    // stays for anyone who would rather tap than shake.
     ShakeToRefresh(onShake = { refresh() })
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -1704,52 +1794,45 @@ private fun FylzV1Workspace(
                     // shake. What it opens is a description of the folder it is naming, which
                     // is the one thing a title could open without surprising anybody.
                     title = {
-                        // Crossfades on FylzMotion.settle rather than swapping instantly: the
-                        // owner's "desktop feel" asked for motion as its own pillar, and a title
-                        // that snaps between a folder name and a selection count is the one piece
-                        // of chrome on screen that changes meaning entirely, every time a
-                        // selection starts or ends -- exactly where an instant cut reads as a
-                        // glitch instead of a mode change.
-                        Crossfade(targetState = selectedUris.isNotEmpty(), animationSpec = FylzMotion.settle, label = "topBarTitle") { selecting ->
-                            if (selecting) {
-                                // Selection chrome: the HIG rule this app only ever half-built. A
-                                // live selection is a mode, not a place, so the title reads as a
-                                // count regardless of which surface (a folder tab, or now a home
-                                // surface too) the selection actually lives on.
-                                Text(if (selectedUris.size == 1) "1 selected" else "${selectedUris.size} selected")
-                            } else if (activeTab != null) {
-                                Text(
-                                    activeTab.current.name,
-                                    // heightIn before clickable so the target is the 48dp DESIGN.md
-                                    // asks for rather than the height of the glyphs; wrapContentHeight
-                                    // then re-centres the text inside it.
-                                    modifier = Modifier
-                                        .heightIn(min = 48.dp)
-                                        .clickable { shell.open(RoomEdge.TOP) }
-                                        .wrapContentHeight(Alignment.CenterVertically)
-                                        .semantics {
-                                            contentDescription = "${activeTab.current.name}. Show details"
-                                        },
-                                )
-                            } else {
-                                // No tab open means no folder for the details room to describe, so
-                                // the title stops offering to open it — plain text, no target, no
-                                // "Show details" semantics to announce a room with nothing in it.
-                                Text("Fylz")
-                            }
+                        // No longer crossfades to a selection count: the chrome's own SelectionRow
+                        // (mounted at the outer Box level, below) is the one place that count is
+                        // shown now -- a live selection used to also retitle this bar with the
+                        // same number, which was the "second live count" the plan asked reconciled.
+                        // The title keeps naming the PLACE regardless of selection.
+                        if (activeTab != null) {
+                            Text(
+                                activeTab.current.name,
+                                // heightIn before clickable so the target is the 48dp DESIGN.md
+                                // asks for rather than the height of the glyphs; wrapContentHeight
+                                // then re-centres the text inside it.
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .clickable { shell.open(RoomEdge.TOP) }
+                                    .wrapContentHeight(Alignment.CenterVertically)
+                                    .semantics {
+                                        contentDescription = "${activeTab.current.name}. Show details"
+                                    },
+                            )
+                        } else {
+                            // No tab open means no folder for the details room to describe, so
+                            // the title stops offering to open it — plain text, no target, no
+                            // "Show details" semantics to announce a room with nothing in it.
+                            Text("Fylz")
                         }
                     },
                     actions = {
                         if (selectedUris.isNotEmpty()) {
                             // Select-all needs a listing to draw from, and the top bar only has
                             // one (visibleEntries/searchHits) while a folder tab is open -- a
-                            // selection made on a home surface still gets Done, just not this.
+                            // selection made on a home surface has nothing to select-all against.
+                            // No "Done"/clear button here any more: the chrome's own SelectionRow
+                            // close glyph is the one clear affordance now, matching a live
+                            // selection to exactly one way to leave it instead of three.
                             if (activeTab != null) {
                                 IconButton(onClick = ::selectAllVisible) {
                                     Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
                                 }
                             }
-                            TextButton(onClick = { selectedUris = emptySet(); selectedEntryDetails = emptyMap() }) { Text("Done") }
                         } else {
                             // Composed only while the Shelf holds something -- zero chrome at
                             // rest, and visible regardless of whether a folder tab is open, since
@@ -1798,6 +1881,12 @@ private fun FylzV1Workspace(
                                         preferencesStore.setDensity(mode)
                                     },
                                 )
+                                // Sort and select-all used to ride the floating command pill,
+                                // which was a permanent fixture over the listing; now that the
+                                // pill only shows while search is pulled down (PullDownSearchHost),
+                                // both moved to the one row that is always on screen while a
+                                // folder is open.
+                                SortMenu(sortSpec, onChange = { sortSpec = it })
                                 IconButton(onClick = { refresh() }) {
                                     Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
                                 }
@@ -1805,16 +1894,6 @@ private fun FylzV1Workspace(
                         }
                     },
                 )
-            },
-            bottomBar = {
-                if (selectionActions.any) {
-                    SelectionSummaryBar(
-                        count = selectionActions.count,
-                        onOpenActions = { shell.open(RoomEdge.BOTTOM) },
-                        onOpenDeck = { deckOpen = DeckSource.SELECTION },
-                        onClear = { selectedUris = emptySet(); selectedEntryDetails = emptyMap() },
-                    )
-                }
             },
         ) { padding ->
             // The numbered workspace chips are gone. They were a second navigation surface
@@ -1834,7 +1913,7 @@ private fun FylzV1Workspace(
                                 }
                             },
                             onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
-                            onRecycle = { recycleDialog = true },
+                            onRecycle = { trashSheetOpen = true },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
                         HorizontalDivider(Modifier.width(1.dp).fillMaxHeight())
@@ -1890,6 +1969,7 @@ private fun FylzV1Workspace(
                         loading = loading,
                         operationMessage = operationMessage,
                         onOpenStorageRoot = ::openStorageRoot,
+                        onOpenStorageFolder = ::openTabAt,
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
@@ -1898,6 +1978,12 @@ private fun FylzV1Workspace(
                         onOpenHomeFolder = { location ->
                             landingSubject?.let { subject -> openTabAt(subject.treeUri, location) }
                         },
+                        topTags = topTagsList,
+                        onOpenFavorite = ::openFavorite,
+                        onOpenTag = ::openTagResults,
+                        onOpenTrash = { trashSheetOpen = true },
+                        onFindLargeFiles = { toast("Open a folder, then use Actions to find duplicates there -- a device-wide scan isn't wired up yet.") },
+                        onCleanUpDuplicates = { toast("Open a folder, then use Actions to find duplicates there -- a device-wide scan isn't wired up yet.") },
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -1921,7 +2007,6 @@ private fun FylzV1Workspace(
                                 selectedEntryDetails = selectedEntryDetails + (entry.uri to entry)
                             }
                         },
-                        onSelectAll = ::selectAllVisible,
                         listState = listState,
                         gridState = gridState,
                         cluster = ClusterGestureHooks(
@@ -1946,11 +2031,6 @@ private fun FylzV1Workspace(
                         diagnostics = parsedQuery.diagnostics,
                         recentSearches = recentSearches,
                         onRecentSearchSelected = { query = it },
-                        tabs = tabs,
-                        activeTabId = activeTabId,
-                        onTabSelected = { id -> activeTabId = id },
-                        onTabClosed = ::closeTab,
-                        onAddTab = { rootPicker.launch(null) },
                         modifier = Modifier.weight(1f),
                     )
                     if (wide && previewMode == PreviewMode.DOCKED) {
@@ -1976,6 +2056,58 @@ private fun FylzV1Workspace(
                     }
                 }
             }
+        }
+
+        // ── Bottom chrome: the folder tabs, and the selection row riding above them while a
+        // selection is live ── mounted here, at the outer Box, NOT inside FileBrowser and NOT in
+        // Scaffold's own bottomBar slot. The selection row occupying Scaffold's bottomBar (the
+        // old SelectionSummaryBar's spot) shrinks the padding Scaffold hands its content, which
+        // shrinks FileBrowser's own Box in turn — a tab band mounted inside that Box, or in the
+        // bottomBar itself, would slide up and down every time a selection starts or ends. Mounted
+        // as a plain overlay instead, both pieces hold one fixed position regardless of selection.
+        // The tab band itself only shows while a folder tab is open, matching the old tab strip's
+        // own scope (LocationsRoom's word wheel is still how tabs switch from the home surfaces).
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+            // Self-gating: draws nothing at count <= 0, so this is safe to mount unconditionally
+            // for a selection made on a home surface too, where there is no tab band beneath it.
+            // Wrapped in its own clickable rather than SelectionRow growing an onOpenDeck param
+            // (that composable is Workstream A's, and its own contract carries no such callback):
+            // the close button's own, more specific clickable inside SelectionRow wins a tap
+            // squarely on it, so this outer one only ever fires for the count pill and the row's
+            // own dead space -- the exact "tap the count to riffle the deck" behaviour
+            // SelectionSummaryBar carried, preserved rather than dropped.
+            Box(
+                Modifier.clickable(onClick = { deckOpen = DeckSource.SELECTION })
+                    .semantics { contentDescription = "Review ${selectedUris.size} selected" },
+            ) {
+                SelectionRow(
+                    count = selectedUris.size,
+                    onClose = { selectedUris = emptySet(); selectedEntryDetails = emptyMap() },
+                )
+            }
+            if (activeTab != null) {
+                TabBand(
+                    tabs = tabs.map { TabBandItem(it.id, it.current.name.ifBlank { "Folder" }) },
+                    activeTabId = activeTabId,
+                    onTabSelected = { id -> activeTabId = id },
+                    onTabClosed = { item -> tabs.firstOrNull { it.id == item.id }?.let(::closeTab) },
+                    onAddTab = { rootPicker.launch(null) },
+                    onTrashTap = { trashSheetOpen = true },
+                    frosted = themeStyle == ThemeStyle.FYLZ,
+                )
+            }
+        }
+        // Top-left, only while a selection is live -- the new route to zip/move/copy that used
+        // to be SelectionSummaryBar's "Actions" button. statusBarsPadding keeps its square top-left
+        // corner clear of the status bar, the same edge the tab band clears at the opposite end
+        // with navigationBarsPadding.
+        if (selectedUris.isNotEmpty()) {
+            ActionsBar(
+                onZip = { runAction(FylzAction.ARCHIVE) },
+                onMove = { runAction(FylzAction.MOVE) },
+                onCopy = { runAction(FylzAction.COPY) },
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding(),
+            )
         }
 
         // The Niagara-style edge scrubber. Its stops follow whatever the list is sorted by —
@@ -2029,14 +2161,17 @@ private fun FylzV1Workspace(
                 bubbleTextColor = MaterialTheme.colorScheme.onPrimary,
                 // Held clear of the chrome at both ends. The strip is drawn over the whole
                 // workspace, so left to itself it runs the full height of the window — its top
-                // letters landing on the toolbar's buttons, its foot under the command pill.
-                // Both ends were unhittable: a tap there goes to whatever is on top. Insetting
-                // costs a little travel and makes the entire strip a real target.
+                // letters landing on the toolbar's buttons, its foot under the tab band. Both
+                // ends were unhittable: a tap there goes to whatever is on top. Insetting costs a
+                // little travel and makes the entire strip a real target. TabBandHeight alone is
+                // enough here (not the selection row's height too): this scrubber's own gate
+                // above already requires selectedEntries.isEmpty(), so the selection row never
+                // shows while it does.
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    .padding(top = TOP_BAR_HEIGHT, bottom = CommandPillReservedHeight),
+                    .padding(top = TOP_BAR_HEIGHT, bottom = TabBandHeight),
             )
         }
 
@@ -2064,45 +2199,31 @@ private fun FylzV1Workspace(
             )
         }
 
-        // ── Resting bulges: the trays' standing presence while they hold something ─────
-        // Drawn only outside a drag (the drag layer renders its own swollen versions) and only
-        // while occupied — an empty tray leaves the corner clean.
-        if (!clusterController.active) {
-            if (!clipboardTray.isEmpty || !moveTray.isEmpty) {
-                val total = clipboardTray.size + moveTray.size
-                RestingBulge(
-                    corner = BulgeCorner.TOP_LEFT,
-                    swell = 0f,
-                    label = "$total",
-                    contentDescription = "Staged files: $total. Open the clipboard",
-                    onTap = {
-                        openTray = if (!clipboardTray.isEmpty) TrayKind.CLIPBOARD else TrayKind.MOVE
-                    },
-                    modifier = Modifier.align(Alignment.TopStart),
-                ) {
-                    Icon(
-                        Icons.Outlined.ContentPaste,
-                        contentDescription = null,
-                        tint = InkContent,
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
-            }
-            if (sessionTrashIds.isNotEmpty()) {
-                RestingBulge(
-                    corner = BulgeCorner.BOTTOM_RIGHT,
-                    swell = 0f,
-                    label = "${sessionTrashIds.size}",
-                    contentDescription = "In the can: ${sessionTrashIds.size}. Open the trash",
-                    onTap = { trashSheetOpen = true },
-                    modifier = Modifier.align(Alignment.BottomEnd),
-                ) {
-                    TrashGlyph(
-                        proximity = 0f,
-                        tint = InkContent,
-                        modifier = Modifier.size(26.dp),
-                    )
-                }
+        // ── Resting bulge: the clipboard/move trays' standing presence while they hold
+        // something ── drawn only outside a drag (the drag layer renders its own swollen
+        // version) and only while occupied. The trash's own resting bulge is retired -- its tap
+        // target and its standing count both live on the tab band's trash tab now (see the
+        // bottom chrome block below); the drag-time drop zone this bulge never actually owned
+        // either (ClusterDragLayer's own DropTargetPolicy.trashCentre is a fixed geometric inset,
+        // not this bulge's measured position) is unaffected by its removal.
+        if (!clusterController.active && (!clipboardTray.isEmpty || !moveTray.isEmpty)) {
+            val total = clipboardTray.size + moveTray.size
+            RestingBulge(
+                corner = BulgeCorner.TOP_LEFT,
+                swell = 0f,
+                label = "$total",
+                contentDescription = "Staged files: $total. Open the clipboard",
+                onTap = {
+                    openTray = if (!clipboardTray.isEmpty) TrayKind.CLIPBOARD else TrayKind.MOVE
+                },
+                modifier = Modifier.align(Alignment.TopStart),
+            ) {
+                Icon(
+                    Icons.Outlined.ContentPaste,
+                    contentDescription = null,
+                    tint = InkContent,
+                    modifier = Modifier.size(22.dp),
+                )
             }
         }
 
@@ -2137,25 +2258,22 @@ private fun FylzV1Workspace(
         }
 
         if (trashSheetOpen) {
-            val sessionRecords = remember(trashRefreshKey, sessionTrashIds.size) {
-                recycleBin.records().filter { it.itemId in sessionTrashIds }
-            }
+            // The one recycle-bin surface now: every record the store actually holds, not a
+            // process-scoped guess -- the settings dialog's old separate route into RecycleBinDialog
+            // is gone too (see LibraryRail/settingsOpen below), so there is exactly one place this
+            // list is read and exactly one truth about what the bin shows.
+            val records = remember(trashRefreshKey) { recycleBin.records() }
             TrashBrowserSheet(
-                records = sessionRecords,
+                records = records,
                 onPutBack = { record ->
                     scope.launch {
                         runCatching { recycleBin.restore(record.itemId, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
-                            .onSuccess {
-                                sessionTrashIds.remove(record.itemId)
-                                trashRefreshKey += 1
-                                refresh()
-                            }
+                            .onSuccess { trashRefreshKey += 1; refresh() }
                             .onFailure { toast(it.message ?: "Restore failed") }
-                        if (sessionTrashIds.isEmpty()) trashSheetOpen = false
                     }
                 },
                 onShred = { record -> shredTargets = listOf(record) },
-                onShredAll = { shredTargets = sessionRecords },
+                onShredAll = { shredTargets = records },
                 onDismiss = { trashSheetOpen = false },
             )
         }
@@ -2343,11 +2461,20 @@ private fun FylzV1Workspace(
     }
 
     if (tagDialog) {
+        // Seeded from the UNION of every selected entry's own tags, not just the first -- and
+        // remembered once per opening (not re-derived on every keystroke the dialog's own field
+        // produces), since it is also the "before" half of the delta applied on confirm. Without
+        // this, a multi-select edit used to overwrite every entry but the first with the first's
+        // own list, even on an untouched Save -- see LibraryStore.applyTagDelta's own KDoc.
+        val tagsBefore = remember { unionOfTags(selectedEntries.map { library.tags(it.uri) }) }
         TagDialog(
-            initial = selectedEntries.firstOrNull()?.let { library.tags(it.uri).joinToString(", ") }.orEmpty(),
+            initial = tagsBefore.joinToString(", "),
             onDismiss = { tagDialog = false },
             onConfirm = { tags ->
-                selectedEntries.forEach { library.setTags(it.uri, tags.split(',')) }
+                val tagsAfter = tags.split(',').map(String::trim).filter(String::isNotBlank).toSet()
+                selectedEntries.forEach { entry ->
+                    library.setTags(entry.uri, applyTagDelta(library.tags(entry.uri), tagsBefore, tagsAfter))
+                }
                 tagsVersion += 1
                 tagDialog = false
                 toast("Tags saved")
@@ -2371,24 +2498,23 @@ private fun FylzV1Workspace(
         )
     }
 
-    if (recycleDialog) {
-        RecycleBinDialog(
-            records = recycleBin.records(),
-            onDismiss = { recycleDialog = false },
-            onRestore = { id ->
-                scope.launch {
-                    runCatching { recycleBin.restore(id, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
-                        .onSuccess { refresh() }
-                        .onFailure { toast(it.message ?: "Restore failed") }
-                }
+    if (tagBrowserOpen) {
+        TagBrowserDialog(
+            tags = allTagsMap,
+            onTagSelected = ::openTagResults,
+            onDismiss = { tagBrowserOpen = false },
+        )
+    }
+
+    tagResultsFor?.let { tag ->
+        TagResultsDialog(
+            tag = tag,
+            results = tagResults,
+            onOpen = { entry ->
+                tagResultsFor = null
+                openEntry(entry)
             },
-            onDelete = { id ->
-                scope.launch {
-                    runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
-                        .onSuccess { recycleDialog = false; recycleDialog = true }
-                        .onFailure { toast(it.message ?: "Permanent deletion failed") }
-                }
-            },
+            onDismiss = { tagResultsFor = null },
         )
     }
 
@@ -2579,7 +2705,7 @@ private fun FylzV1Workspace(
             onPickLandingSubject = onPickLandingSubject,
             landingSplash = landingSplash,
             onLandingSplashChange = onLandingSplashChange,
-            onOpenRecycleBin = { settingsOpen = false; recycleDialog = true },
+            onOpenRecycleBin = { settingsOpen = false; trashSheetOpen = true },
             onOpenRemotes = { settingsOpen = false; remoteDialog = true },
             onOpenWebDav = { settingsOpen = false; webDavDialog = true },
             onOpenTools = {
@@ -2594,9 +2720,15 @@ private fun FylzV1Workspace(
                     context.startActivity(Intent(context, IndexManagerActivity::class.java))
                 }.onFailure { toast("The index manager is unavailable") }
             },
-            onDismiss = { settingsOpen = false },
+            onFolderAppearanceChanged = { appearanceVersion += 1 },
+            // Settings can change what the landing surfaces show (retention window, quick
+            // actions, theme) without any of those screens' own state having a reason to
+            // recompose on its own -- bumping this the same way every other "something the home
+            // surfaces read changed underneath them" path already does.
+            onDismiss = { settingsOpen = false; homeRefreshKey += 1 },
         )
     }
+    } // CompositionLocalProvider(LocalFolderAppearance, LocalTagsFor)
 }
 
 @Composable
@@ -2658,19 +2790,25 @@ private fun FileBrowser(
     loading: Boolean,
     operationMessage: String?,
     onOpenStorageRoot: (StorageRoot) -> Unit,
+    onOpenStorageFolder: (Uri, FolderLocation) -> Unit = { _, _ -> },
     onPickFolder: (StorageRoot?) -> Unit,
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
     homeMode: HomeMode = HomeMode.LOCATIONS,
     landingSubject: LandingSubject? = null,
     onOpenHomeFolder: (FolderLocation) -> Unit = {},
+    topTags: List<Pair<String, Int>> = emptyList(),
+    onOpenFavorite: (FavoriteLocation) -> Unit = {},
+    onOpenTag: (String) -> Unit = {},
+    onOpenTrash: () -> Unit = {},
+    onFindLargeFiles: () -> Unit = {},
+    onCleanUpDuplicates: () -> Unit = {},
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
     onOpenTabFolder: (FolderLocation) -> Unit = {},
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
-    onSelectAll: () -> Unit,
     listState: LazyListState,
     gridState: LazyGridState,
     cluster: ClusterGestureHooks?,
@@ -2679,11 +2817,6 @@ private fun FileBrowser(
     diagnostics: List<Diagnostic>,
     recentSearches: List<String>,
     onRecentSearchSelected: (String) -> Unit,
-    tabs: List<FolderTab> = emptyList(),
-    activeTabId: String? = null,
-    onTabSelected: (String) -> Unit = {},
-    onTabClosed: (FolderTab) -> Unit = {},
-    onAddTab: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Selection mode is de-facto, not a separate flag: any non-empty selection puts every row
@@ -2692,15 +2825,34 @@ private fun FileBrowser(
     // the same selection this listing does -- one flag, whichever surface is actually on screen.
     val selectionActive = selectedUris.isNotEmpty()
 
-    // With no tab open the browser shows the storage home surface -- or, once Settings has
-    // picked a subject and a view other than Locations, that subject arranged the chosen way.
-    // This is the change that originally answered "the app doesn't show any folders on launch",
-    // now with three more ways to answer it. StorageHomeScreen alone gets none of the selection
-    // args below: it lists storage roots, not files, and a root is somewhere you navigate, not
-    // something a selection ever contains -- see that composable's own KDoc.
+    // With no tab open the browser shows the storage home surface, the new device-wide Overview,
+    // or -- once Settings has picked a subject and a view other than Locations/Overview -- that
+    // subject arranged the chosen way. StorageHomeScreen and OverviewScreen alone get none of the
+    // selection args below: neither lists files a selection can contain -- see their own KDoc.
     if (activeTab == null) {
         val subject = landingSubject
+        val context = LocalContext.current
         when {
+            homeMode == HomeMode.OVERVIEW -> OverviewScreen(
+                repository = repository,
+                modifier = modifier,
+                refreshKey = homeRefreshKey,
+                onOpenFolder = { location -> onOpenStorageFolder(treeUriFromDocument(location.uri), location) },
+                onOpenFile = onOpen,
+                onGrantFullAccess = { context.startActivity(FullAccessPermission.intent(context)) },
+                onSeeDeletedFiles = onOpenTrash,
+                onFindLargeFiles = onFindLargeFiles,
+                onCleanUpDuplicates = onCleanUpDuplicates,
+                onOpenFavorite = onOpenFavorite,
+                onOpenTag = onOpenTag,
+                topTags = topTags,
+                // A plain SharedPreferences read, cheap enough to key off homeRefreshKey directly
+                // rather than a produceState -- this is how the card learns a retention change
+                // made in Settings without waiting for a process restart.
+                retentionDescription = remember(homeRefreshKey) {
+                    RecycleBinRetentionStore(context).period().describe()
+                },
+            )
             subject != null && homeMode == HomeMode.LIST -> SubjectList(
                 subject = subject,
                 repository = repository,
@@ -2752,149 +2904,31 @@ private fun FileBrowser(
     val themeStyle = LocalThemeStyle.current
 
     // Whether SearchResults, not the plain listing, is on screen -- read in two places below
-    // (which branch renders, and what "select all"/its enabled state mean) so they can never
-    // disagree about which list the user is actually looking at.
+    // (which branch renders, and what select-all's enabled state means, up in the top bar) so
+    // they can never disagree about which list the user is actually looking at.
     val searchActive = searchRecursive && query.isNotBlank()
 
-    // The listing fills the surface and the pill floats over its foot, rather than a band of
-    // chrome pushing the listing down. Everything the old top row held now rides the pill.
-    Box(modifier) {
-        Column(Modifier.fillMaxSize()) {
-            Text(
-                activeTab.locations.joinToString(" / ") { it.name },
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            HorizontalDivider()
+    // How much bottom padding a listing must reserve so its last row clears the floating chrome:
+    // the tab band always, plus the selection row's own height on top of that while a selection
+    // is live -- the same two heights the chrome itself stacks at the outer Box level.
+    val bottomChromeReserve = TabBandHeight + if (selectionActive) SelectionRowHeight else 0.dp
 
-            if (searchActive) {
-                SearchResults(
-                    progress = searchProgress,
-                    hits = searchHits,
-                    selectedUris = selectedUris,
-                    focusedEntry = focusedEntry,
-                    onOpen = onOpen,
-                    onOpenExternal = onOpenExternal,
-                    onToggleSelection = onToggleSelection,
-                )
-            } else if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(operationMessage ?: "Working…")
-                }
-            } else if (entries.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (query.isBlank()) {
-                            stringResource(R.string.browser_empty_folder)
-                        } else {
-                            stringResource(R.string.browser_search_none)
-                        },
-                    )
-                }
-            } else if (themeStyle == ThemeStyle.CLI) {
-                // CLI is a look at the whole folder, not one more entry beside GRID/LIST/DETAILS
-                // -- the indented tree IS the theme, so it takes over the listing outright rather
-                // than decorating whichever view mode happened to be selected. Search still wins
-                // above (CliListing has no notion of a ranked hit), and this never reaches STACKS
-                // or CANVAS's own branches below since this `when` arm returns first.
-                CliListing(
-                    treeUri = activeTab.treeUri,
-                    entries = entries,
-                    repository = repository,
-                    selected = selectedUris,
-                    selectionActive = selectionActive,
-                    showHidden = showHidden,
-                    onOpenFile = onOpen,
-                    onToggleSelect = onToggleSelection,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else if (viewMode == ViewMode.GRID) {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(Density.gridMinCellWidth(density)),
-                    state = gridState,
-                    contentPadding = listingPaddingFor(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(entries, key = { it.uri.toString() }) { entry ->
-                        FileCard(
-                            entry = entry,
-                            selected = entry.uri in selectedUris,
-                            focused = entry.uri == focusedEntry?.uri,
-                            selectionActive = selectionActive,
-                            onOpen = onOpen,
-                            onOpenExternal = onOpenExternal,
-                            onToggleSelection = onToggleSelection,
-                            cluster = cluster,
-                            treeUri = activeTab.treeUri,
-                            repository = repository,
-                            showHidden = showHidden,
-                            folderPeeks = folderPeeks,
-                            cardHeight = Density.gridCardHeight(density),
-                            thumbSize = Density.gridThumb(density),
-                        )
-                    }
-                }
-            } else if (viewMode == ViewMode.DETAILS) {
-                Column(Modifier.fillMaxSize()) {
-                    DetailsHeaderRow(sortSpec, onSortSpecChange)
-                    HorizontalDivider()
-                    LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        items(entries, key = { it.uri.toString() }) { entry ->
-                            DetailsRow(
-                                entry = entry,
-                                selected = entry.uri in selectedUris,
-                                focused = entry.uri == focusedEntry?.uri,
-                                selectionActive = selectionActive,
-                                onOpen = onOpen,
-                                onOpenExternal = onOpenExternal,
-                                onToggleSelection = onToggleSelection,
-                                cluster = cluster,
-                                rowHeight = Density.detailsRowHeight(density),
-                                thumbSize = Density.detailsThumb(density),
-                            )
-                        }
-                    }
-                }
-            } else if (viewMode == ViewMode.STACKS) {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
-                ) {
-                    items(
-                        groupedListing.rows,
-                        key = { row ->
-                            when (row) {
-                                is ListingRow.Header -> "header:${row.label}"
-                                is ListingRow.Item -> row.entry.uri.toString()
-                            }
-                        },
-                    ) { row ->
-                        when (row) {
-                            is ListingRow.Header -> StacksHeaderRow(row)
-                            is ListingRow.Item -> FileRowV1(
-                                entry = row.entry,
-                                selected = row.entry.uri in selectedUris,
-                                focused = row.entry.uri == focusedEntry?.uri,
-                                selectionActive = selectionActive,
-                                onOpen = onOpen,
-                                onOpenExternal = onOpenExternal,
-                                onToggleSelection = onToggleSelection,
-                                cluster = cluster,
-                                rowHeight = Density.listRowHeight(density),
-                                thumbSize = Density.listThumb(density),
-                            )
-                        }
-                    }
-                }
-            } else if (viewMode == ViewMode.CANVAS) {
+    Column(modifier.fillMaxSize()) {
+        Text(
+            activeTab.locations.joinToString(" / ") { it.name },
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        HorizontalDivider()
+
+        if (viewMode == ViewMode.CANVAS) {
+            // No scroll container to hang the pull-down reveal's NestedScrollConnection off --
+            // search here stays reachable from the permanent floating pill, the one mode that
+            // keeps it (PullDownSearch's own contract: "CANVAS has no scroll container").
+            Box(Modifier.weight(1f)) {
                 SubjectCanvas(
                     subject = LandingSubject(activeTab.treeUri, activeTab.current.uri, activeTab.current.name),
                     repository = repository,
@@ -2906,59 +2940,234 @@ private fun FileBrowser(
                     onToggleSelection = onToggleSelection,
                     cluster = cluster,
                 )
+                CommandPill(
+                    query = query,
+                    onQueryChange = onQueryChange,
+                    canNavigateUp = activeTab.locations.size > 1,
+                    onNavigateUp = onNavigateUp,
+                    searchRecursive = searchRecursive,
+                    onSearchRecursiveChange = onSearchRecursiveChange,
+                    searchBusy = searchRecursive && searchProgress?.complete == false,
+                    chips = chips,
+                    onRemoveChip = onRemoveChip,
+                    diagnostics = diagnostics,
+                    recentSearches = recentSearches,
+                    onRecentSearchSelected = onRecentSearchSelected,
+                    // CANVAS has no scroll container to reserve contentPadding on, so this is
+                    // the one branch that has to clear the bottom chrome by hand -- without it
+                    // the tab band (and, mid-selection, the selection row) draws over the pill.
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomChromeReserve),
+                    trailing = {},
+                )
+            }
+        } else {
+            // Claimed only once the active list is scrolled to its own absolute top -- GRID reads
+            // its own LazyGridState, every other branch below (CLI, SearchResults, DETAILS,
+            // STACKS, the plain list) shares [listState], since exactly one of them is ever on
+            // screen at a time (the `when` in `content` below is as mutually exclusive as this
+            // one was).
+            val listAtTop = if (viewMode == ViewMode.GRID) {
+                gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
             } else {
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(bottom = CommandPillReservedHeight),
-                ) {
-                    items(entries, key = { it.uri.toString() }) { entry ->
-                        FileRowV1(
-                            entry = entry,
-                            selected = entry.uri in selectedUris,
-                            focused = entry.uri == focusedEntry?.uri,
-                            selectionActive = selectionActive,
+                listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+            }
+            PullDownSearchHost(
+                listAtTop = listAtTop,
+                revealHeight = CommandPillSearchHeight,
+                modifier = Modifier.weight(1f),
+                searchField = {
+                    CommandPill(
+                        query = query,
+                        onQueryChange = onQueryChange,
+                        canNavigateUp = activeTab.locations.size > 1,
+                        onNavigateUp = onNavigateUp,
+                        searchRecursive = searchRecursive,
+                        onSearchRecursiveChange = onSearchRecursiveChange,
+                        searchBusy = searchRecursive && searchProgress?.complete == false,
+                        chips = chips,
+                        onRemoveChip = onRemoveChip,
+                        diagnostics = diagnostics,
+                        recentSearches = recentSearches,
+                        onRecentSearchSelected = onRecentSearchSelected,
+                        trailing = {},
+                    )
+                },
+                content = { listModifier ->
+                    if (searchActive) {
+                        SearchResults(
+                            progress = searchProgress,
+                            hits = searchHits,
+                            selectedUris = selectedUris,
+                            focusedEntry = focusedEntry,
                             onOpen = onOpen,
                             onOpenExternal = onOpenExternal,
                             onToggleSelection = onToggleSelection,
-                            cluster = cluster,
-                            rowHeight = Density.listRowHeight(density),
-                            thumbSize = Density.listThumb(density),
+                            listState = listState,
+                            bottomPadding = bottomChromeReserve,
+                            modifier = listModifier,
                         )
+                    } else if (loading) {
+                        Box(listModifier, contentAlignment = Alignment.Center) {
+                            Text(operationMessage ?: "Working…")
+                        }
+                    } else if (entries.isEmpty()) {
+                        Box(listModifier, contentAlignment = Alignment.Center) {
+                            Text(
+                                if (query.isBlank()) {
+                                    stringResource(R.string.browser_empty_folder)
+                                } else {
+                                    stringResource(R.string.browser_search_none)
+                                },
+                            )
+                        }
+                    } else if (themeStyle == ThemeStyle.CLI) {
+                        // CLI is a look at the whole folder, not one more entry beside GRID/LIST/
+                        // DETAILS -- the indented tree IS the theme, so it takes over the listing
+                        // outright rather than decorating whichever view mode happened to be
+                        // selected. Search still wins above (CliListing has no notion of a ranked
+                        // hit), and this never reaches STACKS or the plain list below since this
+                        // `when` arm returns first.
+                        CliListing(
+                            treeUri = activeTab.treeUri,
+                            entries = entries,
+                            repository = repository,
+                            selected = selectedUris,
+                            selectionActive = selectionActive,
+                            showHidden = showHidden,
+                            onOpenFile = onOpen,
+                            onToggleSelect = onToggleSelection,
+                            listState = listState,
+                            modifier = listModifier,
+                        )
+                    } else if (viewMode == ViewMode.GRID) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(Density.gridMinCellWidth(density)),
+                            state = gridState,
+                            contentPadding = listingPaddingFor(8.dp, bottomChromeReserve),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = listModifier,
+                        ) {
+                            items(entries, key = { it.uri.toString() }) { entry ->
+                                FileCard(
+                                    entry = entry,
+                                    selected = entry.uri in selectedUris,
+                                    focused = entry.uri == focusedEntry?.uri,
+                                    selectionActive = selectionActive,
+                                    onOpen = onOpen,
+                                    onOpenExternal = onOpenExternal,
+                                    onToggleSelection = onToggleSelection,
+                                    cluster = cluster,
+                                    treeUri = activeTab.treeUri,
+                                    repository = repository,
+                                    showHidden = showHidden,
+                                    folderPeeks = folderPeeks,
+                                    cardHeight = Density.gridCardHeight(density),
+                                    thumbSize = Density.gridThumb(density),
+                                )
+                            }
+                        }
+                    } else if (viewMode == ViewMode.DETAILS) {
+                        Column(listModifier) {
+                            DetailsHeaderRow(sortSpec, onSortSpecChange)
+                            HorizontalDivider()
+                            LazyColumn(
+                                state = listState,
+                                contentPadding = PaddingValues(bottom = bottomChromeReserve),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                items(entries, key = { it.uri.toString() }) { entry ->
+                                    DetailsRow(
+                                        entry = entry,
+                                        selected = entry.uri in selectedUris,
+                                        focused = entry.uri == focusedEntry?.uri,
+                                        selectionActive = selectionActive,
+                                        onOpen = onOpen,
+                                        onOpenExternal = onOpenExternal,
+                                        onToggleSelection = onToggleSelection,
+                                        cluster = cluster,
+                                        rowHeight = Density.detailsRowHeight(density),
+                                        thumbSize = Density.detailsThumb(density),
+                                    )
+                                }
+                            }
+                        }
+                    } else if (viewMode == ViewMode.STACKS) {
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(bottom = bottomChromeReserve),
+                            modifier = listModifier,
+                        ) {
+                            items(
+                                groupedListing.rows,
+                                key = { row ->
+                                    when (row) {
+                                        is ListingRow.Header -> "header:${row.label}"
+                                        is ListingRow.Item -> row.entry.uri.toString()
+                                    }
+                                },
+                            ) { row ->
+                                when (row) {
+                                    is ListingRow.Header -> StacksHeaderRow(row)
+                                    is ListingRow.Item -> FileRowV1(
+                                        entry = row.entry,
+                                        selected = row.entry.uri in selectedUris,
+                                        focused = row.entry.uri == focusedEntry?.uri,
+                                        selectionActive = selectionActive,
+                                        onOpen = onOpen,
+                                        onOpenExternal = onOpenExternal,
+                                        onToggleSelection = onToggleSelection,
+                                        cluster = cluster,
+                                        rowHeight = Density.listRowHeight(density),
+                                        thumbSize = Density.listThumb(density),
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            contentPadding = PaddingValues(bottom = bottomChromeReserve),
+                            modifier = listModifier,
+                        ) {
+                            items(entries, key = { it.uri.toString() }) { entry ->
+                                FileRowV1(
+                                    entry = entry,
+                                    selected = entry.uri in selectedUris,
+                                    focused = entry.uri == focusedEntry?.uri,
+                                    selectionActive = selectionActive,
+                                    onOpen = onOpen,
+                                    onOpenExternal = onOpenExternal,
+                                    onToggleSelection = onToggleSelection,
+                                    cluster = cluster,
+                                    rowHeight = Density.listRowHeight(density),
+                                    thumbSize = Density.listThumb(density),
+                                )
+                            }
+                        }
                     }
-                }
-            }
-        }
-
-        CommandPill(
-            query = query,
-            onQueryChange = onQueryChange,
-            canNavigateUp = activeTab.locations.size > 1,
-            onNavigateUp = onNavigateUp,
-            searchRecursive = searchRecursive,
-            onSearchRecursiveChange = onSearchRecursiveChange,
-            searchBusy = searchRecursive && searchProgress?.complete == false,
-            chips = chips,
-            onRemoveChip = onRemoveChip,
-            diagnostics = diagnostics,
-            recentSearches = recentSearches,
-            onRecentSearchSelected = onRecentSearchSelected,
-            tabs = tabs,
-            activeTabId = activeTabId,
-            onTabSelected = onTabSelected,
-            onTabClosed = onTabClosed,
-            onAddTab = onAddTab,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        ) {
-            SortMenu(sortSpec, onSortSpecChange)
-            IconButton(
-                onClick = onSelectAll,
-                enabled = if (searchActive) searchHits.isNotEmpty() else entries.isNotEmpty(),
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
-            }
+                },
+            )
         }
     }
+}
+
+/**
+ * Reconstructs the tree URI a document URI's own tree would resolve to, for a provider (like
+ * [io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider]) that mints both from the identical
+ * doc id -- `documentUri(rootId, path)` there is built as
+ * `buildDocumentUriUsingTree(treeUri(rootId, path), "$rootId:$path")`, so the tree and the
+ * document share one doc id and this is the standard [DocumentsContract] call that reverses it.
+ * [OverviewScreen]'s own `onOpenFolder` only ever hands back the [FolderLocation] it built from a
+ * [StorageRoot] (discarding that root's own [StorageRoot.treeUri] along the way), so this is what
+ * lets a tap on one of its cards still open as its own tab rather than needing OverviewScreen to
+ * carry a tree grant through a parameter it was never given.
+ */
+private fun treeUriFromDocument(documentUri: Uri): Uri {
+    // A content:// uri from any DocumentsProvider always carries an authority; the checkNotNull
+    // documents that rather than silently building a malformed tree uri from a blank one.
+    val authority = checkNotNull(documentUri.authority) { "$documentUri has no authority" }
+    return DocumentsContract.buildTreeDocumentUri(authority, DocumentsContract.getDocumentId(documentUri))
 }
 
 /** Sort controls. Previously the order was hardcoded in DocumentRepository with no UI at all. */
@@ -3238,9 +3447,15 @@ private fun SearchResults(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    // Hoisted rather than internal, matching every other listing surface here -- the pull-down
+    // search reveal above needs this list's own "at top" reading to decide whether it may claim
+    // a downward drag.
+    listState: LazyListState,
+    bottomPadding: Dp,
+    modifier: Modifier = Modifier,
 ) {
     val selectionActive = selectedUris.isNotEmpty()
-    Column(Modifier.fillMaxSize()) {
+    Column(modifier) {
         Text(
             when {
                 progress == null -> stringResource(R.string.browser_search_none)
@@ -3265,7 +3480,7 @@ private fun SearchResults(
             }
             return@Column
         }
-        LazyColumn(contentPadding = PaddingValues(bottom = CommandPillReservedHeight)) {
+        LazyColumn(state = listState, contentPadding = PaddingValues(bottom = bottomPadding)) {
             items(hits, key = { it.entry.uri.toString() }) { hit ->
                 FileRowV1(
                     entry = hit.entry,
@@ -3327,47 +3542,21 @@ private fun FileRowV1(
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
     val label = if (entry.isDirectory) "Folder $shownName" else shownName
     val themeStyle = LocalThemeStyle.current
-    // Not read as `selected = selected` below: a local shadows a same-named extension property
-    // even inside that extension's own receiver lambda, so a bare `selected` in the semantics
-    // block resolves back to THIS parameter, not `SemanticsPropertyReceiver.selected` -- reaching
-    // the latter needs an explicit `this.selected`. Renaming this copy keeps the assignment's
-    // right-hand side from ever writing the ambiguous bare name.
-    val rowSelected = selected
-    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = rowHeight)
-            .onGloballyPositioned { coordinates ->
-                originInRoot = coordinates.positionInRoot()
-                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
-            }
-            .then(
-                if (selected && cluster != null) {
-                    Modifier.pointerInput(entry.uri) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                cluster.onDrag(originInRoot + change.position)
-                            },
-                            onDragEnd = { cluster.onEnd() },
-                            onDragCancel = { cluster.onCancel() },
-                        )
-                    }
-                } else {
-                    Modifier
-                },
-            )
-            .combinedClickable(
-                // At rest, a tap opens; once anything is selected, every row is in selection
-                // mode and a tap toggles membership instead — the checkbox's job, without a
-                // checkbox to carry it.
-                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
-                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                // A selected row's long-press belongs to the cluster drag; deselecting is a tap
-                // away, so the two gestures never fight over one finger.
-                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
+            .entryGestures(
+                key = entry.uri,
+                selected = selected,
+                selectionActive = selectionActive,
+                onOpen = { onOpen(entry) },
+                onToggleSelection = { onToggleSelection(entry) },
+                cluster = cluster,
+                // Preserved verbatim from the raw-gesture stack this replaces: a directory opens
+                // on double-tap same as a single tap would, a file opens externally instead.
+                onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                contentDescription = label,
             )
             .background(
                 when {
@@ -3376,21 +3565,20 @@ private fun FileRowV1(
                     else -> Color.Transparent
                 },
             )
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .semantics {
-                contentDescription = label
-                this.selected = rowSelected
-            },
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Real image/video thumbnails; falls back to a per-type icon. Previously every file in
         // the list rendered the same handful of static vectors. The selection mark rides its
         // corner rather than a gutter column of its own -- at rest there is nothing here at all.
+        // The tag mark rides the opposite corner so a tagged, selected item never overlaps its
+        // own two marks.
         Box {
             EntryThumbnail(entry, size = thumbSize)
             if (selected) {
                 SelectionMark(themeStyle, Modifier.align(Alignment.TopStart))
             }
+            TagMark(entry.uri, Modifier.align(Alignment.BottomEnd))
         }
         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
             if (overline != null) {
@@ -3458,7 +3646,6 @@ private fun FileCard(
     cardHeight: Dp = 164.dp,
     thumbSize: Dp = 56.dp,
 ) {
-    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     val themeStyle = LocalThemeStyle.current
 
     // Read once per (folder uri, showHidden), not once per recomposition -- the cache is what
@@ -3488,10 +3675,6 @@ private fun FileCard(
     val peek = peekState
 
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
-    // See FileRowV1's identical local: a bare `selected` inside the semantics lambda below
-    // would resolve back to this parameter (a local shadows the receiver's own property of the
-    // same name), so the assignment there needs `this.selected` and this rename to read cleanly.
-    val cardSelected = selected
 
     Surface(
         color = when {
@@ -3502,36 +3685,16 @@ private fun FileCard(
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
             .height(cardHeight)
-            .onGloballyPositioned { coordinates ->
-                originInRoot = coordinates.positionInRoot()
-                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
-            }
-            .then(
-                if (selected && cluster != null) {
-                    Modifier.pointerInput(entry.uri) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                cluster.onDrag(originInRoot + change.position)
-                            },
-                            onDragEnd = { cluster.onEnd() },
-                            onDragCancel = { cluster.onCancel() },
-                        )
-                    }
-                } else {
-                    Modifier
-                },
-            )
-            .combinedClickable(
-                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
-                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
-            )
-            .semantics {
-                contentDescription = shownName
-                this.selected = cardSelected
-            },
+            .entryGestures(
+                key = entry.uri,
+                selected = selected,
+                selectionActive = selectionActive,
+                onOpen = { onOpen(entry) },
+                onToggleSelection = { onToggleSelection(entry) },
+                cluster = cluster,
+                onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                contentDescription = shownName,
+            ),
     ) {
         Box(Modifier.fillMaxSize()) {
             when {
@@ -3570,10 +3733,12 @@ private fun FileCard(
                 }
             }
             // The selection mark sits at the card's own top-right, the same corner the checkbox
-            // used to occupy -- composed only for a selected card, never at rest.
+            // used to occupy -- composed only for a selected card, never at rest. The tag mark
+            // rides the opposite corner so the two never overlap on a tagged, selected card.
             if (selected) {
                 SelectionMark(themeStyle, Modifier.align(Alignment.TopEnd).padding(6.dp))
             }
+            TagMark(entry.uri, Modifier.align(Alignment.BottomStart).padding(6.dp))
         }
     }
 }
@@ -3670,41 +3835,20 @@ private fun DetailsRow(
 ) {
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
     val label = if (entry.isDirectory) "Folder $shownName" else shownName
-    // See FileRowV1's identical local: a bare `selected` inside the semantics lambda below
-    // would resolve back to this parameter (a local shadows the receiver's own property of the
-    // same name), so the assignment there needs `this.selected` and this rename to read cleanly.
-    val rowSelected = selected
     val themeStyle = LocalThemeStyle.current
-    var originInRoot by remember { mutableStateOf(Offset.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = rowHeight)
-            .onGloballyPositioned { coordinates ->
-                originInRoot = coordinates.positionInRoot()
-                if (selected) cluster?.onPositioned(entry.uri, coordinates.boundsInRoot().center)
-            }
-            .then(
-                if (selected && cluster != null) {
-                    Modifier.pointerInput(entry.uri) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { offset -> cluster.onStart(originInRoot + offset) },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                cluster.onDrag(originInRoot + change.position)
-                            },
-                            onDragEnd = { cluster.onEnd() },
-                            onDragCancel = { cluster.onCancel() },
-                        )
-                    }
-                } else {
-                    Modifier
-                },
-            )
-            .combinedClickable(
-                onClick = { if (selectionActive) onToggleSelection(entry) else onOpen(entry) },
-                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                onLongClick = if (selected && cluster != null) null else ({ onToggleSelection(entry) }),
+            .entryGestures(
+                key = entry.uri,
+                selected = selected,
+                selectionActive = selectionActive,
+                onOpen = { onOpen(entry) },
+                onToggleSelection = { onToggleSelection(entry) },
+                cluster = cluster,
+                onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                contentDescription = label,
             )
             .background(
                 when {
@@ -3713,11 +3857,7 @@ private fun DetailsRow(
                     else -> Color.Transparent
                 },
             )
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .semantics {
-                contentDescription = label
-                this.selected = rowSelected
-            },
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box {
@@ -3725,6 +3865,7 @@ private fun DetailsRow(
             if (selected) {
                 SelectionMark(themeStyle, Modifier.align(Alignment.TopStart))
             }
+            TagMark(entry.uri, Modifier.align(Alignment.BottomEnd))
         }
         Text(
             shownName,
@@ -3768,72 +3909,6 @@ private fun formatDetailsModified(millis: Long?): String? = millis
             .format(Instant.ofEpochMilli(it))
     }
 
-/**
- * What a live selection looks like from the file list.
- *
- * The eleven-button horizontal scroller this replaces was the app's largest piece of chrome and
- * its least usable control: it covered the listing it acted on, it needed a sideways swipe to
- * read, and the actions past the fourth were effectively hidden. All of them are rows in the
- * actions room now.
- *
- * What survives here is only what the file list itself has to say — the count, one way out, one
- * way up. The count rides the same dark pill family the cluster's bulges and drag-time cards
- * wear ([InkSurface]/[InkContent]), so a selection reads as one steady idiom whether it is being
- * dragged or just sitting there; "Actions" stays a Material button beside it, on purpose, since
- * that is the one action that leaves this bar for a whole different surface rather than acting on
- * the selection directly. "Actions" opens the bottom room by tap, because a control the app draws
- * may open a room directly; the drag from the bottom edge does the same thing and is the gesture
- * this bar is teaching. The count itself is the other way in: tapping it opens the deck to riffle
- * and prune the very selection it is counting.
- */
-@Composable
-private fun SelectionSummaryBar(
-    count: Int,
-    onOpenActions: () -> Unit,
-    onOpenDeck: () -> Unit,
-    onClear: () -> Unit,
-) {
-    Row(
-        // Scaffold's bottomBar slot sits outside its own content padding, unlike the pill (whose
-        // own comment explains why IT skips this) -- without navigationBarsPadding here the bar
-        // draws under a gesture-nav bar's inset instead of clear of it.
-        modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Surface(color = InkSurface, shape = RoundedCornerShape(50)) {
-            Row(
-                modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    if (count == 1) "1 SELECTED" else "$count SELECTED",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = InkContent,
-                    modifier = Modifier
-                        .clickable(onClick = onOpenDeck)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = "Review $count selected"
-                        },
-                )
-                IconButton(onClick = onClear, modifier = Modifier.size(32.dp).padding(start = 4.dp)) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "Clear selection",
-                        tint = InkContent,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.weight(1f))
-        FilledTonalButton(onClick = onOpenActions) {
-            Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text("Actions", Modifier.padding(start = 6.dp))
-        }
-    }
-}
-
 @Composable
 private fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var value by remember(initial) { mutableStateOf(initial) }
@@ -3858,6 +3933,57 @@ private fun TagDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String
     )
 }
 
+/** Every known tag with its count, in one dialog -- the browse-and-filter surface the owner asked
+ *  for ("no way to see what tags exist, no way to browse or filter by one") and reachable with no
+ *  folder tab open, unlike the query box [TagBrowser]'s own tap target would otherwise feed. */
+@Composable
+private fun TagBrowserDialog(tags: Map<String, Int>, onTagSelected: (String) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tags") },
+        text = { TagBrowser(tags = tags, onTagSelected = onTagSelected, modifier = Modifier.heightIn(max = 420.dp)) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+/** Every item carrying [tag], device-wide -- [LibraryStore.itemsWithTag] probed through the same
+ *  repository every other listing here reads, since there is no folder tab this could otherwise
+ *  scope itself to. */
+@Composable
+private fun TagResultsDialog(tag: String, results: List<FileEntry>, onOpen: (FileEntry) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Tagged “$tag”") },
+        text = {
+            if (results.isEmpty()) {
+                Text("Nothing found -- either nothing still carries this tag, or those items are no longer reachable.")
+            } else {
+                LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(results, key = { it.uri.toString() }) { entry ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .clickable { onOpen(entry) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            EntryThumbnail(entry, size = 32.dp)
+                            Text(
+                                displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f).padding(start = 10.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
 @Composable
 private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var prefix by remember { mutableStateOf("File-") }
@@ -3867,35 +3993,6 @@ private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (Str
         text = { OutlinedTextField(prefix, { prefix = it }, label = { Text("Prefix") }) },
         confirmButton = { Button(onClick = { onConfirm(prefix) }, enabled = prefix.isNotBlank()) { Text("Rename") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
-private fun RecycleBinDialog(
-    records: List<io.github.mbaliga.fylz.operations.RecycleRecord>,
-    onDismiss: () -> Unit,
-    onRestore: (String) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Recycle Bin") },
-        text = {
-            if (records.isEmpty()) Text("Recycle Bin is empty. Items are never removed automatically.")
-            else LazyColumn(Modifier.height(360.dp)) {
-                items(records, key = { it.itemId }) { record ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                        Text(record.originalDisplayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Row {
-                            TextButton(onClick = { onRestore(record.itemId) }) { Text("Restore") }
-                            TextButton(onClick = { onDelete(record.itemId) }) { Text("Delete permanently") }
-                        }
-                        HorizontalDivider()
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }
 
@@ -4021,6 +4118,7 @@ private fun LocationsRoom(
     onAdd: () -> Unit,
     onOpenFolder: (List<FolderLocation>) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenTags: () -> Unit,
 ) {
     val items = remember(tabs) {
         buildList {
@@ -4087,8 +4185,31 @@ private fun LocationsRoom(
 
         // The quiet way in: below the wheel and whatever tree is showing, not competing with
         // either for attention. A gear this small next to a label this plain reads as "there is
-        // more, if you want it" rather than as a fourth thing to navigate.
+        // more, if you want it" rather than as a fourth thing to navigate. Tags rides beside it
+        // for the same reason -- the owner's own "is that done?" needed somewhere to browse from
+        // that asks for no folder tab to be open, which the query box (folder-scoped) cannot be.
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 40.dp)
+                .clickable(onClick = onOpenTags)
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Sell,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                "Tags",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 10.dp),
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()

@@ -66,6 +66,7 @@ import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
 import io.github.mbaliga.fylz.util.formatBytes
@@ -250,12 +251,12 @@ fun QuickLook(
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = if (mode == PreviewCardMode.DOCKED) {
-                    // Clear of the pill, the trash bulge (bottom-right) and the clipboard bulge
-                    // (top-left) -- BottomStart with this padding is the one corner none of those
-                    // three claim.
+                    // Clear of the bottom tab band and the clipboard bulge (top-left) -- BottomStart
+                    // with this padding is the one corner neither claims. The trash bulge this once
+                    // also dodged is gone; its drop target now lives on the tab band itself.
                     Modifier
                         .align(Alignment.BottomStart)
-                        .padding(start = 12.dp, bottom = CommandPillReservedHeight + 8.dp)
+                        .padding(start = 12.dp, bottom = TabBandHeight + 8.dp)
                 } else {
                     Modifier
                 },

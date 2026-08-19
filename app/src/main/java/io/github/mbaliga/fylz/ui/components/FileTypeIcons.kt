@@ -105,8 +105,11 @@ object FileTypeIcons {
      * [GENERIC] actually names, plus zip/sql/exe, drawn as hand-authored pixel art rather than
      * generated for all 47 formats. An extension outside this set (a `.docx`, a `.psd`) still
      * resolves correctly; it just does it in [IconStyle.FILLED] instead, via [STYLE_FALLBACK].
+     *
+     * internal, not private: FileTypeIconsTest asserts every member of this exact set has real
+     * artwork on disk, and a hand-copied list in the test would silently stop tracking this one.
      */
-    private val PIXEL_KEYS: Set<String> = setOf(
+    internal val PIXEL_KEYS: Set<String> = setOf(
         "simple-folder",
         "simple-empty",
         "simple-image",
@@ -160,19 +163,53 @@ object FileTypeIcons {
     /** Last resort: a blank document. Every family maps to something, so this is belt-and-braces. */
     private const val FALLBACK = "simple-empty"
 
+    /** The pixel pack's source-code mark -- see [CODE_EXTENSIONS]. */
+    private const val CODE_KEY = "simple-code"
+
+    /**
+     * Source-code extensions with no format-specific artwork of their own: without this set they
+     * fall through to whichever family the format registry happened to classify them under (most
+     * land in [io.github.mbaliga.fylz.core.format.PreviewFamily.TEXT] and draw the generic
+     * document mark), even though the pack ships a dedicated [CODE_KEY] drawing for exactly this
+     * case. Consulted after [EXACT] (a format with its own artwork still wins) and before
+     * [GENERIC] (a generic family mark is the fallback of last resort, not first).
+     */
+    private val CODE_EXTENSIONS: Set<String> = setOf(
+        "py", "kt", "kts", "rs", "go", "c", "cpp", "cc", "h", "hpp", "rb", "sh", "bash",
+        "ts", "tsx", "jsx", "yaml", "yml", "toml", "ini", "gradle", "swift",
+    )
+
     /**
      * The `assets/`-relative path of the icon for [extension] in [family], drawn in [style].
      *
      * @param extension the format registry's resolved extension, lowercase, may be blank.
      */
     fun assetPath(extension: String, family: PreviewFamily, style: IconStyle): String {
-        val key = extension.lowercase().takeIf { it in EXACT }
+        val lowered = extension.lowercase()
+        val key = lowered.takeIf { it in EXACT }
+            ?: CODE_KEY.takeIf { lowered in CODE_EXTENSIONS }
             ?: GENERIC[family]
             ?: FALLBACK
-        val resolved = if (style.covers(key)) style else STYLE_FALLBACK[style] ?: style
-        return "filetype/${key}_${resolved.slug}.svg"
+        return assetPath(key, style)
     }
 
-    /** Every icon this catalog can name, for tests and for the settings preview. */
-    internal fun allKeys(): Set<String> = EXACT + GENERIC.values + FALLBACK
+    /**
+     * The same resolution as the three-arg overload, for a caller that already has the exact
+     * catalog [key] it wants rather than a format to derive one from -- a folder's own icon
+     * override, or any key [allKeys] names. An unrecognised [key] (a stale override from a since-
+     * retired catalog entry) resolves as [FALLBACK] rather than naming a file that was never shipped.
+     */
+    fun assetPath(key: String, style: IconStyle): String {
+        val safeKey = key.takeIf { it in ALL_KEYS } ?: FALLBACK
+        val resolved = if (style.covers(safeKey)) style else STYLE_FALLBACK[style] ?: style
+        return "filetype/${safeKey}_${resolved.slug}.svg"
+    }
+
+    // Built once rather than inside allKeys() itself: both assetPath overloads consult membership
+    // on every call (a folder row's icon resolves through here once per recomposition, `remember`
+    // notwithstanding), so this must not re-union four collections every time.
+    private val ALL_KEYS: Set<String> = EXACT + GENERIC.values + FALLBACK + CODE_KEY
+
+    /** Every icon this catalog can name, for tests, the settings preview, and the folder-icon picker. */
+    fun allKeys(): Set<String> = ALL_KEYS
 }

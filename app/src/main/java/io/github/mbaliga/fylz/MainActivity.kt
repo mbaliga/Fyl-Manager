@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import dev.aarso.crashrecovery.CrashRecovery
 import dev.aarso.crashrecovery.CrashRecoveryStyle
 import io.github.mbaliga.fylz.backup.BackupScheduler
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler
 import io.github.mbaliga.fylz.ui.FylzAppShell
 
 class MainActivity : ComponentActivity() {
@@ -14,6 +15,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (CrashRecovery.maybeShowRecovery(this, appLabel = "Fylz", style = CRASH_STYLE)) return
         BackupScheduler(applicationContext).reconcile()
+        RecycleBinRetentionScheduler(applicationContext).reconcile()
         enableEdgeToEdge()
         // No MaterialTheme wrapper here. FylzAppShell's content owns the theme (FylzTheme,
         // inside FylzV1App), and a bare MaterialTheme above it was one of the places the app's

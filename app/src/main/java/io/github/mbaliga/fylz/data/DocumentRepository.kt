@@ -20,10 +20,25 @@ import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
 import kotlin.coroutines.coroutineContext
 
-class DocumentRepository(context: Context, private val shelf: ShelfStore? = null) {
+class DocumentRepository(
+    context: Context,
+    private val shelf: ShelfStore? = null,
+    // Fired once rename() actually mints a new document uri -- the exact same hook
+    // FileOperationService/FileTools take for a move, so the caller supplies one lambda that
+    // updates every identity-keyed store (favorites, tags, history, canvas placement, the
+    // landing subject, the Shelf) and a rename can no longer notify a narrower set of them than
+    // a move does. Left null, rename() falls back to this repository's own three-store handles
+    // below -- the pre-existing behavior for callers that never wire the fuller fan-out.
+    onItemRelocated: ((Uri, Uri) -> Unit)? = null,
+) {
     private val resolver: ContentResolver = context.contentResolver
     private val history = FileHistoryStore(context.applicationContext)
     private val library = LibraryStore(context.applicationContext)
+    private val relocated: (Uri, Uri) -> Unit = onItemRelocated ?: { old, new ->
+        history.migrateSource(old, new)
+        library.migrateUri(old, new)
+        shelf?.migrateRef(old, new)
+    }
 
     data class TextContent(
         val value: String,
@@ -123,11 +138,7 @@ class DocumentRepository(context: Context, private val shelf: ShelfStore? = null
             ?: error("The provider could not rename the item.")
         // Some providers keep the document ID (and therefore the URI) stable across a rename;
         // only a genuinely new URI needs its identity-keyed metadata carried over.
-        if (renamed != uri) {
-            history.migrateSource(uri, renamed)
-            library.migrateUri(uri, renamed)
-            shelf?.migrateRef(uri, renamed)
-        }
+        if (renamed != uri) relocated(uri, renamed)
         renamed
     }
 

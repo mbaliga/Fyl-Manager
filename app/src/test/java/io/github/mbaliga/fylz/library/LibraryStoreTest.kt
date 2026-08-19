@@ -78,4 +78,119 @@ class LibraryStoreTest {
         assertFalse(store.migrateUri(tracked, tracked))
         assertEquals(listOf(FavoriteLocation(tracked, "Same")), store.favorites())
     }
+
+    @Test
+    fun `allTags counts each tagged item once per tag`() {
+        val store = store()
+        store.setTags(uri("a.txt"), listOf("work", "receipts"))
+        store.setTags(uri("b.txt"), listOf("work"))
+        store.setTags(uri("c.txt"), listOf("personal"))
+
+        assertEquals(mapOf("work" to 2, "receipts" to 1, "personal" to 1), store.allTags())
+    }
+
+    @Test
+    fun `allTags folds different casings of the same tag into one count`() {
+        val store = store()
+        store.setTags(uri("a.txt"), listOf("Work"))
+        store.setTags(uri("b.txt"), listOf("work"))
+
+        val tags = store.allTags()
+
+        assertEquals(1, tags.size)
+        assertEquals(2, tags.getValue("Work"))
+    }
+
+    @Test
+    fun `allTags is empty when nothing is tagged`() {
+        assertEquals(emptyMap<String, Int>(), store().allTags())
+    }
+
+    @Test
+    fun `itemsWithTag finds every item carrying the tag, case-insensitively`() {
+        val store = store()
+        val a = uri("a.txt")
+        val b = uri("b.txt")
+        store.setTags(a, listOf("Work"))
+        store.setTags(b, listOf("personal"))
+
+        assertEquals(listOf(a), store.itemsWithTag("work"))
+        assertEquals(emptyList<Uri>(), store.itemsWithTag("nonexistent"))
+    }
+
+    @Test
+    fun `pruneOrphanedTags drops only the requested records and reports how many`() {
+        val store = store()
+        val kept = uri("kept.txt")
+        val removedUri = uri("removed.txt")
+        store.setTags(kept, listOf("work"))
+        store.setTags(removedUri, listOf("work"))
+
+        val pruned = store.pruneOrphanedTags(listOf(removedUri, uri("never-tagged.txt")))
+
+        assertEquals(1, pruned)
+        assertEquals(setOf("work"), store.tags(kept))
+        assertEquals(emptySet<String>(), store.tags(removedUri))
+    }
+
+    @Test
+    fun `pruneOrphanedTags on an empty collection is a no-op`() {
+        val store = store()
+        val tagged = uri("tagged.txt")
+        store.setTags(tagged, listOf("work"))
+
+        assertEquals(0, store.pruneOrphanedTags(emptyList()))
+        assertEquals(setOf("work"), store.tags(tagged))
+    }
+
+    // -- unionOfTags / applyTagDelta: the multi-select tag dialog fix W applies in FylzV1App --
+
+    @Test
+    fun `unionOfTags combines every item's tags and folds case-insensitively`() {
+        val union = unionOfTags(listOf(setOf("Work", "red"), setOf("work", "blue")))
+        assertEquals(setOf("Work", "red", "blue"), union)
+        assertEquals(3, union.size)
+    }
+
+    @Test
+    fun `applyTagDelta with no edit at all is a no-op for every item`() {
+        val before = unionOfTags(listOf(setOf("work", "red"), setOf("work", "blue")))
+        // The user opened the dialog and hit Save without touching the field.
+        val after = before
+
+        assertEquals(setOf("work", "red"), applyTagDelta(setOf("work", "red"), before, after))
+        assertEquals(setOf("work", "blue"), applyTagDelta(setOf("work", "blue"), before, after))
+    }
+
+    @Test
+    fun `applyTagDelta adds a new tag to every item without touching tags unique to another item`() {
+        val before = unionOfTags(listOf(setOf("work", "red"), setOf("work", "blue")))
+        val after = before + "urgent"
+
+        assertEquals(setOf("work", "red", "urgent"), applyTagDelta(setOf("work", "red"), before, after))
+        assertEquals(setOf("work", "blue", "urgent"), applyTagDelta(setOf("work", "blue"), before, after))
+    }
+
+    @Test
+    fun `applyTagDelta removes a tag from every item that had it, leaving tags unique to others alone`() {
+        val before = unionOfTags(listOf(setOf("work", "red"), setOf("work", "blue")))
+        val after = before - "work"
+
+        assertEquals(setOf("red"), applyTagDelta(setOf("work", "red"), before, after))
+        assertEquals(setOf("blue"), applyTagDelta(setOf("work", "blue"), before, after))
+    }
+
+    @Test
+    fun `applyTagDelta never reproduces the overwrite bug -- a second item keeps tags the first never had`() {
+        // This is the exact shape of the bug: item A has "red", item B has "blue"; the dialog
+        // used to seed from A alone and write A's list onto B, destroying "blue".
+        val aTags = setOf("work", "red")
+        val bTags = setOf("work", "blue")
+        val before = unionOfTags(listOf(aTags, bTags))
+        val after = before // dialog saved unchanged
+
+        val bAfter = applyTagDelta(bTags, before, after)
+        assertTrue("blue" in bAfter)
+        assertTrue("work" in bAfter)
+    }
 }

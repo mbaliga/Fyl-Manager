@@ -54,6 +54,7 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.util.formatBytes
 
 /**
  * The launch surface that replaces the bare `Text("Open a folder to begin")` empty state.
@@ -325,20 +326,11 @@ private fun iconFor(kind: StorageRootKind) = when (kind) {
     StorageRootKind.REMOTE -> Icons.Outlined.Cloud
 }
 
+// formatBytes (util/ByteFormat.kt) is the one place this app turns bytes into a string -- this
+// screen used to carry its own copy that did the same binary math but mislabelled the result in
+// decimal units (KB/MB/GB instead of KiB/MiB/GiB), which RemoteConnectionsDialog also depended on.
 private fun stringResourceFormatFree(availableBytes: Long, totalBytes: Long): String =
-    "${formatStorageBytes(availableBytes)} free of ${formatStorageBytes(totalBytes)}"
-
-internal fun formatStorageBytes(bytes: Long): String {
-    if (bytes < 1_024) return "$bytes B"
-    val units = arrayOf("KB", "MB", "GB", "TB")
-    var value = bytes.toDouble()
-    var unit = -1
-    do {
-        value /= 1_024.0
-        unit += 1
-    } while (value >= 1_024 && unit < units.lastIndex)
-    return "%.1f %s".format(value, units[unit])
-}
+    "${formatBytes(availableBytes)} free of ${formatBytes(totalBytes)}"
 
 /**
  * Starts a system settings activity from a composable's context. Wrapped so the call site stays

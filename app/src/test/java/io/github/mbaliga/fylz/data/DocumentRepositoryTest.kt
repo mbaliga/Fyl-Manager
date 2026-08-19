@@ -174,4 +174,45 @@ class DocumentRepositoryTest {
 
         assertEquals(listOf(bystander.toItemRef()), shelf.items().map { it.ref })
     }
+
+    // ── relocation propagation (onItemRelocated) ──────────────────────────────────────
+
+    /**
+     * Pins the rename fan-out fix: a caller-supplied [io.github.mbaliga.fylz.data
+     * .DocumentRepository]'s `onItemRelocated` must fire on a genuine rename exactly the way
+     * [io.github.mbaliga.fylz.operations.FileOperationService]'s and [io.github.mbaliga.fylz
+     * .operations.FileTools]'s own do for a move -- see `FileOperationServiceRelocationTest`.
+     * `FylzV1App` builds this repository with the identical lambda it hands those two services,
+     * so canvas placement and the landing subject (which only that lambda's fuller fan-out
+     * knows how to migrate) ride along with whatever this test proves fires.
+     */
+    @Test
+    fun `rename fires the supplied onItemRelocated with the old and new uri`() = runBlocking {
+        val relocations = mutableListOf<Pair<Uri, Uri>>()
+        val repository = DocumentRepository(context, onItemRelocated = { old, new -> relocations += old to new })
+        val uri = createFile("before.txt")
+
+        val renamed = repository.rename(uri, "after.txt")
+
+        assertNotEquals(uri, renamed)
+        assertEquals(listOf(uri to renamed), relocations)
+    }
+
+    @Test
+    fun `a supplied onItemRelocated replaces this repository's own store handles rather than joining them`() =
+        runBlocking {
+            val shelf = ShelfStore(context)
+            var fired = false
+            val repository = DocumentRepository(context, shelf = shelf, onItemRelocated = { _, _ -> fired = true })
+            val uri = createFile("before.txt")
+            shelf.add(listOf(shelfItem(uri, "before.txt")))
+
+            repository.rename(uri, "after.txt")
+
+            assertEquals(true, fired)
+            // The caller's lambda owns migration entirely once supplied -- this repository's own
+            // shelf handle must not also run, or a caller whose lambda already covers the Shelf
+            // (as FylzV1App's does) would see it migrated twice.
+            assertEquals(listOf(uri.toItemRef()), shelf.items().map { it.ref })
+        }
 }

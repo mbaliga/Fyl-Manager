@@ -5,12 +5,15 @@ import android.net.Uri
 /**
  * How the landing surface presents the folder Settings has designated as its subject.
  *
- * [LOCATIONS] is today's [io.github.mbaliga.fylz.ui.StorageHomeScreen] -- the default, and the
- * only mode that needs no subject at all. The other three all read the same [LandingSubject]
- * through a different lens; switching between them never touches the subject itself.
+ * [LOCATIONS] is today's [io.github.mbaliga.fylz.ui.StorageHomeScreen] -- the default. [OVERVIEW]
+ * is the other mode that needs no subject: it summarises the device (quick access, storage,
+ * deleted files, pinned, tags) rather than reading one chosen folder. [LIST]/[BENTO]/[CANVAS] all
+ * read the same [LandingSubject] through a different lens; switching between them never touches
+ * the subject itself.
  */
 enum class HomeMode {
     LOCATIONS,
+    OVERVIEW,
     LIST,
     BENTO,
     CANVAS,

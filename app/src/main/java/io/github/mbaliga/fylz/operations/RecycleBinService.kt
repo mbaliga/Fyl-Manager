@@ -8,6 +8,7 @@ import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.core.operations.FileOperationType
 import io.github.mbaliga.fylz.core.operations.OperationItem
 import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.storage.toItemRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,11 @@ class RecycleBinService(
     private val store: RecycleBinStore = RecycleBinStore(context),
     private val journal: OperationJournal = OperationJournal(context),
 ) {
+    // DocumentRepository-modelled: a second LibraryStore instance reading and writing the same
+    // SharedPreferences file, so a permanent delete can drop the tag record it just orphaned
+    // without threading a store through every caller of this service.
+    private val library = LibraryStore(context.applicationContext)
+
     private data class RestorePlan(
         val requestedName: String,
         val stagingName: String,
@@ -286,6 +292,9 @@ class RecycleBinService(
             }
             transactionFolder?.delete()
             store.remove(itemId)
+            // The item is irreversibly gone now -- its tags: record, keyed on either URI it has
+            // ever answered to, is truly orphaned rather than merely absent from this listing.
+            library.pruneOrphanedTags(listOf(record.recycledUri, record.originalUri))
             operation = operation.copy(
                 state = OperationState.SUCCEEDED,
                 items = operation.items.map { it.copy(state = OperationState.SUCCEEDED) },
@@ -306,6 +315,14 @@ class RecycleBinService(
         }
     }
 
+    /**
+     * Every recycled item this device knows about, durable across process death and restart --
+     * every recycle-bin surface (the trash sheet, its bulge/tab entry point, the settings
+     * dialog) must read this directly rather than intersecting it with a UI-local, session-scoped
+     * membership list. This store is already the single source of truth on disk; a second,
+     * narrower notion of "what's in the bin" kept only in Compose state is what caused two
+     * surfaces to disagree, not a gap here.
+     */
     fun records(): List<RecycleRecord> = store.list()
 
     private suspend fun copyDocument(
