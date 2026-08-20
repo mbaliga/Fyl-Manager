@@ -5,8 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- Normal (non-dangerous) permission, no runtime request needed: required for
-         HyleTabHaptics.settle()'s direct VibratorManager.vibrate() call. -->
+    <!-- Normal (non-dangerous) permission, no runtime request needed: required for the
+         LocalHapticFeedback.performHapticFeedback(LongPress) calls entryGestures() (and the
+         desktop/canvas tile gestures beside it) fire on a long-press; Compose routes those
+         through the platform Vibrator under the hood. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--

@@ -25,7 +25,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -60,6 +59,8 @@ import io.github.mbaliga.fylz.ui.components.ICON_SCALE
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.StackCard
 import io.github.mbaliga.fylz.ui.components.displayName
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -179,7 +180,7 @@ fun FileDeckSurface(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), content = actions)
-                    TextButton(onClick = onDismiss) { Text("Done") }
+                    TactileButton(text = "Done", onClick = onDismiss, style = TactileButtonStyle.PRIMARY)
                 }
             }
         }

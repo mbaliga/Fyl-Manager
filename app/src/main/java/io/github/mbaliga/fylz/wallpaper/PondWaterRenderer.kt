@@ -19,6 +19,14 @@ import kotlin.random.Random
  * drifting motes, poke ripple and background wash), deliberately WITHOUT any species/critter
  * layer (owner decision: "just do pond water").
  *
+ * Build 11.5 (design-fidelity pass) adds three more layers on top of that Build-11 base, all
+ * seeded from the same [random] and driven only by [step]'s `dt` like everything else here: a
+ * soft radial edge [vignette][VIGNETTE_ALPHA] (shape lifted from Animalcules' own
+ * `World.drawVignette`, alpha pulled way down to Hyle's ~0.10-0.16 band since Animalcules' own
+ * ~0.35 reads as a hard iris on a flat pond rather than a close soft shadow), 2-3 slow-swaying
+ * warm [LightShaft]s standing in for sunlight-through-water, and a per-mote twinkle (see
+ * [Mote.twinklePhase]) so the mote field reads as alive rather than static specks.
+ *
  * [step] is pure simulation: it takes `dt` from the caller instead of reading a clock, so
  * position/velocity math is unit-testable without a fake `Choreographer` or Robolectric. All
  * randomness comes from the injected [random] rather than a global RNG, so a fixed-seed instance
@@ -62,7 +70,35 @@ class PondWaterRenderer(
         var vy: Float,
         val radius: Float,
         val depth: Float,
+        /** Advances by `dt * twinkleSpeed` in [step] — never reset except by a full [seedField]
+         *  reseed, so a settled/static (`step(0f)`) frame still shows each mote's seeded phase
+         *  rather than a uniform on/off flicker. */
+        var twinklePhase: Float,
+        val twinkleSpeed: Float,
     )
+
+    /**
+     * A very soft, large, slow-swaying warm glow standing in for sunlight through water — "the
+     * Animalcules reference has [a vignette]" but light shafts are new for Build 11.5's "flat and
+     * sparse" audit finding. Position is a pure function of [phase] (an anchor plus a bounded
+     * `cos`/`sin` sway), never a free-running velocity/wrap like [Blob] or [Mote] — that keeps a
+     * shaft's on-canvas bounds a closed-form fact ([anchorX] ± [swayX], [anchorY] ± [swayY])
+     * rather than something that has to be clamped after the fact.
+     */
+    private class LightShaft(
+        val anchorX: Float,
+        val anchorY: Float,
+        var phase: Float,
+        val phaseSpeed: Float,
+        val swayX: Float,
+        val swayY: Float,
+        val radius: Float,
+        val baseAlpha: Float,
+    ) {
+        var x: Float = anchorX + cos(phase) * swayX
+        var y: Float = anchorY + sin(phase * 0.6f) * swayY
+        var shader: RadialGradient? = null
+    }
 
     private var width = 1
     private var height = 1
@@ -70,6 +106,7 @@ class PondWaterRenderer(
 
     private val blobs = ArrayList<Blob>()
     private val motes = ArrayList<Mote>()
+    private val lightShafts = ArrayList<LightShaft>()
 
     private var pokeX = 0f
     private var pokeY = 0f
@@ -85,9 +122,12 @@ class PondWaterRenderer(
     private lateinit var blobPaint: Paint
     private lateinit var motePaint: Paint
     private lateinit var pokePaint: Paint
+    private lateinit var lightShaftPaint: Paint
+    private lateinit var vignettePaint: Paint
 
     private var shadersDirty = true
     private var backgroundShader: LinearGradient? = null
+    private var vignetteShader: RadialGradient? = null
 
     /**
      * (Re)seeds the field for a new surface size. Safe to call repeatedly (e.g. on rotation) —
@@ -165,6 +205,15 @@ class PondWaterRenderer(
             m.y += m.vy * dt
             if (m.x < 0f) m.x += width else if (m.x > width) m.x -= width
             if (m.y < 0f) m.y += height else if (m.y > height) m.y -= height
+            m.twinklePhase += dt * m.twinkleSpeed
+        }
+
+        // Position is re-derived from phase every step rather than integrated as a velocity, so
+        // a shaft can never drift outside its [anchor ± sway] box -- there is nothing to clamp.
+        for (s in lightShafts) {
+            s.phase += dt * s.phaseSpeed
+            s.x = s.anchorX + cos(s.phase) * s.swayX
+            s.y = s.anchorY + sin(s.phase * 0.6f) * s.swayY
         }
     }
 
@@ -178,6 +227,17 @@ class PondWaterRenderer(
         backgroundPaint.shader = backgroundShader
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), backgroundPaint)
 
+        // Drawn before the blobs/motes so the water reads as lit from above rather than the
+        // glow sitting on top of the field like a sprite.
+        for (s in lightShafts) {
+            val shader = s.shader ?: continue
+            lightShaftPaint.shader = shader
+            canvas.save()
+            canvas.translate(s.x, s.y)
+            canvas.drawCircle(0f, 0f, s.radius, lightShaftPaint)
+            canvas.restore()
+        }
+
         for (b in blobs) {
             val shader = b.shader ?: continue
             blobPaint.shader = shader
@@ -190,11 +250,21 @@ class PondWaterRenderer(
 
         motePaint.color = moteTint()
         for (m in motes) {
-            motePaint.alpha = (0.55f * m.depth * 255f).toInt().coerceIn(0, 255)
+            // Slow +/-25% breathing around the depth-scaled base alpha -- a "twinkle", not a
+            // blink: at the seeded per-mote twinkleSpeed (0.15-0.4 rad/s) a full cycle takes
+            // 15-40s, so it reads as ambient shimmer rather than something flashing.
+            val twinkle = 0.75f + 0.25f * sin(m.twinklePhase)
+            motePaint.alpha = (0.55f * m.depth * twinkle * 255f).toInt().coerceIn(0, 255)
             canvas.drawCircle(m.x, m.y, m.radius, motePaint)
         }
 
         if (pokeStrength > POKE_VISIBLE_THRESHOLD) drawPokeRing(canvas)
+
+        // Last, over everything -- the edge darkening is a property of the "lens", not the water.
+        vignetteShader?.let { shader ->
+            vignettePaint.shader = shader
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), vignettePaint)
+        }
     }
 
     private fun drawPokeRing(canvas: Canvas) {
@@ -208,6 +278,7 @@ class PondWaterRenderer(
     private fun seedField() {
         blobs.clear()
         motes.clear()
+        lightShafts.clear()
 
         val area = (width.toFloat() * height) / (density * density)
         val areaK = (area / 260_000f).coerceIn(0.6f, 1.7f)
@@ -236,8 +307,26 @@ class PondWaterRenderer(
                 y = random.nextFloat() * height,
                 vx = (random.nextFloat() - 0.5f) * 10f * density,
                 vy = (random.nextFloat() - 0.5f) * 10f * density,
-                radius = (0.7f + random.nextFloat() * 0.9f) * density,
+                radius = (1.0f + random.nextFloat() * 1.5f) * density,
                 depth = 0.2f + random.nextFloat() * 0.8f,
+                twinklePhase = random.nextFloat() * TAU,
+                twinkleSpeed = 0.15f + random.nextFloat() * 0.25f,
+            )
+        }
+
+        // 2 or 3, per the Build 11.5 fidelity spec -- nextInt(2) is 0 or 1, so this never lands
+        // outside that range regardless of seed.
+        val shaftCount = MIN_SHAFTS + random.nextInt(MAX_SHAFTS - MIN_SHAFTS + 1)
+        repeat(shaftCount) {
+            lightShafts += LightShaft(
+                anchorX = random.nextFloat() * width,
+                anchorY = random.nextFloat() * height * UPPER_REGION_FRACTION,
+                phase = random.nextFloat() * TAU,
+                phaseSpeed = 0.03f + random.nextFloat() * 0.04f,
+                swayX = (0.04f + random.nextFloat() * 0.04f) * width,
+                swayY = (0.03f + random.nextFloat() * 0.03f) * height,
+                radius = (0.35f + random.nextFloat() * 0.25f) * max(width, height),
+                baseAlpha = 0.05f + random.nextFloat() * 0.05f,
             )
         }
     }
@@ -270,19 +359,24 @@ class PondWaterRenderer(
         blobPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         motePaint = Paint(Paint.ANTI_ALIAS_FLAG)
         pokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+        lightShaftPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        vignettePaint = Paint(Paint.ANTI_ALIAS_FLAG)
         paintsReady = true
     }
 
     private fun rebuildShaders() {
         val base = if (isDark) DEEP_TEAL else LIGHT_TEAL
+        // 4 stops (was 3) -- lighter top, an upper- and a lower-mid band either side of the base
+        // tone, then a deep bottom -- reads as more depth than a flat top/base/bottom ramp.
         backgroundShader = LinearGradient(
             0f, 0f, 0f, height.toFloat(),
             intArrayOf(
-                shade(base, if (isDark) 0.18f else 0.12f),
-                base,
-                shade(base, if (isDark) -0.28f else -0.10f),
+                shade(base, if (isDark) 0.20f else 0.14f),
+                shade(base, if (isDark) 0.04f else 0.02f),
+                shade(base, if (isDark) -0.06f else -0.03f),
+                shade(base, if (isDark) -0.30f else -0.12f),
             ),
-            floatArrayOf(0f, 0.45f, 1f),
+            BACKGROUND_STOPS,
             Shader.TileMode.CLAMP,
         )
 
@@ -297,6 +391,29 @@ class PondWaterRenderer(
                 Shader.TileMode.CLAMP,
             )
         }
+
+        val shaftRgb = (if (isDark) LIGHT_SHAFT_TINT_DARK else LIGHT_SHAFT_TINT_LIGHT) and 0x00FFFFFF
+        for (s in lightShafts) {
+            val alphaByte = (s.baseAlpha.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)
+            s.shader = RadialGradient(
+                0f, 0f, s.radius,
+                intArrayOf((alphaByte shl 24) or shaftRgb, shaftRgb),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+
+        // Shape lifted from Animalcules' World.drawVignette (centre, hypot(w/2,h/2) radius,
+        // 0f/0.62f/1f stops) -- only the peak alpha changes, from that reference's ~0.35 (a hard
+        // microscope-eyepiece iris) down to Hyle's soft-close-shadow band.
+        val vignetteAlphaByte = (VIGNETTE_ALPHA * 255f).toInt().coerceIn(0, 255)
+        val vignetteRadius = hypot(width / 2f, height / 2f).let { if (it <= 0f) 1f else it }
+        vignetteShader = RadialGradient(
+            width * 0.5f, height * 0.5f, vignetteRadius,
+            intArrayOf(0x00000000, 0x00000000, vignetteAlphaByte shl 24),
+            floatArrayOf(0f, VIGNETTE_INNER_STOP, 1f),
+            Shader.TileMode.CLAMP,
+        )
     }
 
     private fun moteTint(): Int = if (isDark) MOTE_TINT_DARK else MOTE_TINT_LIGHT
@@ -308,6 +425,15 @@ class PondWaterRenderer(
     internal fun blobCount(): Int = blobs.size
     internal fun moteCount(): Int = motes.size
 
+    /** Test/debug seam (Build 11.5): the new layers. None of these touch `android.graphics`, so
+     *  -- like the accessors above -- they're safe to call from a plain JVM unit test. */
+    internal fun moteRadii(): List<Float> = motes.map { it.radius }
+    internal fun moteTwinklePhases(): List<Float> = motes.map { it.twinklePhase }
+    internal fun lightShaftPositions(): List<Pair<Float, Float>> = lightShafts.map { it.x to it.y }
+    internal fun lightShaftCount(): Int = lightShafts.size
+    internal fun vignetteAlpha(): Float = VIGNETTE_ALPHA
+    internal fun backgroundStopPositions(): FloatArray = BACKGROUND_STOPS
+
     private companion object {
         const val TAU = 6.2831855f
 
@@ -315,11 +441,24 @@ class PondWaterRenderer(
         const val MAX_BLOBS = 14
         const val MOTE_TARGET = 40
         const val MIN_MOTES = 10
+        const val MIN_SHAFTS = 2
+        const val MAX_SHAFTS = 3
+        /** Anchors land in the top 42% of the canvas -- "the upper region" the spec calls for. */
+        const val UPPER_REGION_FRACTION = 0.42f
 
         const val POKE_RADIUS = 240f
         const val POKE_FORCE = 900f
         const val POKE_DECAY_RATE = 2.4f
         const val POKE_VISIBLE_THRESHOLD = 0.01f
+
+        /** Peak edge-darkening alpha -- inside the Hyle soft-shadow band (~0.10-0.16), not the
+         *  ~0.35 Animalcules' own microscope-iris vignette uses. */
+        const val VIGNETTE_ALPHA = 0.14f
+        const val VIGNETTE_INNER_STOP = 0.62f
+
+        /** 4-stop background ramp position (Build 11.5, was 3 stops): lighter top, an upper- and
+         *  a lower-mid band, deep bottom. */
+        val BACKGROUND_STOPS = floatArrayOf(0f, 0.38f, 0.68f, 1f)
 
         val DEEP_TEAL = 0xFF395C6A.toInt()
         val LIGHT_TEAL = 0xFFB8D4DC.toInt()
@@ -327,6 +466,8 @@ class PondWaterRenderer(
         val BLOB_TINT_LIGHT = 0xFF224852.toInt()
         val MOTE_TINT_DARK = 0xFFE6F2F0.toInt()
         val MOTE_TINT_LIGHT = 0xFF2E4A54.toInt()
+        val LIGHT_SHAFT_TINT_DARK = 0xFFFFE9C4.toInt()
+        val LIGHT_SHAFT_TINT_LIGHT = 0xFFFFF4DE.toInt()
 
         /** Lerp a colour toward white (f>0) or black (f<0) by |f| -- same idea as Animalcules'
          *  `MathUtil.shade`, hand-written here since Fylz doesn't depend on that app's module. */

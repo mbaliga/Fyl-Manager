@@ -43,7 +43,9 @@ sealed interface OverviewCard {
     ) : OverviewCard {
         override val id get() = "quick-access:${root?.id ?: "none"}"
         override val span = 1
-        override val height = 216.dp
+        // Reconciled to io.github.mbaliga.fylz.ui.desktop.WidgetRegistry's own QUICK_ACCESS
+        // content-fit height -- see that registration's own KDoc.
+        override val height = 224.dp
     }
 
     /**
@@ -77,7 +79,8 @@ sealed interface OverviewCard {
     ) : OverviewCard {
         override val id = "storage"
         override val span = 2
-        override val height = 360.dp
+        // Reconciled to WidgetRegistry's own STORAGE content-fit height (see below).
+        override val height = 400.dp
     }
 
     data class DeletedFiles(
@@ -88,7 +91,11 @@ sealed interface OverviewCard {
     ) : OverviewCard {
         override val id = "deleted-files"
         override val span = 2
-        override val height = 196.dp
+        // Was 196dp here while io.github.mbaliga.fylz.ui.desktop.WidgetRegistry's own
+        // RECYCLE_BIN entry (this card's desktop counterpart) rendered at a blanket 360dp -- two
+        // different numbers for the one card. Reconciled to that registration's own content-fit
+        // 144dp.
+        override val height = 144.dp
     }
 
     /** Favourites, finally with an icon and a tap target on a phone -- the workspace rail only
@@ -96,13 +103,15 @@ sealed interface OverviewCard {
     data class Pinned(val favorites: List<FavoriteLocation>) : OverviewCard {
         override val id = "pinned"
         override val span = 2
-        override val height = 208.dp
+        // Was 208dp; reconciled to WidgetRegistry's own PINNED content-fit height (up to 4 rows
+        // at the new >=44dp touch-target row height, plus the "+N more" line).
+        override val height = 288.dp
     }
 
     data class Tags(val topTags: List<Pair<String, Int>>) : OverviewCard {
         override val id = "tags"
         override val span = 2
-        override val height = 152.dp
+        override val height = 112.dp
     }
 }
 
@@ -144,6 +153,14 @@ fun ByteTally.describe(): String = buildString {
  *  the two the legend quietly drops. */
 fun storageLegendEntries(snapshot: StorageUsageSnapshot): List<Pair<StorageKind, Long>> =
     STORAGE_KIND_ORDER.map { kind -> kind to snapshot.bytesFor(kind) }
+
+/** [entries] with every zero-byte kind dropped -- the graphical legend's own honest-but-uncluttered
+ *  view (the reference frames show only kinds actually present). A kind genuinely absent from the
+ *  scan earns no row, but any kind -- [StorageKind.OTHER] included -- stays the moment it carries
+ *  even one real byte; there is no special-case beyond "nonzero survives". CLI mode keeps calling
+ *  [storageLegendEntries] directly instead, so it still lists every kind the scan considered. */
+fun visibleStorageLegendEntries(entries: List<Pair<StorageKind, Long>>): List<Pair<StorageKind, Long>> =
+    entries.filter { (_, bytes) -> bytes > 0L }
 
 /** What the scan actually accounted for, which is usually less than [OverviewCard.Storage.usedBytes]
  *  -- app data, thumbnails caches and anything below [StorageScanWorker]'s own depth/entry caps

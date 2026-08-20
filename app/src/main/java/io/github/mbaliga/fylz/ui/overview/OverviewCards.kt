@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.ui.overview
 
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -31,17 +33,13 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,22 +65,33 @@ import io.github.mbaliga.fylz.storage.StorageKind
 import io.github.mbaliga.fylz.storage.StorageUsageSnapshot
 import io.github.mbaliga.fylz.storage.label
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.microLabel
+import io.github.mbaliga.fylz.ui.theme.softShadow
 import io.github.mbaliga.fylz.util.formatBytes
 
-/** Shared card chrome: 20dp corners and a soft raised surface, per the owner's export -- every
- *  card in the bento reads as one visual family regardless of what it shows. */
+/** Shared card chrome: a Hyle radiusXl (16dp) plate, a [hairline] border, and a close
+ *  [softShadow] -- hairline-plus-soft-shadow is the Hyle depth signature, replacing the old
+ *  20dp-radius/no-op-tonalElevation/heavy 3dp shadowElevation combo (tonalElevation is a no-op on
+ *  any Surface whose colour isn't exactly `colorScheme.surface`, which `surfaceContainerHigh`
+ *  never is). Every card in the bento reads as one visual family regardless of what it shows. */
 @Composable
 internal fun OverviewCardSurface(
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val shape = RoundedCornerShape(FylzGeometry.RadiusXl)
     Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        modifier = modifier.fillMaxWidth().softShadow(ShadowLevel.SM, shape),
+        shape = shape,
         color = color,
-        tonalElevation = 1.dp,
-        shadowElevation = 3.dp,
+        border = BorderStroke(1.dp, hairline()),
     ) {
         Column(Modifier.fillMaxSize().padding(16.dp), content = content)
     }
@@ -115,9 +124,11 @@ internal fun QuickAccessCard(
             // (auto-resolved Downloads), since neither a tap (opens the target) nor a long-press
             // (drag-to-move) ever offers a way to point it at a different folder.
             Box {
-                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "More")
-                }
+                TactileIconKey(
+                    icon = Icons.Outlined.MoreVert,
+                    contentDescription = "More",
+                    onClick = { menuOpen = true },
+                )
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Choose folder…") },
@@ -144,12 +155,12 @@ internal fun QuickAccessCard(
                 )
                 else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     if (card.thumbnails.isNotEmpty()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             card.thumbnails.take(3).forEach { entry ->
-                                EntryThumbnail(entry, size = 52.dp, modifier = Modifier.clickable { onOpenFile(entry) })
+                                EntryThumbnail(entry, size = 48.dp, modifier = Modifier.clickable { onOpenFile(entry) })
                             }
                         }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(8.dp))
                     }
                     Text(
                         if (card.entryCount == 1) "1 item" else "${card.entryCount} items",
@@ -187,7 +198,7 @@ private fun EmptyFolderState(
         )
         if (actionLabel != null) {
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onAction) { Text(actionLabel) }
+            TactileButton(text = actionLabel, onClick = onAction, style = TactileButtonStyle.SECONDARY)
         }
     }
 }
@@ -212,10 +223,17 @@ internal fun KindFolderCard(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            // The onPrimaryContainer tint the old IconButton's Icon carried is lost here --
+            // TactileIconKey's own recipe (plate/cap + onPlate/onCap ink) has no tint override
+            // slot, so the glyph now reads in the tactile palette's own ink instead of matching
+            // this card's primaryContainer background. Flag for the render pass: verify contrast
+            // still holds against this card's own colour.
             Box {
-                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "More", tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                }
+                TactileIconKey(
+                    icon = Icons.Outlined.MoreVert,
+                    contentDescription = "More",
+                    onClick = { menuOpen = true },
+                )
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(text = { Text("Open folder") }, onClick = { menuOpen = false; onOpen() })
                 }
@@ -297,27 +315,25 @@ internal fun StorageCard(
                 if (card.scanning) {
                     CircularProgressIndicator(Modifier.size(20.dp))
                 } else {
-                    TextButton(onClick = onRefreshUsage) { Text("Scan now") }
+                    TactileButton(text = "Scan now", onClick = onRefreshUsage, style = TactileButtonStyle.SECONDARY)
                 }
             }
         } else {
             val entries = storageLegendEntries(usage)
             SegmentedUsageBar(entries, storageAccountedBytes(usage))
             Spacer(Modifier.height(12.dp))
-            UsageLegend(entries)
-            Spacer(Modifier.height(10.dp))
+            UsageLegend(visibleStorageLegendEntries(entries))
+            Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "As of ${formatScannedAt(usage.scannedAtMillis)}",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = microLabel(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (card.scanning) {
                     CircularProgressIndicator(Modifier.size(16.dp))
                 } else {
-                    IconButton(onClick = onRefreshUsage, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Rescan")
-                    }
+                    TactileIconKey(icon = Icons.Outlined.Refresh, contentDescription = "Rescan", onClick = onRefreshUsage)
                 }
             }
         }
@@ -329,21 +345,29 @@ internal fun StorageCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onFindLargeFiles, modifier = Modifier.weight(1f)) { Text("Find large files") }
-            OutlinedButton(onClick = onCleanUpDuplicates, modifier = Modifier.weight(1f)) { Text("Clean up duplicates") }
+        // Stacked full-width, not squeezed side by side -- two SECONDARY caps sharing a row left
+        // each one's label cramped at anything past a couple of words.
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            TactileButton(text = "Find large files", onClick = onFindLargeFiles, style = TactileButtonStyle.SECONDARY, fillWidth = true)
+            TactileButton(text = "Clean up duplicates", onClick = onCleanUpDuplicates, style = TactileButtonStyle.SECONDARY, fillWidth = true)
         }
     }
 }
 
+/** The track (empty [entries]/[totalBytes]) is the surfaceVariant background itself, always drawn
+ *  under everything -- so a scan with nothing accounted for still shows an honest flat bar rather
+ *  than an empty gap. Segments sit [SEGMENT_GAP_DP] apart, letting that track colour show through
+ *  as a hairline seam between kinds; only the bar's own outer ends are rounded (its own [clip]),
+ *  not each individual segment. */
 @Composable
 private fun SegmentedUsageBar(entries: List<Pair<StorageKind, Long>>, totalBytes: Long, modifier: Modifier = Modifier) {
     Row(
         modifier
             .fillMaxWidth()
             .height(12.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(RoundedCornerShape(FylzGeometry.RadiusMd))
             .background(MaterialTheme.colorScheme.surfaceVariant),
+        horizontalArrangement = Arrangement.spacedBy(SEGMENT_GAP_DP),
     ) {
         if (totalBytes > 0) {
             entries.forEach { (kind, bytes) ->
@@ -356,9 +380,16 @@ private fun SegmentedUsageBar(entries: List<Pair<StorageKind, Long>>, totalBytes
     }
 }
 
+private val SEGMENT_GAP_DP = 2.dp
+
+/** [entries] is [visibleStorageLegendEntries]' already-filtered list when called from the
+ *  graphical card -- every zero-byte kind dropped, per the reference frames, which show only the
+ *  kinds actually present. [io.github.mbaliga.fylz.ui.overview.overviewCliLines] intentionally
+ *  keeps calling [storageLegendEntries] (the unfiltered six) instead, so CLI mode stays honest
+ *  about every kind the scan considered, zero or not. */
 @Composable
 private fun UsageLegend(entries: List<Pair<StorageKind, Long>>, modifier: Modifier = Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         entries.forEach { (kind, bytes) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(10.dp).clip(CircleShape).background(colorFor(kind)))
@@ -390,19 +421,19 @@ internal fun DeletedFilesCard(
     OverviewCardSurface(modifier) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Deleted Files", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = onSeeFiles) { Text("See Files") }
+            TactileButton(text = "See Files", onClick = onSeeFiles, style = TactileButtonStyle.SECONDARY)
         }
         Spacer(Modifier.height(12.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(FylzGeometry.RadiusLg),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                modifier = Modifier.padding(end = 14.dp),
+                modifier = Modifier.padding(end = 16.dp),
             ) {
                 Text(
                     cappedCountLabel(card.totalCount),
                     style = MaterialTheme.typography.headlineSmall,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 )
             }
             Column {
@@ -436,19 +467,26 @@ internal fun PinnedCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            card.favorites.take(OVERVIEW_LIST_CARD_VISIBLE_ROWS).forEach { favorite ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { onOpenFavorite(favorite) }.padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Outlined.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text(favorite.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                card.favorites.take(OVERVIEW_LIST_CARD_VISIBLE_ROWS).forEach { favorite ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { onOpenFavorite(favorite) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Outlined.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(favorite.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
             val extra = card.favorites.size - OVERVIEW_LIST_CARD_VISIBLE_ROWS
             if (extra > 0) {
-                Text("+$extra more", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "+$extra more",
+                    style = microLabel(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
         }
     }
@@ -470,6 +508,10 @@ internal fun TagsCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
+            // Kept stock: every chip here carries a leading Label icon alongside its text
+            // ("$tag · $count"), and TactileButton's cap has no leading-icon slot to carry that
+            // second glyph -- converting would silently drop the icon that reads "this is a tag"
+            // at a glance. Per the mission's own escape hatch for this exact row.
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 card.topTags.take(OVERVIEW_LIST_CARD_VISIBLE_ROWS * 2).forEach { (tag, count) ->
                     AssistChip(
@@ -525,9 +567,12 @@ internal fun ShelfCard(
             }
         }
         Spacer(Modifier.weight(1f))
-        TextButton(onClick = onOpenShelf, modifier = Modifier.align(Alignment.End)) {
-            Text(stringResource(R.string.desktop_open_shelf))
-        }
+        TactileButton(
+            text = stringResource(R.string.desktop_open_shelf),
+            onClick = onOpenShelf,
+            style = TactileButtonStyle.SECONDARY,
+            modifier = Modifier.align(Alignment.End),
+        )
     }
 }
 
@@ -553,25 +598,23 @@ internal fun RecentsCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            items.take(4).forEach { item ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { onOpenFile(item.uri) }.padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        item.displayName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    formatRelativeTime(nowMillis, item.openedAtMillis)?.let {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items.take(4).forEach { item ->
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { onOpenFile(item.uri) },
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            item.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
                         )
+                        formatRelativeTime(nowMillis, item.openedAtMillis)?.let {
+                            Text(it, style = microLabel(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
@@ -580,21 +623,25 @@ internal fun RecentsCard(
 }
 
 /** The Search widget: a single pill that hands focus to the app's own search entry point rather
- *  than duplicating a text field here -- [onFocusSearch] is what actually opens/focuses it. */
+ *  than duplicating a text field here -- [onFocusSearch] is what actually opens/focuses it. A real
+ *  stadium pill at its own natural height (see [io.github.mbaliga.fylz.ui.desktop.WidgetRegistry]'s
+ *  SEARCH entry) -- hairline plus a close shadow, not the old no-op `tonalElevation` (a no-op on
+ *  any Surface whose colour isn't exactly `colorScheme.surface`). */
 @Composable
 internal fun SearchPill(modifier: Modifier = Modifier, onFocusSearch: () -> Unit = {}) {
+    val shape = CircleShape
     Surface(
-        modifier = modifier.fillMaxWidth().clickable(onClick = onFocusSearch),
-        shape = RoundedCornerShape(999.dp),
+        modifier = modifier.fillMaxWidth().softShadow(ShadowLevel.SM, shape).clickable(onClick = onFocusSearch),
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 1.dp,
+        border = BorderStroke(1.dp, hairline()),
     ) {
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Outlined.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.desktop_search_pill), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -612,8 +659,11 @@ internal fun QuickActionsCard(
 ) {
     OverviewCardSurface(modifier) {
         Text(stringResource(R.string.desktop_widget_quick_actions), style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(10.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Spacer(Modifier.height(8.dp))
+        // SpaceEvenly, not SpaceBetween: four discs at their old 46dp implicit footprint (22dp
+        // icon + 12dp padding each side) overflowed a compact card's own content width; 40dp
+        // discs plus even spacing is the fit that was tuned to the reference frames.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             QuickActionButton(Icons.Outlined.Refresh, stringResource(R.string.desktop_quick_action_scan), onScan)
             QuickActionButton(Icons.Outlined.Search, stringResource(R.string.desktop_quick_action_search), onFocusSearch)
             QuickActionButton(Icons.Outlined.Inventory2, stringResource(R.string.desktop_quick_action_shelf), onOpenShelf)
@@ -622,15 +672,19 @@ internal fun QuickActionsCard(
     }
 }
 
+private val QUICK_ACTION_DISC_DP = 40.dp
+
 @Composable
 private fun QuickActionButton(icon: ImageVector, label: String, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            modifier = Modifier.clickable(onClick = onClick),
+            modifier = Modifier.size(QUICK_ACTION_DISC_DP).clickable(onClick = onClick),
         ) {
-            Icon(icon, contentDescription = label, modifier = Modifier.padding(12.dp).size(22.dp))
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))
+            }
         }
         Spacer(Modifier.height(4.dp))
         Text(label, style = MaterialTheme.typography.labelSmall)
@@ -652,7 +706,9 @@ internal fun LargeFilesCard(
     OverviewCardSurface(modifier) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.desktop_widget_large_files), style = MaterialTheme.typography.titleMedium)
-            if (!scanning) TextButton(onClick = onSeeAll) { Text(stringResource(R.string.desktop_see_all)) }
+            if (!scanning) {
+                TactileButton(text = stringResource(R.string.desktop_see_all), onClick = onSeeAll, style = TactileButtonStyle.SECONDARY)
+            }
         }
         Spacer(Modifier.height(8.dp))
         val files: List<LargeFileFact>? = usage?.largestFiles
@@ -668,26 +724,28 @@ internal fun LargeFilesCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             else -> {
-                files.take(5).forEach { fact ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(
-                            fact.displayName,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            formatBytes(fact.sizeBytes),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    files.take(5).forEach { fact ->
+                        Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                fact.displayName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                formatBytes(fact.sizeBytes),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "As of ${formatScannedAt(usage.scannedAtMillis)}",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = microLabel(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

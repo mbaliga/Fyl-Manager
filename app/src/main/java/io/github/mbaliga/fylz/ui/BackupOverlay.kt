@@ -16,24 +16,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,6 +48,11 @@ import io.github.mbaliga.fylz.backup.BackupScheduler
 import io.github.mbaliga.fylz.backup.BackupService
 import io.github.mbaliga.fylz.backup.BackupSnapshotRecord
 import io.github.mbaliga.fylz.backup.BackupStore
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -185,14 +182,20 @@ fun BackupHost(open: Boolean, onDismiss: () -> Unit) {
             title = { Text("Delete backup?") },
             text = { Text("This permanently deletes ${snapshot.displayName} from the selected backup destination.") },
             confirmButton = {
-                Button(onClick = {
-                    val deleted = service.deleteSnapshot(snapshot.id)
-                    Toast.makeText(context, if (deleted) "Backup deleted" else "Unable to delete backup", Toast.LENGTH_LONG).show()
-                    deleteSnapshot = null
-                    refresh()
-                }) { Text("Delete") }
+                TactileButton(
+                    text = "Delete",
+                    style = TactileButtonStyle.DESTRUCTIVE,
+                    onClick = {
+                        val deleted = service.deleteSnapshot(snapshot.id)
+                        Toast.makeText(context, if (deleted) "Backup deleted" else "Unable to delete backup", Toast.LENGTH_LONG).show()
+                        deleteSnapshot = null
+                        refresh()
+                    },
+                )
             },
-            dismissButton = { TextButton(onClick = { deleteSnapshot = null }) { Text("Cancel") } },
+            dismissButton = {
+                TactileButton(text = "Cancel", style = TactileButtonStyle.SECONDARY, onClick = { deleteSnapshot = null })
+            },
         )
     }
 }
@@ -227,7 +230,7 @@ private fun BackupManagerDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Button(onClick = onAdd, enabled = !working) { Text("New plan") }
+                    TactileButton(text = "New plan", onClick = onAdd, enabled = !working)
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.weight(1f, fill = false)) {
@@ -257,7 +260,7 @@ private fun BackupManagerDialog(
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    Button(onClick = onDismiss) { Text("Done") }
+                    TactileButton(text = "Done", onClick = onDismiss)
                 }
             }
         }
@@ -293,21 +296,19 @@ private fun BackupPlanCard(
                         )
                     }
                 }
-                IconButton(onClick = onDeletePlan, enabled = !working) {
-                    Icon(Icons.Outlined.Delete, contentDescription = "Delete backup plan")
-                }
+                TactileIconKey(
+                    icon = Icons.Outlined.Delete,
+                    contentDescription = "Delete backup plan",
+                    onClick = onDeletePlan,
+                    enabled = !working,
+                )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onRun, enabled = !working) {
-                    Icon(Icons.Outlined.Backup, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Back up now")
-                }
-                OutlinedButton(onClick = onEdit, enabled = !working) {
-                    Icon(Icons.Outlined.Schedule, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Settings")
-                }
+                // TactileButton carries a single text label, no icon slot -- the leading
+                // Backup/Schedule glyphs these two buttons used to show are dropped here, same as
+                // every other icon+label Button/OutlinedButton this conversion touches.
+                TactileButton(text = "Back up now", onClick = onRun, enabled = !working)
+                TactileButton(text = "Settings", onClick = onEdit, style = TactileButtonStyle.SECONDARY, enabled = !working)
             }
             if (snapshots.isNotEmpty()) {
                 Text("Snapshots", style = MaterialTheme.typography.labelLarge)
@@ -321,12 +322,18 @@ private fun BackupPlanCard(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        IconButton(onClick = { onRestore(snapshot) }, enabled = !working) {
-                            Icon(Icons.Outlined.Restore, contentDescription = "Restore this backup")
-                        }
-                        IconButton(onClick = { onDeleteSnapshot(snapshot) }, enabled = !working) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete this backup")
-                        }
+                        TactileIconKey(
+                            icon = Icons.Outlined.Restore,
+                            contentDescription = "Restore this backup",
+                            onClick = { onRestore(snapshot) },
+                            enabled = !working,
+                        )
+                        TactileIconKey(
+                            icon = Icons.Outlined.Delete,
+                            contentDescription = "Delete this backup",
+                            onClick = { onDeleteSnapshot(snapshot) },
+                            enabled = !working,
+                        )
                     }
                 }
             }
@@ -355,10 +362,11 @@ private fun BackupPlanEditorDialog(
                 Text("Backup plan", style = MaterialTheme.typography.headlineSmall)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp)) {
                     item {
-                        OutlinedTextField(
+                        TactileField(
                             value = draft.name,
                             onValueChange = { onDraftChange(draft.copy(name = it)) },
-                            label = { Text("Plan name") },
+                            label = "Plan name",
+                            mandatory = true,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -370,13 +378,18 @@ private fun BackupPlanEditorDialog(
                         FolderChoice("Backup destination", draft.destinationTreeUri, onPickDestination)
                     }
                     item {
-                        OutlinedTextField(
+                        TactileField(
                             value = draft.retention,
                             onValueChange = { onDraftChange(draft.copy(retention = it.filter(Char::isDigit))) },
-                            label = { Text("Backups to retain") },
-                            supportingText = { Text("Oldest snapshots are removed after a successful backup.") },
+                            label = "Backups to retain",
+                            mandatory = true,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "Oldest snapshots are removed after a successful backup.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     item {
@@ -388,17 +401,17 @@ private fun BackupPlanEditorDialog(
                     if (draft.dailyEnabled) {
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(
+                                TactileField(
                                     value = draft.hour,
                                     onValueChange = { onDraftChange(draft.copy(hour = it.filter(Char::isDigit).take(2))) },
-                                    label = { Text("Hour 0–23") },
+                                    label = "Hour 0–23",
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
                                 )
-                                OutlinedTextField(
+                                TactileField(
                                     value = draft.minute,
                                     onValueChange = { onDraftChange(draft.copy(minute = it.filter(Char::isDigit).take(2))) },
-                                    label = { Text("Minute") },
+                                    label = "Minute",
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
                                 )
@@ -415,22 +428,26 @@ private fun BackupPlanEditorDialog(
                     }
                     if (draft.mediaEnabled) {
                         item {
-                            OutlinedTextField(
+                            TactileField(
                                 value = draft.mediaThreshold,
                                 onValueChange = { onDraftChange(draft.copy(mediaThreshold = it.filter(Char::isDigit))) },
-                                label = { Text("New media count") },
+                                label = "New media count",
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                         item {
-                            OutlinedTextField(
+                            TactileField(
                                 value = draft.scanMinutes,
                                 onValueChange = { onDraftChange(draft.copy(scanMinutes = it.filter(Char::isDigit))) },
-                                label = { Text("Check interval in minutes") },
-                                supportingText = { Text("Minimum 15 minutes. The first scan establishes a baseline.") },
+                                label = "Check interval in minutes",
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                "Minimum 15 minutes. The first scan establishes a baseline.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -441,15 +458,21 @@ private fun BackupPlanEditorDialog(
                     item { SettingSwitch("Require unmetered network", draft.unmetered) { onDraftChange(draft.copy(unmetered = it)) } }
                 }
                 Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY)
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = { onSave(draft) }, enabled = valid) { Text("Save") }
+                    TactileButton(text = "Save", onClick = { onSave(draft) }, enabled = valid)
                 }
             }
         }
     }
 }
 
+// KEPT STOCK (LOUD): TactileButton's kit contract is `text: String` only -- no icon slot and no
+// second line. This row is a folder-picker affordance that needs both the FolderOpen icon and a
+// two-tier label (fixed caption above, live chosen-path value below); collapsing that into a
+// single TactileButton string would either drop the icon or drop the live value, both of which
+// are real information the user relies on here, not decoration. Left as an OutlinedButton rather
+// than a lossy conversion.
 @Composable
 private fun FolderChoice(label: String, value: String, onClick: () -> Unit) {
     OutlinedButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -471,7 +494,7 @@ private fun FolderChoice(label: String, value: String, onClick: () -> Unit) {
 private fun SettingSwitch(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text(label, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChecked)
+        TactileSwitch(checked = checked, onCheckedChange = onChecked)
     }
 }
 

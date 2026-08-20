@@ -8,17 +8,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Save
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,12 +25,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.format.PreviewFamily
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.tactileFieldGroove
+import io.github.mbaliga.fylz.ui.tactile.tactilePalette
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.microLabel
 import io.github.mbaliga.fylz.util.FileType
 
 private val SEMANTIC_ZIP_DOCUMENTS = setOf(
@@ -100,15 +104,17 @@ fun PreviewPane(
                     )
                 }
                 if (FileType.isEditable(entry.kind)) {
-                    FilledTonalButton(onClick = { editing = !editing }) {
-                        Icon(Icons.Outlined.Edit, contentDescription = null)
-                        Text(if (editing) "Preview" else "Edit", Modifier.padding(start = 6.dp))
-                    }
+                    // Icon dropped (no leading-icon slot on TactileButton); the label itself
+                    // already carries the Edit<->Preview state, so no separate latched cap is
+                    // needed here -- this button isn't icon-shaped, so it stays a plain SECONDARY
+                    // cap rather than a latched TactileIconKey per the mission's own branch.
+                    TactileButton(
+                        text = if (editing) "Preview" else "Edit",
+                        onClick = { editing = !editing },
+                        style = TactileButtonStyle.SECONDARY,
+                    )
                     if (editing) {
-                        Button(onClick = onSave) {
-                            Icon(Icons.Outlined.Save, contentDescription = null)
-                            Text("Save", Modifier.padding(start = 6.dp))
-                        }
+                        TactileButton(text = "Save", onClick = onSave, style = TactileButtonStyle.PRIMARY)
                     }
                 }
                 ExternalOpenButton(entry)
@@ -119,13 +125,36 @@ fun PreviewPane(
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                editing && FileType.isEditable(entry.kind) -> OutlinedTextField(
-                    value = editorValue,
-                    onValueChange = onEditorValueChange,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                    modifier = Modifier.fillMaxSize().padding(12.dp),
-                    label = { Text("UTF-8 text") },
-                )
+                // TactileField can't carry this: its BasicTextField's textStyle is fixed to
+                // bodyLarge internally, no override slot, and this editor's whole point is the
+                // monospace body. Per the mission's own escape hatch: keep a hand-rolled field but
+                // dress it in the RECESSED GROOVE recipe (tactileFieldGroove) instead of the full
+                // TactileField anatomy (no slant edge / slash-tick / mandatory asterisk here -- an
+                // editor body, not a form field).
+                editing && FileType.isEditable(entry.kind) -> {
+                    val editorPalette = tactilePalette()
+                    Column(Modifier.fillMaxSize().padding(12.dp)) {
+                        Text(
+                            "UTF-8 text",
+                            style = microLabel(),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 6.dp, start = 8.dp),
+                        )
+                        BasicTextField(
+                            value = editorValue,
+                            onValueChange = onEditorValueChange,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(editorPalette.accent),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .tactileFieldGroove(editorPalette, RoundedCornerShape(FylzGeometry.RadiusLg))
+                                .padding(12.dp),
+                        )
+                    }
+                }
                 entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
                     if (textTruncated) TruncationNotice()
                     MarkdownPreview(textContent, Modifier.fillMaxSize())

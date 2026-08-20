@@ -22,23 +22,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +57,11 @@ import io.github.mbaliga.fylz.history.FileHistorySettings
 import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.history.FileHistoryUsage
 import io.github.mbaliga.fylz.history.FileHistoryVersion
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -224,15 +221,19 @@ private fun FileHistoryDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = { settingsOpen = !settingsOpen }, enabled = !busy) {
-                        Icon(
-                            Icons.Outlined.Settings,
-                            contentDescription = if (settingsOpen) "Hide file history settings" else "File history settings",
-                        )
-                    }
-                    IconButton(onClick = onDismiss, enabled = !busy) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close file history")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = if (settingsOpen) "Hide file history settings" else "File history settings",
+                        onClick = { settingsOpen = !settingsOpen },
+                        latched = settingsOpen,
+                        enabled = !busy,
+                    )
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close file history",
+                        onClick = onDismiss,
+                        enabled = !busy,
+                    )
                 }
 
                 if (settingsOpen) {
@@ -247,43 +248,48 @@ private fun FileHistoryDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Switch(checked = enabled, onCheckedChange = { enabled = it }, enabled = !busy)
+                        TactileSwitch(checked = enabled, onCheckedChange = { enabled = it }, enabled = !busy)
                     }
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                     ) {
-                        OutlinedTextField(
+                        TactileField(
                             value = versionLimit,
                             onValueChange = { versionLimit = it.filter(Char::isDigit).take(3) },
-                            label = { Text("Versions/file") },
+                            label = "Versions/file",
                             singleLine = true,
                             enabled = !busy,
                             modifier = Modifier.weight(1f),
                         )
-                        OutlinedTextField(
+                        TactileField(
                             value = fileLimitMb,
                             onValueChange = { fileLimitMb = it.filter(Char::isDigit).take(6) },
-                            label = { Text("Max file (MiB)") },
+                            label = "Max file (MiB)",
                             singleLine = true,
                             enabled = !busy,
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    OutlinedTextField(
+                    TactileField(
                         value = storageLimitGb,
                         onValueChange = { value ->
                             storageLimitGb = value.filter { it.isDigit() || it == '.' }.take(8)
                         },
-                        label = { Text("History storage cap (GiB)") },
-                        supportingText = { Text("Oldest versions are pruned first when this cap is reached.") },
+                        label = "History storage cap (GiB)",
                         singleLine = true,
                         enabled = !busy,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
+                    Text(
+                        "Oldest versions are pruned first when this cap is reached.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
 
-                    Button(
+                    TactileButton(
+                        text = "Save settings",
                         onClick = {
                             onSaveSettings(
                                 FileHistorySettings(
@@ -296,11 +302,7 @@ private fun FileHistoryDialog(
                         },
                         enabled = valid && !busy,
                         modifier = Modifier.align(Alignment.End).padding(top = 8.dp),
-                    ) {
-                        Icon(Icons.Outlined.Save, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Save settings")
-                    }
+                    )
                 }
 
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
@@ -340,6 +342,12 @@ private fun FileHistoryDialog(
                     }
                 } else {
                     if (distinctFiles.size > 1) {
+                        // KEPT STOCK (LOUD): a horizontally-scrolling row of an unbounded number of
+                        // per-file name chips. FilterChip's compact pill + built-in selected
+                        // checkmark is the right density for that; TactileButton's fixed 48dp
+                        // RAISED CAP is sized for one or two deliberate actions; a whole scrolling
+                        // row of them here would fight the layout the spec itself calls out
+                        // ("FilterChips stay stock if layout fights").
                         LazyRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
@@ -381,11 +389,12 @@ private fun FileHistoryDialog(
 
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                    TextButton(onClick = onClear, enabled = versions.isNotEmpty() && !busy) {
-                        Icon(Icons.Outlined.DeleteSweep, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Clear history")
-                    }
+                    TactileButton(
+                        text = "Clear history",
+                        onClick = onClear,
+                        style = TactileButtonStyle.DESTRUCTIVE,
+                        enabled = versions.isNotEmpty() && !busy,
+                    )
                 }
             }
         }
@@ -533,15 +542,14 @@ private fun FileHistoryDetailCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
-                Button(onClick = onRestore, enabled = restoreEnabled) {
-                    Icon(Icons.Outlined.Restore, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Restore")
-                }
+                TactileButton(text = "Restore", onClick = onRestore, enabled = restoreEnabled)
                 Spacer(Modifier.width(8.dp))
-                IconButton(onClick = onDelete, enabled = deleteEnabled) {
-                    Icon(Icons.Outlined.Delete, contentDescription = "Delete saved version")
-                }
+                TactileIconKey(
+                    icon = Icons.Outlined.Delete,
+                    contentDescription = "Delete saved version",
+                    onClick = onDelete,
+                    enabled = deleteEnabled,
+                )
             }
         }
     }

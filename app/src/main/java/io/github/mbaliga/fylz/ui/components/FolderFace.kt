@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.ui.components
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,18 +24,30 @@ import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
@@ -44,7 +57,10 @@ import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.FolderPeek
 import io.github.mbaliga.fylz.ui.theme.FolderMaterial
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.softShadow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -63,18 +79,27 @@ import kotlinx.coroutines.withContext
  * internal, not public: [FolderPeek] itself is internal (FylzV1App.kt owns it, scoped no wider
  * than the app module needs), and a public function cannot expose an internal parameter type.
  * FileCard is this composable's only caller today, and it lives in the same module.
+ *
+ * @param showLabel whether the SOLID/FROSTED/ICONIC registers draw their own internal name+count
+ *   band over the face. Defaults true -- [io.github.mbaliga.fylz.ui.canvas.BentoMosaic] and every
+ *   other caller that hands this composable a bare cell still wants the label drawn inline,
+ *   exactly as before. Callers that
+ *   present the name and count themselves outside the face (`FolderGridCell`'s own centered
+ *   [CountChip], [FolderHero]'s name/count beneath the hero face) pass `false` so the two don't
+ *   double up.
  */
 @Composable
 internal fun FolderFace(
     entry: FileEntry,
     peek: FolderPeek,
     modifier: Modifier = Modifier,
+    showLabel: Boolean = true,
 ) {
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
     when (LocalThemeStyle.current.folderMaterial) {
-        FolderMaterial.SOLID -> SolidFolderFace(entry, shownName, peek, modifier)
-        FolderMaterial.FROSTED -> FrostedFolderFace(entry, shownName, peek, modifier)
-        FolderMaterial.ICONIC -> QuietFolderFace(entry, shownName, peek.itemCount, modifier)
+        FolderMaterial.SOLID -> SolidFolderFace(entry, shownName, peek, modifier, showLabel)
+        FolderMaterial.FROSTED -> FrostedFolderFace(entry, shownName, peek, modifier, showLabel)
+        FolderMaterial.ICONIC -> QuietFolderFace(entry, shownName, peek.itemCount, modifier, showLabel)
         FolderMaterial.TEXT -> Box(modifier)
     }
 }
@@ -122,24 +147,32 @@ private fun QuietFolderFace(
     name: String,
     itemCount: Int,
     modifier: Modifier,
+    showLabel: Boolean,
 ) {
     val dark = isDarkSurface()
     val tone = LocalFolderAppearance.current(entry.uri)?.colorSlug?.let { FolderPalette.colorFor(it, dark) }
-    Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+    val icon = @Composable {
         Box(contentAlignment = Alignment.Center) {
             if (tone != null) {
                 Box(Modifier.size(64.dp).background(tone, CircleShape))
             }
             EntryThumbnail(entry, size = 56.dp)
         }
-        Column {
-            Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-            Text(
-                itemCountLabel(itemCount),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    }
+    if (showLabel) {
+        Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+            icon()
+            Column {
+                Text(name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    itemCountLabel(itemCount),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
+    } else {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { icon() }
     }
 }
 
@@ -160,7 +193,7 @@ private const val FOLDER_BODY_HEIGHT_FRACTION = 0.85f
  * `primaryContainer` tone regardless of what its own record (if any) asked for.
  */
 @Composable
-private fun SolidFolderFace(entry: FileEntry, name: String, peek: FolderPeek, modifier: Modifier) {
+private fun SolidFolderFace(entry: FileEntry, name: String, peek: FolderPeek, modifier: Modifier, showLabel: Boolean) {
     val appearance = LocalFolderAppearance.current(entry.uri)
     val tone = folderTone(appearance, MaterialTheme.colorScheme.primaryContainer)
     Box(modifier.fillMaxSize()) {
@@ -177,103 +210,7 @@ private fun SolidFolderFace(entry: FileEntry, name: String, peek: FolderPeek, mo
                 .fillMaxWidth(FOLDER_TAB_WIDTH_FRACTION)
                 .fillMaxHeight(FOLDER_TAB_HEIGHT_FRACTION),
         ) {}
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
-        ) {
-            Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                Text(
-                    itemCountLabel(peek.itemCount),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-/** How much of the card height the frosted pane claims, bottom-anchored; the rest is where the stack peeks. */
-private const val FROSTED_PANE_HEIGHT_FRACTION = 0.7f
-
-/** Size each real thumbnail draws at in the peek band -- the ~49dp of headroom the 0.7 fraction leaves in a 164dp card. */
-private val PEEK_THUMB_SIZE = 40.dp
-
-/** Where the stack's front card starts, so it straddles the pane's top edge instead of sitting wholly above or below it. */
-private val PEEK_TOP = 20.dp
-
-/**
- * The frosted-glass register: the folder's own first media thumb, blurred full-bleed behind a
- * translucent wash, with a sharp name panel over the bottom -- same copy and colors as the header
- * this replaces. Emerging from behind the pane's top edge, up to three of the folder's own real
- * thumbnails cascade like a small print stack; if the folder also holds non-photographic files,
- * one blank [DocumentSheet] joins as the rearmost leaf of that same cascade.
- *
- * Generalised to every folder, not just media-bearing ones: a folder with nothing to blur still
- * gets the glass pane, just without a photo behind it -- a folder in this theme is a window, and
- * an empty room still has a window.
- *
- * [entry] is read for [LocalFolderAppearance]'s own record -- before it reached this branch too,
- * a Fylz folder could never wear the colour or stickers it was given, no matter what the picker
- * in Settings wrote for it. [FolderAppearance.colorSlug] tints the wash itself (both the plain
- * empty pane and the layer sitting over a real photo), which is what "a much wider range of
- * colours" on a *translucent* folder actually means -- a flat tint under Neo, a tinted pane of
- * glass here. Stickers draw above that wash and below the name panel, so they read as sitting on
- * the glass rather than under it.
- */
-@Composable
-private fun FrostedFolderFace(
-    entry: FileEntry,
-    name: String,
-    peek: FolderPeek,
-    modifier: Modifier,
-) {
-    // peek.hasNonMedia comes from the same folder listing that filled peek.thumbs, so it stays
-    // accurate past the three-thumb cap -- a folder of ten photos and zero documents must never
-    // draw a document sheet, which comparing itemCount against the capped thumb list can't tell
-    // apart from a folder of three photos and seven documents.
-    val hasDocuments = peek.hasNonMedia
-    val specs = peek.thumbs.map { StackSpec(it, it.name, it.kind) }
-    val appearance = LocalFolderAppearance.current(entry.uri)
-    val washTone = folderTone(appearance, MaterialTheme.colorScheme.surfaceContainerHigh)
-
-    Box(modifier.fillMaxSize()) {
-        if (hasDocuments) {
-            // One slot further back than the cascade's own last card -- same offset step, so it
-            // reads as one more leaf in the stack rather than a second, competing motif.
-            DocumentSheet(
-                rotation = -4f,
-                tonalElevation = 1.dp,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .offset(x = (specs.size * 6).dp - 6.dp, y = PEEK_TOP + (specs.size * 4).dp)
-                    .zIndex(-1f),
-            )
-        }
-        StackedThumbs(
-            items = specs,
-            size = PEEK_THUMB_SIZE,
-            modifier = Modifier.align(Alignment.TopCenter).offset(x = (-6).dp, y = PEEK_TOP),
-        )
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .fillMaxHeight(FROSTED_PANE_HEIGHT_FRACTION),
-        ) {
-            // peek.thumbs can be empty here (a folder with no media, or none loaded yet) now that
-            // every folder reaches this register under Fylz -- fall back to a plain tinted pane
-            // instead of `.first()`ing an empty list.
-            if (peek.thumbs.isNotEmpty()) {
-                FrostedBackdrop(peek.thumbs.first(), Modifier.fillMaxSize())
-            } else {
-                Box(Modifier.fillMaxSize().background(washTone))
-            }
-            Box(Modifier.fillMaxSize().background(washTone.copy(alpha = 0.55f)))
-            if (appearance != null && appearance.stickers.isNotEmpty()) {
-                FolderStickerLayer(appearance.stickers, Modifier.align(Alignment.TopEnd).padding(6.dp))
-            }
+        if (showLabel) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
                 shape = MaterialTheme.shapes.small,
@@ -292,25 +229,210 @@ private fun FrostedFolderFace(
     }
 }
 
+/** Size each real thumbnail draws at in the peek band. */
+private val PEEK_THUMB_SIZE = 40.dp
+
+/**
+ * Where the peek cascade's front card sits, negative so it visibly overflows the silhouette's own
+ * top edge instead of nesting inside it -- Build 11.5's "peeks break the silhouette" language
+ * (frames 1/3), replacing the old positive [Dp] that tucked the stack's top card just inside the
+ * pane.
+ */
+private val PEEK_BREAK_Y = (-10).dp
+
+/** Per-card fan -- frames 1/3's own -8/+6/-4deg cascade, each card nudged a little further right and down than the last. */
+private val PEEK_TILTS = floatArrayOf(-8f, 6f, -4f)
+private val PEEK_OFFSETS_X = listOf((-8).dp, 0.dp, 8.dp)
+private val PEEK_OFFSETS_Y = listOf(0.dp, 3.dp, 6.dp)
+
+/** Matches [StackCard]'s own hardcoded corner radius, so the soft shadow wrapped around each peek traces the same silhouette the card itself draws. */
+private val PEEK_CARD_SHAPE = RoundedCornerShape(10.dp)
+
+/**
+ * The frosted-glass register: a die-cut sticker -- the folder's own tab+body silhouette
+ * ([FolderSilhouetteShape], the same proportions [SolidFolderFace] draws), white-outlined and
+ * floating on a soft [ShadowLevel.MD] shadow, filled with the folder's own first media thumb
+ * blurred full-bleed behind a translucent wash. Up to three of the folder's own real thumbnails
+ * cascade above the silhouette's top edge, fanned and visibly overflowing it rather than sitting
+ * inside -- frames 1/3's "content peek breaks the folder's silhouette" read; if the folder also
+ * holds non-photographic files, one blank [DocumentSheet] joins as the rearmost leaf of that same
+ * cascade.
+ *
+ * Generalised to every folder, not just media-bearing ones: a folder with nothing to blur still
+ * gets the glass silhouette, just without a photo behind it -- a folder in this theme is a window,
+ * and an empty room still has a window.
+ *
+ * [entry] is read for [LocalFolderAppearance]'s own record -- before it reached this branch too,
+ * a Fylz folder could never wear the colour or stickers it was given, no matter what the picker
+ * in Settings wrote for it. [FolderAppearance.colorSlug] tints the wash itself (both the plain
+ * empty silhouette and the layer sitting over a real photo), which is what "a much wider range of
+ * colours" on a *translucent* folder actually means -- a flat tint under Neo, a tinted pane of
+ * glass here. Stickers draw above that wash and below the name panel, so they read as sitting on
+ * the glass rather than under it.
+ */
+@Composable
+private fun FrostedFolderFace(
+    entry: FileEntry,
+    name: String,
+    peek: FolderPeek,
+    modifier: Modifier,
+    showLabel: Boolean,
+) {
+    // peek.hasNonMedia comes from the same folder listing that filled peek.thumbs, so it stays
+    // accurate past the three-thumb cap -- a folder of ten photos and zero documents must never
+    // draw a document sheet, which comparing itemCount against the capped thumb list can't tell
+    // apart from a folder of three photos and seven documents.
+    val hasDocuments = peek.hasNonMedia
+    val specs = peek.thumbs.map { StackSpec(it, it.name, it.kind) }
+    val appearance = LocalFolderAppearance.current(entry.uri)
+    val washTone = folderTone(appearance, MaterialTheme.colorScheme.surfaceContainerHigh)
+    val stickerOutline = if (isDarkSurface()) MaterialTheme.colorScheme.surfaceBright else Color.White
+    val silhouette = remember { FolderSilhouetteShape() }
+
+    Box(modifier.fillMaxSize()) {
+        if (hasDocuments) {
+            // One slot further back than the cascade's own last card -- same offset step, so it
+            // reads as one more leaf in the stack rather than a second, competing motif.
+            DocumentSheet(
+                rotation = -4f,
+                tonalElevation = 1.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(x = (specs.size * 6).dp - 6.dp, y = PEEK_BREAK_Y + (specs.size * 3).dp)
+                    .zIndex(-1f),
+            )
+        }
+        // Drawn directly rather than through StackedThumbs: each card here wants its own
+        // softShadow wrapper for the "tiny shadow" sticker look, which StackedThumbs has no
+        // per-card modifier hook to add.
+        specs.take(3).forEachIndexed { index, spec ->
+            StackCard(
+                entry = spec.entry,
+                fallbackName = spec.fallbackName,
+                kind = spec.kind,
+                size = PEEK_THUMB_SIZE,
+                rotation = PEEK_TILTS.getOrElse(index) { 0f },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(x = PEEK_OFFSETS_X.getOrElse(index) { 0.dp }, y = PEEK_BREAK_Y + PEEK_OFFSETS_Y.getOrElse(index) { 0.dp })
+                    .zIndex((3 - index).toFloat())
+                    .softShadow(ShadowLevel.SM, PEEK_CARD_SHAPE),
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .softShadow(ShadowLevel.MD, silhouette)
+                .clip(silhouette)
+                .border(3.dp, stickerOutline, silhouette),
+        ) {
+            // peek.thumbs can be empty here (a folder with no media, or none loaded yet) now that
+            // every folder reaches this register under Fylz -- fall back to a plain tinted pane
+            // instead of `.first()`ing an empty list.
+            if (peek.thumbs.isNotEmpty()) {
+                FrostedBackdrop(peek.thumbs.first(), Modifier.fillMaxSize())
+            } else {
+                Box(Modifier.fillMaxSize().background(washTone))
+            }
+            Box(Modifier.fillMaxSize().background(washTone.copy(alpha = 0.55f)))
+            if (appearance != null && appearance.stickers.isNotEmpty()) {
+                FolderStickerLayer(appearance.stickers, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            }
+            if (showLabel) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                        Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            itemCountLabel(peek.itemCount),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The folder's own tab+body silhouette as one outline -- the exact two rectangles
+ * [SolidFolderFace] draws as separate `Surface`s ([FOLDER_TAB_WIDTH_FRACTION] /
+ * [FOLDER_TAB_HEIGHT_FRACTION] / [FOLDER_BODY_HEIGHT_FRACTION]), unioned into a single [Path] so
+ * [FrostedFolderFace] can clip, stroke and shadow one silhouette instead of two independently
+ * bordered rectangles. The tab's own height fraction already runs past where the body starts
+ * ([FOLDER_TAB_HEIGHT_FRACTION] 0.18 vs. the body's own top at `1 - FOLDER_BODY_HEIGHT_FRACTION`
+ * = 0.15), so the union has no seam to paper over.
+ */
+private class FolderSilhouetteShape(
+    private val tabWidthFraction: Float = FOLDER_TAB_WIDTH_FRACTION,
+    private val tabHeightFraction: Float = FOLDER_TAB_HEIGHT_FRACTION,
+    private val bodyHeightFraction: Float = FOLDER_BODY_HEIGHT_FRACTION,
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        with(density) {
+            val bodyRadius = FylzGeometry.RadiusLg.toPx()
+            val tabRadius = FylzGeometry.RadiusSm.toPx()
+            val bodyTop = size.height * (1f - bodyHeightFraction)
+            val body = Path().apply {
+                addRoundRect(RoundRect(Rect(0f, bodyTop, size.width, size.height), CornerRadius(bodyRadius)))
+            }
+            val tabWidth = size.width * tabWidthFraction
+            val tabHeight = size.height * tabHeightFraction
+            val tab = Path().apply {
+                addRoundRect(
+                    RoundRect(
+                        rect = Rect(0f, 0f, tabWidth, tabHeight),
+                        topLeft = CornerRadius(tabRadius),
+                        topRight = CornerRadius(bodyRadius),
+                        bottomRight = CornerRadius.Zero,
+                        bottomLeft = CornerRadius.Zero,
+                    ),
+                )
+            }
+            val union = Path().apply { op(body, tab, PathOperation.Union) }
+            Outline.Generic(union)
+        }
+}
+
 /** How many of a folder's stickers actually draw -- past this the cascade would crowd the name panel below it. */
 private const val STICKERS_DRAWN = 3
 private val STICKER_SIZE = 22.dp
+private val STICKER_BORDER_WIDTH = 2.dp
 
 /**
  * The chosen sticker set, drawn as a small overlapping row -- SVGs from `assets/stickers/`, never
  * emoji (see [io.github.mbaliga.fylz.appearance.FolderStickers]). Only [FrostedFolderFace] ever
  * calls this: it is the one register with a pane of glass for a sticker to sit on.
+ *
+ * Each sticker gets the same 2dp white (surfaceBright in dark) die-cut border the peek thumbnails
+ * wear -- Build 11.5's sticker treatment applied uniformly, so a folder's front-facing stickers and
+ * its peeking photos read as the same kind of object rather than two different affordances.
  */
 @Composable
 private fun FolderStickerLayer(stickers: List<String>, modifier: Modifier) {
+    val borderColor = if (isDarkSurface()) MaterialTheme.colorScheme.surfaceBright else Color.White
     Row(modifier, horizontalArrangement = Arrangement.spacedBy((-6).dp)) {
         stickers.take(STICKERS_DRAWN).forEach { key ->
-            AsyncImage(
-                model = "file:///android_asset/stickers/$key.svg",
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.size(STICKER_SIZE),
-            )
+            Box(
+                Modifier
+                    .size(STICKER_SIZE)
+                    .softShadow(ShadowLevel.SM, CircleShape)
+                    .clip(CircleShape)
+                    .background(borderColor)
+                    .border(STICKER_BORDER_WIDTH, borderColor, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    model = "file:///android_asset/stickers/$key.svg",
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(STICKER_SIZE - STICKER_BORDER_WIDTH * 2),
+                )
+            }
         }
     }
 }

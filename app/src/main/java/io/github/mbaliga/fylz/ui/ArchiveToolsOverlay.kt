@@ -8,24 +8,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +34,11 @@ import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
 import io.github.mbaliga.fylz.ui.picker.PickerOutcome
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileFieldState
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -304,33 +300,31 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
                         "Create standard or AES-256 password-protected ZIP files, or inspect and safely extract an existing ZIP.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Button(
+                    // TactileButton carries a single text label, no icon slot -- the leading
+                    // Archive/Unarchive glyphs these two buttons used to show are dropped here,
+                    // same as every other icon+label Button/OutlinedButton this conversion touches.
+                    TactileButton(
+                        text = "Create ZIP",
                         onClick = {
                             onDismiss()
                             pick = ArchivePick.Sources
                         },
                         enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Archive, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Create ZIP")
-                    }
-                    OutlinedButton(
+                        fillWidth = true,
+                    )
+                    TactileButton(
+                        text = "Inspect and extract ZIP",
                         onClick = {
                             onDismiss()
                             pick = ArchivePick.Archive
                         },
+                        style = TactileButtonStyle.SECONDARY,
                         enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Unarchive, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Inspect and extract ZIP")
-                    }
+                        fillWidth = true,
+                    )
                 }
             },
-            confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+            confirmButton = { TactileButton(text = "Done", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
         )
     }
 
@@ -412,42 +406,53 @@ private fun ArchivePasswordDialog(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Switch(checked = encrypted, onCheckedChange = { encrypted = it })
+                        TactileSwitch(checked = encrypted, onCheckedChange = { encrypted = it })
                     }
                 }
                 if (encrypted) {
-                    OutlinedTextField(
+                    TactileField(
                         value = password,
                         onValueChange = { password = it.take(256) },
-                        label = { Text("Password") },
+                        label = "Password",
                         visualTransformation = PasswordVisualTransformation(),
+                        mandatory = true,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     if (creating) {
-                        OutlinedTextField(
+                        // The Error state below reuses the exact same length/match condition that
+                        // already gates `valid` (and therefore the confirm button) -- it is not a
+                        // new validation rule, just that existing rule surfaced through the field's
+                        // own slash/border colour instead of a plain caption.
+                        val confirmProblem = when {
+                            password.length < 8 -> "Use at least 8 characters."
+                            confirmation.isNotEmpty() && password != confirmation -> "Passwords do not match."
+                            else -> null
+                        }
+                        TactileField(
                             value = confirmation,
                             onValueChange = { confirmation = it.take(256) },
-                            label = { Text("Confirm password") },
+                            label = "Confirm password",
                             visualTransformation = PasswordVisualTransformation(),
-                            supportingText = {
-                                Text(
-                                    when {
-                                        password.length < 8 -> "Use at least 8 characters."
-                                        confirmation.isNotEmpty() && password != confirmation -> "Passwords do not match."
-                                        else -> "Fylz cannot recover a forgotten archive password."
-                                    },
-                                )
-                            },
+                            state = confirmProblem?.let(TactileFieldState::Error) ?: TactileFieldState.Idle,
+                            mandatory = true,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                        if (confirmProblem == null) {
+                            Text(
+                                "Fylz cannot recover a forgotten archive password.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
         },
         confirmButton = {
-            Button(
+            TactileButton(
+                text = "Choose destination",
                 onClick = {
                     val result = if (encrypted) password.toCharArray() else null
                     password = ""
@@ -455,11 +460,9 @@ private fun ArchivePasswordDialog(
                     onConfirm(result)
                 },
                 enabled = valid,
-            ) {
-                Text(if (creating) "Choose destination" else "Choose destination")
-            }
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -504,11 +507,15 @@ private fun ArchiveInspectionDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onExtract, enabled = allowed && !busy) {
-                Text(if (inspection.encrypted) "Enter password" else "Choose destination")
-            }
+            TactileButton(
+                text = if (inspection.encrypted) "Enter password" else "Choose destination",
+                onClick = onExtract,
+                enabled = allowed && !busy,
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+        dismissButton = {
+            TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY, enabled = !busy)
+        },
     )
 }
 

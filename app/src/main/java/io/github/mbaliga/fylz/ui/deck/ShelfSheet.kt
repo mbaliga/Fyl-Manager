@@ -5,14 +5,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 
 /**
  * The persistent Shelf, riffled the same way a live selection is: [FileDeckSurface] plus the one
@@ -84,12 +84,15 @@ private fun ShelfOpsRow(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            FilledTonalButton(onClick = onCopyHere, enabled = canCommitHere) { Text("Copy here") }
-            FilledTonalButton(onClick = onMoveHere, enabled = canCommitHere) { Text("Move here") }
-            TextButton(onClick = onCompress) { Text("Compress") }
-            TextButton(onClick = onNewFolderWith) { Text("New folder with") }
-            TextButton(onClick = onShare) { Text("Share") }
-            TextButton(onClick = onClear) { Text("Clear") }
+            // Both commits are PRIMARY, not PRIMARY+SECONDARY: Copy here and Move here are equally
+            // weighted destination commits, and giving one a lesser SECONDARY cap would read as a
+            // hierarchy that doesn't exist between them.
+            TactileButton(text = "Copy here", onClick = onCopyHere, style = TactileButtonStyle.PRIMARY, enabled = canCommitHere)
+            TactileButton(text = "Move here", onClick = onMoveHere, style = TactileButtonStyle.PRIMARY, enabled = canCommitHere)
+            TactileButton(text = "Compress", onClick = onCompress, style = TactileButtonStyle.SECONDARY)
+            TactileButton(text = "New folder with", onClick = onNewFolderWith, style = TactileButtonStyle.SECONDARY)
+            TactileButton(text = "Share", onClick = onShare, style = TactileButtonStyle.SECONDARY)
+            TactileButton(text = "Clear", onClick = onClear, style = TactileButtonStyle.SECONDARY)
         }
         if (!canCommitHere) {
             Text(
@@ -99,7 +102,7 @@ private fun ShelfOpsRow(
             )
         }
         if (hasMissing) {
-            TextButton(onClick = onRemoveMissing) { Text("Remove missing") }
+            TactileButton(text = "Remove missing", onClick = onRemoveMissing, style = TactileButtonStyle.SECONDARY)
         }
     }
 }

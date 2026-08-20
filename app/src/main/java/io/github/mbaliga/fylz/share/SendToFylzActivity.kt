@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -39,6 +38,8 @@ import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.staging.ShelfItem
 import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.storage.toItemRef
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
@@ -157,9 +158,11 @@ private fun InboxSetupScreen(fileCount: Int, onChooseFolder: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
             )
-            Button(onClick = onChooseFolder) {
-                Text(stringResource(R.string.share_choose_inbox_folder))
-            }
+            TactileButton(
+                text = stringResource(R.string.share_choose_inbox_folder),
+                onClick = onChooseFolder,
+                style = TactileButtonStyle.PRIMARY,
+            )
         }
     }
 }

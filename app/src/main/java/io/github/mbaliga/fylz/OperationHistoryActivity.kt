@@ -16,14 +16,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -39,6 +37,8 @@ import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import java.text.DateFormat
 import java.util.Date
@@ -79,19 +79,19 @@ private fun OperationHistoryScreen(
             TopAppBar(
                 title = { Text("Activity") },
                 navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
+                    TactileButton(text = "Back", onClick = onBack, style = TactileButtonStyle.SECONDARY)
                 },
                 actions = {
-                    TextButton(
+                    TactileButton(
+                        text = "Clear finished",
                         onClick = { confirmClear = true },
+                        style = TactileButtonStyle.SECONDARY,
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
                                 it.state == OperationState.CANCELLED
                         },
-                    ) {
-                        Text("Clear finished")
-                    }
+                    )
                 },
             )
         },
@@ -147,16 +147,18 @@ private fun OperationHistoryScreen(
                 )
             },
             confirmButton = {
-                Button(
+                TactileButton(
+                    text = "Clear",
                     onClick = {
                         journal.clearFinished()
                         confirmClear = false
                         refresh()
                     },
-                ) { Text("Clear") }
+                    style = TactileButtonStyle.PRIMARY,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+                TactileButton(text = "Cancel", onClick = { confirmClear = false }, style = TactileButtonStyle.SECONDARY)
             },
         )
     }

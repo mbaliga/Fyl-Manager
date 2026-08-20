@@ -2,7 +2,9 @@ package io.github.mbaliga.fylz.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -56,15 +58,16 @@ private fun AccentPreset.colors(): AccentColors = when (this) {
 }
 
 /**
- * Builds the ten roles the app actually styles, all riding [family] -- the one seam that lets
- * CLI and Vintage pull every label onto a monospace face without every call site deciding that
- * for themselves.
+ * Builds all fifteen M3 [Typography] roles on [family] -- the one seam that lets CLI and Vintage
+ * pull every label onto a monospace face without every call site deciding that for themselves.
  *
- * Widened from the original six: [labelLarge], [labelSmall], [bodySmall] and [titleLarge] used to
- * fall through to Compose's own default type scale, which is why the selection pill, room
- * headings, the breadcrumb and the search hint kept reading in the system font even once [family]
- * carried the app's own look everywhere else. Sizes and line heights otherwise match Material 3's
- * own scale for these roles -- only the family and weight are the app's.
+ * Build 11.5 closes the last of the Roboto leaks: [bodyLarge], [titleSmall], [displaySmall],
+ * [headlineLarge] and [headlineMedium] were never overridden, so text riding those roles (body
+ * copy, list subtitles, big numerals) quietly fell through to Compose's system-default Roboto
+ * even though every *other* role already carried the app's own face -- exactly the kind of
+ * font-family drift the owner's "only Hyle fonts" note was about. Sizes/line-heights for the five
+ * newly-added roles match Material 3's own baseline scale for that role; only the family and
+ * weight are the app's, same as the roles that were already overridden.
  */
 private fun fylzTypography(family: FontFamily) = Typography(
     // No display-sized surface used these before the landing hero; the wordmark itself stays on
@@ -81,6 +84,24 @@ private fun fylzTypography(family: FontFamily) = Typography(
         fontWeight = FontWeight.SemiBold,
         fontSize = 45.sp,
         lineHeight = 52.sp,
+    ),
+    displaySmall = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 36.sp,
+        lineHeight = 44.sp,
+    ),
+    headlineLarge = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 32.sp,
+        lineHeight = 40.sp,
+    ),
+    headlineMedium = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 28.sp,
+        lineHeight = 36.sp,
     ),
     headlineSmall = TextStyle(
         fontFamily = family,
@@ -99,6 +120,18 @@ private fun fylzTypography(family: FontFamily) = Typography(
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         lineHeight = 22.sp,
+    ),
+    titleSmall = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = family,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily = family,
@@ -155,39 +188,66 @@ fun FylzTheme(
             dynamicDarkColorScheme(context)
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             dynamicLightColorScheme(context)
+        // Ground colour normalized to the spec's near-white/near-black family, decoupled from the
+        // moss/ink/clay/electric accent tint that used to leak into surface/background themselves
+        // (the old FAFCFA/FDFEFD pair reads as pure white with a faint green cast, not the
+        // "near-white (#F7F8FA..#F9F9F9 family), NOT pure white" the Build 11.5 spec calls for).
+        // surfaceContainer/surfaceContainerHigh step down from that same neutral family rather than
+        // the old moss-tinted ramp, so elevation reads as pure lightness change, not a colour shift.
         darkTheme -> darkColorScheme(
             primary = accent.darkPrimary,
             secondary = accent.darkSecondary,
-            surface = Color(0xFF111413),
-            surfaceContainer = Color(0xFF191D1B),
-            surfaceContainerHigh = Color(0xFF232825),
-            background = Color(0xFF0E1110),
+            surface = Color(0xFF121314),
+            surfaceContainer = Color(0xFF1B1C1E),
+            surfaceContainerHigh = Color(0xFF26282B),
+            background = Color(0xFF0E0F10),
         )
         else -> lightColorScheme(
             primary = accent.lightPrimary,
             secondary = accent.lightSecondary,
-            surface = Color(0xFFFAFCFA),
-            surfaceContainer = Color(0xFFF1F4F1),
-            surfaceContainerHigh = Color(0xFFE8ECE8),
-            background = Color(0xFFFDFEFD),
+            surface = Color(0xFFF8F9FA),
+            surfaceContainer = Color(0xFFEEEFF1),
+            surfaceContainerHigh = Color(0xFFE3E5E8),
+            background = Color(0xFFF9F9FA),
         )
     }
 
-    // Bundled rather than the platform's stock sans -- Space Grotesk's geometric forms are what
-    // the rest of the chrome (tab band, selection row, actions bar) is built around, and a system
-    // font substitution here would make every other role in this Typography visibly disagree with
-    // them. VINTAGE/CLI still win outright via themeStyle.monospace, unchanged from before.
-    val spaceGrotesk = remember {
+    // Bundled rather than the platform's stock sans -- Build 11.5 swaps Space Grotesk (a stock
+    // outside import) for Hyle Grotesk Classic, the Hyle-native face built on Space Grotesk with
+    // Archivo letterforms substituted (see docs/FONTS.md): the owner's "only Hyle fonts" note,
+    // satisfied without losing the geometric-grotesk look the rest of the chrome (tab band,
+    // selection row, actions bar -- ChromeTokens.kt's own chromeFontFamily()) is built around.
+    // Light rides along even though no role above requests it yet, so it's available the moment
+    // one does rather than needing a second FontFamily edit here. VINTAGE/CLI still win outright
+    // via themeStyle.monospace, unchanged from before.
+    val hyleGroteskClassic = remember {
         FontFamily(
-            Font(R.font.space_grotesk_regular, FontWeight.Normal),
-            Font(R.font.space_grotesk_medium, FontWeight.Medium),
-            Font(R.font.space_grotesk_bold, FontWeight.Bold),
+            Font(R.font.hyle_grotesk_classic_light, FontWeight.Light),
+            Font(R.font.hyle_grotesk_classic_regular, FontWeight.Normal),
+            Font(R.font.hyle_grotesk_classic_medium, FontWeight.Medium),
+            Font(R.font.hyle_grotesk_classic_bold, FontWeight.Bold),
+        )
+    }
+
+    // Hyle's radius vocabulary caps at 16dp (FylzGeometry.RadiusXl) -- M3's stock Shapes() default
+    // (extraLarge = 28dp) is exactly the "20dp cards" the owner flagged as off-vocabulary, and
+    // FylzTheme previously passed no Shapes at all, so every unstyled Card/Surface/Sheet was
+    // quietly drawing that stock ramp. extraLarge collapses onto the same 16dp as large because
+    // Hyle has no radius step above RadiusXl.
+    val shapes = remember {
+        Shapes(
+            extraSmall = RoundedCornerShape(FylzGeometry.RadiusSm),
+            small = RoundedCornerShape(FylzGeometry.RadiusMd),
+            medium = RoundedCornerShape(FylzGeometry.RadiusLg),
+            large = RoundedCornerShape(FylzGeometry.RadiusXl),
+            extraLarge = RoundedCornerShape(FylzGeometry.RadiusXl),
         )
     }
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = fylzTypography(if (themeStyle.monospace) FontFamily.Monospace else spaceGrotesk),
+        typography = fylzTypography(if (themeStyle.monospace) FontFamily.Monospace else hyleGroteskClassic),
+        shapes = shapes,
         content = content,
     )
 }

@@ -3,12 +3,14 @@ package io.github.mbaliga.fylz.ui
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,8 +32,10 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Add
@@ -38,12 +43,10 @@ import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
@@ -52,31 +55,21 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -175,7 +168,13 @@ import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CliListing
 import io.github.mbaliga.fylz.ui.components.CommandPill
 import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
+import io.github.mbaliga.fylz.ui.components.CountChip
+import io.github.mbaliga.fylz.ui.components.DogEarPage
 import io.github.mbaliga.fylz.ui.components.FolderFace
+import io.github.mbaliga.fylz.ui.components.FolderHero
+import io.github.mbaliga.fylz.ui.components.LeftTimelineRail
+import io.github.mbaliga.fylz.ui.components.dateSections
+import io.github.mbaliga.fylz.ui.components.groupByDay
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.LocalFolderAppearance
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
@@ -200,6 +199,11 @@ import io.github.mbaliga.fylz.ui.chrome.TabBandItem
 import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
 import io.github.mbaliga.fylz.ui.search.PullDownSearchState
 import io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import io.github.mbaliga.fylz.ui.tags.LocalTagsFor
 import io.github.mbaliga.fylz.ui.tags.TagBrowser
 import io.github.mbaliga.fylz.ui.tags.TagMark
@@ -215,9 +219,13 @@ import io.github.mbaliga.fylz.ui.deck.toDeckItem
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
 import io.github.mbaliga.fylz.ui.picker.PickerOutcome
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.softShadow
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.Dispatchers
@@ -332,6 +340,25 @@ private const val SHELF_PROBE_PARALLELISM = 6
 
 /** How long a first back press at the root leaves "press again to exit" armed. */
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+
+/**
+ * The size [EntryThumbnail] is asked to render at inside a [DogEarPage] frame (Build 11.5 frame
+ * 2's document grid) -- deliberately larger than any realistic 3-column cell so [DogEarPage]'s own
+ * clip crops the overflow into a fill, per that composable's own KDoc ("size it to at least the
+ * frame's own bounds"); [EntryThumbnail] has no aspect-fill mode of its own to ask for instead.
+ */
+private val DOC_THUMB_SIZE = 240.dp
+
+/**
+ * GRID's own `GridCells.Adaptive` minimum cell width (Build 11.5 frames 1/3's "2-column rhythm").
+ * At a 440dp phone frame minus [listingPaddingFor]'s 16dp margins and the grid's own 24dp gutter,
+ * two cells of this width (2*176 + 24 = 376dp) fit with room to spare while three (3*176 + 48 =
+ * 576dp) do not -- Adaptive settles on exactly two columns there, same as the reference frames,
+ * and opens up to more on a tablet's wider FileBrowser pane the way a hardcoded `Fixed(2)` never
+ * would. COMFORTABLE-baseline like every other [Density] literal; scaled the same way at the one
+ * call site rather than added to that shared table, since nothing else in the app reads it.
+ */
+private const val GRID_MIN_CELL_WIDTH = 176
 
 /**
  * The app, and the owner of its theme.
@@ -2162,22 +2189,26 @@ private fun FylzV1Workspace(
                             // close glyph is the one clear affordance now, matching a live
                             // selection to exactly one way to leave it instead of three.
                             if (activeTab != null) {
-                                IconButton(onClick = ::selectAllVisible) {
-                                    Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
-                                }
+                                TactileIconKey(
+                                    icon = Icons.Outlined.SelectAll,
+                                    contentDescription = stringResource(R.string.browser_select_all),
+                                    onClick = ::selectAllVisible,
+                                )
                             }
                         } else {
                             // Composed only while the Shelf holds something -- zero chrome at
                             // rest, and visible regardless of whether a folder tab is open, since
                             // the Shelf outlives any one of them.
                             if (shelfItems.isNotEmpty()) {
-                                IconButton(onClick = { deckOpen = DeckSource.SHELF }) {
-                                    BadgedBox(badge = { Badge { Text("${shelfItems.size}") } }) {
-                                        Icon(
-                                            Icons.Outlined.Inventory2,
-                                            contentDescription = "The Shelf, ${shelfItems.size} items",
-                                        )
-                                    }
+                                // BadgedBox stays stock M3 -- it is a badge-overlay layout wrapper,
+                                // not one of the controls this wave converts, and it composes fine
+                                // around a TactileIconKey the same way it did around the old Icon.
+                                BadgedBox(badge = { Badge { Text("${shelfItems.size}") } }) {
+                                    TactileIconKey(
+                                        icon = Icons.Outlined.Inventory2,
+                                        contentDescription = "The Shelf, ${shelfItems.size} items",
+                                        onClick = { deckOpen = DeckSource.SHELF },
+                                    )
                                 }
                             }
                             // Both act on the listing; on the storage home surface there is no
@@ -2220,9 +2251,11 @@ private fun FylzV1Workspace(
                                 // both moved to the one row that is always on screen while a
                                 // folder is open.
                                 SortMenu(sortSpec, onChange = { sortSpec = it })
-                                IconButton(onClick = { refresh() }) {
-                                    Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
-                                }
+                                TactileIconKey(
+                                    icon = Icons.Outlined.Refresh,
+                                    contentDescription = "Refresh",
+                                    onClick = { refresh() },
+                                )
                             }
                         }
                     },
@@ -2476,13 +2509,17 @@ private fun FylzV1Workspace(
         // listing with SearchResults — either way the strip would map a list nobody is seeing.
         // CANVAS has no list index to scrub (a freeform layout isn't a sequence), and CLI draws
         // its own tree instead of any of the five view modes below, so neither reaches here either.
+        // Build 11.5: nor does the STACKS+DATE arrangement (frames 2/4) -- LeftTimelineRail is its
+        // own, quieter left-edge stand-in (FileBrowser's own STACKS branch), and the two rails
+        // drawn at once would be a second, disagreeing scrubber for the same list.
         if (
             activeTab != null &&
             visibleEntries.size > 1 &&
             selectedEntries.isEmpty() &&
             query.isBlank() &&
             viewMode != ViewMode.CANVAS &&
-            themeStyle != ThemeStyle.CLI
+            themeStyle != ThemeStyle.CLI &&
+            !(viewMode == ViewMode.STACKS && sortSpec.groupBy == GroupAxis.DATE)
         ) {
             val grid = viewMode == ViewMode.GRID
             // STACKS interleaves headers, so the lazy list's own index no longer lines up with an
@@ -2907,7 +2944,7 @@ private fun FylzV1Workspace(
             onDismissRequest = { duplicateResult = null },
             title = { Text("Duplicate files") },
             text = { Text(result) },
-            confirmButton = { TextButton(onClick = { duplicateResult = null }) { Text("Done") } },
+            confirmButton = { TactileButton(text = "Done", onClick = { duplicateResult = null }, style = TactileButtonStyle.SECONDARY) },
         )
     }
 
@@ -3197,21 +3234,31 @@ private fun LibraryRail(
     Surface(modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Workspace", style = MaterialTheme.typography.titleMedium)
-            FilledTonalButton(onClick = onOpenRoot, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.FolderOpen, null)
-                Text("Open root", Modifier.padding(start = 8.dp))
-            }
-            OutlinedButton(onClick = onToggleFavorite, enabled = activeTab != null, modifier = Modifier.fillMaxWidth()) {
-                Icon(
-                    if (activeTab?.current?.uri in favorites.map { it.uri }) Icons.Outlined.Star else Icons.Outlined.StarBorder,
-                    null,
-                )
-                Text("Favourite", Modifier.padding(start = 8.dp))
-            }
-            OutlinedButton(onClick = onRecycle, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.RestoreFromTrash, null)
-                Text("Recycle Bin", Modifier.padding(start = 8.dp))
-            }
+            // TactileButton (the kit's own fixed contract) is a text-only keycap -- no leading-icon
+            // slot -- so the FolderOpen/Star-StarBorder/RestoreFromTrash glyphs these three used to
+            // carry are dropped here. Most visibly on "Favourite": the star used to be the ONLY
+            // channel telling the current folder is already favourited (the label itself never
+            // changed); that state cue has no home left on this button now. Flagged loudly for the
+            // owner/a later pass -- either TactileButton grows an optional leading-icon slot
+            // upstream, or this call site moves to a differently-shaped tactile control.
+            TactileButton(
+                text = "Open root",
+                onClick = onOpenRoot,
+                fillWidth = true,
+            )
+            TactileButton(
+                text = "Favourite",
+                onClick = onToggleFavorite,
+                enabled = activeTab != null,
+                style = TactileButtonStyle.SECONDARY,
+                fillWidth = true,
+            )
+            TactileButton(
+                text = "Recycle Bin",
+                onClick = onRecycle,
+                style = TactileButtonStyle.SECONDARY,
+                fillWidth = true,
+            )
             HorizontalDivider()
             Text("FAVOURITES", style = MaterialTheme.typography.labelSmall)
             favorites.forEach { Text(it.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -3295,6 +3342,13 @@ private fun FileBrowser(
     // actually draws -- harmless today, but a trap for whichever of the two grows a persistent
     // bottom affordance next. Hoisted here so both get the real answer instead of an assumed zero.
     val bottomChromeReserve = TabBandHeight + if (selectionActive) SelectionRowHeight else 0.dp
+
+    // Build 11.5 frames 2/4: STACKS grouped by date gets the date-sectioned document grid (hero,
+    // dog-eared thumbnails, left rail) instead of the plain header+row listing every other group
+    // axis still uses -- read wherever GRID's own grid-vs-list branching already is (listAtTop,
+    // the render `when` below), so the two view modes that actually need a LazyGridState agree on
+    // exactly the same condition instead of two independently maintained checks drifting apart.
+    val dateArrangement = viewMode == ViewMode.STACKS && sortSpec.groupBy == GroupAxis.DATE
 
     // With no tab open the browser shows the storage home surface, the desktop, or -- once
     // Settings has picked a subject and a view other than Locations/Desktop -- that subject
@@ -3441,12 +3495,12 @@ private fun FileBrowser(
                 )
             }
         } else {
-            // Claimed only once the active list is scrolled to its own absolute top -- GRID reads
-            // its own LazyGridState, every other branch below (CLI, SearchResults, DETAILS,
-            // STACKS, the plain list) shares [listState], since exactly one of them is ever on
-            // screen at a time (the `when` in `content` below is as mutually exclusive as this
-            // one was).
-            val listAtTop = if (viewMode == ViewMode.GRID) {
+            // Claimed only once the active list is scrolled to its own absolute top -- GRID and
+            // the STACKS+DATE arrangement (frames 2/4's document grid, [dateArrangement]) read
+            // [gridState], every other branch below (CLI, SearchResults, DETAILS, plain STACKS,
+            // the plain list) shares [listState], since exactly one of them is ever on screen at a
+            // time (the `when` in `content` below is as mutually exclusive as this one was).
+            val listAtTop = if (viewMode == ViewMode.GRID || dateArrangement) {
                 gridState.firstVisibleItemIndex == 0 && gridState.firstVisibleItemScrollOffset == 0
             } else {
                 listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
@@ -3522,31 +3576,52 @@ private fun FileBrowser(
                             modifier = listModifier,
                         )
                     } else if (viewMode == ViewMode.GRID) {
+                        // Build 11.5 frames 1/3: a directory cell is FolderGridCell (the floating
+                        // FolderFace + centered name + honest CountChip, no card behind it), never
+                        // FileCard -- GRID_MIN_CELL_WIDTH plus the 24dp gutter below is sized so
+                        // Adaptive lands on exactly two columns at phone widths (the spec's own
+                        // "2-column rhythm for directories") while still opening up to more columns
+                        // on a tablet's wider FileBrowser pane, unlike a hardcoded GridCells.Fixed(2)
+                        // would. Files keep FileCard, now hairline+softShadow bordered instead of a
+                        // flat colour fill -- the same two-primitive depth language every other flat
+                        // card in this pass adopted.
                         LazyVerticalGrid(
-                            columns = GridCells.Adaptive(Density.gridMinCellWidth(density)),
+                            columns = GridCells.Adaptive(GRID_MIN_CELL_WIDTH.dp * Density.scale(density)),
                             state = gridState,
-                            contentPadding = listingPaddingFor(8.dp, bottomChromeReserve),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = listingPaddingFor(16.dp, bottomChromeReserve),
+                            horizontalArrangement = Arrangement.spacedBy(24.dp),
+                            verticalArrangement = Arrangement.spacedBy(40.dp),
                             modifier = listModifier,
                         ) {
                             items(entries, key = { it.uri.toString() }) { entry ->
-                                FileCard(
-                                    entry = entry,
-                                    selected = entry.uri in selectedUris,
-                                    focused = entry.uri == focusedEntry?.uri,
-                                    selectionActive = selectionActive,
-                                    onOpen = onOpen,
-                                    onOpenExternal = onOpenExternal,
-                                    onToggleSelection = onToggleSelection,
-                                    cluster = cluster,
-                                    treeUri = activeTab.treeUri,
-                                    repository = repository,
-                                    showHidden = showHidden,
-                                    folderPeeks = folderPeeks,
-                                    cardHeight = Density.gridCardHeight(density),
-                                    thumbSize = Density.gridThumb(density),
-                                )
+                                if (entry.isDirectory) {
+                                    FolderGridCell(
+                                        entry = entry,
+                                        selected = entry.uri in selectedUris,
+                                        focused = entry.uri == focusedEntry?.uri,
+                                        selectionActive = selectionActive,
+                                        onOpen = onOpen,
+                                        onToggleSelection = onToggleSelection,
+                                        cluster = cluster,
+                                        treeUri = activeTab.treeUri,
+                                        repository = repository,
+                                        showHidden = showHidden,
+                                        folderPeeks = folderPeeks,
+                                    )
+                                } else {
+                                    FileCard(
+                                        entry = entry,
+                                        selected = entry.uri in selectedUris,
+                                        focused = entry.uri == focusedEntry?.uri,
+                                        selectionActive = selectionActive,
+                                        onOpen = onOpen,
+                                        onOpenExternal = onOpenExternal,
+                                        onToggleSelection = onToggleSelection,
+                                        cluster = cluster,
+                                        cardHeight = Density.gridCardHeight(density),
+                                        thumbSize = Density.gridThumb(density),
+                                    )
+                                }
                             }
                         }
                     } else if (viewMode == ViewMode.DETAILS) {
@@ -3573,6 +3648,138 @@ private fun FileBrowser(
                                     )
                                 }
                             }
+                        }
+                    } else if (dateArrangement) {
+                        // Build 11.5 frames 2/4: the date-sectioned document grid. FolderHero
+                        // carries the open folder's own identity, B's dateSections() grid draws
+                        // DogEarPage-framed thumbnails three per row, LeftTimelineRail stands in
+                        // for the right-edge scrubber this arrangement hides (see dateArrangement's
+                        // own gate above the scrubber, and the [dateArrangement] KDoc for why
+                        // [gridState], not [listState], is what tracks it).
+                        val context = LocalContext.current
+                        val undatedLabel = stringResource(R.string.browse_date_undated)
+                        // A plain Resources call, not pluralStringResource: groupByDay's own
+                        // countLabel parameter is a plain (Int) -> String, not a @Composable one,
+                        // so a lambda literal handed to it can never itself call a composable --
+                        // this is the adaptation, kept here rather than in DateSections.kt, that
+                        // still gets real localized plurals out of the same strings_browse.xml
+                        // resource DateSections.kt's own KDoc names for exactly this call site.
+                        val documentCountLabel: (Int) -> String = { n ->
+                            context.resources.getQuantityString(R.plurals.browse_date_document_count, n, n)
+                        }
+                        val dateSectionsList = remember(entries, undatedLabel) {
+                            groupByDay(
+                                entries = entries,
+                                nowMillis = System.currentTimeMillis(),
+                                undatedLabel = undatedLabel,
+                                countLabel = documentCountLabel,
+                            )
+                        }
+                        // Decorative and approximate, per LeftTimelineRail's own contract: each
+                        // section's start as a fraction of the total item count, not a measured
+                        // scroll position -- headers and a 3-wide grid's uneven last row make an
+                        // exact pixel fraction not worth computing for a rail that draws ticks,
+                        // not a scrollbar.
+                        val sectionAnchors = remember(dateSectionsList) {
+                            val total = dateSectionsList.sumOf { it.entries.size }.coerceAtLeast(1)
+                            var seen = 0
+                            dateSectionsList.map { section ->
+                                val anchor = seen.toFloat() / total.toFloat()
+                                seen += section.entries.size
+                                anchor
+                            }
+                        }
+                        // activeTab.current is a FolderLocation (uri+name only), not a FileEntry --
+                        // synthesized honestly here the same way the rest of the app treats
+                        // metadata it doesn't have: null size/lastModified, never a guess. entries
+                        // is this folder's own already-loaded listing, so the peek built from it is
+                        // the real content, not the three-thumbnail-capped lazy peek
+                        // FolderGridCell computes for a *child* folder it hasn't opened yet.
+                        val heroEntry = remember(activeTab.current.uri, activeTab.current.name) {
+                            FileEntry(
+                                uri = activeTab.current.uri,
+                                name = activeTab.current.name,
+                                mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+                                sizeBytes = null,
+                                lastModifiedMillis = null,
+                                flags = 0,
+                                kind = EntryKind.DIRECTORY,
+                            )
+                        }
+                        val heroPeek = remember(entries) {
+                            val thumbs = entries.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
+                            val hasNonMedia = entries.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
+                            FolderPeek(entries.size, thumbs, hasNonMedia)
+                        }
+                        Box(listModifier) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                state = gridState,
+                                // 36dp clears LeftTimelineRail per dateSections()'s own KDoc; the
+                                // other three edges keep the usual 16dp rhythm.
+                                contentPadding = PaddingValues(
+                                    start = 36.dp,
+                                    top = 16.dp,
+                                    end = 16.dp,
+                                    bottom = bottomChromeReserve + 16.dp,
+                                ),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    FolderHero(
+                                        name = activeTab.current.name,
+                                        countLabel = documentCountLabel(entries.size),
+                                        face = { FolderFace(heroEntry, heroPeek, modifier = Modifier.fillMaxSize(), showLabel = false) },
+                                    )
+                                }
+                                dateSections(
+                                    sections = dateSectionsList,
+                                    // dateSections() wraps every DogEarPage in its own plain
+                                    // Modifier.clickable(onEntryClick) -- left a no-op here on
+                                    // purpose. The real gesture surface is entryGestures below,
+                                    // applied one node deeper inside itemContent: Compose's pointer
+                                    // dispatch lets a descendant see (and consume) a pointer event
+                                    // before it bubbles to an ancestor's own detector, so
+                                    // entryGestures resolves every tap, long-press, toggle-
+                                    // selection and cluster-drag exactly as FileRowV1/FileCard/
+                                    // DetailsRow already do, and this outer clickable never has
+                                    // anything left to decide (its own onClick would be the only
+                                    // thing left unconsumed on a plain tap, which is why it stays a
+                                    // harmless no-op rather than a second, competing onOpen). This
+                                    // is the "adapt in FylzV1App, not in DateSections.kt" call:
+                                    // that file's contract is a plain click, and stacking a second
+                                    // gesture detector there is exactly the bug entryGestures'
+                                    // own KDoc describes it replacing.
+                                    onEntryClick = {},
+                                ) { entry ->
+                                    Box(
+                                        Modifier
+                                            .fillMaxSize()
+                                            .entryGestures(
+                                                key = entry.uri,
+                                                selected = entry.uri in selectedUris,
+                                                selectionActive = selectionActive,
+                                                onOpen = { onOpen(entry) },
+                                                onToggleSelection = { onToggleSelection(entry) },
+                                                cluster = cluster,
+                                                onDoubleTap = { onOpenExternal(entry) },
+                                                contentDescription = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
+                                            ),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        EntryThumbnail(entry, size = DOC_THUMB_SIZE)
+                                        if (entry.uri in selectedUris) {
+                                            SelectionMark(themeStyle, Modifier.align(Alignment.TopEnd).padding(4.dp))
+                                        }
+                                    }
+                                }
+                            }
+                            LeftTimelineRail(
+                                sectionAnchors,
+                                modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp),
+                            )
                         }
                     } else if (viewMode == ViewMode.STACKS) {
                         LazyColumn(
@@ -3639,9 +3846,12 @@ private fun FileBrowser(
 private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
-            Icon(Icons.Outlined.Sort, stringResource(R.string.browser_sort))
-        }
+        TactileIconKey(
+            icon = Icons.Outlined.Sort,
+            contentDescription = stringResource(R.string.browser_sort),
+            onClick = { expanded = true },
+            latched = expanded,
+        )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             SortField.entries.forEach { field ->
                 val active = spec.field == field
@@ -3672,7 +3882,7 @@ private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.browser_sort_folders_first)) },
                 trailingIcon = {
-                    Checkbox(
+                    TactileSwitch(
                         checked = spec.foldersFirst,
                         onCheckedChange = { onChange(spec.copy(foldersFirst = it)) },
                     )
@@ -3718,9 +3928,12 @@ private fun ArrangeMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        IconButton(onClick = { expanded = true }) {
-            Icon(viewMode.arrangeIcon(), contentDescription = "Arrange")
-        }
+        TactileIconKey(
+            icon = viewMode.arrangeIcon(),
+            contentDescription = "Arrange",
+            onClick = { expanded = true },
+            latched = expanded,
+        )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             ViewMode.entries.forEach { mode ->
                 DropdownMenuItem(
@@ -4092,6 +4305,14 @@ private fun highlightedName(text: String, ranges: List<IntRange>): AnnotatedStri
     }
 }
 
+/**
+ * A file's grid cell -- directories no longer reach this composable (Build 11.5 frames 1/3 split
+ * them out into [FolderGridCell], which floats a bare [FolderFace] with no card behind it at all,
+ * a fundamentally different visual than a bordered thumbnail tile). [hairline] plus [softShadow]
+ * replace the old flat colour fill's only depth cue -- the same two-primitive language every other
+ * flat card in this pass adopted, and the real one now that a plain colour `Surface` has nothing
+ * to say about depth on its own ([softShadow]'s own KDoc: `tonalElevation` is a no-op here).
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileCard(
@@ -4103,42 +4324,12 @@ private fun FileCard(
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     cluster: ClusterGestureHooks?,
-    treeUri: Uri,
-    repository: DocumentRepository,
-    showHidden: Boolean,
-    folderPeeks: MutableMap<Uri, FolderPeek>,
     cardHeight: Dp = 164.dp,
     thumbSize: Dp = 56.dp,
 ) {
     val themeStyle = LocalThemeStyle.current
-
-    // Read once per (folder uri, showHidden), not once per recomposition -- the cache is what
-    // makes scrolling a card off-screen and back free, and the containsKey guard is what makes
-    // composing the same card twice (e.g. a sort that reorders but doesn't change the entry) free
-    // too. showHidden rides in the key alongside entry.uri so a setting flip restarts this effect
-    // against the fresh map `folderPeeks` was just rebound to, instead of leaving the composable
-    // waiting on a key change that would never come.
-    LaunchedEffect(entry.uri, showHidden) {
-        if (!entry.isDirectory || folderPeeks.containsKey(entry.uri)) return@LaunchedEffect
-        val children = runCatching { repository.listChildren(treeUri, entry.uri) }.getOrDefault(emptyList())
-        val visible = if (showHidden) children else children.filterNot { it.name.startsWith(".") }
-        val thumbs = visible.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
-        val hasNonMedia = visible.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
-        folderPeeks[entry.uri] = FolderPeek(visible.size, thumbs, hasNonMedia)
-    }
-    // derivedStateOf, not a bare folderPeeks[entry.uri] read: SnapshotStateMap invalidates every
-    // reader on ANY key's write, not just this one's -- with dozens of folder cards each writing
-    // their own peek as they resolve, a bare read turns every card's arrival into an O(N) recompose
-    // of every other already-resolved card. Scoping the read behind a derived value means this
-    // card only recomposes when the value at its OWN key actually changes.
-    val peekState by remember(entry.uri, folderPeeks) {
-        derivedStateOf { if (entry.isDirectory) folderPeeks[entry.uri] else null }
-    }
-    // Copied into a plain local: a delegated property's reads aren't smart-castable, and the
-    // uses below rely on the null check narrowing the type.
-    val peek = peekState
-
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
+    val shape = MaterialTheme.shapes.medium
 
     Surface(
         color = when {
@@ -4146,9 +4337,11 @@ private fun FileCard(
             focused -> MaterialTheme.colorScheme.surfaceContainerHigh
             else -> MaterialTheme.colorScheme.surfaceContainer
         },
-        shape = MaterialTheme.shapes.medium,
+        shape = shape,
         modifier = Modifier
             .height(cardHeight)
+            .softShadow(ShadowLevel.SM, shape)
+            .border(1.dp, hairline(), shape)
             .entryGestures(
                 key = entry.uri,
                 selected = selected,
@@ -4156,44 +4349,22 @@ private fun FileCard(
                 onOpen = { onOpen(entry) },
                 onToggleSelection = { onToggleSelection(entry) },
                 cluster = cluster,
-                onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
+                onDoubleTap = { onOpenExternal(entry) },
                 contentDescription = shownName,
             ),
     ) {
         Box(Modifier.fillMaxSize()) {
-            when {
-                // Every resolved directory hands its peek to FolderFace now -- both the
-                // frosted, media-bearing register and the quiet, empty one live inside it (see
-                // ui/components/FolderFace.kt), so this call site no longer branches on
-                // peek.thumbs. Full-bleed, no padding: the frosted register's blurred backdrop
-                // is meant to run to the card's own rounded corners, which the Surface above
-                // already clips to.
-                peek != null -> FolderFace(entry, peek, modifier = Modifier.fillMaxSize())
-                // A directory whose peek hasn't resolved yet: the same bare icon-plus-name
-                // placeholder this card always drew here, before FolderFace existed -- it never
-                // sees this state, only a resolved one.
-                entry.isDirectory -> {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                        EntryThumbnail(entry, size = thumbSize)
-                        Column {
-                            Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-                else -> {
-                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                        EntryThumbnail(entry, size = thumbSize)
-                        Column {
-                            Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
+            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                EntryThumbnail(entry, size = thumbSize)
+                Column {
+                    Text(shownName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        listOfNotNull(entry.kind.readableLabel(), entry.sizeBytes?.let(::formatBytes)).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             // The selection mark sits at the card's own top-right, the same corner the checkbox
@@ -4206,6 +4377,106 @@ private fun FileCard(
         }
     }
 }
+
+/**
+ * A directory's grid cell (Build 11.5 frames 1/3): the folder floats on its own -- [FolderFace]
+ * already draws the sticker outline and soft shadow the frosted register wants (see
+ * `ui/components/FolderFace.kt`'s own `FrostedFolderFace` KDoc) -- with its name and an honest
+ * [CountChip] centered below, outside the face entirely rather than layered over a card surface
+ * the way [FileCard] draws a file's name. Owns the same lazy [FolderPeek] resolution [FileCard]
+ * used to (before directories split out of it): a peek still isn't known the moment a folder
+ * scrolls into view, and [CountChip] renders nothing rather than a guess until [folderPeeks]
+ * resolves it -- the honesty rule [CountChip] itself already holds callers to.
+ */
+@Composable
+private fun FolderGridCell(
+    entry: FileEntry,
+    selected: Boolean,
+    focused: Boolean,
+    selectionActive: Boolean,
+    onOpen: (FileEntry) -> Unit,
+    onToggleSelection: (FileEntry) -> Unit,
+    cluster: ClusterGestureHooks?,
+    treeUri: Uri,
+    repository: DocumentRepository,
+    showHidden: Boolean,
+    folderPeeks: MutableMap<Uri, FolderPeek>,
+) {
+    LaunchedEffect(entry.uri, showHidden) {
+        if (folderPeeks.containsKey(entry.uri)) return@LaunchedEffect
+        val children = runCatching { repository.listChildren(treeUri, entry.uri) }.getOrDefault(emptyList())
+        val visible = if (showHidden) children else children.filterNot { it.name.startsWith(".") }
+        val thumbs = visible.filter { it.kind == EntryKind.IMAGE || it.kind == EntryKind.VIDEO }.take(3)
+        val hasNonMedia = visible.any { it.kind != EntryKind.IMAGE && it.kind != EntryKind.VIDEO }
+        folderPeeks[entry.uri] = FolderPeek(visible.size, thumbs, hasNonMedia)
+    }
+    // derivedStateOf, not a bare folderPeeks[entry.uri] read -- see FileCard's own retired copy of
+    // this same comment for why (SnapshotStateMap invalidates every reader on any key's write).
+    val peekState by remember(entry.uri, folderPeeks) {
+        derivedStateOf { folderPeeks[entry.uri] }
+    }
+    val peek = peekState
+    val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
+    val themeStyle = LocalThemeStyle.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .entryGestures(
+                key = entry.uri,
+                selected = selected,
+                selectionActive = selectionActive,
+                onOpen = { onOpen(entry) },
+                onToggleSelection = { onToggleSelection(entry) },
+                cluster = cluster,
+                contentDescription = shownName,
+            )
+            .then(
+                if (focused) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(FylzGeometry.RadiusXl))
+                } else {
+                    Modifier
+                },
+            )
+            .padding(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+            if (peek != null) {
+                FolderFace(entry, peek, modifier = Modifier.fillMaxSize(), showLabel = false)
+            } else {
+                // Not resolved yet -- the same bare icon placeholder FileCard always drew here
+                // before FolderFace existed, centered in the face's own eventual bounds instead of
+                // top-anchored so the cell doesn't visibly jump once the peek resolves.
+                EntryThumbnail(entry, size = 48.dp)
+            }
+            if (selected) {
+                SelectionMark(themeStyle, Modifier.align(Alignment.TopEnd).padding(6.dp))
+            }
+            TagMark(entry.uri, Modifier.align(Alignment.BottomStart).padding(6.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            shownName,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (peek != null) {
+            Spacer(Modifier.height(4.dp))
+            CountChip(gridFolderCountLabel(peek.itemCount))
+        }
+    }
+}
+
+/** "1 item" vs "12 items" under a grid folder's name -- the same plain-Kotlin idiom
+ *  `FolderFace.kt`'s own private `itemCountLabel` already uses for this exact wording, not a
+ *  string resource: this workstream's own [strings_integration.xml] documents why (raw literals
+ *  are this codebase's established convention for text like this, not the exception). */
+private fun gridFolderCountLabel(count: Int): String = if (count == 1) "1 item" else "$count items"
 
 /**
  * Finder's column header, tap to sort. Not a `stickyHeader` -- it sits above the [LazyColumn]
@@ -4379,9 +4650,9 @@ private fun NameDialog(title: String, initial: String, onDismiss: () -> Unit, on
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
-        text = { OutlinedTextField(value, { value = it }, singleLine = true) },
-        confirmButton = { Button(onClick = { onConfirm(value) }, enabled = value.isNotBlank()) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        text = { TactileField(value = value, onValueChange = { value = it }, singleLine = true) },
+        confirmButton = { TactileButton(text = "Save", onClick = { onConfirm(value) }, enabled = value.isNotBlank()) },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4391,9 +4662,9 @@ private fun TagDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Tags") },
-        text = { OutlinedTextField(value, { value = it }, label = { Text("Comma-separated tags") }) },
-        confirmButton = { Button(onClick = { onConfirm(value) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        text = { TactileField(value = value, onValueChange = { value = it }, label = "Comma-separated tags") },
+        confirmButton = { TactileButton(text = "Save", onClick = { onConfirm(value) }) },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4406,7 +4677,7 @@ private fun TagBrowserDialog(tags: Map<String, Int>, onTagSelected: (String) -> 
         onDismissRequest = onDismiss,
         title = { Text("Tags") },
         text = { TagBrowser(tags = tags, onTagSelected = onTagSelected, modifier = Modifier.heightIn(max = 420.dp)) },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = { TactileButton(text = "Close", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4444,7 +4715,7 @@ private fun TagResultsDialog(tag: String, results: List<FileEntry>, onOpen: (Fil
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = { TactileButton(text = "Close", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4454,9 +4725,9 @@ private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (Str
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Batch rename $count items") },
-        text = { OutlinedTextField(prefix, { prefix = it }, label = { Text("Prefix") }) },
-        confirmButton = { Button(onClick = { onConfirm(prefix) }, enabled = prefix.isNotBlank()) { Text("Rename") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        text = { TactileField(value = prefix, onValueChange = { prefix = it }, label = "Prefix") },
+        confirmButton = { TactileButton(text = "Rename", onClick = { onConfirm(prefix) }, enabled = prefix.isNotBlank()) },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4472,21 +4743,28 @@ private fun AiDialog(entry: FileEntry?, onDismiss: () -> Unit, onRun: (String, S
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Only ${entry?.name.orEmpty()} and bounded preview text will be sent. Fylz will not apply changes automatically.")
-                OutlinedTextField(endpoint, { endpoint = it }, label = { Text("OpenAI-compatible endpoint") })
-                OutlinedTextField(model, { model = it }, label = { Text("Model") })
-                OutlinedTextField(key, { key = it }, label = { Text("API key") })
+                // The key field carries no PasswordVisualTransformation today (none was present
+                // before this swap either) -- behaviour-preserving means this conversion does not
+                // add masking that wasn't already there, but it's worth flagging loudly: an API
+                // key field showing its value in plain text looks like a pre-existing gap a later
+                // pass should close, tactile kit or not.
+                TactileField(value = endpoint, onValueChange = { endpoint = it }, label = "OpenAI-compatible endpoint")
+                TactileField(value = model, onValueChange = { model = it }, label = "Model")
+                TactileField(value = key, onValueChange = { key = it }, label = "API key")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(approved, { approved = it })
-                    Text("I approve this transmission")
+                    TactileSwitch(checked = approved, onCheckedChange = { approved = it })
+                    Text("I approve this transmission", modifier = Modifier.padding(start = 12.dp))
                 }
             }
         },
         confirmButton = {
-            Button(onClick = { onRun(endpoint, model, key, approved) }, enabled = approved && model.isNotBlank() && key.isNotBlank()) {
-                Text("Get proposal")
-            }
+            TactileButton(
+                text = "Get proposal",
+                onClick = { onRun(endpoint, model, key, approved) },
+                enabled = approved && model.isNotBlank() && key.isNotBlank(),
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4501,18 +4779,23 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
         title = { Text("WebDAV") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(url, { url = it }, label = { Text("HTTPS server URL") })
-                OutlinedTextField(username, { username = it }, label = { Text("Username") })
-                OutlinedTextField(password, { password = it }, label = { Text("Password") })
-                OutlinedTextField(path, { path = it }, label = { Text("Path") })
+                TactileField(value = url, onValueChange = { url = it }, label = "HTTPS server URL")
+                TactileField(value = username, onValueChange = { username = it }, label = "Username")
+                // No PasswordVisualTransformation was applied to this field before this swap
+                // either -- preserved exactly, not fixed, per the same note on AiDialog's key
+                // field above.
+                TactileField(value = password, onValueChange = { password = it }, label = "Password")
+                TactileField(value = path, onValueChange = { path = it }, label = "Path")
             }
         },
         confirmButton = {
-            Button(onClick = { onConnect(url, username, password, path) }, enabled = url.startsWith("https://") && username.isNotBlank()) {
-                Text("List folder")
-            }
+            TactileButton(
+                text = "List folder",
+                onClick = { onConnect(url, username, password, path) },
+                enabled = url.startsWith("https://") && username.isNotBlank(),
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
 
@@ -4616,13 +4899,11 @@ private fun LocationsRoom(
                 // location you are actually looking at — which is also the only one where
                 // "close" has an unambiguous meaning.
                 tabs.firstOrNull { it.id == item.id }?.let { tab ->
-                    IconButton(onClick = { onClose(tab) }, modifier = Modifier.size(40.dp)) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "Close ${tab.current.name}",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close ${tab.current.name}",
+                        onClick = { onClose(tab) },
+                    )
                 }
             },
         )

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -31,12 +30,9 @@ import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,12 +43,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.remember
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
@@ -87,6 +80,18 @@ import io.github.mbaliga.fylz.ui.landing.HomeMode
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
 import io.github.mbaliga.fylz.ui.picker.PickerOutcome
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.drawTactileSlashTick
+import io.github.mbaliga.fylz.ui.tactile.tactilePalette
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import io.github.mbaliga.fylz.ui.theme.FolderMaterial
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
@@ -155,9 +160,11 @@ internal fun SettingsOverlay(
                     .padding(horizontal = 24.dp, vertical = 16.dp),
             ) {
                 Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close settings")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close settings",
+                        onClick = onDismiss,
+                    )
                     Text(
                         "Settings",
                         style = MaterialTheme.typography.titleLarge,
@@ -166,38 +173,16 @@ internal fun SettingsOverlay(
                 }
 
                 RoomHeading("Appearance")
-                // selectableGroup + selectable(role = RadioButton) so a screen reader announces
-                // this as one choice among three rather than three independent taps.
-                Column(Modifier.selectableGroup()) {
+                // selectableGroup so a screen reader announces this as one choice among three
+                // rather than three independent taps -- TactileOptionRow supplies the individual
+                // selectable(role = RadioButton) semantics per row.
+                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     ThemeMode.entries.forEach { mode ->
-                        val selected = mode == themeMode
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .selectable(
-                                    selected = selected,
-                                    onClick = { onThemeModeChange(mode) },
-                                    role = Role.RadioButton,
-                                )
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            // A filled square for the chosen mode rather than a RadioButton: the
-                            // same marker the old tools room used, so this surface still reads
-                            // as the same app as the rooms either side of it.
-                            Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                if (selected) {
-                                    Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                                }
-                            }
-                            Text(
-                                mode.readableLabel(),
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                            )
-                        }
+                        TactileOptionRow(
+                            text = mode.readableLabel(),
+                            selected = mode == themeMode,
+                            onClick = { onThemeModeChange(mode) },
+                        )
                     }
                 }
 
@@ -219,7 +204,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = showHidden, onCheckedChange = onShowHiddenChange)
+                    TactileSwitch(checked = showHidden, onCheckedChange = onShowHiddenChange)
                 }
                 Row(
                     Modifier
@@ -237,7 +222,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = showExtensions, onCheckedChange = onShowExtensionsChange)
+                    TactileSwitch(checked = showExtensions, onCheckedChange = onShowExtensionsChange)
                 }
                 Row(
                     Modifier
@@ -255,7 +240,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = autoAnimate, onCheckedChange = onAutoAnimateChange)
+                    TactileSwitch(checked = autoAnimate, onCheckedChange = onAutoAnimateChange)
                 }
 
                 Spacer(Modifier.size(20.dp))
@@ -266,33 +251,13 @@ internal fun SettingsOverlay(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
-                Column(Modifier.selectableGroup()) {
+                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     HomeMode.entries.forEach { mode ->
-                        val selected = mode == homeMode
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .selectable(
-                                    selected = selected,
-                                    onClick = { onHomeModeChange(mode) },
-                                    role = Role.RadioButton,
-                                )
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                if (selected) {
-                                    Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                                }
-                            }
-                            Text(
-                                mode.readableLabel(),
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                            )
-                        }
+                        TactileOptionRow(
+                            text = mode.readableLabel(),
+                            selected = mode == homeMode,
+                            onClick = { onHomeModeChange(mode) },
+                        )
                     }
                 }
                 LandingSubjectRow(
@@ -316,7 +281,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = landingSplash, onCheckedChange = onLandingSplashChange)
+                    TactileSwitch(checked = landingSplash, onCheckedChange = onLandingSplashChange)
                 }
                 SettingsToolRow(Icons.Outlined.Wallpaper, "Wallpaper", onOpenWallpaperPicker)
                 Row(
@@ -335,7 +300,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = desktopSnap, onCheckedChange = onDesktopSnapChange)
+                    TactileSwitch(checked = desktopSnap, onCheckedChange = onDesktopSnapChange)
                 }
                 Row(
                     Modifier
@@ -353,7 +318,7 @@ internal fun SettingsOverlay(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Switch(checked = desktopLabels, onCheckedChange = onDesktopLabelsChange)
+                    TactileSwitch(checked = desktopLabels, onCheckedChange = onDesktopLabelsChange)
                 }
 
                 Spacer(Modifier.size(20.dp))
@@ -386,33 +351,13 @@ internal fun SettingsOverlay(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
-                Column(Modifier.selectableGroup()) {
+                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     DensityMode.entries.forEach { mode ->
-                        val selected = mode == density
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 44.dp)
-                                .selectable(
-                                    selected = selected,
-                                    onClick = { onDensityChange(mode) },
-                                    role = Role.RadioButton,
-                                )
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                                if (selected) {
-                                    Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                                }
-                            }
-                            Text(
-                                mode.readableLabel(),
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                            )
-                        }
+                        TactileOptionRow(
+                            text = mode.readableLabel(),
+                            selected = mode == density,
+                            onClick = { onDensityChange(mode) },
+                        )
                     }
                 }
 
@@ -527,6 +472,12 @@ private fun SettingsToolRow(icon: ImageVector, label: String, onClick: () -> Uni
  * The sample formats are picked to span the pack's range — a document, a spreadsheet, an image and
  * an archive — because the styles diverge most on the busiest marks; a row of four identical grey
  * document icons would make Filled and Gray look like the same choice.
+ *
+ * **Kept stock (Build 11.5 wave-2 tactile sweep, deliberately not [io.github.mbaliga.fylz.ui.tactile
+ * .TactileOptionRow]):** this row's entire point is the four live artwork samples beside the label
+ * (see the KDoc above) -- [io.github.mbaliga.fylz.ui.tactile.TactileOptionRow]'s contract is
+ * `text: String` only, with no slot for trailing content, so a straight swap would have to drop the
+ * samples this row exists to show. Same call for [ThemeSwatchRow] just below, for the same reason.
  */
 @Composable
 private fun IconStyleRow(style: IconStyle, selected: Boolean, onSelect: () -> Unit) {
@@ -548,13 +499,16 @@ private fun IconStyleRow(style: IconStyle, selected: Boolean, onSelect: () -> Un
         } else {
             MaterialTheme.colorScheme.surface
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .semantics { role = Role.RadioButton; this.selected = selected },
     ) {
         Row(
             Modifier.heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RadioButton(selected = selected, onClick = onSelect)
+            SelectionSlashTick(selected)
             Text(
                 style.name.lowercase().replaceFirstChar(Char::titlecase),
                 style = MaterialTheme.typography.bodyLarge,
@@ -592,13 +546,16 @@ private fun ThemeSwatchRow(style: ThemeStyle, selected: Boolean, onSelect: () ->
         } else {
             MaterialTheme.colorScheme.surface
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .semantics { role = Role.RadioButton; this.selected = selected },
     ) {
         Row(
             Modifier.heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            RadioButton(selected = selected, onClick = onSelect)
+            SelectionSlashTick(selected)
             Text(
                 style.readableLabel(),
                 style = MaterialTheme.typography.bodyLarge,
@@ -606,6 +563,22 @@ private fun ThemeSwatchRow(style: ThemeStyle, selected: Boolean, onSelect: () ->
             )
             ThemeMiniature(style, Modifier.weight(1f))
         }
+    }
+}
+
+/**
+ * The tactile option-state mark the two swatch rows above share: the kit's slash tick (accent
+ * when selected, the idle indicator tint when not), standing in for the stock M3 radio dot the
+ * Build-11.5 sweep removed. The rows themselves stay hand-built -- their whole point is the live
+ * artwork/theme samples TactileOptionRow has no slot for -- so only the indicator comes from the
+ * kit, and the radio semantics live on the row's Surface.
+ */
+@Composable
+private fun SelectionSlashTick(selected: Boolean) {
+    val palette = tactilePalette()
+    val tint = if (selected) palette.accent else palette.indicatorIdle
+    Canvas(Modifier.padding(start = 2.dp).size(width = 12.dp, height = 26.dp)) {
+        drawTactileSlashTick(color = tint, withErrorDot = false)
     }
 }
 
@@ -866,9 +839,11 @@ private fun QuickActionEditorRow(
             modifier = Modifier.weight(1f).padding(start = 16.dp),
         )
         if (pinned && canMoveUp) {
-            IconButton(onClick = onMoveUp, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Move ${action.label} earlier")
-            }
+            TactileIconKey(
+                icon = Icons.Outlined.KeyboardArrowUp,
+                contentDescription = "Move ${action.label} earlier",
+                onClick = onMoveUp,
+            )
         }
         Icon(
             if (pinned) Icons.Outlined.Remove else Icons.Outlined.Add,
@@ -905,37 +880,17 @@ private fun RecycleBinRetentionSection() {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(bottom = 4.dp),
     )
-    Column(Modifier.selectableGroup()) {
+    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RecycleBinRetentionPeriod.entries.forEach { option ->
-            val selected = option == period
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 44.dp)
-                    .selectable(
-                        selected = selected,
-                        onClick = {
-                            period = option
-                            store.setPeriod(option)
-                            RecycleBinRetentionScheduler(context.applicationContext).reconcile(option)
-                        },
-                        role = Role.RadioButton,
-                    )
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                    if (selected) {
-                        Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                    }
-                }
-                Text(
-                    option.readableLabel(),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                )
-            }
+            TactileOptionRow(
+                text = option.readableLabel(),
+                selected = option == period,
+                onClick = {
+                    period = option
+                    store.setPeriod(option)
+                    RecycleBinRetentionScheduler(context.applicationContext).reconcile(option)
+                },
+            )
         }
     }
 }
@@ -1022,16 +977,16 @@ private fun FolderAppearanceSection(themeStyle: ThemeStyle, onAppearanceChanged:
             )
         }
 
-        TextButton(
+        TactileButton(
+            text = "Reset to theme default",
             onClick = {
                 target?.let(store::clear)
                 appearance = FolderAppearance()
                 onAppearanceChanged()
             },
+            style = TactileButtonStyle.SECONDARY,
             modifier = Modifier.padding(top = 4.dp),
-        ) {
-            Text("Reset to theme default")
-        }
+        )
     }
 
     if (pickerOpen) {

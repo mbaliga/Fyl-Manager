@@ -4,19 +4,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileFieldState
 
 private const val CONFIRMATION_PHRASE = "DELETE PERMANENTLY"
 
@@ -32,8 +32,8 @@ fun PermanentDeleteConfirmationDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
-    var typed by remember(displayName) { mutableStateOf(TextFieldValue()) }
-    val confirmed = typed.text.trim() == CONFIRMATION_PHRASE
+    var typed by remember(displayName) { mutableStateOf("") }
+    val confirmed = typed.trim() == CONFIRMATION_PHRASE
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -45,28 +45,30 @@ fun PermanentDeleteConfirmationDialog(
                     color = MaterialTheme.colorScheme.error,
                 )
                 Text("Type $CONFIRMATION_PHRASE to continue.")
-                OutlinedTextField(
+                TactileField(
                     value = typed,
                     onValueChange = { typed = it },
-                    label = { Text("Confirmation phrase") },
+                    label = "Confirmation phrase",
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    supportingText = {
-                        if (typed.text.isNotEmpty() && !confirmed) {
-                            Text("The phrase must match exactly.")
-                        }
+                    state = if (typed.isNotEmpty() && !confirmed) {
+                        TactileFieldState.Error("The phrase must match exactly.")
+                    } else {
+                        TactileFieldState.Idle
                     },
-                    isError = typed.text.isNotEmpty() && !confirmed,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm, enabled = confirmed) {
-                Text("Delete permanently")
-            }
+            TactileButton(
+                text = "Delete permanently",
+                onClick = onConfirm,
+                style = TactileButtonStyle.DESTRUCTIVE,
+                enabled = confirmed,
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY)
         },
     )
 }

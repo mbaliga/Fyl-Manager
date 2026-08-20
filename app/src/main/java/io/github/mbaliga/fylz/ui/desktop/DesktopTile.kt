@@ -1,7 +1,9 @@
 package io.github.mbaliga.fylz.ui.desktop
 
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
@@ -15,8 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.BrokenImage
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +34,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -39,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -51,11 +54,11 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.canvas.TilePlacement
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.desktop.DesktopItem
-import io.github.mbaliga.fylz.desktop.DesktopItemSize
 import io.github.mbaliga.fylz.desktop.DesktopPolicy
 import io.github.mbaliga.fylz.desktop.DesktopWidgetType
 import io.github.mbaliga.fylz.model.FileEntry
@@ -67,31 +70,34 @@ import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.overview.OverviewCard
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.softShadow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.roundToInt
 
 private const val SHORTCUT_TILE_WIDTH_DP = 92
+private const val SHORTCUT_THUMB_BOX_DP = 64
 private const val NUDGE_FRACTION = 0.08f
 private const val ARRANGE_SCALE = 1.06f
 private const val ARRANGE_ELEVATION = 10f
-private const val WIDGET_CORNER_DP = 20
 
 /**
- * A widget's dp footprint for its own [DesktopItemSize] -- widths come from
- * [DesktopPolicy.widgetWidthFraction] (the same fractions [DesktopPolicy.clampWidget] keeps on
- * screen, so the two can never drift), heights are the Build-10 overview card heights those
- * renderers were designed around:
- *
- * - [DesktopItemSize.SMALL]: compact width, 152dp tall (the Tags card's height).
- * - [DesktopItemSize.MEDIUM]: compact width, 216dp tall (the Quick-access card's height).
- * - [DesktopItemSize.LARGE]: full width, 360dp tall (the Storage card's height).
+ * A widget's dp footprint: width comes from [DesktopPolicy.widgetWidthFraction] against the LIVE
+ * [viewportWidthDp] (the same fraction [DesktopPolicy.clampWidget]/[DesktopPolicy.snapWidget] keep
+ * on screen, so the three can never drift), height is [WidgetRegistry]'s own content-fit constant
+ * for [item]'s TYPE -- not a blanket SMALL/MEDIUM/LARGE table, since two widgets of the same size
+ * class can need very different room (a Storage card's legend versus a Deleted-files count chip).
  */
-internal fun desktopWidgetSize(size: DesktopItemSize, viewportWidth: Dp): DpSize = when (size) {
-    DesktopItemSize.SMALL -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 152.dp)
-    DesktopItemSize.MEDIUM -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 216.dp)
-    DesktopItemSize.LARGE -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 360.dp)
+internal fun desktopWidgetSize(item: DesktopItem.Widget, viewportWidthDp: Dp): DpSize {
+    val height = WidgetRegistry.of(item.type).height
+    val widthFraction = DesktopPolicy.widgetWidthFraction(item.size, viewportWidthDp.value)
+    return DpSize(viewportWidthDp * widthFraction, height)
 }
 
 /** What [DocumentRepository.probe] found for a [DesktopItem.FolderShortcut]/[DesktopItem.FileShortcut]'s
@@ -107,12 +113,15 @@ private sealed interface ShortcutProbe {
  * One item on the desktop, gestures and all -- [CanvasTile][io.github.mbaliga.fylz.ui.canvas.CanvasTile]-
  * modelled long-press-lifts/drag-commits shape, adapted for a desktop that also hosts widgets:
  *
- * - **Shortcuts** ([DesktopItem.FolderShortcut]/[DesktopItem.FileShortcut]) render an
- *   [EntryThumbnail] plus (when [showLabels]) a label, exactly like a canvas tile. The target is
- *   probed on [DocumentRepository.probe] (already IO-dispatched) and dimmed, never removed, when
- *   the probe comes back empty -- see [ShortcutProbe]. A short tap opens the target, except while
- *   [editing] -- edit mode's own remove badge sits in the same corner a stray tap could otherwise
- *   also read as "open", so activation is suppressed for as long as editing is on.
+ * - **Shortcuts** ([DesktopItem.FolderShortcut]/[DesktopItem.FileShortcut]) render as a chip
+ *   ([ShortcutTileContent]): an [EntryThumbnail] in a uniform 64dp box plus (when [showLabels]) a
+ *   label. The target is probed once, HERE (not inside [ShortcutTileContent]), on
+ *   [DocumentRepository.probe] (already IO-dispatched) -- this composable's own tap gesture needs
+ *   to know whether the shortcut is reachable *before* deciding what a tap does (open it, or offer
+ *   [BrokenShortcutDialog]), so the probe can no longer live purely inside the content composable
+ *   the way it used to. A short tap opens the target when reachable, or offers the dialog when it
+ *   is not -- except while [editing], where the remove badge sits in the same corner a stray tap
+ *   could otherwise also read as "open", so activation is suppressed for as long as editing is on.
  * - **Widgets** render inside a sized card ([desktopWidgetSize]) via [DesktopWidgetContent]. A
  *   short tap is left alone here -- Compose delivers it straight to whatever inside the widget's
  *   own content wants it (a button, a row) -- only a long press is intercepted, to lift the whole
@@ -132,6 +141,7 @@ internal fun DesktopTile(
     viewportWidthDp: Dp,
     viewportWidthPx: Float,
     viewportHeightPx: Float,
+    worldHeightDp: Dp,
     repository: DocumentRepository,
     refreshKey: Int,
     widgetData: DesktopWidgetData,
@@ -145,14 +155,28 @@ internal fun DesktopTile(
     val placement = item.placement
     val haptics = LocalHapticFeedback.current
 
+    // Resolved here, in a real @Composable context -- the semantics{} block a few lines down is a
+    // plain SemanticsPropertyReceiver lambda, not @Composable, so stringResource() cannot be called
+    // from inside it directly.
+    val openActionLabel = stringResource(R.string.desktop_action_open)
+    val moveLeftLabel = stringResource(R.string.desktop_move_left)
+    val moveRightLabel = stringResource(R.string.desktop_move_right)
+    val moveUpLabel = stringResource(R.string.desktop_move_up)
+    val moveDownLabel = stringResource(R.string.desktop_move_down)
+    val removeLabel = stringResource(R.string.desktop_remove_item)
+
     var dragOffsetPx by remember(item.id) { mutableStateOf(Offset.Zero) }
     val editingState = rememberUpdatedState(editing)
 
-    // Widgets settle through clampWidget (width-aware, keeps the whole card on screen); shortcut
-    // tiles keep the canvas safe band their 92dp footprint was tuned for. snap() first either way.
+    // Widgets settle through clampWidget/snapWidget (width- AND viewport-aware, keeps the whole
+    // card on the real screen); shortcut tiles keep the canvas safe band their 92dp footprint was
+    // tuned for.
     fun settled(next: TilePlacement): TilePlacement = if (item is DesktopItem.Widget) {
-        val width = DesktopPolicy.widgetWidthFraction(item.size)
-        if (snapEnabled) DesktopPolicy.snapWidget(next, width) else DesktopPolicy.clampWidget(next, width)
+        if (snapEnabled) {
+            DesktopPolicy.snapWidget(next, item.size, viewportWidthDp.value, worldHeightDp.value)
+        } else {
+            DesktopPolicy.clampWidget(next, item.size, viewportWidthDp.value, worldHeightDp.value)
+        }
     } else {
         if (snapEnabled) DesktopPolicy.snap(next) else DesktopPolicy.clamp(next)
     }
@@ -160,10 +184,22 @@ internal fun DesktopTile(
     fun nudged(dx: Float, dy: Float): TilePlacement =
         settled(placement.copy(x = placement.x + dx * NUDGE_FRACTION, y = placement.y + dy * NUDGE_FRACTION))
 
+    // Probed once here (not inside ShortcutTileContent -- see this composable's own KDoc) so both
+    // the tap gesture below and the rendered content agree on reachability.
+    val shortcutTarget = shortcutTargetUri(item)
+    val probe by produceState<ShortcutProbe>(ShortcutProbe.Loading, shortcutTarget, refreshKey) {
+        value = ShortcutProbe.Loading
+        value = shortcutTarget?.let { repository.probe(it) }?.let { ShortcutProbe.Found(it) } ?: ShortcutProbe.Missing
+    }
+    val shortcutReachable = probe !is ShortcutProbe.Missing
+    var showBrokenDialog by remember(item.id) { mutableStateOf(false) }
+
     val onActivate: () -> Unit = {
         when (item) {
-            is DesktopItem.FolderShortcut -> callbacks.onOpenFolderShortcut(item.treeUri, item.folderUri)
-            is DesktopItem.FileShortcut -> callbacks.onOpenFileShortcut(item.uri)
+            is DesktopItem.FolderShortcut ->
+                if (shortcutReachable) callbacks.onOpenFolderShortcut(item.treeUri, item.folderUri) else showBrokenDialog = true
+            is DesktopItem.FileShortcut ->
+                if (shortcutReachable) callbacks.onOpenFileShortcut(item.uri) else showBrokenDialog = true
             is DesktopItem.Widget -> Unit // Tap passes through to the widget's own content instead.
         }
     }
@@ -175,8 +211,9 @@ internal fun DesktopTile(
                 waitForUpOrCancellation() != null
             }
             when (liftedEarly) {
-                // A shortcut opens on tap (unless editing -- see this composable's own KDoc); a
-                // widget always leaves the tap for its own content to handle.
+                // A shortcut opens (or, when broken, offers the dialog) on tap unless editing --
+                // see this composable's own KDoc; a widget always leaves the tap for its own
+                // content to handle.
                 true -> if (item !is DesktopItem.Widget && !editingState.value) onActivate()
                 false -> Unit
                 null -> {
@@ -216,18 +253,20 @@ internal fun DesktopTile(
                 scaleX = if (arranging) ARRANGE_SCALE else 1f
                 scaleY = if (arranging) ARRANGE_SCALE else 1f
                 shadowElevation = if (arranging) ARRANGE_ELEVATION else 0f
+                shape = RoundedCornerShape(if (item is DesktopItem.Widget) FylzGeometry.RadiusXl else FylzGeometry.RadiusLg)
+                clip = false
             }
             .then(gestureModifier)
             .semantics {
                 contentDescription = tileContentDescription(item)
-                onClick(label = "Open") { onActivate(); true }
+                onClick(label = openActionLabel) { onActivate(); true }
                 customActions = buildList {
-                    add(CustomAccessibilityAction("Move left") { onCommit(nudged(-1f, 0f)); true })
-                    add(CustomAccessibilityAction("Move right") { onCommit(nudged(1f, 0f)); true })
-                    add(CustomAccessibilityAction("Move up") { onCommit(nudged(0f, -1f)); true })
-                    add(CustomAccessibilityAction("Move down") { onCommit(nudged(0f, 1f)); true })
+                    add(CustomAccessibilityAction(moveLeftLabel) { onCommit(nudged(-1f, 0f)); true })
+                    add(CustomAccessibilityAction(moveRightLabel) { onCommit(nudged(1f, 0f)); true })
+                    add(CustomAccessibilityAction(moveUpLabel) { onCommit(nudged(0f, -1f)); true })
+                    add(CustomAccessibilityAction(moveDownLabel) { onCommit(nudged(0f, 1f)); true })
                     if (editingState.value) {
-                        add(CustomAccessibilityAction("Remove from desktop") { onRemove(); true })
+                        add(CustomAccessibilityAction(removeLabel) { onRemove(); true })
                     }
                 }
             },
@@ -236,8 +275,8 @@ internal fun DesktopTile(
             is DesktopItem.FolderShortcut, is DesktopItem.FileShortcut -> ShortcutTileContent(
                 item = item,
                 showLabels = showLabels,
-                repository = repository,
-                refreshKey = refreshKey,
+                reachable = shortcutReachable,
+                probe = probe,
             )
             is DesktopItem.Widget -> WidgetTileContent(
                 item = item,
@@ -250,22 +289,22 @@ internal fun DesktopTile(
         }
 
         if (editing) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.errorContainer,
-                modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp),
-            ) {
-                IconButton(onClick = onRemove, modifier = Modifier.size(24.dp)) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "Remove from desktop",
-                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            }
+            RemoveBadge(onRemove = onRemove, label = removeLabel, modifier = Modifier.align(Alignment.TopEnd))
         }
     }
+
+    if (showBrokenDialog) {
+        BrokenShortcutDialog(
+            onRemove = { showBrokenDialog = false; onRemove() },
+            onKeep = { showBrokenDialog = false },
+        )
+    }
+}
+
+private fun shortcutTargetUri(item: DesktopItem): Uri? = when (item) {
+    is DesktopItem.FolderShortcut -> item.folderUri
+    is DesktopItem.FileShortcut -> item.uri
+    is DesktopItem.Widget -> null
 }
 
 private fun tileContentDescription(item: DesktopItem): String = when (item) {
@@ -274,32 +313,104 @@ private fun tileContentDescription(item: DesktopItem): String = when (item) {
     is DesktopItem.Widget -> WidgetRegistry.of(item.type).let { "${it.type.name.lowercase().replace('_', ' ')} widget" }
 }
 
+/**
+ * The remove-from-desktop badge: a 48dp touch target (this composable's own KDoc point 9) around a
+ * visually smaller 28dp disc, so the tap area meets the hard 48dp gate without the mark itself
+ * growing to match -- an [IconButton] (48dp by default) is layered directly over a decorative
+ * [Surface] disc, both centred in the same [Box].
+ *
+ * **Kept stock (Build 11.5 wave-2 tactile sweep, deliberately not
+ * [io.github.mbaliga.fylz.ui.tactile.TactileIconKey]):** the badge's whole identity is a small,
+ * unambiguously-red disc riding the tile's corner -- errorContainer colour, 28dp, no bevel -- and
+ * [TactileIconKey]'s contract has no tint/colour override, only `latched: Boolean` swapping between
+ * its own two fixed RAISED CAP / plate looks (neither is red). Even ignoring colour, its own visual
+ * footprint (48x44dp, [io.github.mbaliga.fylz.ui.tactile.TactileIconKey]'s own `IconKeyVisualWidth`/
+ * `Height`) would roughly double this corner mark's size against a 92dp-wide [ShortcutTileContent]
+ * chip or a compact widget card, very plausibly swallowing the thumbnail/label it sits over. The
+ * "simplest honest" call from the wave-2 brief: keep this disc, its colour, and its small scale --
+ * they are the badge's whole reason for existing -- and take the press behaviour ([IconButton]'s
+ * ripple + 48dp target) as already matching the kit's own PRESS recipe intent well enough that
+ * forcing the RAISED CAP skin on top would only cost legibility for no behavioural gain.
+ */
+@Composable
+private fun RemoveBadge(onRemove: () -> Unit, label: String, modifier: Modifier = Modifier) {
+    Box(modifier.offset(x = 10.dp, y = (-10).dp).size(48.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.errorContainer,
+            modifier = Modifier.size(28.dp).softShadow(ShadowLevel.SM, CircleShape),
+        ) {}
+        IconButton(onClick = onRemove) {
+            Icon(
+                Icons.Outlined.Close,
+                contentDescription = label,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Offered instead of the (formerly dead) open callback when a shortcut's own target can no longer
+ * be probed -- Remove takes it off the desktop the same way [RemoveBadge] does; Keep just dismisses,
+ * for a target that is only temporarily unavailable (an unmounted SD card, a cloud-backed
+ * document not currently synced).
+ */
+@Composable
+private fun BrokenShortcutDialog(onRemove: () -> Unit, onKeep: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onKeep,
+        title = { Text(stringResource(R.string.desktop_broken_dialog_title)) },
+        text = { Text(stringResource(R.string.desktop_broken_dialog_body)) },
+        // Remove just drops the desktop shortcut, not the (already-missing) target itself, so this
+        // reads as an ordinary confirm rather than a DESTRUCTIVE one -- PRIMARY per the wave-2
+        // brief's own default for a dialog's confirm side.
+        confirmButton = {
+            TactileButton(
+                text = stringResource(R.string.desktop_broken_dialog_remove),
+                onClick = onRemove,
+                style = TactileButtonStyle.PRIMARY,
+            )
+        },
+        dismissButton = {
+            TactileButton(
+                text = stringResource(R.string.desktop_broken_dialog_keep),
+                onClick = onKeep,
+                style = TactileButtonStyle.SECONDARY,
+            )
+        },
+    )
+}
+
+/**
+ * A shortcut's own chip -- the same treatment [CanvasTile][io.github.mbaliga.fylz.ui.canvas.CanvasTile]
+ * gives a canvas tile, adapted for sitting directly on wallpaper: a translucent
+ * `surfaceContainerHigh` fill (so it reads as a chip against art of any colour, never a flat block)
+ * plus a [hairline] border and a close [softShadow], never the plain unstyled thumbnail-plus-label
+ * the desktop used to draw straight onto the wallpaper.
+ *
+ * The chip itself is always FULL opacity, reachable or not -- only the thumbnail inside dims when
+ * [reachable] is false, so a broken shortcut still reads as a real, tappable object (this
+ * composable's own KDoc point 8) rather than fading into the wallpaper the way the whole-tile dim
+ * used to.
+ */
 @Composable
 private fun ShortcutTileContent(
     item: DesktopItem,
     showLabels: Boolean,
-    repository: DocumentRepository,
-    refreshKey: Int,
+    reachable: Boolean,
+    probe: ShortcutProbe,
 ) {
     val showExtensions = LocalShowExtensions.current
-    val targetUri = when (item) {
-        is DesktopItem.FolderShortcut -> item.folderUri
-        is DesktopItem.FileShortcut -> item.uri
-        else -> null
-    }
     val storedDisplayName = when (item) {
         is DesktopItem.FolderShortcut -> item.displayName
         is DesktopItem.FileShortcut -> item.displayName
         else -> ""
     }
     val isFolder = item is DesktopItem.FolderShortcut
+    val targetUri = shortcutTargetUri(item)
 
-    val probe by produceState<ShortcutProbe>(ShortcutProbe.Loading, targetUri, refreshKey) {
-        value = ShortcutProbe.Loading
-        value = targetUri?.let { repository.probe(it) }?.let { ShortcutProbe.Found(it) } ?: ShortcutProbe.Missing
-    }
-
-    val reachable = probe !is ShortcutProbe.Missing
     val entry = (probe as? ShortcutProbe.Found)?.entry ?: FileEntry(
         uri = targetUri ?: Uri.EMPTY,
         name = storedDisplayName,
@@ -311,19 +422,43 @@ private fun ShortcutTileContent(
     )
     val shownName = displayName(storedDisplayName.ifBlank { entry.name }, isFolder, showExtensions)
 
+    val chipShape = RoundedCornerShape(FylzGeometry.RadiusLg)
     Column(
-        Modifier.width(SHORTCUT_TILE_WIDTH_DP.dp).graphicsLayer { alpha = if (reachable) 1f else 0.45f },
+        Modifier
+            .width(SHORTCUT_TILE_WIDTH_DP.dp)
+            .softShadow(ShadowLevel.SM, chipShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f), chipShape)
+            .border(1.dp, hairline(), chipShape)
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box {
-            EntryThumbnail(entry, size = if (isFolder) 56.dp else 72.dp, pixels = if (isFolder) 192 else 384)
+        Box(Modifier.size(SHORTCUT_THUMB_BOX_DP.dp), contentAlignment = Alignment.Center) {
+            EntryThumbnail(
+                entry,
+                size = SHORTCUT_THUMB_BOX_DP.dp,
+                pixels = if (isFolder) 256 else 384,
+                modifier = Modifier.graphicsLayer { alpha = if (reachable) 1f else 0.5f },
+            )
             if (!reachable) {
-                Icon(
-                    Icons.Outlined.BrokenImage,
-                    contentDescription = "Can't find this anymore",
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.align(Alignment.BottomEnd).size(16.dp),
-                )
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceBright,
+                    border = BorderStroke(1.dp, hairline()),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(x = 4.dp, y = 4.dp)
+                        .size(24.dp)
+                        .softShadow(ShadowLevel.SM, CircleShape),
+                ) {
+                    Box(Modifier.padding(2.dp), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Outlined.ErrorOutline,
+                            contentDescription = stringResource(R.string.desktop_broken_shortcut),
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
         }
         if (showLabels) {
@@ -335,6 +470,16 @@ private fun ShortcutTileContent(
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 4.dp),
             )
+            if (!reachable) {
+                Text(
+                    stringResource(R.string.desktop_shortcut_missing_caption),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }
@@ -348,19 +493,18 @@ private fun WidgetTileContent(
     widgetData: DesktopWidgetData,
     callbacks: DesktopCallbacks,
 ) {
-    val size = desktopWidgetSize(item.size, viewportWidthDp)
+    val size = desktopWidgetSize(item, viewportWidthDp)
     val quickAccess = if (item.type == DesktopWidgetType.QUICK_ACCESS) {
         resolveQuickAccess(item, repository, refreshKey, callbacks)
     } else {
         null
     }
 
-    Box(
-        Modifier
-            .size(size.width, size.height)
-            .clip(RoundedCornerShape(WIDGET_CORNER_DP.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    // No backing plate here any more -- every widget's own content (OverviewCardSurface, or
+    // SearchPill's own stadium Surface) already draws the one and only surface a card needs; a
+    // second, identically-coloured surface underneath it was pure Z-fighting (this composable's
+    // own KDoc point 1).
+    Box(Modifier.size(size.width, size.height)) {
         DesktopWidgetContent(
             item = item,
             data = widgetData,

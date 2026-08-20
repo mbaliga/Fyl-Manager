@@ -25,6 +25,22 @@
 
     <!-- Shortcut tiles -->
     <string name="desktop_broken_shortcut">Can\'t find this anymore</string>
+    <string name="desktop_shortcut_missing_caption">Missing</string>
+    <string name="desktop_broken_dialog_title">Can\'t find this item</string>
+    <string name="desktop_broken_dialog_body">It may have been moved, renamed, or deleted outside Fylz.</string>
+    <string name="desktop_broken_dialog_remove">Remove</string>
+    <string name="desktop_broken_dialog_keep">Keep</string>
+
+    <!-- Tile accessibility actions -->
+    <string name="desktop_action_open">Open</string>
+    <string name="desktop_move_left">Move left</string>
+    <string name="desktop_move_right">Move right</string>
+    <string name="desktop_move_up">Move up</string>
+    <string name="desktop_move_down">Move down</string>
+
+    <!-- Empty desktop state -->
+    <string name="desktop_empty_title">Your desktop is empty</string>
+    <string name="desktop_empty_body">Long-press to edit, or tap Add.</string>
 
     <!-- Widget content -->
     <string name="desktop_open_shelf">Open shelf</string>

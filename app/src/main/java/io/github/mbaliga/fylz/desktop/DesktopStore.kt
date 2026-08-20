@@ -16,6 +16,19 @@ import org.json.JSONObject
  * [io.github.mbaliga.fylz.canvas.CanvasLayoutStore] there is only ever one list (one desktop, not
  * one layout per location), so there is no location-eviction bookkeeping to speak of -- [MAX_ITEMS]
  * bounds the one list directly, oldest item dropped first, same as that store's per-location cap.
+ *
+ * Placements persist as x/y FRACTIONS of the live grid ([DesktopPolicy.WORLD_MIN_HEIGHT_DP] for y,
+ * the real viewport width for x), not absolute dp -- so a change to either basis (Build 11.5 moved
+ * both: [DesktopPolicy.WORLD_MIN_HEIGHT_DP] and the widget column x formulas) re-anchors any
+ * already-persisted fraction against a new grid the next time it renders, drifting visually until
+ * the user drags the item once (which runs it through [DesktopPolicy.clampWidget]/`snapWidget` and
+ * re-settles it). No migration re-clamps a stored placement on load today, and [SCHEMA_VERSION] is
+ * write-only -- deliberately so, not an oversight: per this repo's own README/CHANGELOG, no build
+ * up to and including Build 11.5 has ever shipped through a channel that would leave persisted
+ * desktop data on a real device, so there is nothing yet for a migration to correct. Add one (bump
+ * [SCHEMA_VERSION], re-run every loaded placement through `clampWidget`/`snapWidget` once) before
+ * the first release build that could carry a user's desktop layout across a geometry-basis change
+ * like this one.
  */
 class DesktopStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)

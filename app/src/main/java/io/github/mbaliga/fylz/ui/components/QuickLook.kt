@@ -77,6 +77,7 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -487,14 +488,18 @@ private fun QuickLookCard(
         if (docked) {
             // One tiny close, nothing else -- the rail and the anchor/dock/close trio only make
             // sense at a size where their own pills fit.
-            IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd).size(20.dp)) {
-                Icon(
-                    Icons.Outlined.Close,
-                    contentDescription = "Close preview",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(14.dp),
-                )
-            }
+            //
+            // TactileIconKey's own >=48dp touch-target floor (the kit's hard rule) is a large
+            // fraction of this whole 132x96dp mini card -- the old 20dp glyph undershot that floor
+            // outright, so this also fixes a pre-existing touch-target violation, not just a style
+            // swap. Flagged for the render pass: verify the docked card still reads as a mini
+            // preview once this corner grows.
+            TactileIconKey(
+                icon = Icons.Outlined.Close,
+                contentDescription = "Close preview",
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
         } else {
             // Drawn before the chrome pills, not after: the two overlap by design in the very
             // corner (the pill floats 10dp in, the drag target starts flush at the edge), and a
@@ -590,7 +595,18 @@ private fun PreviewPill(content: @Composable RowScope.() -> Unit) {
     }
 }
 
-/** One 48dp action cell inside a floating pill. Sized to the touch minimum, not to the pill. */
+/**
+ * One 48dp action cell inside a floating pill. Sized to the touch minimum, not to the pill.
+ *
+ * Kept stock (not [io.github.mbaliga.fylz.ui.tactile.TactileIconKey]) per the mission's own
+ * carve-out for this exact rail slot: [active] draws a translucent circle behind the glyph (used
+ * by the Anchor button while anchored), and that circle IS this button's active-state contract --
+ * `TactileIconKey`'s own `latched` state draws the RAISED CAP recipe (a dark gradient keycap plus
+ * glint) instead, a different shape and a different "you tapped this" story than a pill of icons
+ * floating over an arbitrary photo needs. Converting only the non-active rail/More/Dock/Close
+ * cells to keycaps while the Anchor cell stayed a circle would also fragment one pill's five
+ * buttons across two visual languages. All five stay this shared composable as a set.
+ */
 @Composable
 private fun PreviewChromeButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,

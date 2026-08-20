@@ -22,14 +22,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -53,6 +49,9 @@ import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
 import io.github.mbaliga.fylz.staging.TrayKind
 import io.github.mbaliga.fylz.ui.components.StackCard
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 
 /**
  * The expanded clipboard/move bulge: the tray's contents, browsable.
@@ -109,11 +108,17 @@ internal fun TrayBrowserSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close ${tray.kind.title()}")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close ${tray.kind.title()}",
+                        onClick = onDismiss,
+                    )
                 }
 
+                // Kept stock: only two chips ever appear here (clipboard vs. move tray) in one
+                // tightly-spaced row (spacedBy 8dp) sharing the sheet's own 20dp side padding --
+                // FilterChip's compact selected/unselected pill is exactly what that row has room
+                // for, and a TactileButton pair would either crowd the row or force a wider sheet.
                 if (otherTray != null && !otherTray.isEmpty) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -149,10 +154,13 @@ internal fun TrayBrowserSheet(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 ) {
-                    FilledTonalButton(onClick = onCommitHere, enabled = !tray.isEmpty) {
-                        Text(if (tray.kind == TrayKind.CLIPBOARD) "Paste here" else "Move here")
-                    }
-                    TextButton(onClick = onClear, enabled = !tray.isEmpty) { Text("Clear") }
+                    TactileButton(
+                        text = if (tray.kind == TrayKind.CLIPBOARD) "Paste here" else "Move here",
+                        onClick = onCommitHere,
+                        style = TactileButtonStyle.PRIMARY,
+                        enabled = !tray.isEmpty,
+                    )
+                    TactileButton(text = "Clear", onClick = onClear, style = TactileButtonStyle.SECONDARY, enabled = !tray.isEmpty)
                 }
             }
         }
@@ -306,9 +314,11 @@ internal fun TrashBrowserSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.weight(1f))
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close the trash can")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close the trash can",
+                        onClick = onDismiss,
+                    )
                 }
                 Text(
                     "Everything currently in the Recycle Bin.",
@@ -330,21 +340,19 @@ internal fun TrashBrowserSheet(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
                             )
-                            TextButton(onClick = { onPutBack(record) }) { Text("Put back") }
-                            TextButton(onClick = { onShred(record) }) {
-                                Text("Shred", color = MaterialTheme.colorScheme.error)
-                            }
+                            TactileButton(text = "Put back", onClick = { onPutBack(record) }, style = TactileButtonStyle.SECONDARY)
+                            TactileButton(text = "Shred", onClick = { onShred(record) }, style = TactileButtonStyle.DESTRUCTIVE)
                         }
                     }
                 }
 
                 if (records.size > 1) {
-                    TextButton(
+                    TactileButton(
+                        text = "Shred all ${records.size}",
                         onClick = onShredAll,
+                        style = TactileButtonStyle.DESTRUCTIVE,
                         modifier = Modifier.padding(horizontal = 12.dp),
-                    ) {
-                        Text("Shred all ${records.size}", color = MaterialTheme.colorScheme.error)
-                    }
+                    )
                 }
             }
         }

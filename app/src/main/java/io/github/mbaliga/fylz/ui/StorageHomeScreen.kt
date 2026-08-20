@@ -17,18 +17,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +52,8 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.util.formatBytes
 
 /**
@@ -191,19 +190,22 @@ fun StorageHomeScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     // The gate card's "Use picker" button is this exact action -- showing both
-                    // is the same affordance twice on one screen.
+                    // is the same affordance twice on one screen. Icon dropped: TactileButton
+                    // carries a text label only, no leading-icon slot.
                     if (ready) {
-                        Button(onClick = { onPickFolder(null) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                            Icon(Icons.Outlined.Add, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(stringResource(R.string.storage_home_add_folder))
-                        }
+                        TactileButton(
+                            text = stringResource(R.string.storage_home_add_folder),
+                            onClick = { onPickFolder(null) },
+                            style = TactileButtonStyle.SECONDARY,
+                            fillWidth = true,
+                        )
                     }
-                    OutlinedButton(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Icon(Icons.Outlined.Cloud, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.storage_home_remotes))
-                    }
+                    TactileButton(
+                        text = stringResource(R.string.storage_home_remotes),
+                        onClick = onOpenRemotes,
+                        style = TactileButtonStyle.SECONDARY,
+                        fillWidth = true,
+                    )
                     Text(
                         stringResource(R.string.storage_home_access_note, StorageAccess.accessLabel(context)),
                         style = MaterialTheme.typography.labelSmall,
@@ -310,14 +312,17 @@ private fun PermissionGateCard(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onGrant, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.storage_permission_grant))
-                }
-                Button(onClick = onUsePicker, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Icon(Icons.Outlined.FolderOpen, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.storage_permission_use_picker))
-                }
+                TactileButton(
+                    text = stringResource(R.string.storage_permission_grant),
+                    onClick = onGrant,
+                    style = TactileButtonStyle.PRIMARY,
+                )
+                // Icon dropped -- same leading-icon-slot note as the footer buttons above.
+                TactileButton(
+                    text = stringResource(R.string.storage_permission_use_picker),
+                    onClick = onUsePicker,
+                    style = TactileButtonStyle.SECONDARY,
+                )
             }
         }
     }

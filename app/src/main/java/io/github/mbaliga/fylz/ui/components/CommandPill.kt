@@ -1,5 +1,8 @@
 package io.github.mbaliga.fylz.ui.components
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -7,10 +10,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -18,14 +23,11 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -47,6 +50,14 @@ import dev.aarso.search.Diagnostic
 import dev.aarso.search.QueryChip
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileToggle
+import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
+import io.github.mbaliga.fylz.ui.tactile.drawTactileSlashTick
+import io.github.mbaliga.fylz.ui.tactile.tactileFieldGroove
+import io.github.mbaliga.fylz.ui.tactile.tactilePalette
+import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
+import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 
 /**
  * How much vertical room the search surface claims when it is showing, for a listing that wants
@@ -60,6 +71,12 @@ import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
  * mounted, not all three unconditionally.
  */
 val CommandPillSearchHeight: Dp = 88.dp
+
+/** Width of the pill's own hand-drawn state slash-tick -- see [CommandPill]'s own note on why it
+ *  reaches for [io.github.mbaliga.fylz.ui.tactile.drawTactileSlashTick] directly rather than the
+ *  kit's [io.github.mbaliga.fylz.ui.tactile.TactileField]'s fixed `SlashSlotWidth`, which is
+ *  private to that file. Same proportions, a local copy of the constant. */
+private val PillSlashWidth: Dp = 20.dp
 
 /**
  * The browser's command pill: search, its scope, and the parser's reading of a live query.
@@ -133,19 +150,28 @@ fun CommandPill(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                FilterChip(
-                    selected = !searchRecursive,
-                    onClick = { onSearchRecursiveChange(false) },
-                    label = { Text("This folder") },
-                )
-                FilterChip(
-                    selected = searchRecursive,
-                    onClick = { onSearchRecursiveChange(true) },
-                    label = { Text("Everything below") },
+                // Two-option TactileToggle per the conversion rule (width allows it here -- this
+                // row has no other permanent occupant besides the busy spinner). BoxWithConstraints
+                // inside TactileToggle needs a bounded width from its parent to size its segments;
+                // weight(fill = false) gives it that bound without forcing it to stretch the full
+                // remaining row width the way a plain weight(1f) would.
+                TactileToggle(
+                    options = listOf(
+                        TactileToggleOption(label = "This folder", contentDescription = "This folder"),
+                        TactileToggleOption(label = "Everything below", contentDescription = "Everything below"),
+                    ),
+                    selectedIndex = if (searchRecursive) 1 else 0,
+                    onSelect = { index -> onSearchRecursiveChange(index == 1) },
+                    modifier = Modifier.weight(1f, fill = false),
                 )
                 if (searchBusy) CircularProgressIndicator(Modifier.size(18.dp))
             }
             if (chips.isNotEmpty()) {
+                // Kept stock: these are small, removable, horizontally-scrolling filter pills --
+                // recasting each as a TactileButton(SECONDARY, compact) keycap would fight the tight
+                // chip-flow reading (a row of keycaps doesn't read as "tap to remove one filter" the
+                // way a chip's own trailing X does), so per the conversion rule's own carve-out this
+                // stays InputChip. Noted, not left unconsidered.
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -190,6 +216,8 @@ fun CommandPill(
                 )
             }
         } else if (fieldFocused && recentSearches.isNotEmpty()) {
+            // Kept stock for the same reason as the InputChip row above -- a horizontally-scrolling
+            // row of recent queries reads as chips, not keycaps.
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -206,63 +234,98 @@ fun CommandPill(
             }
         }
 
-        Surface(
-            shape = RoundedCornerShape(50),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = 3.dp,
-            shadowElevation = 10.dp,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
+        // The pill keeps its own exact geometry (stadium shape, 56dp height, back/field/clear/
+        // trailing Row) rather than wrapping in the kit's own TactileField -- that component's
+        // slanted-leading-edge body and label/asterisk anatomy is built for a labelled form field,
+        // not a full-bleed search bar sitting between a nav glyph and trailing controls, and forcing
+        // it in here would break the pill's layout contract the conversion rules ask this call site
+        // to preserve. Instead this applies the RECESSED GROOVE fill/inner-shadow recipe and the
+        // state slash-tick straight from the kit's own recipe functions, onto the pill's existing
+        // stadium [pillShape] -- the groove treatment the mission calls for, without the field
+        // anatomy that would fight this shape. CLI theme is guarded by hand here (rather than
+        // relying on a kit composable's own internal branch) since this is the one piece of the
+        // pill CommandPill paints itself instead of handing to the kit -- never a faked cap/groove
+        // in CLI, per the hard rule; the plain flat pill it falls back to is exactly what shipped
+        // before this conversion.
+        val cli = LocalThemeStyle.current == ThemeStyle.CLI
+        val palette = if (cli) null else tactilePalette()
+        val pillShape = remember { RoundedCornerShape(50) }
+        val stateColor = palette?.let { if (fieldFocused) it.accent else it.indicatorIdle }
+
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .then(
+                    if (palette != null && stateColor != null) {
+                        Modifier
+                            .tactileFieldGroove(palette, pillShape)
+                            .border(1.dp, stateColor, pillShape)
+                    } else {
+                        Modifier
+                            .clip(pillShape)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    },
+                ),
         ) {
             Row(
-                Modifier.padding(horizontal = 6.dp),
+                Modifier.fillMaxHeight().padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(
+                TactileIconKey(
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = stringResource(R.string.browser_parent_folder),
                     onClick = onNavigateUp,
                     enabled = canNavigateUp,
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
-                }
+                )
 
-                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-                    if (query.isEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Outlined.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                stringResource(R.string.browser_search_placeholder),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(start = 8.dp),
-                            )
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    if (palette != null && stateColor != null) {
+                        Canvas(Modifier.width(PillSlashWidth).fillMaxHeight()) {
+                            drawTactileSlashTick(stateColor, withErrorDot = false)
                         }
                     }
-                    BasicTextField(
-                        value = query,
-                        onValueChange = onQueryChange,
-                        singleLine = true,
-                        textStyle = LocalTextStyle.current.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = MaterialTheme.typography.bodyMedium.fontSize,
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth()
-                            .onFocusChanged { fieldFocused = it.isFocused }
-                            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it },
-                    )
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Outlined.Search,
+                                    contentDescription = null,
+                                    tint = palette?.indicatorIdle ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    stringResource(R.string.browser_search_placeholder),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette?.indicatorIdle ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(start = 8.dp),
+                                )
+                            }
+                        }
+                        BasicTextField(
+                            value = query,
+                            onValueChange = onQueryChange,
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = MaterialTheme.typography.bodyMedium.fontSize,
+                            ),
+                            cursorBrush = SolidColor(palette?.accent ?: MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                                .onFocusChanged { fieldFocused = it.isFocused }
+                                .let { if (focusRequester != null) it.focusRequester(focusRequester) else it },
+                        )
+                    }
                 }
 
                 if (query.isNotEmpty()) {
-                    IconButton(onClick = { onQueryChange("") }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Clear search")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Clear search",
+                        onClick = { onQueryChange("") },
+                    )
                 }
                 trailing()
             }

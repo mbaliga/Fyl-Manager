@@ -5,6 +5,11 @@
     own name and (implicitly) the same icon once FolderWidgetConfigActivity has written a config.
     RemoteViews-safe views only: LinearLayout, ImageView, TextView.
 
+    Build 11.5 inset rule: this repo's other two widget faces (widget_storage.xml,
+    widget_actions.xml) use 14dp root padding; this one is the documented exception at 10dp,
+    since a 1x1 cell is too small to give up 14dp on every side without crowding the icon+label
+    down to nothing.
+
     android:tint (not app:tint) below is deliberate, not the lint UseAppTint suggestion left
     unaddressed: a widget host inflates RemoteViews as plain framework views, never through
     AppCompat's LayoutInflater factory, so app:tint (an AppCompat-only attribute) would silently
@@ -19,7 +24,7 @@
     android:orientation="vertical"
     android:gravity="center"
     android:background="@drawable/widget_background"
-    android:padding="6dp">
+    android:padding="10dp">
 
     <ImageView
         android:id="@+id/widget_folder_icon"
@@ -38,5 +43,6 @@
         android:maxLines="1"
         android:ellipsize="end"
         android:textColor="@color/widget_on_surface"
-        android:textSize="11sp" />
+        android:textSize="11sp"
+        android:fontFamily="@font/hyle_grotesk_classic_regular" />
 </LinearLayout>

@@ -76,6 +76,27 @@ class OverviewModelsTest {
     }
 
     @Test
+    fun `visibleStorageLegendEntries drops every zero-byte kind`() {
+        val snapshot = StorageUsageSnapshot(scannedAtMillis = 1L, kindBytes = mapOf(StorageKind.PHOTOS to 10L))
+
+        val visible = visibleStorageLegendEntries(storageLegendEntries(snapshot))
+
+        assertEquals(listOf(StorageKind.PHOTOS), visible.map { it.first })
+    }
+
+    @Test
+    fun `visibleStorageLegendEntries keeps Other the moment it is nonzero`() {
+        val snapshot = StorageUsageSnapshot(
+            scannedAtMillis = 1L,
+            kindBytes = mapOf(StorageKind.PHOTOS to 10L, StorageKind.OTHER to 1L),
+        )
+
+        val visible = visibleStorageLegendEntries(storageLegendEntries(snapshot))
+
+        assertTrue(visible.any { it.first == StorageKind.OTHER })
+    }
+
+    @Test
     fun `storageAccountedBytes sums whatever the scan actually classified`() {
         val snapshot = StorageUsageSnapshot(
             scannedAtMillis = 1L,

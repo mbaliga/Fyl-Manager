@@ -20,7 +20,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +51,8 @@ import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.LocalShowExtensions
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.landing.LandingSubject
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.withTimeoutOrNull
@@ -151,7 +152,7 @@ private fun SubjectListHeader(subjectName: String, onOpenAsFolder: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = onOpenAsFolder) { Text("Open as folder") }
+        TactileButton(text = "Open as folder", onClick = onOpenAsFolder, style = TactileButtonStyle.SECONDARY)
     }
 }
 

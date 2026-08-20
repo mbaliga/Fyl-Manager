@@ -129,4 +129,98 @@ class PondWaterRendererTest {
         assertEquals(a.motePositions(), b.motePositions())
         assertEquals(a.blobPositions(), b.blobPositions())
     }
+
+    // -- Build 11.5 (design-fidelity pass): vignette, light shafts, mote twinkle, deeper motes,
+    // 4-stop background -- added without touching any assertion above. --
+
+    @Test
+    fun `motes seed within the widened 1_0-2_5dp radius range`() {
+        // density = 1f so `radius = (1.0f + rand * 1.5f) * density` is a direct dp read, not a
+        // density-scaled one -- the spec's "1.0-2.5dp" is a dp figure.
+        val r = renderer(density = 1f)
+        assertTrue(
+            "expected every mote radius within 1.0..2.5dp, got ${r.moteRadii()}",
+            r.moteRadii().all { it in 1.0f..2.5f },
+        )
+    }
+
+    @Test
+    fun `a fresh field seeds 2 or 3 light shafts, deterministically per seed`() {
+        val a = renderer(seed = 55L)
+        val b = renderer(seed = 55L)
+        assertTrue("light shaft count ${a.lightShaftCount()} outside 2..3", a.lightShaftCount() in 2..3)
+        assertEquals(a.lightShaftCount(), b.lightShaftCount())
+        assertEquals(a.lightShaftPositions(), b.lightShaftPositions())
+    }
+
+    @Test
+    fun `light shafts stay anchored in the upper region and drift deterministically`() {
+        val a = renderer(seed = 21L, w = 800, h = 480)
+        val b = renderer(seed = 21L, w = 800, h = 480)
+
+        repeat(60) { a.step(1f / 30f); b.step(1f / 30f) }
+
+        // Same generous-but-real bound as the resize test uses for motes/blobs: the anchor +
+        // sway construction keeps every shaft within a wide margin of the canvas, biased to the
+        // upper ~48% (anchor's 0.42h ceiling plus the largest possible 0.06h sway).
+        assertTrue(
+            "expected every light shaft to stay within a wide margin of the canvas",
+            a.lightShaftPositions().all { (x, y) -> x in -120f..920f && y in -60f..300f },
+        )
+        assertEquals(
+            "two identically-seeded renderers driven the same way must stay identical",
+            a.lightShaftPositions(),
+            b.lightShaftPositions(),
+        )
+    }
+
+    @Test
+    fun `dt of zero leaves twinkle phase and light shaft position unchanged`() {
+        val r = renderer()
+        val phasesBefore = r.moteTwinklePhases()
+        val shaftsBefore = r.lightShaftPositions()
+
+        r.step(0f)
+
+        assertEquals(phasesBefore, r.moteTwinklePhases())
+        assertEquals(shaftsBefore, r.lightShaftPositions())
+    }
+
+    @Test
+    fun `stepping advances mote twinkle phase and light shaft position`() {
+        val r = renderer()
+        val phasesBefore = r.moteTwinklePhases()
+        val shaftsBefore = r.lightShaftPositions()
+
+        repeat(10) { r.step(1f / 30f) }
+
+        assertTrue(
+            "expected at least one mote's twinkle phase to have advanced",
+            phasesBefore.indices.any { phasesBefore[it] != r.moteTwinklePhases()[it] },
+        )
+        assertTrue(
+            "expected at least one light shaft to have drifted",
+            shaftsBefore.indices.any { shaftsBefore[it] != r.lightShaftPositions()[it] },
+        )
+    }
+
+    @Test
+    fun `vignette alpha lands inside the Hyle soft-shadow band`() {
+        val r = renderer()
+        assertTrue(
+            "vignette alpha ${r.vignetteAlpha()} outside the 0.10-0.16 Hyle band",
+            r.vignetteAlpha() in 0.10f..0.16f,
+        )
+    }
+
+    @Test
+    fun `background gradient now carries 4 ascending stops from 0 to 1`() {
+        val stops = renderer().backgroundStopPositions()
+        assertEquals(4, stops.size)
+        assertEquals(0f, stops.first())
+        assertEquals(1f, stops.last())
+        for (i in 1 until stops.size) {
+            assertTrue("stops must be strictly ascending, got ${stops.toList()}", stops[i] > stops[i - 1])
+        }
+    }
 }

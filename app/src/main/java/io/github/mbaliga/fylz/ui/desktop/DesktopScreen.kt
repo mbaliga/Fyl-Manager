@@ -2,7 +2,7 @@ package io.github.mbaliga.fylz.ui.desktop
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,14 +16,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Wallpaper
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -41,9 +41,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -73,6 +75,12 @@ import io.github.mbaliga.fylz.storage.StorageUsageSnapshot
 import io.github.mbaliga.fylz.storage.StorageUsageStore
 import io.github.mbaliga.fylz.ui.overview.OverviewCard
 import io.github.mbaliga.fylz.ui.overview.tallyBytes
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.softShadow
 import io.github.mbaliga.fylz.wallpaper.WallpaperSpec
 import io.github.mbaliga.fylz.widgets.WidgetRefresher
 import kotlinx.coroutines.Dispatchers
@@ -275,13 +283,21 @@ fun DesktopScreen(
         )
     }
 
+    // No BoxWithConstraints has run yet at this point in the composable body, so there is no LIVE
+    // viewport to measure -- screenWidthDp is a reasonable stand-in for a freshly-added widget's
+    // very first placement, and (like io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed's
+    // own REFERENCE_VIEWPORT_WIDTH_DP) is re-validated against the device's own real width the
+    // instant the card renders and the user's first drag runs it back through snapWidget.
+    val configuration = LocalConfiguration.current
     fun addWidget(type: DesktopWidgetType, config: Map<String, String> = emptyMap()) {
         val registration = WidgetRegistry.of(type)
         // nextFreePlacement finds clear water; snapWidget then pulls the card onto the widget
         // column grid so a fresh card never pokes off-screen the way a raw cell center can.
         val placement = DesktopPolicy.snapWidget(
             DesktopPolicy.nextFreePlacement(items.map(DesktopItem::placement)),
-            DesktopPolicy.widgetWidthFraction(registration.defaultSize),
+            registration.defaultSize,
+            configuration.screenWidthDp.toFloat(),
+            DesktopPolicy.WORLD_MIN_HEIGHT_DP.toFloat(),
         )
         store.upsert(
             DesktopItem.Widget(
@@ -295,16 +311,17 @@ fun DesktopScreen(
     }
 
     Box(modifier.fillMaxSize()) {
-        WallpaperLayer(wallpaperSpec, Modifier.fillMaxSize())
+        WallpaperLayer(wallpaperSpec, Modifier.fillMaxSize(), bottomInset = bottomReserve)
 
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val viewportWidthDp = maxWidth
             val viewportWidthPx = constraints.maxWidth.toFloat()
             // Placements' y is a fraction of the WORLD, not the raw viewport: card heights are
             // fixed dp, so viewport-fraction rows would collide on short phones and gap on tall
-            // ones. The world is floored at WORLD_MIN_HEIGHT_DP and the surface scrolls over it;
-            // the trailing pad below the world keeps a card parked at clampWidget's y ceiling
-            // fully reachable above the bottom chrome.
+            // ones. The world is floored at WORLD_MIN_HEIGHT_DP -- itself derived from
+            // defaultSeed's own content bottom plus a fixed bottom margin (see that constant's own
+            // KDoc), so there is no further dead-scroll pad to add here beyond bottomReserve, the
+            // real space the bottom chrome occupies.
             val worldHeightDp = maxOf(maxHeight, DesktopPolicy.WORLD_MIN_HEIGHT_DP.dp)
             val worldHeightPx = with(LocalDensity.current) { worldHeightDp.toPx() }
             val maxZ = items.maxOfOrNull { it.placement.z } ?: 0
@@ -314,7 +331,7 @@ fun DesktopScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
             ) {
-                Box(Modifier.fillMaxWidth().height(worldHeightDp + 260.dp + bottomReserve)) {
+                Box(Modifier.fillMaxWidth().height(worldHeightDp + bottomReserve)) {
             items.forEach { item ->
                 DesktopTile(
                     item = item,
@@ -325,6 +342,7 @@ fun DesktopScreen(
                     viewportWidthDp = viewportWidthDp,
                     viewportWidthPx = viewportWidthPx,
                     viewportHeightPx = worldHeightPx,
+                    worldHeightDp = worldHeightDp,
                     repository = repository,
                     refreshKey = refreshKey,
                     widgetData = widgetData,
@@ -359,26 +377,31 @@ fun DesktopScreen(
             }
         }
 
+        if (items.isEmpty() && !editing) {
+            EmptyDesktopHint(modifier = Modifier.align(Alignment.Center))
+        }
+
         Column(
             Modifier.align(Alignment.BottomEnd).padding(bottom = bottomReserve + 16.dp, end = 16.dp),
             horizontalAlignment = Alignment.End,
         ) {
             if (editing) {
-                Surface(
+                TactileButton(
+                    text = stringResource(R.string.desktop_edit_done),
                     onClick = { editing = false; showAddSheet = false },
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    modifier = Modifier.padding(bottom = 10.dp),
-                ) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(R.string.desktop_edit_done))
-                    }
-                }
+                    style = TactileButtonStyle.SECONDARY,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
             }
-            ExtendedFloatingActionButton(
+            // "+ " prefixed onto the existing string, not a reword of it -- TactileButton's
+            // contract (kit contract, io.github.mbaliga.fylz.ui.tactile) is text-only with no
+            // leading-icon slot, so the spec's "leading-plus feel" for this PRIMARY cap is given
+            // by decorating the label rather than by an Icon composable the old
+            // ExtendedFloatingActionButton had a dedicated slot for and TactileButton does not.
+            TactileButton(
+                text = "+ " + stringResource(R.string.desktop_edit_add),
                 onClick = { editing = true; showAddSheet = true },
-                icon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
-                text = { Text(stringResource(R.string.desktop_edit_add)) },
+                style = TactileButtonStyle.PRIMARY,
             )
         }
     }
@@ -406,14 +429,20 @@ private fun DesktopAddSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Row(
-                Modifier.fillMaxWidth().clickable(enabled = !atCapacity, onClick = onAddFolder).padding(vertical = 12.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(enabled = !atCapacity, onClick = onAddFolder),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Outlined.CreateNewFolder, contentDescription = null)
                 Text(stringResource(R.string.desktop_add_folder), Modifier.padding(start = 16.dp))
             }
             Row(
-                Modifier.fillMaxWidth().clickable(onClick = onOpenWallpaper).padding(vertical = 12.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClick = onOpenWallpaper),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Icons.Outlined.Wallpaper, contentDescription = null)
@@ -432,21 +461,51 @@ private fun DesktopAddSheet(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
                 )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
                     items(WidgetRegistry.entries) { registration ->
-                        Surface(
+                        TactileButton(
+                            text = stringResource(registration.displayNameRes),
                             onClick = { onAddWidget(registration.type) },
-                            shape = MaterialTheme.shapes.medium,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        ) {
-                            Text(
-                                stringResource(registration.displayNameRes),
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                            )
-                        }
+                            style = TactileButtonStyle.SECONDARY,
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The desktop's own empty state: wallpaper and a FAB alone left first-run users with no clue what
+ * to do next -- this is a small, hairline-bordered hint card, centred over the wallpaper, gone the
+ * instant the first item lands (and while [editing] is already open, so it never fights the add
+ * sheet for attention).
+ */
+@Composable
+private fun EmptyDesktopHint(modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(FylzGeometry.RadiusXl)
+    Surface(
+        modifier = modifier.padding(horizontal = 32.dp).softShadow(ShadowLevel.SM, shape),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, hairline()),
+    ) {
+        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                stringResource(R.string.desktop_empty_title),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                stringResource(R.string.desktop_empty_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
     }
 }

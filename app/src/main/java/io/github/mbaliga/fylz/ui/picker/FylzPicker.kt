@@ -26,16 +26,12 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +58,10 @@ import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import kotlinx.coroutines.launch
 
 /** What the picker is asking the user to choose. */
@@ -186,14 +186,13 @@ fun FylzPicker(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(
+                    TactileIconKey(
+                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "Back",
                         onClick = {
                             if (crumbs.isEmpty()) onDismiss() else crumbs = crumbs.dropLast(1)
                         },
-                        modifier = Modifier.size(48.dp),
-                    ) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
-                    }
+                    )
                     Column(Modifier.weight(1f).padding(start = 4.dp)) {
                         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
@@ -205,9 +204,11 @@ fun FylzPicker(
                         )
                     }
                     if (here != null && mode != PickerMode.FILES) {
-                        IconButton(onClick = { newFolderOpen = true }, modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = "New folder")
-                        }
+                        TactileIconKey(
+                            icon = Icons.Outlined.CreateNewFolder,
+                            contentDescription = "New folder",
+                            onClick = { newFolderOpen = true },
+                        )
                     }
                 }
                 HorizontalDivider()
@@ -256,10 +257,11 @@ fun FylzPicker(
 
                 // ── Commit ────────────────────────────────────────────────────────────
                 if (mode == PickerMode.SAVE) {
-                    OutlinedTextField(
+                    TactileField(
                         value = fileName,
                         onValueChange = { fileName = it },
-                        label = { Text("File name") },
+                        label = "File name",
+                        mandatory = true,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     )
@@ -270,13 +272,18 @@ fun FylzPicker(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     if (onBrowseSystem != null) {
-                        TextButton(onClick = onBrowseSystem) { Text("Other app…") }
+                        TactileButton(text = "Other app…", onClick = onBrowseSystem, style = TactileButtonStyle.SECONDARY)
                     }
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onDismiss) { Text("Cancel") }
-                    Button(
+                    TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY)
+                    TactileButton(
+                        text = if (mode == PickerMode.FILES && selected.isNotEmpty()) {
+                            "$confirmLabel (${selected.size})"
+                        } else {
+                            confirmLabel
+                        },
                         onClick = {
-                            val crumb = here ?: return@Button
+                            val crumb = here ?: return@TactileButton
                             when (mode) {
                                 PickerMode.FOLDER -> onResult(PickerOutcome.Folder(crumb.treeUri, crumb.folderUri))
                                 PickerMode.FILES -> onResult(PickerOutcome.Files(selected.toList()))
@@ -290,15 +297,7 @@ fun FylzPicker(
                             PickerMode.FILES -> selected.isNotEmpty()
                             PickerMode.SAVE -> here != null && fileName.isNotBlank()
                         },
-                    ) {
-                        Text(
-                            if (mode == PickerMode.FILES && selected.isNotEmpty()) {
-                                "$confirmLabel (${selected.size})"
-                            } else {
-                                confirmLabel
-                            },
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -488,16 +487,22 @@ private fun NewFolderDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("New folder") },
         text = {
-            OutlinedTextField(
+            TactileField(
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
-                label = { Text("Name") },
+                label = "Name",
+                mandatory = true,
             )
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(name.trim()) }, enabled = name.isNotBlank()) { Text("Create") }
+            TactileButton(
+                text = "Create",
+                onClick = { onCreate(name.trim()) },
+                style = TactileButtonStyle.SECONDARY,
+                enabled = name.isNotBlank(),
+            )
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }

@@ -11,14 +11,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
+import io.github.mbaliga.fylz.ui.tactile.TactileToggle
+import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
 
 /**
  * PDF page tools: the UI for `pdf/PdfToolService`, `pdf/PdfPageTools` and
@@ -98,24 +100,31 @@ fun PdfToolsDialog(
                     pageCount?.let { count ->
                         Text("$count page${if (count == 1) "" else "s"}", style = MaterialTheme.typography.bodyMedium)
                     }
-                    OutlinedTextField(
+                    TactileField(
                         value = range,
                         onValueChange = { range = it },
-                        label = { Text("Pages") },
-                        supportingText = { Text("For example 1-3,7,9-12. Blank means every page.") },
+                        label = "Pages",
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Rotate", Modifier.width(80.dp))
-                        listOf(0, 90, 180, 270).forEach { degrees ->
-                            TextButton(onClick = { rotation = degrees }) {
-                                Text(
-                                    if (rotation == degrees) "[$degrees°]" else "$degrees°",
-                                    style = MaterialTheme.typography.labelLarge,
-                                )
-                            }
-                        }
+                    // TactileField has no persistent (non-error) supporting-text slot, unlike the
+                    // OutlinedTextField this replaces -- this hint was never an error state, so it
+                    // moves to a plain caption below the field rather than being dropped or
+                    // recast as an invented Error().
+                    Text(
+                        "For example 1-3,7,9-12. Blank means every page.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Rotate", style = MaterialTheme.typography.labelLarge)
+                        TactileToggle(
+                            options = ROTATION_DEGREES.map { degrees ->
+                                TactileToggleOption(label = "$degrees°", contentDescription = "Rotate $degrees degrees")
+                            },
+                            selectedIndex = ROTATION_DEGREES.indexOf(rotation).coerceAtLeast(0),
+                            onSelect = { index -> rotation = ROTATION_DEGREES[index] },
+                        )
                     }
                 }
 
@@ -124,7 +133,7 @@ fun PdfToolsDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
-                    Switch(checked = searchableOcr, onCheckedChange = { searchableOcr = it })
+                    TactileSwitch(checked = searchableOcr, onCheckedChange = { searchableOcr = it })
                     Spacer(Modifier.width(10.dp))
                     Column {
                         Text("Make searchable (OCR)")
@@ -141,27 +150,27 @@ fun PdfToolsDialog(
         },
         confirmButton = {
             if (sources.size > 1) {
-                Button(onClick = { onMerge(searchableOcr) }) { Text("Merge") }
+                TactileButton(text = "Merge", onClick = { onMerge(searchableOcr) }, style = TactileButtonStyle.PRIMARY)
             } else {
-                Button(
+                TactileButton(
+                    text = if (parsedPages.isEmpty()) "Extract" else "Extract ${parsedPages.size} pages",
                     onClick = {
-                        val uri = single ?: return@Button
+                        val uri = single ?: return@TactileButton
                         onExport(
                             parsedPages.map { PdfPageRef(uri, it, rotation) },
                             searchableOcr,
                         )
                     },
+                    style = TactileButtonStyle.PRIMARY,
                     enabled = parsedPages.isNotEmpty(),
-                ) {
-                    Text(
-                        if (parsedPages.isEmpty()) "Extract" else "Extract ${parsedPages.size} pages",
-                    )
-                }
+                )
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
+
+private val ROTATION_DEGREES = listOf(0, 90, 180, 270)
 
 /**
  * Parses a `1-3,7,9-12` page range into zero-based indices.

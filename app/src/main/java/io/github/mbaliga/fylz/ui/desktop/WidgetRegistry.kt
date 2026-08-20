@@ -1,6 +1,8 @@
 package io.github.mbaliga.fylz.ui.desktop
 
 import androidx.annotation.StringRes
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.desktop.DesktopItemSize
 import io.github.mbaliga.fylz.desktop.DesktopWidgetType
@@ -8,8 +10,18 @@ import io.github.mbaliga.fylz.desktop.DesktopWidgetType
 /**
  * Static metadata for one [DesktopWidgetType]: what the "Add widget" gallery in [DesktopScreen]
  * shows for it ([displayNameRes]), what footprint a freshly added instance gets
- * ([defaultSize]), and which sizes the user is allowed to resize it to ([allowedSizes], always
- * containing [defaultSize]).
+ * ([defaultSize]), which sizes the user is allowed to resize it to ([allowedSizes], always
+ * containing [defaultSize]), and how tall its card renders ([height]).
+ *
+ * [height] is the single source of truth for a widget's own content-fit footprint -- replacing the
+ * old blanket 152/216/360-by-[DesktopItemSize] table [io.github.mbaliga.fylz.ui.desktop.desktopWidgetSize]
+ * used to apply to every widget alike, regardless of what it actually drew. That blanket table
+ * clipped tall content (Large files' five rows, Shelf's CTA) and wasted a LARGE card's worth of
+ * space on a short one (Deleted files' single count row) -- [height] is tuned per TYPE instead, once,
+ * here, so a card's footprint always matches what it draws. Width still comes from [defaultSize]/
+ * [DesktopItemSize] via [io.github.mbaliga.fylz.desktop.DesktopPolicy.widgetWidthFraction] -- a
+ * widget's WIDTH genuinely is shared across every type of its size class (all compact cards sit in
+ * the same column), which is why that half of the old table was never the problem.
  *
  * The renderer entry point per type is [WidgetRenderers]' own `when (item.type)` dispatch, not a
  * function reference stored here -- [WidgetRegistry.of] below is itself an exhaustive `when`, so a
@@ -22,6 +34,7 @@ data class WidgetRegistration(
     @param:StringRes val displayNameRes: Int,
     val defaultSize: DesktopItemSize,
     val allowedSizes: Set<DesktopItemSize>,
+    val height: Dp,
 )
 
 object WidgetRegistry {
@@ -40,60 +53,95 @@ object WidgetRegistry {
             displayNameRes = R.string.desktop_widget_storage,
             defaultSize = DesktopItemSize.LARGE,
             allowedSizes = setOf(DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header(22) + spacer(12) + bar(12) + spacer(12) + legend(all six StorageKind rows,
+            // 6*16 + 5*8 gutters = 136) + spacer(8) + as-of row (48, the Rescan IconButton's own
+            // touch target) + spacer(4) + disclaimer (up to 2 lines at 16dp/line = 32) +
+            // spacer(12) + two STACKED CTAs (the fidelity pass stacks them full-width instead of
+            // squeezing them side by side; 40dp OutlinedButtons + 8dp gap = 88) + the card's own
+            // 32dp vertical padding (OverviewCardSurface) = 418dp worst case, rounded up with
+            // headroom rather than trimmed to the exact sum.
+            height = 440.dp,
         )
         DesktopWidgetType.QUICK_ACCESS -> WidgetRegistration(
             type = DesktopWidgetType.QUICK_ACCESS,
             displayNameRes = R.string.desktop_widget_quick_access,
             defaultSize = DesktopItemSize.MEDIUM,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header row (its overflow button is now a real 48dp touch target) + thumbnail row +
+            // item count.
+            height = 224.dp,
         )
         DesktopWidgetType.RECYCLE_BIN -> WidgetRegistration(
             type = DesktopWidgetType.RECYCLE_BIN,
             displayNameRes = R.string.desktop_widget_recycle_bin,
-            defaultSize = DesktopItemSize.MEDIUM,
+            // Was MEDIUM here while io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed
+            // placed it LARGE -- two different "default" sizes for the one type. LARGE wins: the
+            // reference overview always gave Deleted files the full-width treatment; what was
+            // actually wrong was the HEIGHT a LARGE card got (the blanket 360dp for a one-row
+            // count chip), fixed by `height` below, not by shrinking the card's width class.
+            defaultSize = DesktopItemSize.LARGE,
             allowedSizes = setOf(DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header row + one count-chip row -- short, honest content, not the old 360dp blanket.
+            height = 144.dp,
         )
         DesktopWidgetType.TAGS -> WidgetRegistration(
             type = DesktopWidgetType.TAGS,
             displayNameRes = R.string.desktop_widget_tags,
             defaultSize = DesktopItemSize.SMALL,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header + one scrollable chip row.
+            height = 112.dp,
         )
         DesktopWidgetType.PINNED -> WidgetRegistration(
             type = DesktopWidgetType.PINNED,
             displayNameRes = R.string.desktop_widget_pinned,
             defaultSize = DesktopItemSize.MEDIUM,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header + up to 4 rows at the new >=44dp touch-target row height + the "+N more" line.
+            height = 288.dp,
         )
         DesktopWidgetType.SHELF -> WidgetRegistration(
             type = DesktopWidgetType.SHELF,
             displayNameRes = R.string.desktop_widget_shelf,
             defaultSize = DesktopItemSize.SMALL,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM),
+            // Header + up to 3 preview rows + the "Open shelf" CTA -- was clipping that CTA at the
+            // old blanket 152dp.
+            height = 216.dp,
         )
         DesktopWidgetType.RECENTS -> WidgetRegistration(
             type = DesktopWidgetType.RECENTS,
             displayNameRes = R.string.desktop_widget_recents,
             defaultSize = DesktopItemSize.MEDIUM,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header + up to 4 rows at the new >=44dp touch-target row height.
+            height = 264.dp,
         )
         DesktopWidgetType.SEARCH -> WidgetRegistration(
             type = DesktopWidgetType.SEARCH,
             displayNameRes = R.string.desktop_widget_search,
             defaultSize = DesktopItemSize.SMALL,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM),
+            // A PILL, not a card -- its own natural height (14dp vertical padding either side of a
+            // 24dp icon/20dp text line), not a card-sized box it used to be stretched into and then
+            // erased by the identical-colour backing plate this fidelity pass removes.
+            height = 52.dp,
         )
         DesktopWidgetType.QUICK_ACTIONS -> WidgetRegistration(
             type = DesktopWidgetType.QUICK_ACTIONS,
             displayNameRes = R.string.desktop_widget_quick_actions,
             defaultSize = DesktopItemSize.SMALL,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM),
+            // Header + one row of four 40dp action discs.
+            height = 128.dp,
         )
         DesktopWidgetType.LARGE_FILES -> WidgetRegistration(
             type = DesktopWidgetType.LARGE_FILES,
             displayNameRes = R.string.desktop_widget_large_files,
             defaultSize = DesktopItemSize.MEDIUM,
             allowedSizes = setOf(DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
+            // Header + up to 5 rows at the new >=44dp touch-target row height + the as-of line.
+            height = 360.dp,
         )
     }
 }

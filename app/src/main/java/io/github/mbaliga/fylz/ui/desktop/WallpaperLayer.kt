@@ -3,11 +3,13 @@ package io.github.mbaliga.fylz.ui.desktop
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.currentStateAsState
@@ -48,9 +51,19 @@ import io.github.mbaliga.fylz.wallpaper.WallpaperSpec
 /**
  * Draws [spec] full-bleed behind [modifier]'s bounds. [WallpaperSpec.None] draws nothing (the
  * theme's own background shows through); every other variant fills the given bounds.
+ *
+ * [bottomInset] (Build 11.5 design-fidelity pass) is how far up from the bottom edge the pond
+ * variant's attribution chip sits, so it clears fixed bottom chrome instead of landing underneath
+ * it (audit item 11: the chip used to sit *under* the tab band at a flat 12dp). It defaults to
+ * `0.dp` -- a caller with no bottom chrome over the wallpaper needn't pass anything -- and does
+ * nothing for every spec but [WallpaperSpec.PondWater], since that is the only variant with any
+ * floating chrome of its own. `DesktopScreen.kt`'s own call already passes its `bottomReserve: Dp`
+ * through as `bottomInset`, so the chip clears the tab band there; a caller that wants the raw
+ * bottom-right corner instead (nothing else floats over its wallpaper) can still rely on the
+ * `0.dp` default.
  */
 @Composable
-fun WallpaperLayer(spec: WallpaperSpec, modifier: Modifier = Modifier) {
+fun WallpaperLayer(spec: WallpaperSpec, modifier: Modifier = Modifier, bottomInset: Dp = 0.dp) {
     when (spec) {
         is WallpaperSpec.None -> Unit
         is WallpaperSpec.Solid -> Box(
@@ -64,7 +77,7 @@ fun WallpaperLayer(spec: WallpaperSpec, modifier: Modifier = Modifier) {
                 .background(gradientBrush(spec.slug, isSystemInDarkTheme())),
         ) {}
         is WallpaperSpec.Image -> ImageWallpaper(spec, modifier)
-        is WallpaperSpec.PondWater -> PondWaterWallpaper(modifier)
+        is WallpaperSpec.PondWater -> PondWaterWallpaper(modifier, bottomInset)
     }
 }
 
@@ -87,7 +100,7 @@ private fun ImageWallpaper(spec: WallpaperSpec.Image, modifier: Modifier) {
 }
 
 @Composable
-private fun PondWaterWallpaper(modifier: Modifier) {
+private fun PondWaterWallpaper(modifier: Modifier, bottomInset: Dp = 0.dp) {
     val context = LocalContext.current
     val dark = isSystemInDarkTheme()
     val density = LocalDensity.current.density
@@ -155,10 +168,20 @@ private fun PondWaterWallpaper(modifier: Modifier) {
             tick.let { }
             renderer.draw(drawContext.canvas.nativeCanvas)
         }
-        PondAttributionChip(Modifier.align(Alignment.BottomEnd).padding(12.dp))
+        PondAttributionChip(
+            Modifier.align(Alignment.BottomEnd).padding(bottom = bottomInset + 12.dp, end = 12.dp),
+        )
     }
 }
 
+/**
+ * The pond wallpaper's attribution chip. Two sizes on purpose: a >= 48dp square tap target (the
+ * Hyle hard gate) wrapping a visually slim glass-pane pill -- Black @ 55% + a 1dp hairline of
+ * White @ 12% -- so the touch target doesn't itself bloat into an oversized chip. Colour is
+ * literal (not [io.github.mbaliga.fylz.ui.theme.hairline]'s theme-derived outline) because this
+ * chip has to read over BOTH pond palettes regardless of which app theme is active, the same
+ * reasoning [io.github.mbaliga.fylz.ui.chrome.ChromeTokens] uses for the tab band's fixed ink.
+ */
 @Composable
 private fun PondAttributionChip(modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -168,16 +191,24 @@ private fun PondAttributionChip(modifier: Modifier = Modifier) {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ANIMALCULES_PLAY_STORE_URL)))
             }
         },
-        modifier = modifier,
+        modifier = modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp),
         shape = RoundedCornerShape(999.dp),
-        color = Color.Black.copy(alpha = 0.35f),
+        color = Color.Transparent,
     ) {
-        Text(
-            text = stringResource(R.string.wallpaper_pond_attribution),
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-        )
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = Color.Black.copy(alpha = 0.55f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+            ) {
+                Text(
+                    text = stringResource(R.string.wallpaper_pond_attribution),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
     }
 }
 

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -16,8 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -140,21 +138,30 @@ private fun PdfPagerPill(
         shadowElevation = 2.dp,
         modifier = modifier,
     ) {
+        // Was a 32dp compact IconButton pair -- TactileIconKey's own >=48dp touch target (the
+        // kit's hard floor) makes this floating pill noticeably taller than before. Flag for the
+        // render pass: verify it still reads as a floating pill rather than crowding the page.
         Row(
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onPrevious, enabled = pageIndex > 0, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous PDF page", modifier = Modifier.size(18.dp))
-            }
+            TactileIconKey(
+                icon = Icons.Outlined.ChevronLeft,
+                contentDescription = "Previous PDF page",
+                onClick = onPrevious,
+                enabled = pageIndex > 0,
+            )
             Text(
                 "${pageIndex + 1} of $pageCount",
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.padding(horizontal = 4.dp),
             )
-            IconButton(onClick = onNext, enabled = pageIndex + 1 < pageCount, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Outlined.ChevronRight, contentDescription = "Next PDF page", modifier = Modifier.size(18.dp))
-            }
+            TactileIconKey(
+                icon = Icons.Outlined.ChevronRight,
+                contentDescription = "Next PDF page",
+                onClick = onNext,
+                enabled = pageIndex + 1 < pageCount,
+            )
         }
     }
 }

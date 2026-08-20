@@ -25,13 +25,10 @@ import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,6 +51,9 @@ import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -96,19 +96,23 @@ fun PdfDocumentPreview(entry: FileEntry, descriptor: FileFormatDescriptor, modif
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            IconButton(
+                            TactileIconKey(
+                                icon = Icons.Outlined.ChevronLeft,
+                                contentDescription = "Previous PDF page",
                                 enabled = preview.pageIndex > 0,
                                 onClick = { requestedPage = preview.pageIndex - 1 },
-                            ) { Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous PDF page") }
+                            )
                             Text(
                                 "Page ${preview.pageIndex + 1} of ${preview.pageCount}",
                                 style = MaterialTheme.typography.titleSmall,
                                 modifier = Modifier.weight(1f),
                             )
-                            IconButton(
+                            TactileIconKey(
+                                icon = Icons.Outlined.ChevronRight,
+                                contentDescription = "Next PDF page",
                                 enabled = preview.pageIndex + 1 < preview.pageCount,
                                 onClick = { requestedPage = preview.pageIndex + 1 },
-                            ) { Icon(Icons.Outlined.ChevronRight, contentDescription = "Next PDF page") }
+                            )
                         }
                     }
                     Row(
@@ -268,16 +272,18 @@ private fun ArchiveMetric(label: String, value: String) {
 @Composable
 fun ExternalOpenButton(entry: FileEntry) {
     val context = LocalContext.current
-    Button(onClick = {
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(entry.uri, entry.mimeType)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        runCatching { context.startActivity(intent) }
-            .onFailure { Toast.makeText(context, "No installed app advertises support for this type.", Toast.LENGTH_SHORT).show() }
-    }) {
-        Icon(Icons.Outlined.OpenInNew, contentDescription = null)
-        Text("Open with…", Modifier.padding(start = 6.dp))
-    }
+    // Icon dropped -- no leading-icon slot on TactileButton.
+    TactileButton(
+        text = "Open with…",
+        onClick = {
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(entry.uri, entry.mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            runCatching { context.startActivity(intent) }
+                .onFailure { Toast.makeText(context, "No installed app advertises support for this type.", Toast.LENGTH_SHORT).show() }
+        },
+        style = TactileButtonStyle.PRIMARY,
+    )
 }
 
 private fun formatSpecializedBytes(bytes: Long): String {

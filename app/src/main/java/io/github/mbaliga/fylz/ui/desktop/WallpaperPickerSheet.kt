@@ -15,22 +15,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -49,6 +44,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileSlider
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.microLabel
 import io.github.mbaliga.fylz.wallpaper.ANIMALCULES_PLAY_STORE_URL
 import io.github.mbaliga.fylz.wallpaper.FylzPondWallpaperService
 import io.github.mbaliga.fylz.wallpaper.PondWaterRenderer
@@ -88,32 +90,36 @@ fun WallpaperPickerSheet(current: WallpaperSpec, onPick: (WallpaperSpec) -> Unit
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             Text(stringResource(R.string.wallpaper_picker_title), style = MaterialTheme.typography.titleMedium)
 
+            WallpaperLivePreview(current)
+
             WallpaperOptionRow(
-                selected = current is WallpaperSpec.None,
                 label = stringResource(R.string.wallpaper_option_none),
                 onClick = { onPick(WallpaperSpec.None) },
-            ) { NoneSwatch() }
+            ) { NoneSwatch(selected = current is WallpaperSpec.None) }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.wallpaper_section_solid), style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(R.string.wallpaper_section_solid), style = microLabel())
                 SolidSwatchRow(current = current, onPick = { slug -> onPick(WallpaperSpec.Solid(slug)) })
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.wallpaper_section_gradient), style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(R.string.wallpaper_section_gradient), style = microLabel())
                 GradientSwatchRow(current = current, onPick = { slug -> onPick(WallpaperSpec.Gradient(slug)) })
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.wallpaper_section_image), style = MaterialTheme.typography.labelLarge)
-                OutlinedButton(onClick = { imagePicker.launch(arrayOf("image/*")) }) {
-                    Text(stringResource(R.string.wallpaper_choose_image))
-                }
+                Text(stringResource(R.string.wallpaper_section_image), style = microLabel())
+                TactileButton(
+                    text = stringResource(R.string.wallpaper_choose_image),
+                    onClick = { imagePicker.launch(arrayOf("image/*")) },
+                    style = TactileButtonStyle.SECONDARY,
+                    fillWidth = true,
+                )
                 if (current is WallpaperSpec.Image) {
                     ImageTuning(
                         spec = current,
@@ -126,42 +132,70 @@ fun WallpaperPickerSheet(current: WallpaperSpec, onPick: (WallpaperSpec) -> Unit
             HorizontalDivider()
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.wallpaper_section_pond), style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(R.string.wallpaper_section_pond), style = microLabel())
                 WallpaperOptionRow(
-                    selected = current is WallpaperSpec.PondWater,
                     label = stringResource(R.string.wallpaper_option_pond),
                     onClick = { onPick(WallpaperSpec.PondWater) },
-                ) { PondWaterSwatch() }
+                ) { PondWaterSwatch(selected = current is WallpaperSpec.PondWater) }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).putExtra(
-                                    WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                                    ComponentName(context, FylzPondWallpaperService::class.java),
-                                ),
-                            )
-                        }
-                    }) {
-                        Text(stringResource(R.string.wallpaper_set_as_phone_wallpaper))
-                    }
-                    TextButton(onClick = {
-                        runCatching {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ANIMALCULES_PLAY_STORE_URL)))
-                        }
-                    }) {
-                        Text(stringResource(R.string.wallpaper_get_animalcules))
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TactileButton(
+                        text = stringResource(R.string.wallpaper_set_as_phone_wallpaper),
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).putExtra(
+                                        WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                                        ComponentName(context, FylzPondWallpaperService::class.java),
+                                    ),
+                                )
+                            }
+                        },
+                        style = TactileButtonStyle.SECONDARY,
+                    )
+                    TactileButton(
+                        text = stringResource(R.string.wallpaper_get_animalcules),
+                        onClick = {
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ANIMALCULES_PLAY_STORE_URL)))
+                            }
+                        },
+                        style = TactileButtonStyle.SECONDARY,
+                    )
                 }
             }
         }
     }
 }
 
+/**
+ * A live-scale preview of [spec] at the top of the sheet, so a pick shows before it's committed.
+ * Every non-pond variant just delegates straight to [WallpaperLayer] -- none of those draw a
+ * per-frame loop, so there is no extra cost to rendering the real thing here. [WallpaperSpec
+ * .PondWater] is the one exception: it routes to [StaticPondPreview] instead of [WallpaperLayer]
+ * so this decorative swap-preview never spins up the live wallpaper's Choreographer loop (the
+ * spec calls this out explicitly -- "static frame for pond").
+ */
+@Composable
+private fun WallpaperLivePreview(spec: WallpaperSpec) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(FylzGeometry.RadiusXl))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .border(1.dp, hairline(), RoundedCornerShape(FylzGeometry.RadiusXl)),
+    ) {
+        if (spec is WallpaperSpec.PondWater) {
+            StaticPondPreview(Modifier.fillMaxSize())
+        } else {
+            WallpaperLayer(spec, Modifier.fillMaxSize())
+        }
+    }
+}
+
 @Composable
 private fun WallpaperOptionRow(
-    selected: Boolean,
     label: String,
     onClick: () -> Unit,
     leading: @Composable () -> Unit,
@@ -169,39 +203,50 @@ private fun WallpaperOptionRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(FylzGeometry.RadiusLg))
             .clickable(onClick = onClick)
-            .padding(vertical = 6.dp),
+            .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         leading()
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 2.dp))
-        if (selected) {
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 4.dp),
-            )
-        }
+        Text(label, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
+/**
+ * The 40dp ring-and-clip treatment every swatch shares: a 2dp primary selection ring around
+ * content clipped to a circle. [onClick] is `null` for a swatch that only decorates an
+ * already-clickable row ([NoneSwatch], [PondWaterSwatch] inside [WallpaperOptionRow]) and
+ * non-null for a swatch that is its own tap target ([ColorSwatch] inside a swatch row) -- the
+ * clickable is applied last, after both clips, exactly like the pre-Build-11.5 [ColorSwatch] did,
+ * so the ripple stays bounded to the circle rather than spilling past its corners.
+ */
 @Composable
-private fun NoneSwatch() {
+private fun SwatchRing(selected: Boolean, onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+    val ringColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
     Box(
         Modifier
             .size(SWATCH_SIZE)
             .clip(CircleShape)
-            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
-    ) {}
+            .border(2.dp, ringColor, CircleShape)
+            .padding(2.dp)
+            .clip(CircleShape)
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
+    ) { content() }
+}
+
+@Composable
+private fun NoneSwatch(selected: Boolean) {
+    SwatchRing(selected = selected) {
+        Box(Modifier.fillMaxSize().border(1.dp, hairline(), CircleShape))
+    }
 }
 
 @Composable
 private fun SolidSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
     val dark = isSystemInDarkTheme()
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         SOLID_SLUGS.forEach { slug ->
             val colors = SOLID_PALETTE.getValue(slug)
             val color = if (dark) colors.second else colors.first
@@ -214,7 +259,7 @@ private fun SolidSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
 @Composable
 private fun GradientSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
     val dark = isSystemInDarkTheme()
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         GRADIENT_SLUGS.forEach { slug ->
             val (top, bottom) = gradientStops(slug, dark)
             val selected = current is WallpaperSpec.Gradient && current.slug == slug
@@ -230,17 +275,13 @@ private fun ColorSwatch(
     color: Color? = null,
     brush: Brush? = null,
 ) {
-    val ringColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
-    Box(
-        Modifier
-            .size(SWATCH_SIZE)
-            .clip(CircleShape)
-            .border(2.dp, ringColor, CircleShape)
-            .padding(2.dp)
-            .clip(CircleShape)
-            .let { if (brush != null) it.background(brush) else it.background(color ?: Color.Transparent) }
-            .clickable(onClick = onClick),
-    ) {}
+    SwatchRing(selected = selected, onClick = onClick) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .let { if (brush != null) it.background(brush) else it.background(color ?: Color.Transparent) },
+        )
+    }
 }
 
 @Composable
@@ -252,10 +293,10 @@ private fun ImageTuning(spec: WallpaperSpec.Image, onBlurChanged: (Boolean) -> U
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(stringResource(R.string.wallpaper_image_blur_label), style = MaterialTheme.typography.bodyMedium)
-            Switch(checked = spec.blur, onCheckedChange = onBlurChanged)
+            TactileSwitch(checked = spec.blur, onCheckedChange = onBlurChanged)
         }
         Text(stringResource(R.string.wallpaper_image_dim_label), style = MaterialTheme.typography.bodyMedium)
-        Slider(
+        TactileSlider(
             value = spec.dim.coerceIn(0f, 0.6f),
             onValueChange = onDimChanged,
             valueRange = 0f..0.6f,
@@ -264,38 +305,46 @@ private fun ImageTuning(spec: WallpaperSpec.Image, onBlurChanged: (Boolean) -> U
 }
 
 /**
- * A tiny static [PondWaterRenderer] preview -- seeded, resized once, and stepped forward a few
- * seconds so the field looks settled rather than freshly spawned, then never stepped again. It
- * intentionally never redraws after that first frame: this is a swatch, not the live wallpaper.
+ * A tiny static [PondWaterRenderer] frame -- seeded, resized once, and stepped forward a few
+ * seconds so the field looks settled rather than freshly spawned, then never stepped again.
+ * Shared by [PondWaterSwatch] and [StaticPondPreview]: both want a settle-then-freeze pond frame,
+ * just at different sizes and shapes, and neither is the live wallpaper -- this never redraws
+ * after that first frame, so there is no per-frame loop hiding in either of them.
  */
 @Composable
-private fun PondWaterSwatch() {
+private fun SettledPondCanvas(seed: Long, modifier: Modifier = Modifier) {
     val dark = isSystemInDarkTheme()
     val density = LocalDensity.current.density
-    val renderer = remember(dark) { PondWaterRenderer(random = Random(POND_SWATCH_SEED), isDark = dark) }
+    val renderer = remember(dark) { PondWaterRenderer(random = Random(seed), isDark = dark) }
     var settled by remember(dark) { mutableStateOf(false) }
 
-    Box(
-        Modifier
-            .size(SWATCH_SIZE)
-            .clip(RoundedCornerShape(8.dp)),
+    Canvas(
+        modifier.onSizeChanged { size ->
+            if (size.width > 0 && size.height > 0 && !settled) {
+                renderer.resize(size.width, size.height, density)
+                renderer.step(POND_SWATCH_SETTLE_SECONDS)
+                settled = true
+            }
+        },
     ) {
-        Canvas(
-            Modifier
-                .size(SWATCH_SIZE)
-                .onSizeChanged { size ->
-                    if (size.width > 0 && size.height > 0 && !settled) {
-                        renderer.resize(size.width, size.height, density)
-                        renderer.step(POND_SWATCH_SETTLE_SECONDS)
-                        settled = true
-                    }
-                },
-        ) {
-            renderer.draw(drawContext.canvas.nativeCanvas)
-        }
+        renderer.draw(drawContext.canvas.nativeCanvas)
     }
+}
+
+@Composable
+private fun PondWaterSwatch(selected: Boolean) {
+    SwatchRing(selected = selected) {
+        SettledPondCanvas(POND_SWATCH_SEED, Modifier.fillMaxSize())
+    }
+}
+
+/** The pond variant's stand-in inside [WallpaperLivePreview] -- see [SettledPondCanvas]. */
+@Composable
+private fun StaticPondPreview(modifier: Modifier = Modifier) {
+    SettledPondCanvas(POND_PREVIEW_SEED, modifier)
 }
 
 private val SWATCH_SIZE = 40.dp
 private const val POND_SWATCH_SEED = 20260820L
+private const val POND_PREVIEW_SEED = 20260821L
 private const val POND_SWATCH_SETTLE_SECONDS = 1.5f

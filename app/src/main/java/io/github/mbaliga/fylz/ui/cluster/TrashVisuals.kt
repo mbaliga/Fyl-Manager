@@ -19,11 +19,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -38,6 +36,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import kotlin.math.sin
 
 /**
@@ -233,17 +233,13 @@ internal fun ShredConfirmOverlay(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(top = 16.dp),
                 ) {
-                    TextButton(onClick = onDismiss, enabled = !shredding) { Text("Keep") }
-                    Button(
+                    TactileButton(text = "Keep", onClick = onDismiss, style = TactileButtonStyle.SECONDARY, enabled = !shredding)
+                    TactileButton(
+                        text = if (shredding) "Shredding…" else "Shred",
                         onClick = onConfirm,
+                        style = TactileButtonStyle.DESTRUCTIVE,
                         enabled = !shredding,
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError,
-                        ),
-                    ) {
-                        Text(if (shredding) "Shredding…" else "Shred")
-                    }
+                    )
                 }
             }
         }
