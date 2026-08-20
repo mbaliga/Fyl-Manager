@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.ui.overview
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -20,11 +21,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -48,14 +52,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.browse.readableLabel
 import io.github.mbaliga.fylz.core.model.EntryKind
+import io.github.mbaliga.fylz.history.RecentOpen
 import io.github.mbaliga.fylz.library.FavoriteLocation
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.storage.LargeFileFact
 import io.github.mbaliga.fylz.storage.StorageKind
+import io.github.mbaliga.fylz.storage.StorageUsageSnapshot
 import io.github.mbaliga.fylz.storage.label
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.util.formatBytes
@@ -86,17 +95,37 @@ internal fun QuickAccessCard(
     onOpen: () -> Unit = {},
     onOpenFile: (FileEntry) -> Unit = {},
     onGrantFullAccess: () -> Unit = {},
+    onPickFolder: () -> Unit = {},
 ) {
     val root = card.root
+    var menuOpen by remember { mutableStateOf(false) }
     OverviewCardSurface(
         modifier = modifier.let { if (root != null && card.entryCount != null) it.clickable(onClick = onOpen) else it },
     ) {
-        Text(
-            root?.title ?: "Quick access",
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                root?.title ?: "Quick access",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            // The only affordance that reaches DesktopCallbacks.onPickQuickAccessFolder -- without
+            // it a QUICK_ACCESS widget is permanently stuck on whatever config it was seeded with
+            // (auto-resolved Downloads), since neither a tap (opens the target) nor a long-press
+            // (drag-to-move) ever offers a way to point it at a different folder.
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Outlined.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Choose folder…") },
+                        onClick = { menuOpen = false; onPickFolder() },
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when {
@@ -449,6 +478,218 @@ internal fun TagsCard(
                         leadingIcon = { Icon(Icons.Outlined.Label, contentDescription = null, modifier = Modifier.size(16.dp)) },
                     )
                 }
+            }
+        }
+    }
+}
+
+// ── Desktop-only widget bodies ────────────────────────────────────────────────────────────────
+//
+// The five below have no [OverviewCard] grid membership (no [OverviewCard.id]/span/height) --
+// nothing on [OverviewScreen] shows a Shelf, Recents, Search, Quick actions or Large files card
+// today -- but they follow the exact same shape as every card above: a plain model (or plain
+// parameters, for the ones with nothing worth wrapping) plus callbacks, framed in
+// [OverviewCardSurface]. [io.github.mbaliga.fylz.ui.desktop.WidgetRenderers] is what actually
+// reuses them, one per [io.github.mbaliga.fylz.desktop.DesktopWidgetType] that has no counterpart
+// above.
+
+/** The Shelf widget's own compact card: how many items are staged, up to three of their names,
+ *  and a way in. [previewNames] is already the caller's chosen slice and order -- this composable
+ *  only ever takes its own first three of whatever it is handed, never re-orders it. */
+@Composable
+internal fun ShelfCard(
+    count: Int,
+    previewNames: List<String>,
+    modifier: Modifier = Modifier,
+    onOpenShelf: () -> Unit = {},
+) {
+    OverviewCardSurface(modifier) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.desktop_widget_shelf), style = MaterialTheme.typography.titleMedium)
+            Icon(Icons.Outlined.Inventory2, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(8.dp))
+        if (count == 0) {
+            Text(
+                stringResource(R.string.desktop_shelf_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                if (count == 1) "1 item" else "$count items",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            previewNames.take(3).forEach { name ->
+                Text(name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onOpenShelf, modifier = Modifier.align(Alignment.End)) {
+            Text(stringResource(R.string.desktop_open_shelf))
+        }
+    }
+}
+
+/**
+ * The Recents widget: up to four rows of what was opened lately, newest first. Row tap opens the
+ * item; [nowMillis] is threaded in (rather than read internally) purely so [formatRelativeTime]'s
+ * own caption stays testable against a pinned clock, per that function's own KDoc.
+ */
+@Composable
+internal fun RecentsCard(
+    items: List<RecentOpen>,
+    nowMillis: Long,
+    modifier: Modifier = Modifier,
+    onOpenFile: (Uri) -> Unit = {},
+) {
+    OverviewCardSurface(modifier) {
+        Text(stringResource(R.string.desktop_widget_recents), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        if (items.isEmpty()) {
+            Text(
+                stringResource(R.string.desktop_recents_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            items.take(4).forEach { item ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenFile(item.uri) }.padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        item.displayName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    formatRelativeTime(nowMillis, item.openedAtMillis)?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The Search widget: a single pill that hands focus to the app's own search entry point rather
+ *  than duplicating a text field here -- [onFocusSearch] is what actually opens/focuses it. */
+@Composable
+internal fun SearchPill(modifier: Modifier = Modifier, onFocusSearch: () -> Unit = {}) {
+    Surface(
+        modifier = modifier.fillMaxWidth().clickable(onClick = onFocusSearch),
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 1.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Outlined.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(10.dp))
+            Text(stringResource(R.string.desktop_search_pill), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** Four one-tap shortcuts to the actions that would otherwise need a folder open first: scan,
+ *  search, the Shelf, the recycle bin. */
+@Composable
+internal fun QuickActionsCard(
+    modifier: Modifier = Modifier,
+    onScan: () -> Unit = {},
+    onFocusSearch: () -> Unit = {},
+    onOpenShelf: () -> Unit = {},
+    onOpenTrash: () -> Unit = {},
+) {
+    OverviewCardSurface(modifier) {
+        Text(stringResource(R.string.desktop_widget_quick_actions), style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            QuickActionButton(Icons.Outlined.Refresh, stringResource(R.string.desktop_quick_action_scan), onScan)
+            QuickActionButton(Icons.Outlined.Search, stringResource(R.string.desktop_quick_action_search), onFocusSearch)
+            QuickActionButton(Icons.Outlined.Inventory2, stringResource(R.string.desktop_quick_action_shelf), onOpenShelf)
+            QuickActionButton(Icons.Outlined.DeleteSweep, stringResource(R.string.desktop_quick_action_trash), onOpenTrash)
+        }
+    }
+}
+
+@Composable
+private fun QuickActionButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            modifier = Modifier.clickable(onClick = onClick),
+        ) {
+            Icon(icon, contentDescription = label, modifier = Modifier.padding(12.dp).size(22.dp))
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/**
+ * The Large files widget: the top five of [usage]'s own [StorageUsageSnapshot.largestFiles],
+ * largest first, name plus size, with the same "no scan yet" / "scanning" absent-state split the
+ * Storage card itself makes -- never a fabricated empty list standing in for "unknown".
+ */
+@Composable
+internal fun LargeFilesCard(
+    usage: StorageUsageSnapshot?,
+    scanning: Boolean,
+    modifier: Modifier = Modifier,
+    onSeeAll: () -> Unit = {},
+) {
+    OverviewCardSurface(modifier) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.desktop_widget_large_files), style = MaterialTheme.typography.titleMedium)
+            if (!scanning) TextButton(onClick = onSeeAll) { Text(stringResource(R.string.desktop_see_all)) }
+        }
+        Spacer(Modifier.height(8.dp))
+        val files: List<LargeFileFact>? = usage?.largestFiles
+        when {
+            files == null -> Text(
+                if (scanning) stringResource(R.string.desktop_large_files_empty_scanning) else stringResource(R.string.desktop_large_files_empty_unscanned),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            files.isEmpty() -> Text(
+                stringResource(R.string.desktop_large_files_empty_unscanned),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> {
+                files.take(5).forEach { fact ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            fact.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            formatBytes(fact.sizeBytes),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "As of ${formatScannedAt(usage.scannedAtMillis)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

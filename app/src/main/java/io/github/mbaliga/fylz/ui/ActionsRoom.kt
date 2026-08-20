@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material3.Icon
@@ -54,6 +55,7 @@ internal enum class FylzAction {
     PDF_TOOLS,
     SHARE,
     ADD_TO_SHELF,
+    PIN_TO_DESKTOP,
     CLEAR_SELECTION,
     NEW_FOLDER,
     NEW_FILE,
@@ -181,6 +183,12 @@ internal fun ActionsRoom(
                 item {
                     ActionCard(Icons.Outlined.Inventory2, "Add to Shelf", "Stage for actions across folders") {
                         onAction(FylzAction.ADD_TO_SHELF)
+                    }
+                }
+                // Any non-empty selection can be pinned to the desktop, same as the Shelf above.
+                item {
+                    ActionCard(Icons.Outlined.PushPin, "Pin to desktop", "Add a shortcut to the desktop") {
+                        onAction(FylzAction.PIN_TO_DESKTOP)
                     }
                 }
                 // Destructive last: the one card in the row worth a second glance before tapping.

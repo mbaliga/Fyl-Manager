@@ -214,8 +214,8 @@ class AppPreferencesStoreTest {
     }
 
     @Test
-    fun `home mode defaults to LOCATIONS`() {
-        assertEquals(HomeMode.LOCATIONS, store().homeMode())
+    fun `home mode defaults to DESKTOP`() {
+        assertEquals(HomeMode.DESKTOP, store().homeMode())
     }
 
     @Test
@@ -226,12 +226,52 @@ class AppPreferencesStoreTest {
     }
 
     @Test
-    fun `home mode falls back to LOCATIONS on a corrupted value`() {
+    fun `home mode falls back to DESKTOP on a corrupted value`() {
         val store = store()
         context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
             .edit().putString("landing_view", "NOT_A_HOME_MODE").commit()
 
-        assertEquals(HomeMode.LOCATIONS, store.homeMode())
+        assertEquals(HomeMode.DESKTOP, store.homeMode())
+    }
+
+    @Test
+    fun `a stored legacy OVERVIEW home mode resolves to DESKTOP and is rewritten in place`() {
+        val store = store()
+        context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE)
+            .edit().putString("landing_view", "OVERVIEW").commit()
+
+        assertEquals(HomeMode.DESKTOP, store.homeMode())
+        // The rewrite happened: a fresh store instance reads DESKTOP as a plain valueOf, not a
+        // second migration.
+        assertEquals(
+            "DESKTOP",
+            context.getSharedPreferences("fylz_app_settings", Context.MODE_PRIVATE).getString("landing_view", null),
+        )
+        assertEquals(HomeMode.DESKTOP, store().homeMode())
+    }
+
+    @Test
+    fun `desktop snap defaults to true`() {
+        assertTrue(store().desktopSnap())
+    }
+
+    @Test
+    fun `desktop snap round-trips through the store`() {
+        val store = store()
+        store.setDesktopSnap(false)
+        assertFalse(store().desktopSnap())
+    }
+
+    @Test
+    fun `desktop labels defaults to true`() {
+        assertTrue(store().desktopLabels())
+    }
+
+    @Test
+    fun `desktop labels round-trips through the store`() {
+        val store = store()
+        store.setDesktopLabels(false)
+        assertFalse(store().desktopLabels())
     }
 
     @Test

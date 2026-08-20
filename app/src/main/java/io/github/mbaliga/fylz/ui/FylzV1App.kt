@@ -3,7 +3,6 @@ package io.github.mbaliga.fylz.ui
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -154,7 +153,6 @@ import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
-import io.github.mbaliga.fylz.operations.RecycleBinRetentionStore
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.describe
 import io.github.mbaliga.fylz.operations.SelectionActionPolicy
@@ -199,8 +197,9 @@ import io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight
 import io.github.mbaliga.fylz.ui.chrome.TabBand
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.chrome.TabBandItem
-import io.github.mbaliga.fylz.ui.overview.OverviewScreen
 import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
+import io.github.mbaliga.fylz.ui.search.PullDownSearchState
+import io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState
 import io.github.mbaliga.fylz.ui.tags.LocalTagsFor
 import io.github.mbaliga.fylz.ui.tags.TagBrowser
 import io.github.mbaliga.fylz.ui.tags.TagMark
@@ -221,6 +220,7 @@ import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -228,6 +228,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -283,6 +284,24 @@ import io.github.mbaliga.fylz.ui.landing.LandingGate
 import io.github.mbaliga.fylz.ui.landing.LandingSplash
 import io.github.mbaliga.fylz.ui.landing.LandingSubject
 import io.github.mbaliga.fylz.ui.motion.FylzMotion
+import io.github.mbaliga.fylz.desktop.DesktopItem
+import io.github.mbaliga.fylz.desktop.DesktopPolicy
+import io.github.mbaliga.fylz.desktop.DesktopStore
+import io.github.mbaliga.fylz.wallpaper.WallpaperPreferences
+import io.github.mbaliga.fylz.wallpaper.WallpaperSpec
+import io.github.mbaliga.fylz.ui.desktop.DesktopCallbacks
+import io.github.mbaliga.fylz.ui.desktop.DesktopCli
+import io.github.mbaliga.fylz.ui.desktop.DesktopScreen
+import io.github.mbaliga.fylz.ui.desktop.WallpaperPickerSheet
+import io.github.mbaliga.fylz.intents.FylzCommand
+import io.github.mbaliga.fylz.widgets.WidgetRefresher
+import io.github.mbaliga.fylz.history.RecentOpensStore
+import io.github.mbaliga.fylz.storage.LargeFileFact
+import io.github.mbaliga.fylz.storage.StorageUsageStore
+import io.github.mbaliga.fylz.storage.FileStorageProvider
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 
@@ -336,6 +355,16 @@ private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
  */
 @Composable
 fun FylzV1App(
+    // Hoisted from MainActivity's own launch-intent / onNewIntent handling, through FylzAppShell:
+    // a launcher-surface command (a widget tap, a static shortcut, Send-to-Fylz) decoded by
+    // io.github.mbaliga.fylz.intents.FylzIntents.parse. Consumed exactly once, by the workspace
+    // below, via a LaunchedEffect that acts on it then calls [onCommandConsumed] -- MainActivity
+    // owns nulling its own state, this composable never mutates [pendingCommand] itself.
+    // Placed ahead of recoverySection/overlays below (not appended after them) so both keep their
+    // trailing-lambda call convention at every existing call site -- Kotlin only elides the name
+    // for a lambda argument when its parameter is the LAST one in the signature.
+    pendingCommand: FylzCommand? = null,
+    onCommandConsumed: () -> Unit = {},
     recoverySection: @Composable () -> Unit = {},
     overlays: @Composable (showHidden: Boolean) -> Unit = {},
 ) {
@@ -494,6 +523,8 @@ fun FylzV1App(
                   preferencesStore.setLandingSplash(it)
               },
               recoverySection = recoverySection,
+              pendingCommand = pendingCommand,
+              onCommandConsumed = onCommandConsumed,
           )
           overlays(showHidden)
           // Mounted last of all, so it draws above everything -- rooms, bulges, the drag layer,
@@ -536,6 +567,8 @@ private fun FylzV1Workspace(
     landingSplash: Boolean,
     onLandingSplashChange: (Boolean) -> Unit,
     recoverySection: @Composable () -> Unit,
+    pendingCommand: FylzCommand? = null,
+    onCommandConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -572,6 +605,13 @@ private fun FylzV1Workspace(
     // Bumped alongside shelfVersion by the same relocation fan-out, and read by LocalFolderAppearance
     // below to force a fresh lookup -- the appearanceVersion counter FolderFace's own KDoc names.
     var appearanceVersion by remember { mutableIntStateOf(0) }
+    // The desktop's own item list (folder/file shortcuts, widget placements) -- DesktopStore is
+    // ShelfStore/CanvasLayoutStore-modelled, its own SharedPreferences file. Read here (rather
+    // than only inside DesktopScreen) because relocation and Pin-to-desktop both need to write
+    // through it from this composable.
+    val desktopStore = remember { DesktopStore(context.applicationContext) }
+    // The desktop's Recents widget -- capped, newest-first, recorded from openEntry below.
+    val recentOpensStore = remember { RecentOpensStore(context.applicationContext) }
     // Fired once per item a move or a batch rename actually relocates -- the one seam where all
     // four identity-keyed stores learn about a URI that changed out from under them. No store
     // type leaks past this lambda into operations/; each store translates the raw Uri pair
@@ -582,6 +622,8 @@ private fun FylzV1Workspace(
         shelf.migrateRef(old, new)
         canvasLayoutStore.migrateUri(old, new)
         folderAppearanceStore.migrateUri(old, new)
+        desktopStore.migrateUri(old, new)
+        recentOpensStore.migrateUri(old, new)
         if (preferencesStore.migrateLandingSubject(old, new)) onLandingSubjectRelocated(new)
         shelfVersion += 1
         appearanceVersion += 1
@@ -616,6 +658,46 @@ private fun FylzV1Workspace(
     // The zone every relative date phrase ("today", "last week") in a typed query resolves
     // against -- fixed for the composition's lifetime rather than re-read per keystroke.
     val searchZone = remember { ZoneId.systemDefault() }
+
+    // ── The desktop and its wallpaper ──────────────────────────────────────────────────
+    val wallpaperPreferences = remember { WallpaperPreferences(context.applicationContext) }
+    var wallpaperSpec by remember { mutableStateOf(wallpaperPreferences.spec()) }
+    LaunchedEffect(Unit) {
+        // The picked image's own read grant can go stale between launches (the provider revoked
+        // it, the app was reinstalled) -- re-checked once at boot, the same shape as the landing
+        // subject's own grant re-check above, and degrades to WallpaperSpec.None rather than
+        // leaving the desktop pointed at a uri it can no longer read.
+        wallpaperSpec = wallpaperPreferences.validateGrant(context.applicationContext)
+    }
+    LaunchedEffect(Unit) {
+        // A one-time decision DesktopStore itself remembers (its own `seeded` key) -- calling this
+        // on every boot is safe; only the very first call, on a genuinely empty desktop, ever
+        // writes anything.
+        desktopStore.seedIfEmpty(DesktopPolicy.defaultSeed())
+    }
+    var wallpaperPickerOpen by remember { mutableStateOf(false) }
+    var largeFilesSheetOpen by remember { mutableStateOf(false) }
+    var desktopSnap by remember { mutableStateOf(preferencesStore.desktopSnap()) }
+    var desktopLabels by remember { mutableStateOf(preferencesStore.desktopLabels()) }
+    // Which existing QUICK_ACCESS widget the next quickAccessFolderPicker result should update --
+    // set immediately before every quickAccessFolderPicker.launch() call, the same
+    // set-before-launch idiom archiveSources uses for the shared archiveCreator launcher below.
+    var pendingQuickAccessWidgetId by remember { mutableStateOf<String?>(null) }
+
+    // Hoisted (rather than left to FileBrowser's own default) so FocusSearch -- reachable from a
+    // desktop widget, a launcher shortcut, or a system widget with no gesture of its own to
+    // replay -- can reveal and focus the same field a real pull-down would land on, whichever tab
+    // happens to be open when the command arrives. See PullDownSearchState.reveal()'s own KDoc:
+    // nothing equivalent existed on this state before this build, so that method is itself a
+    // small, additive addition made for this call site.
+    val pullDownSearchState = rememberPullDownSearchState(revealHeight = CommandPillSearchHeight)
+    val searchFocusRequester = remember { FocusRequester() }
+    // FocusSearch's own readiness flag for the "no tab open yet" branch: set once the freshly
+    // opened tab's tree write has gone in, consumed by FileBrowser's own LaunchedEffect once that
+    // tab's CommandPill has actually composed and attached searchFocusRequester -- a real signal
+    // rather than a guessed delay, since a plain state write here doesn't itself guarantee the
+    // next recomposition (let alone attachment) has happened yet.
+    var pendingSearchFocus by remember { mutableStateOf(false) }
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
@@ -760,12 +842,11 @@ private fun FylzV1Workspace(
 
     // Every known tag, cached once per write rather than re-scanned on every recomposition, per
     // allTags()'s own caching obligation -- allTagsMap keeps its natural case-insensitive order
-    // for the browser dialog (TagBrowser's own KDoc contract), topTagsList reorders the same map
-    // by count for the Overview's chips, which want the most-used tags first.
+    // for the browser dialog (TagBrowser's own KDoc contract). The by-count reordering this used
+    // to also cache here (topTagsList) fed only the removed OverviewScreen's Tags card;
+    // DesktopScreen now gathers that same ranking itself, so nothing here needs to precompute it
+    // for a consumer that no longer exists.
     val allTagsMap = remember(tagsVersion) { library.allTags() }
-    val topTagsList = remember(allTagsMap) {
-        allTagsMap.entries.sortedByDescending { it.value }.map { it.key to it.value }
-    }
 
     /** A tag tapped from the browser or the Overview's own chips: closes the browser (if it was
      *  the source) and probes every item carrying [tag], device-wide -- LibraryStore's own reverse
@@ -878,6 +959,11 @@ private fun FylzV1Workspace(
     fun refreshShelf() {
         shelfVersion += 1
         if (deckOpen == DeckSource.SHELF && shelf.items().isEmpty()) deckOpen = null
+        // The desktop's own Shelf widget reads shelf.items() the same way this composable does --
+        // fire-and-forget on the existing coroutine scope, same as every other post-mutation
+        // widget push in this build, so a widget's Binder round trip never rides the same frame
+        // as the UI update this function itself triggers.
+        scope.launch { WidgetRefresher.refreshAll(context) }
     }
 
     // What the Shelf deck actually draws: each member paired with its probe result when one
@@ -1121,6 +1207,113 @@ private fun FylzV1Workspace(
             .addOnFailureListener { toast(it.message ?: "Scanner is unavailable") }
     }
 
+    // ── Desktop shortcut/quick-access pickers ──────────────────────────────────────────
+    // A picked folder becomes a FolderShortcut placed at the next free desktop cell -- the grant
+    // is persisted the same way rootPicker's own callback persists one, and homeRefreshKey bumps
+    // so DesktopScreen's own `items` reload picks the new shortcut up without needing a poked
+    // Flow this store does not have.
+    val desktopFolderShortcutPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            repository.persistTreePermission(uri)
+            scope.launch {
+                runCatching { repository.rootLocation(uri) }
+                    .onSuccess { root ->
+                        desktopStore.upsert(
+                            DesktopItem.FolderShortcut(
+                                treeUri = uri,
+                                folderUri = root.uri,
+                                displayName = root.name,
+                                placement = DesktopPolicy.nextFreePlacement(desktopStore.items().map(DesktopItem::placement)),
+                            ),
+                        )
+                        homeRefreshKey += 1
+                    }
+                    .onFailure { toast(it.message ?: "Unable to open folder") }
+            }
+        }
+    }
+
+    // Rewrites one existing QUICK_ACCESS widget's own config target -- pendingQuickAccessWidgetId
+    // names which instance, set immediately before every launch() call below (the shape
+    // archiveSources already establishes for the shared archiveCreator launcher).
+    val quickAccessFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val widgetId = pendingQuickAccessWidgetId
+        pendingQuickAccessWidgetId = null
+        if (uri != null && widgetId != null) {
+            repository.persistTreePermission(uri)
+            scope.launch {
+                runCatching { repository.rootLocation(uri) }
+                    .onSuccess { root ->
+                        val current = desktopStore.items().firstOrNull { it.id == widgetId } as? DesktopItem.Widget
+                        if (current != null) {
+                            desktopStore.upsert(
+                                current.copy(config = current.config + ("target" to "tree:$uri|folder:${root.uri}")),
+                            )
+                            homeRefreshKey += 1
+                        }
+                    }
+                    .onFailure { toast(it.message ?: "Unable to open folder") }
+            }
+        }
+    }
+
+    /**
+     * Duplicates scanning ([findDuplicates] below) is folder-scoped: it reads `entries`, the
+     * ACTIVE tab's own listing. Auto-running it the instant a picked folder's tab opens would
+     * race that listing's own `LaunchedEffect` (it fills asynchronously, after the tab exists) --
+     * rather than guess at a delay, the honest choice named for this callback is the plainer one:
+     * open the picked folder as its own tab and say in as many words what to do next.
+     */
+    val duplicatesFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            repository.persistTreePermission(uri)
+            scope.launch {
+                runCatching { repository.rootLocation(uri) }
+                    .onSuccess { root ->
+                        openTabAt(uri, root)
+                        toast("Opened ${root.name} -- use Actions > Find duplicates here")
+                    }
+                    .onFailure { toast(it.message ?: "Unable to open folder") }
+            }
+        }
+    }
+
+    /**
+     * FocusSearch's honest minimum: search only exists once a folder tab is open (the pull-down
+     * field lives inside FileBrowser's own folder-open branch; CANVAS's floating CommandPill is
+     * the one exception, always on screen while that view mode is active). With no tab open, the
+     * primary device root is opened first (mirroring OverviewScreen's own `primaryRoot`), the same
+     * as a person tapping into a folder before typing a query -- then the field is revealed and
+     * focused once that tab has had a beat to compose.
+     */
+    fun focusSearch() {
+        if (activeTab != null) {
+            pullDownSearchState.reveal()
+            runCatching { searchFocusRequester.requestFocus() }
+        } else {
+            scope.launch {
+                val root = withContext(Dispatchers.IO) {
+                    if (!FullAccessPermission.isGranted()) {
+                        null
+                    } else {
+                        StorageAccess.fileProvider.rootGroups(context)
+                            .firstOrNull { it.title == FileStorageProvider.GROUP_DEVICE }
+                            ?.roots?.firstOrNull()
+                    }
+                }
+                if (root?.treeUri != null && root.documentUri != null) {
+                    openStorageRoot(root)
+                    // FileBrowser's own LaunchedEffect (keyed on this flag) reveals and focuses
+                    // the field once the newly opened tab has actually composed and attached
+                    // searchFocusRequester -- see this flag's own KDoc above.
+                    pendingSearchFocus = true
+                } else {
+                    toast("Open a folder, then search")
+                }
+            }
+        }
+    }
+
     // Restore previously granted subtrees as tabs. This used to be the ONLY way content ever
     // appeared, which is why a fresh install showed nothing at all; the storage home surface below
     // is now the real entry point and this is just tab restoration on top of it.
@@ -1284,7 +1477,95 @@ private fun FylzV1Workspace(
             // instead of A being protected the way docking promises.
             previewCardMode = PreviewCardMode.EXPANDED
             focusedEntry = entry
+            // Recorded for every non-directory open, whichever surface it came from (a listing
+            // row, a desktop shortcut, a Recents tap feeding right back into this same function)
+            // -- one choke point, so the desktop's own Recents widget never has to be told about
+            // an open from more than one call site. Dispatched to IO: record()'s own persist() is
+            // a synchronous SharedPreferences commit(), and openEntry() itself is called directly
+            // from bare, non-coroutine click lambdas (e.g. DetailsRoom's onOpenChild) as well as
+            // from call sites already inside scope.launch{} -- either way this is opening a file,
+            // the single most frequent interaction here, so the write must never block the tap.
+            val kindName = entry.kind.name
+            val openedAt = System.currentTimeMillis()
+            scope.launch(Dispatchers.IO) {
+                recentOpensStore.record(entry.uri, entry.name, kindName, openedAt)
+            }
         }
+    }
+
+    /**
+     * Opens a desktop [DesktopItem.FolderShortcut] -- the grant-recovering shape [openFavorite]
+     * above already established, adapted to a shortcut that already carries its own tree grant
+     * rather than one recovered from a favourite's bare authority. The folder's display name is
+     * re-resolved through [repository] rather than trusted from the shortcut's own stored name:
+     * [DesktopCallbacks.onOpenFolderShortcut] only ever hands this callback the two uris, and a
+     * live name is worth one IO round trip over showing one that may since have gone stale.
+     */
+    fun openDesktopFolderShortcut(treeUri: Uri, folderUri: Uri) {
+        val hasGrant = context.contentResolver.persistedUriPermissions.any { it.uri == treeUri && it.isReadPermission }
+        if (!hasGrant) {
+            toast("This folder's grant is gone")
+            return
+        }
+        scope.launch {
+            val name = runCatching { repository.probe(folderUri) }.getOrNull()?.name
+                ?: folderUri.lastPathSegment?.substringAfterLast('/')?.takeIf(String::isNotBlank)
+                ?: "Folder"
+            openTabAt(treeUri, FolderLocation(folderUri, name))
+        }
+    }
+
+    /** Opens a desktop [DesktopItem.FileShortcut]: probed on IO (a shortcut only ever stores a
+     *  bare uri, never a live [FileEntry]), then handed to [openEntry] exactly like any listing
+     *  row's own tap -- a probe that comes back null means the target is gone, told honestly
+     *  rather than opening a stale placeholder. */
+    fun openDesktopFileShortcut(uri: Uri) {
+        scope.launch {
+            val entry = runCatching { repository.probe(uri) }.getOrNull()
+            if (entry == null) {
+                toast("Can't find this anymore")
+            } else {
+                openEntry(entry)
+            }
+        }
+    }
+
+    /** [FylzCommand.OpenFolder]'s own grant-recovering open -- [treeUri] with [folderUri] absent
+     *  opens the tree's own root (a shortcut/widget/intent that only names the tree, e.g. a
+     *  restored tab); present, it opens exactly that folder via the same
+     *  [openDesktopFolderShortcut] path a desktop shortcut tap uses. */
+    fun openCommandFolder(treeUri: Uri, folderUri: Uri?) {
+        val hasGrant = context.contentResolver.persistedUriPermissions.any { it.uri == treeUri && it.isReadPermission }
+        if (!hasGrant) {
+            toast("This folder's grant is gone")
+            return
+        }
+        if (folderUri == null) {
+            scope.launch {
+                runCatching { repository.rootLocation(treeUri) }
+                    .onSuccess { root -> openTabAt(treeUri, root) }
+                    .onFailure { toast(it.message ?: "Unable to open folder") }
+            }
+        } else {
+            openDesktopFolderShortcut(treeUri, folderUri)
+        }
+    }
+
+    // The launch intent (or a fresh one delivered to onNewIntent while the process was already
+    // running -- MainActivity is launchMode="singleTask") decoded once, hoisted all the way down
+    // from there through FylzAppShell/FylzV1App. Consumed exactly once: acted on here, then
+    // [onCommandConsumed] tells MainActivity to null its own state, so a rotation or any other
+    // recomposition never replays the same command a second time.
+    LaunchedEffect(pendingCommand) {
+        val command = pendingCommand ?: return@LaunchedEffect
+        when (command) {
+            FylzCommand.Scan -> startScan()
+            FylzCommand.FocusSearch -> focusSearch()
+            FylzCommand.OpenShelf -> deckOpen = DeckSource.SHELF
+            FylzCommand.OpenTrash -> trashSheetOpen = true
+            is FylzCommand.OpenFolder -> openCommandFolder(command.treeUri, command.folderUri)
+        }
+        onCommandConsumed()
     }
 
     fun openExternal(entry: FileEntry) {
@@ -1316,6 +1597,7 @@ private fun FylzV1Workspace(
                 selectedEntryDetails = emptyMap()
                 trashRefreshKey += 1
                 refresh()
+                WidgetRefresher.refreshAll(context)
             }.onFailure { toast(it.message ?: "Unable to recycle selection") }
             loading = false
         }
@@ -1504,6 +1786,7 @@ private fun FylzV1Workspace(
             trashRefreshKey += 1
             failure?.let { toast(it.message ?: "Shredding failed for some files") }
             refresh()
+            WidgetRefresher.refreshAll(context)
         }
     }
 
@@ -1578,6 +1861,56 @@ private fun FylzV1Workspace(
                 addToShelf(selectedEntries)
                 selectedUris = emptySet()
                 selectedEntryDetails = emptyMap()
+            }
+            FylzAction.PIN_TO_DESKTOP -> {
+                // A folder or file shortcut needs a tree grant; the active tab's own is the
+                // obvious one, but a selection can also come from a home surface with no tab open
+                // (List/Bento/Canvas against the landing subject), so the subject's own grant is
+                // the fallback -- one of the two is always present whenever a selection exists at
+                // all, since neither surface that carries one has anything to select without it.
+                val treeUri = activeTab?.treeUri ?: landingSubject?.treeUri
+                if (treeUri == null) {
+                    toast("Unable to pin -- no folder context")
+                } else {
+                    val entriesToPin = selectedEntries
+                    scope.launch(Dispatchers.IO) {
+                        val existing = desktopStore.items()
+                        var placements = existing.map(DesktopItem::placement)
+                        val newItems = entriesToPin.map { entry ->
+                            val placement = DesktopPolicy.nextFreePlacement(placements)
+                            placements = placements + placement
+                            if (entry.isDirectory) {
+                                DesktopItem.FolderShortcut(
+                                    treeUri = treeUri,
+                                    folderUri = entry.uri,
+                                    displayName = entry.name,
+                                    placement = placement,
+                                )
+                            } else {
+                                DesktopItem.FileShortcut(
+                                    uri = entry.uri,
+                                    treeUri = treeUri,
+                                    displayName = entry.name,
+                                    placement = placement,
+                                )
+                            }
+                        }
+                        // Bound to MAX_ITEMS here, dropping the oldest first -- the same
+                        // direction DesktopStore.upsert() trims in -- so newly pinned items are
+                        // never the ones silently discarded by replaceAll()'s own cap check.
+                        val combined = existing + newItems
+                        val bounded = if (combined.size > DesktopPolicy.MAX_ITEMS) {
+                            combined.takeLast(DesktopPolicy.MAX_ITEMS)
+                        } else {
+                            combined
+                        }
+                        desktopStore.replaceAll(bounded)
+                        withContext(Dispatchers.Main) {
+                            homeRefreshKey += 1
+                            toast("Pinned to desktop")
+                        }
+                    }
+                }
             }
             FylzAction.CLEAR_SELECTION -> {
                 selectedUris = emptySet()
@@ -1910,6 +2243,7 @@ private fun FylzV1Workspace(
                                 activeTab?.let { tab ->
                                     library.toggleFavorite(tab.current.uri, tab.current.name)
                                     refresh()
+                                    scope.launch { WidgetRefresher.refreshAll(context) }
                                 }
                             },
                             onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
@@ -1969,7 +2303,6 @@ private fun FylzV1Workspace(
                         loading = loading,
                         operationMessage = operationMessage,
                         onOpenStorageRoot = ::openStorageRoot,
-                        onOpenStorageFolder = ::openTabAt,
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
@@ -1978,12 +2311,33 @@ private fun FylzV1Workspace(
                         onOpenHomeFolder = { location ->
                             landingSubject?.let { subject -> openTabAt(subject.treeUri, location) }
                         },
-                        topTags = topTagsList,
-                        onOpenFavorite = ::openFavorite,
-                        onOpenTag = ::openTagResults,
-                        onOpenTrash = { trashSheetOpen = true },
-                        onFindLargeFiles = { toast("Open a folder, then use Actions to find duplicates there -- a device-wide scan isn't wired up yet.") },
-                        onCleanUpDuplicates = { toast("Open a folder, then use Actions to find duplicates there -- a device-wide scan isn't wired up yet.") },
+                        desktopStore = desktopStore,
+                        wallpaperSpec = wallpaperSpec,
+                        desktopSnap = desktopSnap,
+                        desktopLabels = desktopLabels,
+                        desktopCallbacks = DesktopCallbacks(
+                            onOpenFolderShortcut = ::openDesktopFolderShortcut,
+                            onOpenFileShortcut = ::openDesktopFileShortcut,
+                            onOpenTrash = { trashSheetOpen = true },
+                            onOpenShelf = { deckOpen = DeckSource.SHELF },
+                            onFocusSearch = ::focusSearch,
+                            onScan = ::startScan,
+                            onOpenTag = ::openTagResults,
+                            onOpenFavorite = ::openFavorite,
+                            onOpenWallpaperPicker = { wallpaperPickerOpen = true },
+                            onOpenLargeFiles = { largeFilesSheetOpen = true },
+                            onPickFolderShortcut = { desktopFolderShortcutPicker.launch(null) },
+                            onPickQuickAccessFolder = { widgetId ->
+                                pendingQuickAccessWidgetId = widgetId
+                                quickAccessFolderPicker.launch(null)
+                            },
+                            onPickDuplicatesFolder = { duplicatesFolderPicker.launch(null) },
+                            onGrantFullAccess = { context.startActivity(FullAccessPermission.intent(context)) },
+                        ),
+                        pullDownSearchState = pullDownSearchState,
+                        searchFocusRequester = searchFocusRequester,
+                        pendingSearchFocus = pendingSearchFocus,
+                        onSearchFocusConsumed = { pendingSearchFocus = false },
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -2268,13 +2622,43 @@ private fun FylzV1Workspace(
                 onPutBack = { record ->
                     scope.launch {
                         runCatching { recycleBin.restore(record.itemId, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
-                            .onSuccess { trashRefreshKey += 1; refresh() }
+                            .onSuccess {
+                                trashRefreshKey += 1
+                                refresh()
+                                WidgetRefresher.refreshAll(context)
+                            }
                             .onFailure { toast(it.message ?: "Restore failed") }
                     }
                 },
                 onShred = { record -> shredTargets = listOf(record) },
                 onShredAll = { shredTargets = records },
                 onDismiss = { trashSheetOpen = false },
+            )
+        }
+
+        if (wallpaperPickerOpen) {
+            WallpaperPickerSheet(
+                current = wallpaperSpec,
+                onPick = { spec ->
+                    wallpaperSpec = spec
+                    wallpaperPreferences.setSpec(spec)
+                },
+                onDismiss = { wallpaperPickerOpen = false },
+            )
+        }
+
+        if (largeFilesSheetOpen) {
+            val usage = remember(homeRefreshKey) { StorageUsageStore(context).snapshot() }
+            LargeFilesSheet(
+                files = usage?.largestFiles.orEmpty(),
+                onOpenFile = { uriString ->
+                    largeFilesSheetOpen = false
+                    scope.launch {
+                        val entry = runCatching { repository.probe(Uri.parse(uriString)) }.getOrNull()
+                        if (entry != null) openEntry(entry) else toast("Can't find this anymore")
+                    }
+                },
+                onDismiss = { largeFilesSheetOpen = false },
             )
         }
 
@@ -2705,6 +3089,17 @@ private fun FylzV1Workspace(
             onPickLandingSubject = onPickLandingSubject,
             landingSplash = landingSplash,
             onLandingSplashChange = onLandingSplashChange,
+            onOpenWallpaperPicker = { settingsOpen = false; wallpaperPickerOpen = true },
+            desktopSnap = desktopSnap,
+            onDesktopSnapChange = {
+                desktopSnap = it
+                preferencesStore.setDesktopSnap(it)
+            },
+            desktopLabels = desktopLabels,
+            onDesktopLabelsChange = {
+                desktopLabels = it
+                preferencesStore.setDesktopLabels(it)
+            },
             onOpenRecycleBin = { settingsOpen = false; trashSheetOpen = true },
             onOpenRemotes = { settingsOpen = false; remoteDialog = true },
             onOpenWebDav = { settingsOpen = false; webDavDialog = true },
@@ -2729,6 +3124,65 @@ private fun FylzV1Workspace(
         )
     }
     } // CompositionLocalProvider(LocalFolderAppearance, LocalTagsFor)
+}
+
+/**
+ * The desktop's Large files sheet -- [io.github.mbaliga.fylz.storage.StorageUsageSnapshot.largestFiles]
+ * from the last completed scan, largest first, name plus size, tap to probe-then-open. Honest
+ * empty state when no scan has ever run, rather than a fabricated empty list: [files] is empty
+ * both when nothing large was found and when nothing has been scanned yet, and this sheet cannot
+ * tell those apart on its own -- see [DesktopCallbacks.onOpenLargeFiles]'s call site, which only
+ * ever hands this a real (possibly empty) [StorageUsageSnapshot.largestFiles] list.
+ */
+@Composable
+private fun LargeFilesSheet(
+    files: List<LargeFileFact>,
+    onOpenFile: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Text(
+                stringResource(R.string.integration_large_files_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
+            if (files.isEmpty()) {
+                Text(
+                    stringResource(R.string.integration_large_files_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                    items(files, key = LargeFileFact::uriString) { fact ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenFile(fact.uriString) }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                fact.displayName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                formatBytes(fact.sizeBytes),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 12.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -2790,19 +3244,21 @@ private fun FileBrowser(
     loading: Boolean,
     operationMessage: String?,
     onOpenStorageRoot: (StorageRoot) -> Unit,
-    onOpenStorageFolder: (Uri, FolderLocation) -> Unit = { _, _ -> },
     onPickFolder: (StorageRoot?) -> Unit,
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
     homeMode: HomeMode = HomeMode.LOCATIONS,
     landingSubject: LandingSubject? = null,
     onOpenHomeFolder: (FolderLocation) -> Unit = {},
-    topTags: List<Pair<String, Int>> = emptyList(),
-    onOpenFavorite: (FavoriteLocation) -> Unit = {},
-    onOpenTag: (String) -> Unit = {},
-    onOpenTrash: () -> Unit = {},
-    onFindLargeFiles: () -> Unit = {},
-    onCleanUpDuplicates: () -> Unit = {},
+    desktopStore: DesktopStore,
+    wallpaperSpec: WallpaperSpec,
+    desktopSnap: Boolean = true,
+    desktopLabels: Boolean = true,
+    desktopCallbacks: DesktopCallbacks,
+    pullDownSearchState: PullDownSearchState,
+    searchFocusRequester: FocusRequester,
+    pendingSearchFocus: Boolean = false,
+    onSearchFocusConsumed: () -> Unit = {},
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
@@ -2825,34 +3281,51 @@ private fun FileBrowser(
     // the same selection this listing does -- one flag, whichever surface is actually on screen.
     val selectionActive = selectedUris.isNotEmpty()
 
-    // With no tab open the browser shows the storage home surface, the new device-wide Overview,
-    // or -- once Settings has picked a subject and a view other than Locations/Overview -- that
-    // subject arranged the chosen way. StorageHomeScreen and OverviewScreen alone get none of the
-    // selection args below: neither lists files a selection can contain -- see their own KDoc.
+    // Read up here, not after the home branch's own early return: DesktopScreen/DesktopCli/CLI's
+    // own dispatch below all need it (CLI's home branch has to know CLI is the theme, and the
+    // desktop needs bottomChromeReserve just as much as a folder listing does), and there is only
+    // ever one definition of either to avoid the two quietly drifting apart.
+    val themeStyle = LocalThemeStyle.current
+
+    // How much bottom padding a listing must reserve so its last row clears the floating chrome:
+    // the tab band always, plus the selection row's own height on top of that while a selection
+    // is live -- the same two heights the chrome itself stacks at the outer Box level. Used to be
+    // computed only after the home branch's early return below, which meant StorageHomeScreen and
+    // (now) DesktopScreen never reserved anything for chrome that, while no tab is open, never
+    // actually draws -- harmless today, but a trap for whichever of the two grows a persistent
+    // bottom affordance next. Hoisted here so both get the real answer instead of an assumed zero.
+    val bottomChromeReserve = TabBandHeight + if (selectionActive) SelectionRowHeight else 0.dp
+
+    // With no tab open the browser shows the storage home surface, the desktop, or -- once
+    // Settings has picked a subject and a view other than Locations/Desktop -- that subject
+    // arranged the chosen way. StorageHomeScreen and DesktopScreen/DesktopCli alone get none of
+    // the selection args below: neither lists files a selection can contain -- see their own KDoc.
     if (activeTab == null) {
         val subject = landingSubject
-        val context = LocalContext.current
         when {
-            homeMode == HomeMode.OVERVIEW -> OverviewScreen(
-                repository = repository,
-                modifier = modifier,
-                refreshKey = homeRefreshKey,
-                onOpenFolder = { location -> onOpenStorageFolder(treeUriFromDocument(location.uri), location) },
-                onOpenFile = onOpen,
-                onGrantFullAccess = { context.startActivity(FullAccessPermission.intent(context)) },
-                onSeeDeletedFiles = onOpenTrash,
-                onFindLargeFiles = onFindLargeFiles,
-                onCleanUpDuplicates = onCleanUpDuplicates,
-                onOpenFavorite = onOpenFavorite,
-                onOpenTag = onOpenTag,
-                topTags = topTags,
-                // A plain SharedPreferences read, cheap enough to key off homeRefreshKey directly
-                // rather than a produceState -- this is how the card learns a retention change
-                // made in Settings without waiting for a process restart.
-                retentionDescription = remember(homeRefreshKey) {
-                    RecycleBinRetentionStore(context).period().describe()
-                },
-            )
+            homeMode == HomeMode.DESKTOP -> if (themeStyle == ThemeStyle.CLI) {
+                // CLI's whole point is "the indented tree IS the theme" -- plain text rows, no
+                // wallpaper layer, matching the same rule a folder listing already follows under
+                // this style (FileBrowser's own CliListing branch below).
+                DesktopCli(
+                    store = desktopStore,
+                    refreshKey = homeRefreshKey,
+                    callbacks = desktopCallbacks,
+                    modifier = modifier,
+                )
+            } else {
+                DesktopScreen(
+                    store = desktopStore,
+                    wallpaperSpec = wallpaperSpec,
+                    repository = repository,
+                    refreshKey = homeRefreshKey,
+                    bottomReserve = bottomChromeReserve,
+                    callbacks = desktopCallbacks,
+                    modifier = modifier,
+                    snapEnabled = desktopSnap,
+                    showLabels = desktopLabels,
+                )
+            }
             subject != null && homeMode == HomeMode.LIST -> SubjectList(
                 subject = subject,
                 repository = repository,
@@ -2896,22 +3369,28 @@ private fun FileBrowser(
                 onOpenRemotes = onOpenRemotes,
                 refreshKey = homeRefreshKey,
                 modifier = modifier,
+                bottomReserve = bottomChromeReserve,
             )
         }
         return
     }
-
-    val themeStyle = LocalThemeStyle.current
 
     // Whether SearchResults, not the plain listing, is on screen -- read in two places below
     // (which branch renders, and what select-all's enabled state means, up in the top bar) so
     // they can never disagree about which list the user is actually looking at.
     val searchActive = searchRecursive && query.isNotBlank()
 
-    // How much bottom padding a listing must reserve so its last row clears the floating chrome:
-    // the tab band always, plus the selection row's own height on top of that while a selection
-    // is live -- the same two heights the chrome itself stacks at the outer Box level.
-    val bottomChromeReserve = TabBandHeight + if (selectionActive) SelectionRowHeight else 0.dp
+    // FocusSearch's real readiness signal for the "no tab was open yet" path: this LaunchedEffect
+    // only runs once Compose has committed a composition that includes this branch, which means
+    // CommandPill below (either arm) has already attached searchFocusRequester -- no fixed delay
+    // to guess, and no risk of requestFocus() throwing on a requester that isn't attached yet.
+    LaunchedEffect(pendingSearchFocus) {
+        if (pendingSearchFocus) {
+            pullDownSearchState.reveal()
+            runCatching { searchFocusRequester.requestFocus() }
+            onSearchFocusConsumed()
+        }
+    }
 
     Column(modifier.fillMaxSize()) {
         Text(
@@ -2953,6 +3432,7 @@ private fun FileBrowser(
                     diagnostics = diagnostics,
                     recentSearches = recentSearches,
                     onRecentSearchSelected = onRecentSearchSelected,
+                    focusRequester = searchFocusRequester,
                     // CANVAS has no scroll container to reserve contentPadding on, so this is
                     // the one branch that has to clear the bottom chrome by hand -- without it
                     // the tab band (and, mid-selection, the selection row) draws over the pill.
@@ -2974,6 +3454,7 @@ private fun FileBrowser(
             PullDownSearchHost(
                 listAtTop = listAtTop,
                 revealHeight = CommandPillSearchHeight,
+                state = pullDownSearchState,
                 modifier = Modifier.weight(1f),
                 searchField = {
                     CommandPill(
@@ -2989,6 +3470,7 @@ private fun FileBrowser(
                         diagnostics = diagnostics,
                         recentSearches = recentSearches,
                         onRecentSearchSelected = onRecentSearchSelected,
+                        focusRequester = searchFocusRequester,
                         trailing = {},
                     )
                 },
@@ -3150,24 +3632,6 @@ private fun FileBrowser(
             )
         }
     }
-}
-
-/**
- * Reconstructs the tree URI a document URI's own tree would resolve to, for a provider (like
- * [io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider]) that mints both from the identical
- * doc id -- `documentUri(rootId, path)` there is built as
- * `buildDocumentUriUsingTree(treeUri(rootId, path), "$rootId:$path")`, so the tree and the
- * document share one doc id and this is the standard [DocumentsContract] call that reverses it.
- * [OverviewScreen]'s own `onOpenFolder` only ever hands back the [FolderLocation] it built from a
- * [StorageRoot] (discarding that root's own [StorageRoot.treeUri] along the way), so this is what
- * lets a tap on one of its cards still open as its own tab rather than needing OverviewScreen to
- * carry a tree grant through a parameter it was never given.
- */
-private fun treeUriFromDocument(documentUri: Uri): Uri {
-    // A content:// uri from any DocumentsProvider always carries an authority; the checkNotNull
-    // documents that rather than silently building a malformed tree uri from a blank one.
-    val authority = checkNotNull(documentUri.authority) { "$documentUri has no authority" }
-    return DocumentsContract.buildTreeDocumentUri(authority, DocumentsContract.getDocumentId(documentUri))
 }
 
 /** Sort controls. Previously the order was hardcoded in DocumentRepository with no UI at all. */

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream W (integration) owned strings: the small handful of new user-facing labels this
+    workstream's own wiring introduced (the Large files sheet, the desktop's own "at capacity"
+    notice). Everything else this workstream touched (SettingsOverlay's new rows, every toast
+    message in FylzV1App.kt) follows those files' own pre-existing convention of a raw string
+    literal at the call site rather than a resource; this file exists for the few spots where a
+    genuinely new piece of on-screen copy needed a home of its own, not to relitigate that
+    convention for text that already matched it everywhere else in the same file.
+-->
+<resources>
+    <string name="integration_large_files_title">Large files</string>
+    <string name="integration_large_files_empty">Run a storage scan first</string>
+    <string name="integration_desktop_full">The desktop is full.</string>
+    <string name="integration_desktop_cli_empty">Nothing on the desktop yet.</string>
+</resources>

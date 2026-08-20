@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream D (intent door / launcher surface) owned strings: the three app widgets, the
+    folder widget's config screen, the Send-to-Fylz share target, and the three new static
+    shortcuts. Also fylz_wallpaper_label / fylz_wallpaper_description — workstream B's
+    strings_wallpaper.xml and res/xml/fylz_wallpaper.xml both reference these two keys but were
+    deliberately told not to define them; this file is where they live.
+-->
+<resources>
+    <!-- Live wallpaper metadata (referenced by res/xml/fylz_wallpaper.xml and the manifest's
+         android:label for the FylzPondWallpaperService entry). -->
+    <string name="fylz_wallpaper_label">Fylz Pond water</string>
+    <string name="fylz_wallpaper_description">A slow-moving pond-water animation, in Fylz\'s own palette.</string>
+
+    <!-- StorageWidgetProvider (2x2) -->
+    <string name="widget_storage_title">Storage</string>
+    <string name="widget_storage_no_scan">No scan yet — tap to open</string>
+    <string name="widget_storage_as_of">As of %1$s</string>
+    <string name="widget_storage_bar_description">Storage usage by kind</string>
+    <string name="widget_storage_description">Your storage usage at a glance.</string>
+
+    <!-- FolderShortcutWidgetProvider (1x1) + its config screen -->
+    <string name="widget_folder_picker_label">Folder shortcut</string>
+    <string name="widget_folder_unconfigured">Tap to choose a folder</string>
+    <string name="widget_folder_description">A one-tap shortcut to a folder or favourite.</string>
+    <string name="widget_config_title">Choose a folder</string>
+    <string name="widget_config_empty">No folders available yet. Open a folder in Fylz or mark one as a favourite first.</string>
+    <string name="widget_config_favorites">Favourites</string>
+    <string name="widget_config_folders">Folders</string>
+
+    <!-- QuickActionsWidgetProvider (2x1) -->
+    <string name="widget_actions_picker_label">Quick actions</string>
+    <string name="widget_actions_description">One-tap Scan, Search, Shelf and Trash.</string>
+    <string name="widget_action_scan">Scan</string>
+    <string name="widget_action_search">Search</string>
+    <string name="widget_action_shelf">Shelf</string>
+    <string name="widget_action_trash">Trash</string>
+
+    <!-- Send-to-Fylz share target -->
+    <string name="share_inbox_title">%1$d file(s) ready to shelve</string>
+    <string name="share_inbox_explanation">Choose a folder for shared files. Fylz copies each one there and adds it to your Shelf.</string>
+    <string name="share_choose_inbox_folder">Choose inbox folder</string>
+    <string name="share_inbox_default_name">Inbox</string>
+    <string name="share_inbox_folder_failed">Unable to use this folder</string>
+    <string name="share_copying">Copying to Inbox…</string>
+    <string name="share_source_crumb">Inbox</string>
+    <string name="share_result_success">%1$d file(s) shelved to Inbox</string>
+    <string name="share_result_partial">%1$d file(s) shelved to Inbox, %2$d failed</string>
+    <string name="share_result_all_failed">Could not shelve any files</string>
+
+    <!-- New static shortcuts (res/xml/shortcuts.xml) -->
+    <string name="shortcut_scan_short">Scan</string>
+    <string name="shortcut_scan_long">Scan storage</string>
+    <string name="shortcut_search_short">Search</string>
+    <string name="shortcut_search_long">Search Fylz</string>
+    <string name="shortcut_shelf_short">Shelf</string>
+    <string name="shortcut_shelf_long">Open the Shelf</string>
+</resources>

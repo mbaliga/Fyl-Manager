@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.storage
 import android.content.Context
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.util.FileType
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -75,6 +76,11 @@ fun classifyBytes(files: List<ScannedFileFacts>): Map<StorageKind, Long> {
     return totals
 }
 
+/** One file [StorageScanWorker] flagged as among the largest it saw during the walk -- [uriString]
+ *  is a plain string, not a [android.net.Uri], so this data class (and [StorageUsageSnapshot]
+ *  carrying a list of them) needs no Robolectric to construct or compare in a pure JVM test. */
+data class LargeFileFact(val uriString: String, val displayName: String, val sizeBytes: Long)
+
 /**
  * A completed [StorageScanWorker] pass.
  *
@@ -82,11 +88,18 @@ fun classifyBytes(files: List<ScannedFileFacts>): Map<StorageKind, Long> {
  * absent" discipline [io.github.mbaliga.fylz.browse.EntryDetails] documents for its own facts --
  * [bytesFor] is where that gets collapsed back to zero for display, once the caller has already
  * decided (by checking for a null snapshot) whether a scan has ever run at all.
+ *
+ * [largestFiles] is the widest-reaching files the scan's own bounded top-tracker retained (see
+ * [StorageScanWorker]'s own KDoc), largest first, capped well under what a whole device's file
+ * count could be -- never every file the walk visited. Defaults to empty so a schema-v1 snapshot
+ * (written before this field existed) decodes cleanly with "no large-files figure" rather than a
+ * missing-field crash; a fresh scan always writes it schema-v2, with whatever it found.
  */
 data class StorageUsageSnapshot(
     val scannedAtMillis: Long,
     val kindBytes: Map<StorageKind, Long>,
     val truncated: Boolean = false,
+    val largestFiles: List<LargeFileFact> = emptyList(),
 ) {
     fun bytesFor(kind: StorageKind): Long = kindBytes[kind] ?: 0L
 }
@@ -128,15 +141,31 @@ class StorageUsageStore(context: Context) {
     private fun encode(snapshot: StorageUsageSnapshot): String {
         val kinds = JSONObject()
         snapshot.kindBytes.forEach { (kind, bytes) -> kinds.put(kind.name, bytes) }
+        val largestFiles = JSONArray()
+        snapshot.largestFiles.forEach { fact ->
+            largestFiles.put(
+                JSONObject()
+                    .put("uriString", fact.uriString)
+                    .put("displayName", fact.displayName)
+                    .put("sizeBytes", fact.sizeBytes),
+            )
+        }
         return JSONObject()
             .put("schemaVersion", SCHEMA_VERSION)
             .put("scannedAtMillis", snapshot.scannedAtMillis)
             .put("truncated", snapshot.truncated)
             .put("kindBytes", kinds)
+            .put("largestFiles", largestFiles)
             .toString()
     }
 
-    /** Returns null only when a non-blank payload is malformed -- mirrors [io.github.mbaliga.fylz.canvas.CanvasLayoutStore]. */
+    /**
+     * Returns null only when a non-blank payload is malformed -- mirrors
+     * [io.github.mbaliga.fylz.canvas.CanvasLayoutStore]. A schema-v1 payload (written before
+     * [StorageUsageSnapshot.largestFiles] existed) has no `largestFiles` key at all;
+     * [JSONObject.optJSONArray] returning null for it decodes as an empty list rather than a
+     * decode failure, so an old snapshot on disk keeps decoding after this build's upgrade.
+     */
     private fun decode(raw: String?): StorageUsageSnapshot? {
         if (raw.isNullOrBlank()) return null
         return runCatching {
@@ -148,10 +177,25 @@ class StorageUsageStore(context: Context) {
                     put(kind, kinds.getLong(key))
                 }
             }
+            val largestFiles = buildList {
+                val array = value.optJSONArray("largestFiles") ?: JSONArray()
+                for (index in 0 until array.length()) {
+                    val record = array.optJSONObject(index) ?: continue
+                    val fact = runCatching {
+                        LargeFileFact(
+                            uriString = record.getString("uriString"),
+                            displayName = record.getString("displayName"),
+                            sizeBytes = record.getLong("sizeBytes"),
+                        )
+                    }.getOrNull()
+                    if (fact != null) add(fact)
+                }
+            }
             StorageUsageSnapshot(
                 scannedAtMillis = value.getLong("scannedAtMillis"),
                 kindBytes = kindBytes,
                 truncated = value.optBoolean("truncated", false),
+                largestFiles = largestFiles,
             )
         }.getOrNull()
     }
@@ -160,6 +204,6 @@ class StorageUsageStore(context: Context) {
         const val PREFERENCES_NAME = "fylz_storage_usage"
         const val SNAPSHOT_KEY = "snapshot"
         const val BACKUP_KEY = "snapshot:backup"
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
     }
 }

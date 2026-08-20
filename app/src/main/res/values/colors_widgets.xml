@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream D (intent door / launcher surface) owned colours — the three app widgets'
+    background/text/icon palette. RemoteViews layouts cannot read Compose's MaterialTheme, so
+    they need their own plain colour resources; these ride the platform's Android 12+ dynamic
+    colour families (system_neutral1/2, system_accent1) so a Fylz widget matches the user's
+    wallpaper-derived palette the same way every other dynamically-themed widget on the device
+    does, with the values below as this file only when the device is pre-dynamic-colour —
+    minSdk 31 guarantees these android:color resources exist, so there is no non-dynamic
+    fallback branch to maintain.
+-->
+<resources>
+    <color name="widget_surface">@android:color/system_neutral1_50</color>
+    <color name="widget_on_surface">@android:color/system_neutral1_900</color>
+    <color name="widget_on_surface_variant">@android:color/system_neutral2_700</color>
+    <color name="widget_accent">@android:color/system_accent1_600</color>
+</resources>

@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.ui.components
 
 import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.CancellationSignal
 import android.util.Size
@@ -44,7 +45,11 @@ import kotlinx.coroutines.withContext
  *    path that produces a *video* frame.
  * 2. Coil for images the provider did not thumbnail. Coil decodes `content://` images directly and
  *    is already a dependency (previously used only by `RichImagePreview`).
- * 3. The type icon.
+ * 3. [loadPdfThumbnail] for PDFs the provider did not thumbnail -- most providers only advertise
+ *    `FLAG_SUPPORTS_THUMBNAIL` for images and video, so this is the only path that produces a PDF
+ *    thumbnail at all. Renders the first page with `PdfRenderer`, same as step 1's provider-side
+ *    thumbnail in every other respect (bounded, cached, IO-dispatched).
+ * 4. The type icon.
  *
  * Every step is bounded: thumbnails are requested at [size], never full resolution, satisfying
  * docs/product/preview-and-recycle-bin-contract.md's "must never load an unbounded file into
@@ -80,6 +85,10 @@ fun EntryThumbnail(
     val context = LocalContext.current
     val thumbnailable = !entry.isDirectory &&
         (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO)
+    // PDFs get their own attempt, after the provider's own thumbnail and before the icon
+    // fallback -- kept out of [thumbnailable] itself since that flag also drives the Coil
+    // fallback a few lines down, and Coil has no PDF decoder to fall back to.
+    val isPdf = !entry.isDirectory && entry.kind == EntryKind.PDF
 
     val bitmap by produceState<ImageBitmap?>(
         initialValue = null,
@@ -87,7 +96,7 @@ fun EntryThumbnail(
         key2 = thumbnailable,
         key3 = pixels,
     ) {
-        if (!thumbnailable) {
+        if (!thumbnailable && !isPdf) {
             value = null
             return@produceState
         }
@@ -98,7 +107,9 @@ fun EntryThumbnail(
             return@produceState
         }
         value = withContext(Dispatchers.IO) {
-            loadProviderThumbnail(context.contentResolver, entry.uri, pixels)?.asImageBitmap()
+            val provided = loadProviderThumbnail(context.contentResolver, entry.uri, pixels)
+            (provided ?: if (isPdf) loadPdfThumbnail(context.contentResolver, entry.uri, pixels) else null)
+                ?.asImageBitmap()
         }?.also { ThumbnailCache.put(cacheKey, it) }
     }
 
@@ -159,6 +170,41 @@ internal fun loadProviderThumbnail(
     pixels: Int,
 ): Bitmap? = runCatching {
     resolver.loadThumbnail(uri, Size(pixels, pixels), CancellationSignal())
+}.getOrNull()
+
+/**
+ * Renders a PDF's first page to a bounded [Bitmap], for the entries [loadProviderThumbnail]
+ * leaves empty -- most document providers advertise `FLAG_SUPPORTS_THUMBNAIL` for images and
+ * video only, not PDFs.
+ *
+ * Sized to fit within a [pixels] square, preserving the page's own aspect ratio rather than
+ * stretching it -- a page is usually taller than it is wide, so a square crop would otherwise cut
+ * off its edges. The bitmap is filled white before rendering: [PdfRenderer] draws a page's content
+ * onto whatever is already there, and a page's own background is transparent, not white.
+ *
+ * File descriptor, page and renderer are all opened and closed strictly in this one call via
+ * nested [use] blocks, so a decode failure partway through never leaks any of the three.
+ */
+private fun loadPdfThumbnail(
+    resolver: android.content.ContentResolver,
+    uri: Uri,
+    pixels: Int,
+): Bitmap? = runCatching {
+    resolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+        PdfRenderer(descriptor).use { renderer ->
+            require(renderer.pageCount > 0) { "PDF has no pages." }
+            renderer.openPage(0).use { page ->
+                val longSide = maxOf(page.width, page.height).coerceAtLeast(1)
+                val scale = pixels.toFloat() / longSide
+                val width = (page.width * scale).toInt().coerceAtLeast(1)
+                val height = (page.height * scale).toInt().coerceAtLeast(1)
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                    bitmap.eraseColor(android.graphics.Color.WHITE)
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                }
+            }
+        }
+    }
 }.getOrNull()
 
 /**

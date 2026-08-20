@@ -53,4 +53,44 @@ class FileFormatRegistryTest {
         assertEquals(PreviewDepth.INSPECTED, value.depth)
         assertEquals("binary", value.rendererId)
     }
+
+    @Test fun figAndJamAreRecognizedAsDesignDocuments() {
+        listOf("board.fig", "diagram.jam").forEach { name ->
+            val value = FileFormatRegistry.describe(name, "application/octet-stream", EntryKind.OTHER)
+            assertEquals(PreviewFamily.DESIGN, value.family)
+            assertEquals(PreviewDepth.STRUCTURED, value.depth)
+            assertEquals("Design document", value.label)
+            assertEquals("design", value.rendererId)
+        }
+    }
+
+    @Test fun designExtensionIsCaseInsensitive() {
+        val value = FileFormatRegistry.describe("Board.FIG", "application/octet-stream", EntryKind.OTHER)
+        assertEquals(PreviewFamily.DESIGN, value.family)
+    }
+
+    @Test fun rarGetsAnHonestUnsupportedNoteRatherThanSilentFailure() {
+        val value = FileFormatRegistry.describe("archive.rar", "application/vnd.rar", EntryKind.OTHER)
+        assertEquals(PreviewFamily.ARCHIVE, value.family)
+        assertEquals("RAR listing is not supported.", value.notes)
+    }
+
+    @Test fun otherArchivesCarryNoSpuriousNote() {
+        val value = FileFormatRegistry.describe("archive.zip", "application/zip", EntryKind.OTHER)
+        assertEquals(PreviewFamily.ARCHIVE, value.family)
+        assertEquals(null, value.notes)
+    }
+
+    @Test fun compoundArchiveExtensionsAreUnaffectedByTheDesignFamily() {
+        listOf(
+            "volume.nii.gz" to PreviewFamily.SCIENTIFIC,
+            "backup.tar.gz" to PreviewFamily.ARCHIVE,
+            "backup.tar.bz2" to PreviewFamily.ARCHIVE,
+            "backup.tar.xz" to PreviewFamily.ARCHIVE,
+            "backup.tar.zst" to PreviewFamily.ARCHIVE,
+        ).forEach { (name, family) ->
+            val value = FileFormatRegistry.describe(name, "application/octet-stream", EntryKind.OTHER)
+            assertEquals("$name should resolve to $family", family, value.family)
+        }
+    }
 }

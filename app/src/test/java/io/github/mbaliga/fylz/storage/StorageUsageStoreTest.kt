@@ -98,4 +98,68 @@ class StorageUsageStoreTest {
         assertEquals(500L, snapshot?.bytesFor(StorageKind.PHOTOS))
         assertEquals(1, snapshot?.kindBytes?.size)
     }
+
+    // ---- schema v1 -> v2: largestFiles -----------------------------------------------------
+
+    @Test
+    fun `a schema-v1 payload with no largestFiles key still decodes, with an empty list`() {
+        context.getSharedPreferences("fylz_storage_usage", Context.MODE_PRIVATE)
+            .edit()
+            .putString(
+                "snapshot",
+                """{"schemaVersion":1,"scannedAtMillis":1000,"truncated":false,"kindBytes":{"PHOTOS":500}}""",
+            )
+            .commit()
+
+        val snapshot = store().snapshot()
+
+        assertEquals(500L, snapshot?.bytesFor(StorageKind.PHOTOS))
+        assertEquals(emptyList<LargeFileFact>(), snapshot?.largestFiles)
+    }
+
+    @Test
+    fun `largestFiles round-trips through a fresh store instance`() {
+        val snapshot = StorageUsageSnapshot(
+            scannedAtMillis = 1_000L,
+            kindBytes = mapOf(StorageKind.PHOTOS to 500L),
+            largestFiles = listOf(
+                LargeFileFact("content://fylz/doc/a", "big.mp4", 900_000L),
+                LargeFileFact("content://fylz/doc/b", "medium.zip", 400_000L),
+            ),
+        )
+
+        store().write(snapshot)
+
+        assertEquals(snapshot, store().snapshot())
+    }
+
+    @Test
+    fun `writing a snapshot always encodes schema v2`() {
+        store().write(StorageUsageSnapshot(1_000L, mapOf(StorageKind.PHOTOS to 500L)))
+
+        val raw = context.getSharedPreferences("fylz_storage_usage", Context.MODE_PRIVATE).getString("snapshot", null)
+
+        assertEquals(2, org.json.JSONObject(raw!!).getInt("schemaVersion"))
+    }
+
+    @Test
+    fun `a malformed largestFiles record is skipped without sinking the rest of the snapshot`() {
+        context.getSharedPreferences("fylz_storage_usage", Context.MODE_PRIVATE)
+            .edit()
+            .putString(
+                "snapshot",
+                """
+                {"schemaVersion":2,"scannedAtMillis":1000,"truncated":false,"kindBytes":{"PHOTOS":500},
+                 "largestFiles":[
+                   {"uriString":"content://a","displayName":"good.mp4","sizeBytes":100},
+                   {"uriString":"content://b"}
+                 ]}
+                """.trimIndent(),
+            )
+            .commit()
+
+        val snapshot = store().snapshot()
+
+        assertEquals(listOf(LargeFileFact("content://a", "good.mp4", 100L)), snapshot?.largestFiles)
+    }
 }

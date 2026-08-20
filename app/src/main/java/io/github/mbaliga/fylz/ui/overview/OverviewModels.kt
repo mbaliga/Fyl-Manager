@@ -164,6 +164,33 @@ fun formatScannedAt(millis: Long): String =
     DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Locale.getDefault()).format(Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()))
 
 /**
+ * "Just now" / "5m ago" / "3h ago" / "2d ago" for anything within the last week, falling back to
+ * [formatLastEdited]'s plain date past that -- the desktop Recents widget's own row caption. Takes
+ * [nowMillis] as a parameter, not `System.currentTimeMillis()` read internally, so a test can pin
+ * both sides of the subtraction; a real caller passes the wall clock.
+ *
+ * Same "zero/negative is unknown, not a date" discipline as [formatLastEdited]: absent rather than
+ * a fabricated "Just now" for a timestamp that never happened. A [millis] after [nowMillis] --
+ * clock skew, not a real future open -- clamps to "Just now" rather than a negative duration.
+ */
+fun formatRelativeTime(nowMillis: Long, millis: Long): String? {
+    if (millis <= 0L) return null
+    val elapsed = (nowMillis - millis).coerceAtLeast(0L)
+    return when {
+        elapsed < MINUTE_MILLIS -> "Just now"
+        elapsed < HOUR_MILLIS -> "${elapsed / MINUTE_MILLIS}m ago"
+        elapsed < DAY_MILLIS -> "${elapsed / HOUR_MILLIS}h ago"
+        elapsed < WEEK_MILLIS -> "${elapsed / DAY_MILLIS}d ago"
+        else -> formatLastEdited(millis)
+    }
+}
+
+private const val MINUTE_MILLIS = 60_000L
+private const val HOUR_MILLIS = 60 * MINUTE_MILLIS
+private const val DAY_MILLIS = 24 * HOUR_MILLIS
+private const val WEEK_MILLIS = 7 * DAY_MILLIS
+
+/**
  * The same facts the graphical cards show, as monospace text lines -- [OverviewScreen] renders
  * these instead of the card grid under [io.github.mbaliga.fylz.ui.theme.ThemeStyle.CLI], so the
  * two surfaces can never quietly disagree about what a card says.

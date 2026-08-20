@@ -206,16 +206,47 @@ class AppPreferencesStore(context: Context) {
         preferences.edit().putBoolean(LANDING_SPLASH, value).commit()
     }
 
-    /** Which surface the landing home renders once past the hero. [HomeMode.LOCATIONS] by default. */
+    /**
+     * Which surface the landing home renders once past the hero. [HomeMode.DESKTOP] by default --
+     * an absent key means a fresh install, which lands on the desktop rather than the plain
+     * locations list.
+     */
     @Synchronized
     fun homeMode(): HomeMode {
-        val raw = preferences.getString(LANDING_VIEW, null) ?: return HomeMode.LOCATIONS
-        return runCatching { HomeMode.valueOf(raw) }.getOrDefault(HomeMode.LOCATIONS)
+        val raw = preferences.getString(LANDING_VIEW, null) ?: return HomeMode.DESKTOP
+        if (raw == LEGACY_OVERVIEW_MODE) {
+            // HomeMode.OVERVIEW was renamed to DESKTOP; a bare valueOf on the stored name would
+            // miss, fall through to getOrDefault, and silently drop every existing Overview user
+            // back to whatever the default resolves to instead of the desktop they had. Resolve
+            // it explicitly and rewrite the stored value in place, the same one-time migration
+            // themeStyle() runs for GLASS -> FYLZ.
+            preferences.edit().putString(LANDING_VIEW, HomeMode.DESKTOP.name).commit()
+            return HomeMode.DESKTOP
+        }
+        return runCatching { HomeMode.valueOf(raw) }.getOrDefault(HomeMode.DESKTOP)
     }
 
     @Synchronized
     fun setHomeMode(mode: HomeMode) {
         preferences.edit().putString(LANDING_VIEW, mode.name).commit()
+    }
+
+    /** Whether desktop icons snap to the grid while dragging. On by default. */
+    @Synchronized
+    fun desktopSnap(): Boolean = preferences.getBoolean(DESKTOP_SNAP, true)
+
+    @Synchronized
+    fun setDesktopSnap(value: Boolean) {
+        preferences.edit().putBoolean(DESKTOP_SNAP, value).commit()
+    }
+
+    /** Whether desktop shortcut tiles show their name label beneath the thumbnail. On by default. */
+    @Synchronized
+    fun desktopLabels(): Boolean = preferences.getBoolean(DESKTOP_LABELS, true)
+
+    @Synchronized
+    fun setDesktopLabels(value: Boolean) {
+        preferences.edit().putBoolean(DESKTOP_LABELS, value).commit()
     }
 
     /**
@@ -278,7 +309,10 @@ class AppPreferencesStore(context: Context) {
         const val MAX_RECENT_SEARCHES = 8
         const val LANDING_SPLASH = "landing_splash"
         const val LANDING_VIEW = "landing_view"
+        const val LEGACY_OVERVIEW_MODE = "OVERVIEW"
         const val LANDING_SUBJECT_TREE = "landing_subject_tree"
         const val LANDING_SUBJECT_FOLDER = "landing_subject_folder"
+        const val DESKTOP_SNAP = "desktop_snap"
+        const val DESKTOP_LABELS = "desktop_labels"
     }
 }

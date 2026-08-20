@@ -25,7 +25,7 @@ enum class IconStyle(val slug: String) {
  *
  * ### Why this exists
  *
- * The app already knew far more about a file than it drew. [PreviewFamily] splits files nineteen
+ * The app already knew far more about a file than it drew. [PreviewFamily] splits files twenty
  * ways and the format registry resolves an exact extension on top of that, but rendering collapsed
  * all of it back down to nine `EntryKind`s and then bottomed out at a single stock glyph — a
  * *sidebar* icon stood in for every unrecognised file. Resolution here runs the other way, most
@@ -158,6 +158,7 @@ object FileTypeIcons {
         PreviewFamily.EXECUTABLE to "exe",
         PreviewFamily.PACKAGE to "zip",
         PreviewFamily.BINARY to "simple-empty",
+        PreviewFamily.DESIGN to "fig",
     )
 
     /** Last resort: a blank document. Every family maps to something, so this is belt-and-braces. */

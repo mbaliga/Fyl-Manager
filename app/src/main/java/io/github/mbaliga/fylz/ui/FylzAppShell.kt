@@ -27,6 +27,7 @@ import io.github.mbaliga.fylz.core.operations.FileOperationType
 import io.github.mbaliga.fylz.core.operations.OperationRetryPlan
 import io.github.mbaliga.fylz.core.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.intents.FylzCommand
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.storage.toUri
@@ -58,7 +59,13 @@ import kotlinx.coroutines.launch
  * colours instead of the bare `MaterialTheme` default it used to sit in.
  */
 @Composable
-fun FylzAppShell() {
+fun FylzAppShell(
+    // MainActivity's own launch-intent / onNewIntent state -- see that class's own KDoc. Merely
+    // threaded through here to FylzV1App; this shell owns no opinion of its own about what a
+    // command means.
+    pendingCommand: FylzCommand? = null,
+    onCommandConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
@@ -80,6 +87,8 @@ fun FylzAppShell() {
     }
 
     FylzV1App(
+        pendingCommand = pendingCommand,
+        onCommandConsumed = onCommandConsumed,
         recoverySection = {
             RecoveryHome(
                 operations = operations,

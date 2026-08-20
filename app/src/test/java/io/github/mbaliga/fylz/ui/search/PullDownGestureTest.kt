@@ -178,4 +178,36 @@ class PullDownGestureTest {
     fun `a non-positive threshold is rejected outright`() {
         PullDownGesture(0f)
     }
+
+    @Test
+    fun `reveal latches open at the rest height with no drag at all`() {
+        val g = gesture(thresholdPx = 100f)
+        g.reveal()
+        assertTrue(g.isLatched)
+        assertEquals(100f, g.pulledPx, 0.001f)
+        assertEquals(1f, g.revealFraction, 0.001f)
+        assertEquals(0f, g.overpull, 0.001f)
+        assertFalse("latched is not dragging", g.isDragging)
+    }
+
+    @Test
+    fun `reveal is a no-op once already latched`() {
+        val g = gesture(thresholdPx = 100f, latchExcessFraction = 0.5f)
+        g.onDrag(150f)
+        g.onRelease()
+        check(g.isLatched)
+
+        g.reveal()
+        assertTrue(g.isLatched)
+        assertEquals(100f, g.pulledPx, 0.001f)
+    }
+
+    @Test
+    fun `collapse is the only way back to rest after reveal, same as after a real drag`() {
+        val g = gesture(thresholdPx = 100f)
+        g.reveal()
+        g.collapse()
+        assertFalse(g.isLatched)
+        assertEquals(0f, g.pulledPx, 0.001f)
+    }
 }

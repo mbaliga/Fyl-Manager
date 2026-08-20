@@ -23,6 +23,7 @@ enum class PreviewFamily {
     EXECUTABLE,
     PACKAGE,
     BINARY,
+    DESIGN,
 }
 
 enum class PreviewDepth {
@@ -83,7 +84,13 @@ object FileFormatRegistry {
     private val archives = setOf(
         "zip", "zipx", "7z", "rar", "tar", "gz", "gzip", "bz2", "xz", "zst", "tgz", "tbz", "tbz2",
         "txz", "cab", "arj", "lha", "lzh", "cpio", "iso", "img", "dmg", "wim", "xar", "deb", "rpm",
+        // Compound forms of the above -- compoundExtension() below folds "backup.tar.gz" to the
+        // literal token "tar.gz" rather than the bare "gz" a plain substringAfterLast would give,
+        // so the compound has to be listed here too or a compressed tarball falls all the way
+        // through to the BINARY catch-all instead of ARCHIVE.
+        "tar.gz", "tar.bz2", "tar.xz", "tar.zst",
     )
+    private val design = setOf("fig", "jam")
     private val fonts = setOf("ttf", "otf", "ttc", "otc", "woff", "woff2", "eot", "pfb", "pfm", "bdf", "pcf")
     private val office = setOf(
         "doc", "docx", "docm", "dot", "dotx", "odt", "ott", "rtf", "pages", "wpd",
@@ -153,7 +160,15 @@ object FileFormatRegistry {
             extension in images || mime.startsWith("image/") || kind == EntryKind.IMAGE -> descriptor(PreviewFamily.IMAGE, PreviewDepth.RENDERED, "Image", extension, "image")
             extension in audio || mime.startsWith("audio/") || kind == EntryKind.AUDIO -> descriptor(PreviewFamily.AUDIO, PreviewDepth.RENDERED, "Audio", extension, "media")
             extension in video || mime.startsWith("video/") || kind == EntryKind.VIDEO -> descriptor(PreviewFamily.VIDEO, PreviewDepth.RENDERED, "Video", extension, "media")
-            extension in archives || kind == EntryKind.ARCHIVE || isArchiveMime(mime) -> descriptor(PreviewFamily.ARCHIVE, PreviewDepth.STRUCTURED, "Archive or disk image", extension, "archive")
+            extension in archives || kind == EntryKind.ARCHIVE || isArchiveMime(mime) -> descriptor(
+                PreviewFamily.ARCHIVE,
+                PreviewDepth.STRUCTURED,
+                "Archive or disk image",
+                extension,
+                "archive",
+                if (extension == "rar") "RAR listing is not supported." else null,
+            )
+            extension in design -> descriptor(PreviewFamily.DESIGN, PreviewDepth.STRUCTURED, "Design document", extension, "design")
             extension in fonts || mime.startsWith("font/") -> descriptor(PreviewFamily.FONT, PreviewDepth.RENDERED, "Font", extension, "font")
             extension in office || isOfficeMime(mime) -> descriptor(PreviewFamily.OFFICE, PreviewDepth.STRUCTURED, "Office document", extension, "office")
             extension in ebooks -> descriptor(PreviewFamily.EBOOK, PreviewDepth.STRUCTURED, "E-book or comic", extension, "ebook")

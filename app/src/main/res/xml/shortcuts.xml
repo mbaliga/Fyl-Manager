@@ -38,4 +38,44 @@
             android:targetPackage="io.github.mbaliga.fylz"
             android:targetClass="io.github.mbaliga.fylz.IndexManagerActivity" />
     </shortcut>
+
+    <!--
+        Action-only shortcuts (no extras): each intent's android:action literal must match
+        io.github.mbaliga.fylz.intents.FylzIntents' own constant exactly, since a manifest XML
+        cannot reference a Kotlin const val. FylzIntentsTest pins the constants' actual values;
+        keep both in sync by hand if either ever changes.
+    -->
+    <shortcut
+        android:shortcutId="scan_document"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_scan"
+        android:shortcutShortLabel="@string/shortcut_scan_short"
+        android:shortcutLongLabel="@string/shortcut_scan_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.SCAN"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="search"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_search"
+        android:shortcutShortLabel="@string/shortcut_search_short"
+        android:shortcutLongLabel="@string/shortcut_search_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.SEARCH"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="shelf"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_shelf"
+        android:shortcutShortLabel="@string/shortcut_shelf_short"
+        android:shortcutLongLabel="@string/shortcut_shelf_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.OPEN_SHELF"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
 </shortcuts>

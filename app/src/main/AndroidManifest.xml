@@ -28,6 +28,16 @@
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
+    <!--
+        Declared android:required="false": a file manager must not be filtered off the Play
+        Store (or any other listing) for devices that simply don't support live wallpapers —
+        FylzPondWallpaperService is an optional extra, never a requirement to install or run the
+        app itself.
+    -->
+    <uses-feature
+        android:name="android.software.live_wallpaper"
+        android:required="false" />
+
     <application
         android:name=".FylzApplication"
         android:allowBackup="true"
@@ -119,6 +129,105 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+            The three app widgets. exported="false" on all three, per the current platform
+            guidance for AppWidgetProvider receivers: APPWIDGET_UPDATE is a protected broadcast
+            the system delivers by explicit component name (AppWidgetManager, not another app's
+            process), so it reaches a non-exported receiver regardless — unlike
+            FolderWidgetConfigActivity below, which the launcher/widget host genuinely does start
+            from another app's process and so must stay exported.
+        -->
+        <receiver
+            android:name=".widgets.StorageWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_storage_title">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_storage_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widgets.FolderShortcutWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_folder_picker_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_folder_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widgets.QuickActionsWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_actions_picker_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_actions_info" />
+        </receiver>
+
+        <!-- Launched by the widget host (the launcher app's own process) via
+             APPWIDGET_CONFIGURE, so — unlike the receivers above — this must be exported. -->
+        <activity
+            android:name=".widgets.FolderWidgetConfigActivity"
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The share-in door. exported="true" is required for any other app's share sheet to
+            reach it; excludeFromRecents="true" because its whole life is "copy, toast, finish" —
+            a stale copy of it in the recents list would let a user reopen a share flow with
+            nothing left to do. mimeType "*/*" per the plan: Fylz is a file manager and should
+            accept whatever another app is willing to share, not pre-filter by type.
+        -->
+        <activity
+            android:name=".share.SendToFylzActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Fylz">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Workstream B's live wallpaper. Declared here (AndroidManifest.xml's sole owner this
+            build) exactly as specified: BIND_WALLPAPER is a signature/system permission, so
+            exported="true" does not open this service to arbitrary callers — only the platform
+            wallpaper picker (which holds that permission) can bind to it.
+        -->
+        <service
+            android:name=".wallpaper.FylzPondWallpaperService"
+            android:exported="true"
+            android:label="@string/fylz_wallpaper_label"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/fylz_wallpaper" />
+        </service>
     </application>
 
 </manifest>

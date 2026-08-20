@@ -137,6 +137,19 @@ internal class PullDownGesture(
         isLatched = false
         pulledPx = 0f
     }
+
+    /**
+     * Programmatic open — the counterpart to [collapse], for a caller with no drag to replay (a
+     * command that should land on an already-revealed field, e.g. Workstream W's FocusSearch
+     * command handling in `FylzV1App.kt`). Latches straight at [revealThresholdPx], the same rest
+     * height a real drag-and-release settles at once it clears the latch excess. A no-op while
+     * already [isLatched].
+     */
+    fun reveal() {
+        if (isLatched) return
+        isLatched = true
+        pulledPx = revealThresholdPx
+    }
 }
 
 /** Where the search field settles once fully revealed, absent a caller measuring its own. Matches
@@ -189,6 +202,18 @@ class PullDownSearchState internal constructor(
     fun collapse() {
         gesture.collapse()
         scope.launch { pull.animateTo(0f, animationSpec = FylzMotion.settle) }
+    }
+
+    /**
+     * Opens the field on demand, without a drag to replay — the counterpart to [collapse]. Added
+     * for Workstream W's FocusSearch command handling (`FylzV1App.kt`): nothing equivalent existed
+     * on this state before, so this is a small, additive public method, not a redefinition of
+     * [collapse]'s own contract. Settles at the same rest height a real reveal-and-latch drag
+     * would, via the same [FylzMotion.settle] animation.
+     */
+    fun reveal() {
+        gesture.reveal()
+        scope.launch { pull.animateTo(gesture.pulledPx, animationSpec = FylzMotion.settle) }
     }
 }
 

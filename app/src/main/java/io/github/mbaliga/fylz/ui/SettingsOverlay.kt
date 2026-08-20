@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -124,6 +125,11 @@ internal fun SettingsOverlay(
     onPickLandingSubject: () -> Unit = {},
     landingSplash: Boolean = true,
     onLandingSplashChange: (Boolean) -> Unit = {},
+    onOpenWallpaperPicker: () -> Unit = {},
+    desktopSnap: Boolean = true,
+    onDesktopSnapChange: (Boolean) -> Unit = {},
+    desktopLabels: Boolean = true,
+    onDesktopLabelsChange: (Boolean) -> Unit = {},
     onOpenRecycleBin: () -> Unit,
     onOpenRemotes: () -> Unit,
     onOpenWebDav: () -> Unit,
@@ -312,6 +318,43 @@ internal fun SettingsOverlay(
                     }
                     Switch(checked = landingSplash, onCheckedChange = onLandingSplashChange)
                 }
+                SettingsToolRow(Icons.Outlined.Wallpaper, "Wallpaper", onOpenWallpaperPicker)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDesktopSnapChange(!desktopSnap) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Snap icons to grid", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Desktop shortcuts and widgets settle onto the grid as they are moved.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = desktopSnap, onCheckedChange = onDesktopSnapChange)
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDesktopLabelsChange(!desktopLabels) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Icon labels", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Show a name beneath desktop shortcuts.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = desktopLabels, onCheckedChange = onDesktopLabelsChange)
+                }
 
                 Spacer(Modifier.size(20.dp))
                 RoomHeading("Preview actions")
@@ -412,7 +455,7 @@ internal fun SettingsOverlay(
 
 private fun HomeMode.readableLabel(): String = when (this) {
     HomeMode.LOCATIONS -> "Locations list"
-    HomeMode.OVERVIEW -> "Overview"
+    HomeMode.DESKTOP -> "Desktop"
     HomeMode.LIST -> "List"
     HomeMode.BENTO -> "Bento"
     HomeMode.CANVAS -> "Canvas"

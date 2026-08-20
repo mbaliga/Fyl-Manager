@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FolderShortcutWidgetProvider's 1x1 face: an icon and a label, whole-cell tappable. Shows
+    ic_widget_folder and "Tap to choose a folder" before configuration, then the picked folder's
+    own name and (implicitly) the same icon once FolderWidgetConfigActivity has written a config.
+    RemoteViews-safe views only: LinearLayout, ImageView, TextView.
+
+    android:tint (not app:tint) below is deliberate, not the lint UseAppTint suggestion left
+    unaddressed: a widget host inflates RemoteViews as plain framework views, never through
+    AppCompat's LayoutInflater factory, so app:tint (an AppCompat-only attribute) would silently
+    do nothing here. Plain android:tint on ImageView has been framework-native since API 21, well
+    under this app's minSdk 31.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/widget_folder_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@drawable/widget_background"
+    android:padding="6dp">
+
+    <ImageView
+        android:id="@+id/widget_folder_icon"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:tint="@color/widget_accent"
+        tools:ignore="UseAppTint"
+        android:contentDescription="@null" />
+
+    <TextView
+        android:id="@+id/widget_folder_label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="@color/widget_on_surface"
+        android:textSize="11sp" />
+</LinearLayout>

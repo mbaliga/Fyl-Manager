@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Workstream C (desktop surface + widget registry) owned strings. -->
+<resources>
+    <!-- Widget gallery display names, WidgetRegistry-keyed one per DesktopWidgetType. -->
+    <string name="desktop_widget_storage">Storage</string>
+    <string name="desktop_widget_quick_access">Quick access</string>
+    <string name="desktop_widget_recycle_bin">Deleted files</string>
+    <string name="desktop_widget_tags">Tags</string>
+    <string name="desktop_widget_pinned">Pinned</string>
+    <string name="desktop_widget_shelf">Shelf</string>
+    <string name="desktop_widget_recents">Recents</string>
+    <string name="desktop_widget_search">Search</string>
+    <string name="desktop_widget_quick_actions">Quick actions</string>
+    <string name="desktop_widget_large_files">Large files</string>
+
+    <!-- Edit mode -->
+    <string name="desktop_edit_add">Add to desktop</string>
+    <string name="desktop_edit_done">Done</string>
+    <string name="desktop_add_widget">Add widget</string>
+    <string name="desktop_add_folder">Add folder</string>
+    <string name="desktop_add_file">Add file</string>
+    <string name="desktop_add_wallpaper">Wallpaper</string>
+    <string name="desktop_remove_item">Remove from desktop</string>
+    <string name="desktop_change_quick_access_folder">Change folder</string>
+
+    <!-- Shortcut tiles -->
+    <string name="desktop_broken_shortcut">Can\'t find this anymore</string>
+
+    <!-- Widget content -->
+    <string name="desktop_open_shelf">Open shelf</string>
+    <string name="desktop_shelf_empty">Shelf is empty</string>
+    <string name="desktop_recents_empty">Nothing opened yet</string>
+    <string name="desktop_see_all">See all</string>
+    <string name="desktop_large_files_empty_scanning">Scanning…</string>
+    <string name="desktop_large_files_empty_unscanned">Run a scan to see your largest files</string>
+    <string name="desktop_search_pill">Search</string>
+    <string name="desktop_quick_action_scan">Scan</string>
+    <string name="desktop_quick_action_search">Search</string>
+    <string name="desktop_quick_action_shelf">Shelf</string>
+    <string name="desktop_quick_action_trash">Trash</string>
+</resources>

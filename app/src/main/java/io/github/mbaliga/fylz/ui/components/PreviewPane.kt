@@ -44,6 +44,21 @@ private val ZIP_CONTAINER_EXTENSIONS = setOf(
     "zip", "zipx", "apk", "aab", "apks", "xapk", "apkm", "jar", "war", "ear",
     "cbz", "3mf", "kmz", "usdz", "vsdx", "nupkg", "whl",
 )
+// Non-ZIP structured archives ExtendedArchiveBrowserService lists real entries for: 7z, the TAR
+// family (incl. the compressed tgz/tbz/tbz2/txz shorthands), cpio, ar, arj. RAR is deliberately
+// absent -- the service doesn't support it, and FileFormatRegistry already carries an honest
+// "not supported" note for it that the universal inspector fallback below surfaces.
+private val EXTENDED_ARCHIVE_EXTENSIONS = setOf(
+    "7z", "tar", "tgz", "tbz", "tbz2", "txz", "cpio", "ar", "arj",
+)
+// Lone gz/bz2/xz compression wrapping a single inner file, listed by the same service --
+// including the compound "tar.gz"-style tokens FileFormatRegistry.compoundExtension() resolves
+// to for a doubly-extended name, which never reduce to the bare "gz" this set would otherwise need.
+// No zstd spellings: commons-compress's zstd codec needs zstd-jni, which Fylz does not bundle, so
+// .zst/.tar.zst fall through to the universal inspector honestly (same as RAR).
+private val COMPRESSED_STREAM_EXTENSIONS = setOf(
+    "gz", "gzip", "bz2", "xz", "tar.gz", "tar.bz2", "tar.xz",
+)
 
 @Composable
 fun PreviewPane(
@@ -127,10 +142,13 @@ fun PreviewPane(
                 descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
                     MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.family == PreviewFamily.DESIGN -> DesignDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
                     ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
                     ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
+                descriptor.extension in EXTENDED_ARCHIVE_EXTENSIONS || descriptor.extension in COMPRESSED_STREAM_EXTENSIONS ->
+                    ExtendedArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
                     GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())

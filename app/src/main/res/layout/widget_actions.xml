@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    QuickActionsWidgetProvider's 2x1 face: four independently tappable buttons — Scan, Search,
+    Shelf, Trash — each its own PendingIntent straight to MainActivity. RemoteViews-safe views
+    only: LinearLayout, ImageButton.
+
+    android:tint (not app:tint) below is deliberate, not the lint UseAppTint suggestion left
+    unaddressed: a widget host inflates RemoteViews as plain framework views, never through
+    AppCompat's LayoutInflater factory, so app:tint (an AppCompat-only attribute) would silently
+    do nothing here. Plain android:tint on ImageButton has been framework-native since API 21,
+    well under this app's minSdk 31.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/widget_actions_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/widget_background"
+    android:paddingStart="4dp"
+    android:paddingEnd="4dp">
+
+    <ImageButton
+        android:id="@+id/widget_action_scan"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:scaleType="centerInside"
+        android:padding="12dp"
+        android:src="@drawable/ic_widget_scan"
+        android:tint="@color/widget_accent"
+        tools:ignore="UseAppTint"
+        android:contentDescription="@string/widget_action_scan" />
+
+    <ImageButton
+        android:id="@+id/widget_action_search"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:scaleType="centerInside"
+        android:padding="12dp"
+        android:src="@drawable/ic_widget_search"
+        android:tint="@color/widget_accent"
+        tools:ignore="UseAppTint"
+        android:contentDescription="@string/widget_action_search" />
+
+    <ImageButton
+        android:id="@+id/widget_action_shelf"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:scaleType="centerInside"
+        android:padding="12dp"
+        android:src="@drawable/ic_widget_shelf"
+        android:tint="@color/widget_accent"
+        tools:ignore="UseAppTint"
+        android:contentDescription="@string/widget_action_shelf" />
+
+    <ImageButton
+        android:id="@+id/widget_action_trash"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@android:color/transparent"
+        android:scaleType="centerInside"
+        android:padding="12dp"
+        android:src="@drawable/ic_widget_trash"
+        android:tint="@color/widget_accent"
+        tools:ignore="UseAppTint"
+        android:contentDescription="@string/widget_action_trash" />
+</LinearLayout>

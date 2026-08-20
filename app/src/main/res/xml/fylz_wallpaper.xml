@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Metadata for io.github.mbaliga.fylz.wallpaper.FylzPondWallpaperService. No
+    android:settingsActivity: v1 ships no settings screen for this wallpaper.
+    android:description is owned by workstream D (strings_widgets.xml), not this file's own
+    strings_wallpaper.xml; only referenced here.
+-->
+<wallpaper xmlns:android="http://schemas.android.com/apk/res/android"
+    android:thumbnail="@drawable/fylz_wallpaper_thumb"
+    android:description="@string/fylz_wallpaper_description" />

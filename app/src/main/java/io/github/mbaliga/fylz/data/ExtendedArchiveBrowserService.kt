@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.data
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -46,10 +47,23 @@ class ExtendedArchiveBrowserService(private val context: Context) {
         require(maxEntries in 1..100_000)
         require(maxDeclaredBytes > 0L)
         require(maxArchiveBytes > 0L)
-        val extension = fileName.lowercase().substringAfterLast('.', "")
+        // Compound-aware, same as the rest of the preview pipeline (FileFormatRegistry.describe(),
+        // PreviewPane/QuickLook's own routing sets): a plain substringAfterLast('.') would reduce
+        // "backup.tar.gz" to the bare "gz" and misroute it into listCompressedStream() below --
+        // reporting one fake entry for the still-compressed inner .tar instead of the tar's real
+        // contents -- exactly the double-extension case compoundExtension() exists to resolve.
+        val extension = FileFormatRegistry.compoundExtension(fileName)
         when (extension) {
             "7z" -> listSevenZip(archiveUri, maxEntries, maxDeclaredBytes, maxArchiveBytes)
-            "gz", "gzip", "bz2", "xz", "zst", "lzma" -> listCompressedStream(
+            // The compound dotted spellings are a TAR archive under one compression layer, not a
+            // lone compressed file -- route them the same as their tgz/tbz/tbz2/txz shorthand
+            // cousins, into listStreamingArchive's TAR + layered-decompression path.
+            // Zstandard (.zst/.tar.zst) is deliberately NOT here: commons-compress's zstd codec
+            // delegates to com.github.luben:zstd-jni, which Fylz does not bundle, so claiming the
+            // extension would fail on every real file. Those fall through to the universal
+            // inspector instead, like RAR.
+            "tar.gz", "tar.bz2", "tar.xz" -> listStreamingArchive(archiveUri, extension, maxEntries, maxDeclaredBytes)
+            "gz", "gzip", "bz2", "xz", "lzma" -> listCompressedStream(
                 archiveUri = archiveUri,
                 fileName = fileName,
                 maxArchiveBytes = maxArchiveBytes,
@@ -108,12 +122,23 @@ class ExtendedArchiveBrowserService(private val context: Context) {
         source.use { raw ->
             BufferedInputStream(raw).use { buffered ->
                 val format = archiveFormat(extension)
+                // "tgz"/"tbz"/"tbz2"/"txz" resolve to the plain TAR format above, but the bytes on
+                // disk are a compressed tar -- ArchiveStreamFactory's string-keyed overload builds
+                // a bare TarArchiveInputStream with no decompression layer, so it would otherwise
+                // choke on the compressed magic bytes instead of the tar header they wrap. Layer
+                // the matching compressor first for exactly those shorthand extensions; every other
+                // extension (plain tar/cpio/ar/arj) is unaffected.
+                val layered = if (extension in COMPRESSED_TAR_EXTENSIONS) {
+                    CompressorStreamFactory().createCompressorInputStream(buffered)
+                } else {
+                    buffered
+                }
                 // createArchiveInputStream's raw generic return type left Kotlin unable to infer
                 // the entry type (cascading into "Cannot infer type" / "Unresolved reference
                 // 'nextEntry'" across this whole block); the explicit cast below is what the
                 // stray @Suppress was originally guarding and had been dropped.
                 @Suppress("UNCHECKED_CAST")
-                val archive = ArchiveStreamFactory().createArchiveInputStream(format, buffered)
+                val archive = ArchiveStreamFactory().createArchiveInputStream(format, layered)
                     as ArchiveInputStream<ArchiveEntry>
                 archive.use { input ->
                     val entries = mutableListOf<Entry>()
@@ -213,7 +238,7 @@ class ExtendedArchiveBrowserService(private val context: Context) {
     }
 
     private fun archiveFormat(extension: String): String = when (extension) {
-        "tar", "tgz", "tbz", "tbz2", "txz" -> ArchiveStreamFactory.TAR
+        "tar", "tgz", "tbz", "tbz2", "txz", "tar.gz", "tar.bz2", "tar.xz" -> ArchiveStreamFactory.TAR
         "cpio" -> ArchiveStreamFactory.CPIO
         "ar" -> ArchiveStreamFactory.AR
         "arj" -> ArchiveStreamFactory.ARJ
@@ -224,5 +249,12 @@ class ExtendedArchiveBrowserService(private val context: Context) {
         const val DEFAULT_MAX_ENTRIES = 20_000
         const val DEFAULT_MAX_DECLARED_BYTES = 20L * 1024L * 1024L * 1024L
         const val DEFAULT_MAX_ARCHIVE_BYTES = 2L * 1024L * 1024L * 1024L
+
+        /** Extensions [archiveFormat] maps to TAR whose bytes are compressed, not raw -- the bare
+         *  shorthands (tgz/tbz/tbz2/txz) and the equivalent dotted compounds (tar.gz/tar.bz2/
+         *  tar.xz) alike. [CompressorStreamFactory.createCompressorInputStream] autodetects
+         *  the specific codec from the stream's own magic bytes, so one layering rule covers all.
+         *  No zstd spellings: the codec needs zstd-jni, which Fylz does not bundle. */
+        private val COMPRESSED_TAR_EXTENSIONS = setOf("tgz", "tbz", "tbz2", "txz", "tar.gz", "tar.bz2", "tar.xz")
     }
 }

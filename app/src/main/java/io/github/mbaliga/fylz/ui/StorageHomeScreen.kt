@@ -48,6 +48,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.storage.StorageAccess
@@ -84,6 +85,11 @@ fun StorageHomeScreen(
     onOpenRemotes: () -> Unit,
     modifier: Modifier = Modifier,
     refreshKey: Int = 0,
+    // The floating chrome (tab band, live-selection row) the outer workspace stacks at its own
+    // Box level -- see FylzV1App.kt's bottomChromeReserve. Zero on this surface in practice (no
+    // tab is open while it shows), threaded through anyway so a future caller that does have
+    // chrome to clear does not need this signature to change again.
+    bottomReserve: Dp = 0.dp,
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
@@ -148,7 +154,7 @@ fun StorageHomeScreen(
         // contentPadding is fixed breathing room below the last row; it does not know about the
         // gesture nav bar's device-dependent inset, which is why the footer below also carries
         // navigationBarsPadding() -- without it the caption clips under the gesture bar.
-        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)) {
+        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp + bottomReserve)) {
             resolvedGroups.forEach { group ->
                 item(key = "header:${group.title}") {
                     Text(

@@ -14,6 +14,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.ArrayDeque
+import java.util.PriorityQueue
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -67,9 +68,10 @@ class StorageScanWorker(
             val volumes = FylzFilesDocumentsProvider.discoverVolumes(applicationContext)
             val totals = HashMap<StorageKind, Long>()
             var truncated = false
+            val topFiles = TopFilesTracker(TOP_FILES_LIMIT)
             volumes.forEach { volume ->
                 coroutineContext.ensureActive()
-                val result = walk(volume.directory)
+                val result = walk(volume, topFiles)
                 result.bytes.forEach { (kind, bytes) -> totals[kind] = (totals[kind] ?: 0L) + bytes }
                 truncated = truncated || result.truncated
             }
@@ -79,6 +81,7 @@ class StorageScanWorker(
                     scannedAtMillis = System.currentTimeMillis(),
                     kindBytes = totals,
                     truncated = truncated,
+                    largestFiles = topFiles.toLargeFileFacts(),
                 ),
             )
             Result.success()
@@ -91,8 +94,10 @@ class StorageScanWorker(
 
     /** Breadth-first, the same shape as [io.github.mbaliga.fylz.index.LocalIndexWorker]'s own
      *  scope walk: a bounded queue rather than recursion, so neither a deep tree nor a wide one
-     *  can blow the stack. */
-    private suspend fun walk(root: File): WalkResult {
+     *  can blow the stack. [topFiles] is shared across every volume's own call to this so the
+     *  largest-files figure is a device-wide top, not reset per volume. */
+    private suspend fun walk(volume: VolumeDescriptor, topFiles: TopFilesTracker): WalkResult {
+        val root = volume.directory
         val facts = ArrayList<ScannedFileFacts>()
         val queue = ArrayDeque<Pair<File, Int>>()
         queue.add(root to 0)
@@ -115,11 +120,9 @@ class StorageScanWorker(
                 if (child.isDirectory) {
                     queue.add(child to depth + 1)
                 } else {
-                    facts += ScannedFileFacts(
-                        name = child.name,
-                        mimeType = mimeTypeOf(child),
-                        sizeBytes = runCatching { child.length() }.getOrDefault(0L),
-                    )
+                    val sizeBytes = runCatching { child.length() }.getOrDefault(0L)
+                    facts += ScannedFileFacts(name = child.name, mimeType = mimeTypeOf(child), sizeBytes = sizeBytes)
+                    topFiles.offer(volume.rootId, root, child, sizeBytes)
                 }
             }
         }
@@ -135,5 +138,52 @@ class StorageScanWorker(
     private companion object {
         const val MAX_DEPTH = 64
         const val MAX_VISITED_ENTRIES = 500_000
+
+        /** How many of the scan's largest files [StorageUsageSnapshot.largestFiles] retains. */
+        const val TOP_FILES_LIMIT = 50
+    }
+}
+
+/**
+ * Bounded top-[limit] largest files seen across the whole scan -- a min-heap keyed on size, so
+ * this never holds more than [limit] candidates in memory regardless of how many files the walk
+ * actually visits. Offering a new candidate once the heap is at capacity evicts the current
+ * smallest kept candidate if the new one is larger, in O(log [limit]).
+ */
+private class TopFilesTracker(private val limit: Int) {
+    private val heap = PriorityQueue<Candidate>(limit + 1, compareBy { it.sizeBytes })
+
+    fun offer(rootId: String, rootDirectory: File, file: File, sizeBytes: Long) {
+        if (sizeBytes <= 0L) return
+        heap.add(Candidate(rootId, rootDirectory, file, sizeBytes))
+        if (heap.size > limit) heap.poll()
+    }
+
+    /** Largest first -- the heap itself has no useful iteration order, so this sorts the (at
+     *  most [limit]) retained candidates once, at the end of the scan, rather than on every offer. */
+    fun toLargeFileFacts(): List<LargeFileFact> = heap
+        .sortedByDescending { it.sizeBytes }
+        .map { candidate ->
+            LargeFileFact(
+                uriString = FylzFilesDocumentsProvider
+                    .documentUri(candidate.rootId, candidate.relativePath())
+                    .toString(),
+                displayName = candidate.file.name,
+                sizeBytes = candidate.sizeBytes,
+            )
+        }
+
+    private data class Candidate(val rootId: String, val rootDirectory: File, val file: File, val sizeBytes: Long) {
+        /** Mirrors [FylzFilesDocumentsProvider]'s own private `documentIdFor` path math -- [file]
+         *  is always inside [rootDirectory] here, since every candidate comes from the walk. */
+        fun relativePath(): String {
+            val rootPath = rootDirectory.absolutePath.trimEnd(File.separatorChar)
+            val path = file.absolutePath
+            return if (path.startsWith("$rootPath${File.separatorChar}")) {
+                path.substring(rootPath.length + 1)
+            } else {
+                path.trimStart(File.separatorChar)
+            }
+        }
     }
 }

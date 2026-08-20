@@ -34,6 +34,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
@@ -107,6 +109,11 @@ fun CommandPill(
     recentSearches: List<String> = emptyList(),
     onRecentSearchSelected: (String) -> Unit = {},
     modifier: Modifier = Modifier,
+    // Additive, optional: null (the default) leaves the field exactly as it was. A caller that
+    // programmatically reveals this field with nothing to focus first (Workstream W's FocusSearch
+    // command -- see FylzV1App.kt) attaches one so the reveal actually lands the keyboard, not
+    // just the field's visibility.
+    focusRequester: FocusRequester? = null,
     trailing: @Composable () -> Unit,
 ) {
     var fieldFocused by remember { mutableStateOf(false) }
@@ -246,7 +253,9 @@ fun CommandPill(
                             fontSize = MaterialTheme.typography.bodyMedium.fontSize,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth().onFocusChanged { fieldFocused = it.isFocused },
+                        modifier = Modifier.fillMaxWidth()
+                            .onFocusChanged { fieldFocused = it.isFocused }
+                            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it },
                     )
                 }
 
