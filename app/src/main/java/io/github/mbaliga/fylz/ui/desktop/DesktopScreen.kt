@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -273,7 +277,12 @@ fun DesktopScreen(
 
     fun addWidget(type: DesktopWidgetType, config: Map<String, String> = emptyMap()) {
         val registration = WidgetRegistry.of(type)
-        val placement = DesktopPolicy.nextFreePlacement(items.map(DesktopItem::placement))
+        // nextFreePlacement finds clear water; snapWidget then pulls the card onto the widget
+        // column grid so a fresh card never pokes off-screen the way a raw cell center can.
+        val placement = DesktopPolicy.snapWidget(
+            DesktopPolicy.nextFreePlacement(items.map(DesktopItem::placement)),
+            DesktopPolicy.widgetWidthFraction(registration.defaultSize),
+        )
         store.upsert(
             DesktopItem.Widget(
                 type = type,
@@ -289,10 +298,23 @@ fun DesktopScreen(
         WallpaperLayer(wallpaperSpec, Modifier.fillMaxSize())
 
         BoxWithConstraints(Modifier.fillMaxSize()) {
+            val viewportWidthDp = maxWidth
             val viewportWidthPx = constraints.maxWidth.toFloat()
-            val viewportHeightPx = constraints.maxHeight.toFloat()
+            // Placements' y is a fraction of the WORLD, not the raw viewport: card heights are
+            // fixed dp, so viewport-fraction rows would collide on short phones and gap on tall
+            // ones. The world is floored at WORLD_MIN_HEIGHT_DP and the surface scrolls over it;
+            // the trailing pad below the world keeps a card parked at clampWidget's y ceiling
+            // fully reachable above the bottom chrome.
+            val worldHeightDp = maxOf(maxHeight, DesktopPolicy.WORLD_MIN_HEIGHT_DP.dp)
+            val worldHeightPx = with(LocalDensity.current) { worldHeightDp.toPx() }
             val maxZ = items.maxOfOrNull { it.placement.z } ?: 0
 
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Box(Modifier.fillMaxWidth().height(worldHeightDp + 260.dp + bottomReserve)) {
             items.forEach { item ->
                 DesktopTile(
                     item = item,
@@ -300,9 +322,9 @@ fun DesktopScreen(
                     arranging = arrangingId == item.id,
                     snapEnabled = snapEnabled,
                     showLabels = showLabels,
-                    viewportWidthDp = maxWidth,
+                    viewportWidthDp = viewportWidthDp,
                     viewportWidthPx = viewportWidthPx,
-                    viewportHeightPx = viewportHeightPx,
+                    viewportHeightPx = worldHeightPx,
                     repository = repository,
                     refreshKey = refreshKey,
                     widgetData = widgetData,
@@ -332,6 +354,8 @@ fun DesktopScreen(
                         if (arrangingId == item.id) arrangingId = null
                     },
                 )
+            }
+                }
             }
         }
 

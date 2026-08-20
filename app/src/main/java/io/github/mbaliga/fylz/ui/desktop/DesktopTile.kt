@@ -76,23 +76,22 @@ private const val SHORTCUT_TILE_WIDTH_DP = 92
 private const val NUDGE_FRACTION = 0.08f
 private const val ARRANGE_SCALE = 1.06f
 private const val ARRANGE_ELEVATION = 10f
-private val WIDGET_UNIT_HEIGHT = 168.dp
 private const val WIDGET_CORNER_DP = 20
 
 /**
- * A widget's dp footprint for its own [DesktopItemSize] -- the mapping is a straightforward,
- * documented choice, not something derived from a widget's own content:
+ * A widget's dp footprint for its own [DesktopItemSize] -- widths come from
+ * [DesktopPolicy.widgetWidthFraction] (the same fractions [DesktopPolicy.clampWidget] keeps on
+ * screen, so the two can never drift), heights are the Build-10 overview card heights those
+ * renderers were designed around:
  *
- * - [DesktopItemSize.SMALL]: ~44% of the viewport's width, one unit tall.
- * - [DesktopItemSize.MEDIUM]: ~44% of the viewport's width, two units tall (a narrow, taller card).
- * - [DesktopItemSize.LARGE]: ~92% of the viewport's width, two units tall (the widest card).
- *
- * [WIDGET_UNIT_HEIGHT] is the one unit both taller sizes are multiples of.
+ * - [DesktopItemSize.SMALL]: compact width, 152dp tall (the Tags card's height).
+ * - [DesktopItemSize.MEDIUM]: compact width, 216dp tall (the Quick-access card's height).
+ * - [DesktopItemSize.LARGE]: full width, 360dp tall (the Storage card's height).
  */
 internal fun desktopWidgetSize(size: DesktopItemSize, viewportWidth: Dp): DpSize = when (size) {
-    DesktopItemSize.SMALL -> DpSize(viewportWidth * 0.44f, WIDGET_UNIT_HEIGHT)
-    DesktopItemSize.MEDIUM -> DpSize(viewportWidth * 0.44f, WIDGET_UNIT_HEIGHT * 2)
-    DesktopItemSize.LARGE -> DpSize(viewportWidth * 0.92f, WIDGET_UNIT_HEIGHT * 2)
+    DesktopItemSize.SMALL -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 152.dp)
+    DesktopItemSize.MEDIUM -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 216.dp)
+    DesktopItemSize.LARGE -> DpSize(viewportWidth * DesktopPolicy.widgetWidthFraction(size), 360.dp)
 }
 
 /** What [DocumentRepository.probe] found for a [DesktopItem.FolderShortcut]/[DesktopItem.FileShortcut]'s
@@ -149,10 +148,17 @@ internal fun DesktopTile(
     var dragOffsetPx by remember(item.id) { mutableStateOf(Offset.Zero) }
     val editingState = rememberUpdatedState(editing)
 
-    fun nudged(dx: Float, dy: Float): TilePlacement {
-        val next = placement.copy(x = placement.x + dx * NUDGE_FRACTION, y = placement.y + dy * NUDGE_FRACTION)
-        return if (snapEnabled) DesktopPolicy.snap(next) else DesktopPolicy.clamp(next)
+    // Widgets settle through clampWidget (width-aware, keeps the whole card on screen); shortcut
+    // tiles keep the canvas safe band their 92dp footprint was tuned for. snap() first either way.
+    fun settled(next: TilePlacement): TilePlacement = if (item is DesktopItem.Widget) {
+        val width = DesktopPolicy.widgetWidthFraction(item.size)
+        if (snapEnabled) DesktopPolicy.snapWidget(next, width) else DesktopPolicy.clampWidget(next, width)
+    } else {
+        if (snapEnabled) DesktopPolicy.snap(next) else DesktopPolicy.clamp(next)
     }
+
+    fun nudged(dx: Float, dy: Float): TilePlacement =
+        settled(placement.copy(x = placement.x + dx * NUDGE_FRACTION, y = placement.y + dy * NUDGE_FRACTION))
 
     val onActivate: () -> Unit = {
         when (item) {
@@ -187,7 +193,7 @@ internal fun DesktopTile(
                             z = placement.z,
                         )
                         dragOffsetPx = Offset.Zero
-                        onCommit(if (snapEnabled) DesktopPolicy.snap(next) else DesktopPolicy.clamp(next))
+                        onCommit(settled(next))
                     } else {
                         dragOffsetPx = Offset.Zero
                     }

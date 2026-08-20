@@ -49,6 +49,7 @@ android {
     }
 
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         unitTests.all {
             // The storage contract suite creates non-ASCII filenames through java.io.File and
             // lists them back. The JVM decodes directory entries with the HOST's locale, so a
@@ -155,6 +156,10 @@ dependencies {
     // class of test; only PdfPagePlanPolicyTest opts in via @RunWith(RobolectricTestRunner::class)
     // -- every other test class keeps running as a fast plain-JVM test.
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

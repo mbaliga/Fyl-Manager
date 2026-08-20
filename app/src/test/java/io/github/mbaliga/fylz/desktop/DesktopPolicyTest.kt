@@ -166,16 +166,28 @@ class DesktopPolicyTest {
     }
 
     @Test
-    fun `defaultSeed places every widget inside the safe band`() {
+    fun `defaultSeed places every widget inside the widget clamp for its own width`() {
+        // Widgets live under clampWidget, not the canvas safe band -- the band's 0.16 left margin
+        // is what used to shove 94%-wide cards off the right edge of the screen.
         val seed = DesktopPolicy.defaultSeed()
-        seed.forEach { item -> assertEquals(item.placement, DesktopPolicy.clamp(item.placement)) }
+        seed.forEach { item ->
+            val widget = item as DesktopItem.Widget
+            val width = DesktopPolicy.widgetWidthFraction(widget.size)
+            assertEquals(item.placement, DesktopPolicy.clampWidget(item.placement, width))
+        }
     }
 
     @Test
-    fun `defaultSeed never overlaps a cell under snap`() {
+    fun `defaultSeed columns land exactly on the widget snap columns`() {
         val seed = DesktopPolicy.defaultSeed()
-        val snappedCells = seed.map { DesktopPolicy.snap(it.placement) }.map { it.x to it.y }
-        assertEquals(seed.size, snappedCells.toSet().size)
+        seed.forEach { item ->
+            val widget = item as DesktopItem.Widget
+            val expected =
+                if (DesktopPolicy.widgetWidthFraction(widget.size) >= DesktopPolicy.WIDGET_WIDTH_FULL) 0.03f
+                else if (widget.placement.x < 0.25f) 0.03f
+                else DesktopPolicy.WIDGET_RIGHT_COLUMN_X
+            assertEquals(expected, widget.placement.x, 0.0001f)
+        }
     }
 
     @Test
@@ -183,5 +195,73 @@ class DesktopPolicyTest {
         val first = DesktopPolicy.defaultSeed()
         val second = DesktopPolicy.defaultSeed()
         assertEquals(first, second)
+    }
+
+    // ── clampWidget / snapWidget (width-aware widget geometry) ────────────────────────
+
+    @Test
+    fun `clampWidget keeps a full-width card fully on screen`() {
+        val p = DesktopPolicy.clampWidget(TilePlacement(0.6f, 0.5f, 0), DesktopPolicy.WIDGET_WIDTH_FULL)
+        assertEquals(0.03f, p.x, 0.0001f)
+        assertTrue(p.x + DesktopPolicy.WIDGET_WIDTH_FULL <= 0.98f)
+    }
+
+    @Test
+    fun `clampWidget lets a compact card reach both columns but never off-screen`() {
+        val w = DesktopPolicy.WIDGET_WIDTH_COMPACT
+        val left = DesktopPolicy.clampWidget(TilePlacement(-0.2f, 0.5f, 0), w)
+        val right = DesktopPolicy.clampWidget(TilePlacement(0.95f, 0.5f, 0), w)
+        assertEquals(0.03f, left.x, 0.0001f)
+        assertTrue(right.x + w <= 0.98f)
+    }
+
+    @Test
+    fun `snapWidget lands a compact card on exactly the left or right column`() {
+        val w = DesktopPolicy.WIDGET_WIDTH_COMPACT
+        val left = DesktopPolicy.snapWidget(TilePlacement(0.20f, 0.5f, 0), w)
+        val right = DesktopPolicy.snapWidget(TilePlacement(0.40f, 0.5f, 0), w)
+        assertEquals(0.03f, left.x, 0.0001f)
+        assertEquals(DesktopPolicy.WIDGET_RIGHT_COLUMN_X, right.x, 0.0001f)
+    }
+
+    @Test
+    fun `snapWidget pins a full-width card to the left gutter no matter the drag`() {
+        val p = DesktopPolicy.snapWidget(TilePlacement(0.88f, 0.5f, 3), DesktopPolicy.WIDGET_WIDTH_FULL)
+        assertEquals(0.03f, p.x, 0.0001f)
+        assertEquals(3, p.z)
+    }
+
+    @Test
+    fun `defaultSeed cards never overlap at real card sizes on the minimum world`() {
+        // The regression the Build-11 render pass caught: cell-spaced placements stacked
+        // 46-94%-wide cards into one mass. Re-derive every card's dp rectangle exactly the way
+        // DesktopTile does (widths from widgetWidthFraction, heights 152/216/360) on a 440dp-wide
+        // viewport over the WORLD_MIN_HEIGHT_DP world, and require pairwise disjointness.
+        val viewportWidth = 440f
+        val world = DesktopPolicy.WORLD_MIN_HEIGHT_DP.toFloat()
+        fun heightDp(size: DesktopItemSize) = when (size) {
+            DesktopItemSize.SMALL -> 152f
+            DesktopItemSize.MEDIUM -> 216f
+            DesktopItemSize.LARGE -> 360f
+        }
+        data class R(val l: Float, val t: Float, val r: Float, val b: Float)
+        val rects = DesktopPolicy.defaultSeed().map { item ->
+            val widget = item as DesktopItem.Widget
+            val leftPx = widget.placement.x * viewportWidth
+            val topPx = widget.placement.y * world
+            R(
+                l = leftPx,
+                t = topPx,
+                r = leftPx + DesktopPolicy.widgetWidthFraction(widget.size) * viewportWidth,
+                b = topPx + heightDp(widget.size),
+            )
+        }
+        for (i in rects.indices) for (j in i + 1 until rects.size) {
+            val a = rects[i]; val b = rects[j]
+            val overlaps = a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b
+            assertTrue("seed cards $i and $j overlap: $a vs $b", !overlaps)
+        }
+        // And the whole layout stays inside the world with a bottom margin to spare.
+        assertTrue(rects.all { it.b <= world })
     }
 }

@@ -18,6 +18,55 @@ object DesktopPolicy {
     /** How many items the desktop ever holds at once, mirrored by [DesktopStore]'s own cap. */
     const val MAX_ITEMS = 64
 
+    /**
+     * Widget card widths as fractions of the viewport width, and the vertical WORLD the desktop
+     * scrolls over. Placement x/y are fractions of (viewport width x world height) -- the world is
+     * never shorter than [WORLD_MIN_HEIGHT_DP], so the default layout below fits every phone
+     * without overlap (card HEIGHTS are fixed dp; if y were a fraction of the raw viewport, the
+     * same fractions would collide on a short screen and leave gaps on a tall one).
+     */
+    const val WIDGET_WIDTH_COMPACT = 0.46f
+    const val WIDGET_WIDTH_FULL = 0.94f
+    const val WORLD_MIN_HEIGHT_DP = 1600
+
+    fun widgetWidthFraction(size: DesktopItemSize): Float = when (size) {
+        DesktopItemSize.SMALL, DesktopItemSize.MEDIUM -> WIDGET_WIDTH_COMPACT
+        DesktopItemSize.LARGE -> WIDGET_WIDTH_FULL
+    }
+
+    /**
+     * [clamp] for a WIDGET card: the canvas safe band was tuned for 92dp shortcut tiles and would
+     * shove a 46-94%-wide card so far right it clips off-screen. A widget instead keeps its whole
+     * width on screen: x in [0.03, 0.97 - width] (full-width cards can only move vertically), y
+     * anywhere in the scrollable world short of its very bottom edge.
+     */
+    fun clampWidget(p: TilePlacement, widthFraction: Float): TilePlacement {
+        val maxX = (0.97f - widthFraction).coerceAtLeast(EDGE_GUTTER_X)
+        return TilePlacement(
+            x = p.x.coerceIn(EDGE_GUTTER_X, maxX),
+            y = p.y.coerceIn(0.01f, 0.92f),
+            z = p.z,
+        )
+    }
+
+    /**
+     * [snap] for a WIDGET card. The shortcut grid's cell centers run through the canvas clamp,
+     * which shoves anything left of the canvas band to x~0.16 -- useless for cards that live in a
+     * two-column layout. A compact widget snaps to the left/right column ([EDGE_GUTTER_X] / 0.51),
+     * a full-width one only to the left gutter; rows quantize on the same 14-row grid as [snap].
+     */
+    fun snapWidget(p: TilePlacement, widthFraction: Float): TilePlacement {
+        val columns =
+            if (widthFraction >= WIDGET_WIDTH_FULL) floatArrayOf(EDGE_GUTTER_X)
+            else floatArrayOf(EDGE_GUTTER_X, WIDGET_RIGHT_COLUMN_X)
+        val x = columns.minByOrNull { abs(it - p.x) } ?: EDGE_GUTTER_X
+        val y = cellCenter(cellIndex(p.y, GRID_ROWS), GRID_ROWS)
+        return clampWidget(TilePlacement(x = x, y = y, z = p.z), widthFraction)
+    }
+
+    const val WIDGET_RIGHT_COLUMN_X = 0.51f
+
+    private const val EDGE_GUTTER_X = 0.03f
     private const val GRID_COLUMNS = 8
     private const val GRID_ROWS = 14
 
@@ -58,36 +107,47 @@ object DesktopPolicy {
     }
 
     /**
-     * The Build-10 landing overview, translated one card at a time into desktop widgets and laid
-     * out with [nextFreePlacement] itself -- no randomness, and every placement lands on a distinct
-     * grid cell by construction, so nothing here can ever overlap under [snap].
+     * The Build-10 landing overview, translated one card at a time into desktop widgets with
+     * EXPLICIT hand-laid placements -- no randomness. [nextFreePlacement] cannot lay this out: it
+     * spaces items one grid CELL apart, and these cards are 46-94% of the viewport wide, so
+     * cell-spacing stacks them into one overlapping mass (caught by the Build-11 render pass).
+     * The y fractions below are of the [WORLD_MIN_HEIGHT_DP]-floored scrollable world, computed
+     * against the fixed card heights (360/216/152dp -- see DesktopTile's desktopWidgetSize), each
+     * row leaving clear water beneath the one above:
+     *
+     *   y=0.015  Storage        (full width, 360dp)   ..~408dp
+     *   y=0.265  Deleted files  (full width, 360dp)   ..~784dp
+     *   y=0.505  Quick access | Recents   (216dp)     ..~1024dp
+     *   y=0.665  Pinned       | Quick actions (216/152dp) ..~1280dp
+     *   y=0.810  Tags         | Shelf     (152dp)     ..~1448dp
      */
     fun defaultSeed(): List<DesktopItem> {
+        val leftX = EDGE_GUTTER_X
+        val rightX = 0.51f
         val specs = listOf(
-            SeedSpec("seed-storage", DesktopWidgetType.STORAGE, DesktopItemSize.LARGE),
+            SeedSpec("seed-storage", DesktopWidgetType.STORAGE, DesktopItemSize.LARGE, x = leftX, y = 0.015f),
             SeedSpec(
                 "seed-quick-access",
                 DesktopWidgetType.QUICK_ACCESS,
                 DesktopItemSize.MEDIUM,
-                mapOf("target" to "downloads"),
+                config = mapOf("target" to "downloads"),
+                x = leftX,
+                y = 0.505f,
             ),
-            SeedSpec("seed-recycle-bin", DesktopWidgetType.RECYCLE_BIN, DesktopItemSize.MEDIUM),
-            SeedSpec("seed-pinned", DesktopWidgetType.PINNED, DesktopItemSize.MEDIUM),
-            SeedSpec("seed-tags", DesktopWidgetType.TAGS, DesktopItemSize.SMALL),
-            SeedSpec("seed-shelf", DesktopWidgetType.SHELF, DesktopItemSize.SMALL),
-            SeedSpec("seed-recents", DesktopWidgetType.RECENTS, DesktopItemSize.MEDIUM),
-            SeedSpec("seed-quick-actions", DesktopWidgetType.QUICK_ACTIONS, DesktopItemSize.SMALL),
+            SeedSpec("seed-recycle-bin", DesktopWidgetType.RECYCLE_BIN, DesktopItemSize.LARGE, x = leftX, y = 0.265f),
+            SeedSpec("seed-pinned", DesktopWidgetType.PINNED, DesktopItemSize.MEDIUM, x = leftX, y = 0.665f),
+            SeedSpec("seed-tags", DesktopWidgetType.TAGS, DesktopItemSize.SMALL, x = leftX, y = 0.810f),
+            SeedSpec("seed-shelf", DesktopWidgetType.SHELF, DesktopItemSize.SMALL, x = rightX, y = 0.810f),
+            SeedSpec("seed-recents", DesktopWidgetType.RECENTS, DesktopItemSize.MEDIUM, x = rightX, y = 0.505f),
+            SeedSpec("seed-quick-actions", DesktopWidgetType.QUICK_ACTIONS, DesktopItemSize.SMALL, x = rightX, y = 0.665f),
         )
-        val placements = mutableListOf<TilePlacement>()
-        return specs.map { spec ->
-            val placement = nextFreePlacement(placements)
-            placements += placement
+        return specs.mapIndexed { index, spec ->
             DesktopItem.Widget(
                 id = spec.id,
                 type = spec.type,
                 size = spec.size,
                 config = spec.config,
-                placement = placement,
+                placement = TilePlacement(x = spec.x, y = spec.y, z = index),
             )
         }
     }
@@ -110,5 +170,7 @@ object DesktopPolicy {
         val type: DesktopWidgetType,
         val size: DesktopItemSize,
         val config: Map<String, String> = emptyMap(),
+        val x: Float,
+        val y: Float,
     )
 }
