@@ -52,7 +52,6 @@ import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Inventory2
-import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
@@ -786,7 +785,6 @@ private fun FylzV1Workspace(
     // Tags card alike, neither of which requires a folder tab to be open (unlike the folder-
     // scoped query box), so results are read straight off LibraryStore rather than routed
     // through the query pipeline.
-    var tagBrowserOpen by remember { mutableStateOf(false) }
     var tagResultsFor by remember { mutableStateOf<String?>(null) }
     var tagResults by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     var batchRenameDialog by remember { mutableStateOf(false) }
@@ -895,7 +893,6 @@ private fun FylzV1Workspace(
      *  the source) and probes every item carrying [tag], device-wide -- LibraryStore's own reverse
      *  scan, not the folder-scoped query pipeline, since this is reachable with no folder tab open. */
     fun openTagResults(tag: String) {
-        tagBrowserOpen = false
         tagResultsFor = tag
         scope.launch {
             tagResults = library.itemsWithTag(tag).mapNotNull { uri -> repository.probe(uri) }
@@ -2171,9 +2168,13 @@ private fun FylzV1Workspace(
                         shell.closeAll()
                         settingsOpen = true
                     },
-                    onOpenTags = {
+                    allTags = allTagsMap,
+                    // Tapping a tag inside the room closes the room and opens its results, the
+                    // same destination the browser's own tag chips reach. The room does not need
+                    // to know that openTagResults is device-wide; it just hands over the name.
+                    onTagSelected = { tag ->
                         shell.closeAll()
-                        tagBrowserOpen = true
+                        openTagResults(tag)
                     },
                 )
             }
@@ -3089,13 +3090,6 @@ private fun FylzV1Workspace(
         )
     }
 
-    if (tagBrowserOpen) {
-        TagBrowserDialog(
-            tags = allTagsMap,
-            onTagSelected = ::openTagResults,
-            onDismiss = { tagBrowserOpen = false },
-        )
-    }
 
     tagResultsFor?.let { tag ->
         TagResultsDialog(
@@ -4920,18 +4914,6 @@ private fun TagDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String
     )
 }
 
-/** Every known tag with its count, in one dialog -- the browse-and-filter surface the owner asked
- *  for ("no way to see what tags exist, no way to browse or filter by one") and reachable with no
- *  folder tab open, unlike the query box [TagBrowser]'s own tap target would otherwise feed. */
-@Composable
-private fun TagBrowserDialog(tags: Map<String, Int>, onTagSelected: (String) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Tags") },
-        text = { TagBrowser(tags = tags, onTagSelected = onTagSelected, modifier = Modifier.heightIn(max = 420.dp)) },
-        confirmButton = { TactileButton(text = "Close", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
-    )
-}
 
 /** Every item carrying [tag], device-wide -- [LibraryStore.itemsWithTag] probed through the same
  *  repository every other listing here reads, since there is no folder tab this could otherwise
@@ -5117,8 +5099,12 @@ private fun LocationsRoom(
     onAdd: () -> Unit,
     onOpenFolder: (List<FolderLocation>) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenTags: () -> Unit,
+    allTags: Map<String, Int>,
+    onTagSelected: (String) -> Unit,
 ) {
+    // Which non-tab destination the wheel is resting on. Local to the room: it is a view of this
+    // room, not app state, and it clears the moment the wheel settles on anything else.
+    var showTags by remember { mutableStateOf(false) }
     val items = remember(tabs) {
         buildList {
             add(WheelItem(HOME_WHEEL_ID, "Home"))
@@ -5145,10 +5131,17 @@ private fun LocationsRoom(
             selectedId = activeTabId ?: HOME_WHEEL_ID,
             onSelect = { id ->
                 when (id) {
-                    HOME_WHEEL_ID -> onOpenHome()
-                    TAGS_WHEEL_ID -> onOpenTags()
-                    ADD_WHEEL_ID -> onAdd()
-                    else -> onSelect(id)
+                    HOME_WHEEL_ID -> { showTags = false; onOpenHome() }
+                    // NOT onOpenTags(): WordWheelRail fires onSelect when a turn SETTLES on a row,
+                    // not only when one is tapped (its own KDoc says so), which is what makes
+                    // scrolling to a tab switch to it. A row that popped a modal would therefore
+                    // open a dialog every time the wheel happened to rest on Tags on its way
+                    // somewhere else. Settling here just shows the tag list in this room's own
+                    // body, exactly the way settling on a folder tab shows that tab's tree --
+                    // harmless to land on, and a real place rather than a dialog once you do.
+                    TAGS_WHEEL_ID -> showTags = true
+                    ADD_WHEEL_ID -> { showTags = false; onAdd() }
+                    else -> { showTags = false; onSelect(id) }
                 }
             },
             inkColor = MaterialTheme.colorScheme.onSurface,
@@ -5168,9 +5161,17 @@ private fun LocationsRoom(
             },
         )
 
-        // The structure under whichever location is open, below the quick links rather than
-        // beside them: the wheel answers "which location", the tree answers "where in it".
-        if (activeTab != null) {
+        if (showTags) {
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            RoomHeading("Tags")
+            TagBrowser(
+                tags = allTags,
+                onTagSelected = onTagSelected,
+                modifier = Modifier.weight(1f),
+            )
+        } else if (activeTab != null) {
+            // The structure under whichever location is open, below the quick links rather than
+            // beside them: the wheel answers "which location", the tree answers "where in it".
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text(
                 "FOLDERS",

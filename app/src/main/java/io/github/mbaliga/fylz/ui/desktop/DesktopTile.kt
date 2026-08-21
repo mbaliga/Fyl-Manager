@@ -509,32 +509,27 @@ private fun WidgetTileContent(
     // second, identically-coloured surface underneath it was pure Z-fighting (this composable's
     // own KDoc point 1).
     //
-    // heightIn(min = ...), not size(...): OverviewCardSurface is a Material3 Surface, which clips
-    // to its own shape, wrapping a plain top-anchored Column. Given an EXACT height, a Column hands
-    // each successive child `remaining` space and zero once that runs out, so a card whose content
-    // outgrows its registration loses its LAST children silently -- the Storage card's two CTAs,
-    // the Large files card's "As of" line, the Deleted files card's retention sentence. That is
-    // reachable at the shipped constants, not just in theory: several registrations sit within
-    // 0-4dp of their own content at fontScale 1.0 (see WidgetRegistry.height's own KDoc for the
-    // measured table), so any accessibility font scale, a wrapped title or a third disclaimer line
-    // amputates a control the user is meant to press. A minimum keeps the reserved footprint the
-    // desktop grid is laid out against (io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed's
-    // hand-laid y values, and the exact-16dp gutters DesktopPolicyTest pins, are derived from these
-    // same constants) while letting a card that genuinely needs more room take it. Overflowing into
-    // the 16dp gutter below is a visible, self-explaining crowding; a button cut off at the card
-    // edge is not. It is not a cure-all: a card whose own body sits in a `Modifier.weight(1f)`
-    // child (Shelf, Quick access) is measured at exactly its share whatever the card is allowed to
-    // grow to, so the floor never reaches it -- see WidgetRegistry.height's KDoc for which two.
+    // size(), NOT heightIn(min = ...). Relaxing the maximum here looks like the obvious cure for
+    // a card whose content outgrows its registration, and it is not: heightIn leaves maxHeight as
+    // whatever the parent offers, and every one of these cards is an OverviewCardSurface whose
+    // body is a `Column(Modifier.fillMaxSize())` (ui/overview/OverviewCards.kt). fillMaxSize takes
+    // the MAXIMUM, and the parent here is the desktop's own world Box -- so a relaxed card does not
+    // grow to its content, it grows to the entire scrollable world. A render of the seeded desktop
+    // with that relaxation shows DELETED_FILES standing roughly 700dp tall around 120dp of content,
+    // with the RECENTS tile overlapping inside it.
     //
-    // width(), not fillMaxWidth(): the card must keep the exact column width
-    // DesktopPolicy.clampWidget/snapWidget keep on screen, not whatever the world Box offers.
-    Box(Modifier.width(size.width).heightIn(min = size.height)) {
+    // Tiles are absolutely positioned from DesktopPolicy.defaultSeed's hand-laid y values, and
+    // DesktopPolicyTest pins the resulting 16dp gutters, so an exact height is what the layout is
+    // built on. A card that does not fit its registration is a WidgetRegistry.height that is wrong
+    // and must be corrected there -- where the number is declared, derived from what the renderer
+    // actually draws -- not worked around by letting every tile size itself.
+    Box(Modifier.size(size.width, size.height)) {
         DesktopWidgetContent(
             item = item,
             data = widgetData,
             quickAccess = quickAccess,
             callbacks = callbacks,
-            modifier = Modifier.width(size.width).heightIn(min = size.height),
+            modifier = Modifier.size(size.width, size.height),
         )
     }
 }
