@@ -56,6 +56,13 @@ import io.github.mbaliga.fylz.ui.components.CommandPill
 import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
 import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
 import io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import io.github.mbaliga.fylz.ui.components.NotchedCardShape
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
@@ -315,6 +322,38 @@ class TactileKitSheetRender {
             )
         }
         snap("b12-search-band-empty.png")
+    }
+
+    /** The Quick Look silhouette the owner called "messed up": a rounded card with a rail notch
+     *  bitten out of the top-left and a close notch out of the bottom-right, at the sizes it is
+     *  actually drawn. Filled solid and outlined so the cut geometry is unambiguous. */
+    @Test
+    fun notchedCardShapes() {
+        setThemedContent(ThemeMode.LIGHT) {
+            Column(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                listOf(3 to 1, 5 to 1, 5 to 3, 2 to 1).forEach { (rail, close) ->
+                    Caption("rail=" + rail + " close=" + close)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .clip(NotchedCardShape(railSlots = rail, closeSlots = close))
+                            .background(Color(0xFF2C2C34)),
+                    )
+                }
+                Caption("docked size 132x96")
+                Box(
+                    Modifier
+                        .size(width = 132.dp, height = 96.dp)
+                        .clip(NotchedCardShape(railSlots = 3, closeSlots = 1))
+                        .background(Color(0xFF2C2C34)),
+                )
+            }
+        }
+        snap("b12-notched-card-shapes.png")
     }
 
     /** A single toggle and a single field blown up on their own, for corner-level inspection of
