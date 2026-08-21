@@ -47,6 +47,15 @@ import io.github.mbaliga.fylz.ui.tactile.TactileSlider
 import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import io.github.mbaliga.fylz.ui.tactile.TactileToggle
 import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.LaunchedEffect
+import dev.aarso.search.ChipKind
+import dev.aarso.search.QueryChip
+import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
+import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
+import io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
@@ -220,6 +229,92 @@ class TactileKitSheetRender {
             }
         }
         snap("kit-settings-rhythm-light.png")
+    }
+
+    /**
+     * THE Build-12 regression scene. The owner's recording showed a revealed search band that had
+     * been force-sized to a fixed 88dp while the pill inside it measures roughly 180-200dp with a
+     * live query -- so the scope toggle floated alone and the field itself, the box holding the
+     * query that was hiding every file, was clipped clean off the screen.
+     *
+     * Latched open with a live query and parsed chips: every row of the pill must be on screen,
+     * ending with the input field, above an untouched listing.
+     */
+    @Test
+    fun searchBandRevealedWithLiveQuery() {
+        setThemedContent(ThemeMode.LIGHT) {
+            val state = rememberPullDownSearchState(revealHeight = CommandPillSearchHeight)
+            LaunchedEffect(Unit) { state.reveal() }
+            PullDownSearchHost(
+                listAtTop = true,
+                revealHeight = CommandPillSearchHeight,
+                state = state,
+                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                searchField = {
+                    CommandPill(
+                        query = "pass kind:pdf",
+                        onQueryChange = {},
+                        canNavigateUp = true,
+                        onNavigateUp = {},
+                        searchRecursive = true,
+                        onSearchRecursiveChange = {},
+                        searchBusy = true,
+                        chips = listOf(
+                            // Canonical text, exactly what QueryCompiler.chipsFor emits: a FACET
+                            // chip carries the whole "key:value" in `text` (chipLabel splits on
+                            // the colon to humanise it), with `key` alongside for routing.
+                            QueryChip("pass", ChipKind.TERM),
+                            QueryChip("kind:pdf", ChipKind.FACET, key = "kind"),
+                        ),
+                        onRemoveChip = {},
+                        trailing = {},
+                    )
+                },
+                content = { listModifier ->
+                    LazyColumn(listModifier) {
+                        items(List(12) { "Result row " + (it + 1) }) { row ->
+                            Text(row, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp))
+                        }
+                    }
+                },
+            )
+        }
+        snap("b12-search-band-live-query.png")
+    }
+
+    /** The same band with an empty box -- the short state, which must not leave a gap. */
+    @Test
+    fun searchBandRevealedEmpty() {
+        setThemedContent(ThemeMode.LIGHT) {
+            val state = rememberPullDownSearchState(revealHeight = CommandPillSearchHeight)
+            LaunchedEffect(Unit) { state.reveal() }
+            PullDownSearchHost(
+                listAtTop = true,
+                revealHeight = CommandPillSearchHeight,
+                state = state,
+                modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                searchField = {
+                    CommandPill(
+                        query = "",
+                        onQueryChange = {},
+                        canNavigateUp = true,
+                        onNavigateUp = {},
+                        searchRecursive = false,
+                        onSearchRecursiveChange = {},
+                        searchBusy = false,
+                        trailing = {},
+                    )
+                },
+                content = { listModifier ->
+                    LazyColumn(listModifier) {
+                        items(List(12) { "Result row " + (it + 1) }) { row ->
+                            Text(row, Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp))
+                        }
+                    }
+                },
+            )
+        }
+        snap("b12-search-band-empty.png")
     }
 
     /** A single toggle and a single field blown up on their own, for corner-level inspection of

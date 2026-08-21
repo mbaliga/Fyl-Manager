@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.ui.search
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -12,13 +13,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -152,9 +158,10 @@ internal class PullDownGesture(
     }
 }
 
-/** Where the search field settles once fully revealed, absent a caller measuring its own. Matches
- *  the browser's existing search surface height so a caller that has not built a bespoke field yet
- *  still gets a sane default. */
+/** How far a drag must travel to fully reveal the field, absent a caller with its own figure --
+ *  a pull distance, not a height. [PullDownSearchHost] measures whatever field it was handed and
+ *  draws its band to that; this only decides how much finger it takes to get there. Matches the browser's plain search-bar height so the default still reads
+ *  as roughly "one field's worth of pull" to a caller that has not tuned it. */
 val PullDownSearchDefaultHeight: Dp = 56.dp
 
 /**
@@ -217,9 +224,13 @@ class PullDownSearchState internal constructor(
     }
 }
 
-/** Builds and remembers a [PullDownSearchState] sized to [revealHeight]. Recreated if [revealHeight]
- *  or the display density changes, which loses an in-flight pull — an acceptable trade for a change
- *  that only happens on rotation or a font-scale/density shift, neither of which fires mid-gesture. */
+/** Builds and remembers a [PullDownSearchState] whose pull latches after [revealHeight] of finger
+ *  travel. Recreated if [revealHeight] or the display density changes, which loses an in-flight
+ *  pull — an acceptable trade for a change that only happens on rotation or a font-scale/density
+ *  shift, neither of which fires mid-gesture. That is the whole reason [revealHeight] is a pull
+ *  distance and not the revealed field's height: the field's height moves whenever its content
+ *  does (a query going live, a chip parsed) and this key must not move with it. [PullDownSearchHost]
+ *  measures the field separately for what the band draws. */
 @Composable
 fun rememberPullDownSearchState(revealHeight: Dp = PullDownSearchDefaultHeight): PullDownSearchState {
     val density = LocalDensity.current
@@ -287,6 +298,16 @@ internal fun rememberPullDownSearchConnection(
  * live [PullDownSearchState] so it can key its own entrance on [PullDownSearchState.revealFraction]
  * and call [PullDownSearchState.collapse] from its own close affordance, if it has one.
  *
+ * **The band clips [searchField]; it never sizes it.** The field's own height is whatever it
+ * measures to, and for the browser's command pill that is state-dependent — a live query grows it
+ * a scope toggle, the parser's chips, the syntax hint and a diagnostic line, near tripling it. The
+ * band measures the field unbounded and draws to that, bottom-anchored, clipped only while a pull
+ * is still short of full reveal. [revealHeight] is the pull *distance*, so the reveal completes
+ * after the same finger travel whatever the field contains, and a field taller than that distance
+ * opens faster than the finger moves. That is the trade taken deliberately: the drag it takes to
+ * open search stays the same everywhere, rather than a field with a live query in it demanding a
+ * longer pull than an empty one.
+ *
  * This is the first `nestedScroll` connection in the repo — there is no `PullToRefresh` or
  * `overscroll` precedent here to follow, so the accumulate/threshold/latch split behind it
  * ([PullDownGesture]) is the pattern going forward, not a one-off.
@@ -325,6 +346,10 @@ internal fun rememberPullDownSearchConnection(
  *   Deliberately a plain `Boolean` rather than a `LazyListState` this file would have to know how
  *   to read: GRID's `LazyGridState` and CliListing's `LazyListState` compute "at top" differently,
  *   and this host has no business caring which.
+ * @param revealHeight how far a downward drag travels before the reveal is complete and a release
+ *   latches it open — finger travel, not the field's height. Keep it a constant: it keys the
+ *   gesture through [rememberPullDownSearchState], so a value derived from anything that moves
+ *   while the field is open would rebuild the gesture mid-pull.
  */
 @Composable
 fun PullDownSearchHost(
@@ -339,14 +364,42 @@ fun PullDownSearchHost(
     val connection = rememberPullDownSearchConnection(state) { currentListAtTop.value }
     val density = LocalDensity.current
 
+    // Two numbers, deliberately kept apart. [revealHeight] is finger travel: the distance that
+    // latches, and the gesture's own `remember` key. This is what the band draws at rest, measured
+    // off the field. Deriving the first from the second is the tempting one-liner and the wrong
+    // one -- it would rebuild the gesture on precisely the events that fire while a field is open
+    // (a keystroke, the parser returning a chip) and drop a live pull. Nothing measured here
+    // reaches [PullDownGesture], the [Animatable] or [PullDownSearchState]: a field that grows
+    // mid-pull moves the band and leaves `pulledPx` and the latch untouched.
+    var fieldHeightPx by remember { mutableIntStateOf(with(density) { revealHeight.roundToPx() }) }
+    val bandRestPx by animateFloatAsState(
+        targetValue = fieldHeightPx.toFloat(),
+        animationSpec = FylzMotion.settle,
+        label = "pull-down-band-rest",
+    )
+
     Column(modifier.fillMaxSize()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(revealHeight * state.revealFraction + with(density) { state.overpull.toDp() })
+                .height(with(density) { (bandRestPx * state.revealFraction + state.overpull).toDp() })
                 .clipToBounds(),
         ) {
-            Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(revealHeight)) {
+            // Unbounded on purpose, and [onSizeChanged] stays *inside* that wrap -- read from
+            // outside it, the measurement is the band's own height handed back and the field is
+            // sized by the thing that is supposed to be following it. A Column handed less room
+            // than it needs does not overflow: it gives each child the remainder and coerces a
+            // fixed `height` down into whatever is left, so a field measured last inside a fixed
+            // band came out a few dp tall -- or nothing at all -- in every state but the empty
+            // one. Bottom-anchored, so what a band still short of full reveal hides is the rows
+            // above the field, never the box being typed into.
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .wrapContentHeight(Alignment.Bottom, unbounded = true)
+                    .onSizeChanged { fieldHeightPx = it.height },
+            ) {
                 searchField(state)
             }
         }

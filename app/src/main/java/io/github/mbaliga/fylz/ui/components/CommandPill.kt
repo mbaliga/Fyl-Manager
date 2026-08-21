@@ -60,15 +60,28 @@ import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 
 /**
- * How much vertical room the search surface claims when it is showing, for a listing that wants
- * to reserve content padding beneath it.
+ * How far a downward drag must travel to reveal the search surface -- the pull distance that
+ * latches [io.github.mbaliga.fylz.ui.search.PullDownSearchHost]'s band open. **Not a height this
+ * pill is ever drawn at**, despite the name, which predates the pill growing state-dependent rows
+ * and should be read as `CommandPillRevealDistance` (renaming it means touching `FylzV1App.kt`,
+ * which this change does not own).
  *
- * This used to cover the pill's tab strip too; the tabs are [io.github.mbaliga.fylz.ui.chrome.TabBand]
- * now, with their own [io.github.mbaliga.fylz.ui.chrome.TabBandHeight], and a live selection adds
- * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight] on top of that -- three independent
- * heights instead of one blanket constant, because the pill itself is no longer a permanent
- * fixture a listing must always clear. A caller reserves whichever of the three is actually
- * mounted, not all three unconditionally.
+ * The distinction is the whole defect it was in: [CommandPill] has no single height. A live query
+ * adds the scope toggle, the parser's chips, the syntax hint and a diagnostic line, and the hint
+ * wraps to two lines on a narrow frame or at a raised font scale -- from 80dp empty to past 240dp
+ * with all of it showing. Imposing this constant on it as a height did not overflow the extra
+ * rows, it starved them: a Column short of room hands each child the remainder and coerces a
+ * fixed `height` into whatever is left, and the field is the last child in every state, so it was
+ * the one measured at nothing. The host measures the pill instead and draws its band to that.
+ *
+ * Kept a constant rather than derived from that measurement because it keys the gesture
+ * ([io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState]): a value that moved when the
+ * pill grew would rebuild the gesture on a keystroke and drop a live pull.
+ *
+ * It is not a figure any listing reserves. Bottom chrome is what a listing must clear -- the tab
+ * band's own [io.github.mbaliga.fylz.ui.chrome.TabBandHeight] always, plus
+ * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight] while a selection is live -- and the
+ * revealed band is not bottom chrome; see [listingPaddingFor].
  */
 val CommandPillSearchHeight: Dp = 88.dp
 
@@ -339,8 +352,13 @@ fun CommandPill(
  *
  * [reserve] defaults to [io.github.mbaliga.fylz.ui.chrome.TabBandHeight] alone -- the tab band is
  * the one piece of bottom chrome that's always present. A caller with a live selection (adding
- * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight]) or a revealed search field (adding
- * [CommandPillSearchHeight]) passes the taller sum explicitly rather than relying on this default.
+ * [io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight]) passes the taller sum explicitly rather
+ * than relying on this default.
+ *
+ * A revealed search field is deliberately *not* in that sum, this KDoc having once said it was:
+ * [io.github.mbaliga.fylz.ui.search.PullDownSearchHost] is a Column and its band takes real space
+ * above the listing rather than floating over it, so the band already shortens the listing and
+ * adding [CommandPillSearchHeight] here would reserve a second time, at the wrong end.
  */
 fun listingPaddingFor(base: Dp, reserve: Dp = TabBandHeight): PaddingValues =
     PaddingValues(start = base, top = base, end = base, bottom = base + reserve)

@@ -28,14 +28,22 @@ import io.github.mbaliga.fylz.ui.overview.TagsCard
  * so [DesktopTile] resolves it itself, once per widget instance, and hands the result to
  * [DesktopWidgetContent] as [QuickAccessResolution] rather than this shared holder trying to
  * carry a map keyed by every quick-access widget's own id.
+ *
+ * The four card models are non-null and have no defaults on purpose. They used to be nullable with
+ * a `?:` stand-in at each dispatch below, and every one of those stand-ins was a fabricated fact:
+ * a Deleted-files card reading "0" and "0 B recoverable" for a bin nobody had counted, a Storage
+ * card showing the "grant access" lock on a device that had granted it, an empty Tags/Pinned list
+ * standing in for "not read yet". [DesktopScreen] gathers all four before it composes a single
+ * tile, so nothing was ever gained by tolerating their absence -- requiring them here is what makes
+ * "absent beats invented" a compile error rather than a rule to remember.
  */
 data class DesktopWidgetData(
     val nowMillis: Long,
-    val storage: OverviewCard.Storage? = null,
+    val storage: OverviewCard.Storage,
+    val recycleBin: OverviewCard.DeletedFiles,
+    val tags: OverviewCard.Tags,
+    val pinned: OverviewCard.Pinned,
     val onRefreshStorage: () -> Unit = {},
-    val recycleBin: OverviewCard.DeletedFiles? = null,
-    val tags: OverviewCard.Tags? = null,
-    val pinned: OverviewCard.Pinned? = null,
     val shelfCount: Int = 0,
     val shelfPreviewNames: List<String> = emptyList(),
     val recents: List<RecentOpen> = emptyList(),
@@ -69,7 +77,7 @@ internal fun DesktopWidgetContent(
 ) {
     when (item.type) {
         DesktopWidgetType.STORAGE -> StorageCard(
-            card = data.storage ?: OverviewCard.Storage(hasFullAccess = false, usedBytes = null, totalBytes = null, usage = null, scanning = false),
+            card = data.storage,
             modifier = modifier,
             onRefreshUsage = data.onRefreshStorage,
             onGrantFullAccess = callbacks.onGrantFullAccess,
@@ -87,19 +95,19 @@ internal fun DesktopWidgetContent(
         )
 
         DesktopWidgetType.RECYCLE_BIN -> DeletedFilesCard(
-            card = data.recycleBin ?: OverviewCard.DeletedFiles(0, 0L, 0, ""),
+            card = data.recycleBin,
             modifier = modifier,
             onSeeFiles = callbacks.onOpenTrash,
         )
 
         DesktopWidgetType.TAGS -> TagsCard(
-            card = data.tags ?: OverviewCard.Tags(emptyList()),
+            card = data.tags,
             modifier = modifier,
             onOpenTag = callbacks.onOpenTag,
         )
 
         DesktopWidgetType.PINNED -> PinnedCard(
-            card = data.pinned ?: OverviewCard.Pinned(emptyList()),
+            card = data.pinned,
             modifier = modifier,
             onOpenFavorite = callbacks.onOpenFavorite,
         )
@@ -129,8 +137,8 @@ internal fun DesktopWidgetContent(
         )
 
         DesktopWidgetType.LARGE_FILES -> LargeFilesCard(
-            usage = data.storage?.usage,
-            scanning = data.storage?.scanning ?: false,
+            usage = data.storage.usage,
+            scanning = data.storage.scanning,
             modifier = modifier,
             onSeeAll = callbacks.onOpenLargeFiles,
         )

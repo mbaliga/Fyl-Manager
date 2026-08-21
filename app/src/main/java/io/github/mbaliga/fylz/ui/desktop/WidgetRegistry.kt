@@ -23,6 +23,46 @@ import io.github.mbaliga.fylz.desktop.DesktopWidgetType
  * widget's WIDTH genuinely is shared across every type of its size class (all compact cards sit in
  * the same column), which is why that half of the old table was never the problem.
  *
+ * **[height] is a FLOOR, and the numbers below are tighter than they look.** Applied as an exact
+ * size it was a guillotine: [io.github.mbaliga.fylz.ui.overview.OverviewCardSurface] is a Material3
+ * Surface (clips to its shape) around a top-anchored Column, so a card that outgrew its number lost
+ * its LAST children -- the control at the bottom, every time -- with nothing on screen saying so.
+ * [io.github.mbaliga.fylz.ui.desktop.WidgetTileContent] now applies it as `heightIn(min = ...)`.
+ * Measured against what each renderer actually draws at fontScale 1.0 (titleMedium 24dp, bodyMedium
+ * 20, bodySmall/labelSmall 16, headlineSmall 32; a TactileButton cap and a TactileIconKey are both
+ * a fixed 48; the surface's own padding takes 32 off the declared figure -- SEARCH is a bare pill
+ * with no card surface, so its two figures are the same number):
+ *
+ *   STORAGE        404 of 408   4dp spare
+ *   RECYCLE_BIN    116 of 112   4dp OVER -- the retention sentence's second line
+ *   QUICK_ACCESS   244 of 192   52dp OVER in its no-access state -- the "Grant access" cap
+ *   PINNED         256 of 256   nothing spare once "+N more" shows
+ *   RECENTS        232 of 232   nothing spare at four rows
+ *   LARGE_FILES    328 of 328   nothing spare at five rows -- the "As of" line
+ *   SEARCH          52 of  52   the pill's own natural height, by construction
+ *   QUICK_ACTIONS   92 of  96   4dp spare
+ *   TAGS            64 of  80   16dp spare
+ *   SHELF          148 of 184   36dp spare
+ *
+ * The floor rescues eight of those ten. It does NOT rescue QUICK_ACCESS or SHELF, and saying so is
+ * the point of listing them: both put their body in a `Modifier.weight(1f)` child, and a weighted
+ * child is measured at EXACTLY its share, so those two Columns report the floor and squeeze inside
+ * it however tall the card is allowed to be. SHELF has 36dp spare and does not care. QUICK_ACCESS's
+ * no-access state is 52dp over and still loses its "Grant access" cap -- fixing that means either
+ * the coordinated height change below or dropping the `weight` in
+ * [io.github.mbaliga.fylz.ui.overview.QuickAccessCard], neither of which lives in this file.
+ *
+ * The six numbers that are short cannot be corrected here alone, which is why they still read as
+ * they do. [io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed] lays its two columns out
+ * against these exact constants by hand, `DesktopPolicyTest` asserts every seeded gutter is EXACTLY
+ * 16dp computed from them, and `WORLD_MIN_HEIGHT_DP` is asserted to be the seed's own lowest edge
+ * plus its bottom margin -- so raising a seeded widget's height without moving every y below it in
+ * the same commit both fails those tests and overlaps the very cards it was meant to fix. Taking
+ * "measured + 32dp of surface padding + ~24dp of headroom, rounded up to `VERTICAL_QUANTUM_DP`":
+ * STORAGE 440 -> 472, RECYCLE_BIN 144 -> 176, QUICK_ACCESS 224 -> 304, PINNED 288 -> 312,
+ * RECENTS 264 -> 288, LARGE_FILES 360 -> 384. That is one coordinated change to this file AND
+ * `DesktopPolicy`'s seed and world floor -- not a change to this file.
+ *
  * The renderer entry point per type is [WidgetRenderers]' own `when (item.type)` dispatch, not a
  * function reference stored here -- [WidgetRegistry.of] below is itself an exhaustive `when`, so a
  * [DesktopWidgetType] added to the enum without a matching branch here (or in [WidgetRenderers]'
@@ -53,13 +93,15 @@ object WidgetRegistry {
             displayNameRes = R.string.desktop_widget_storage,
             defaultSize = DesktopItemSize.LARGE,
             allowedSizes = setOf(DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
-            // Header(22) + spacer(12) + bar(12) + spacer(12) + legend(all six StorageKind rows,
-            // 6*16 + 5*8 gutters = 136) + spacer(8) + as-of row (48, the Rescan IconButton's own
-            // touch target) + spacer(4) + disclaimer (up to 2 lines at 16dp/line = 32) +
-            // spacer(12) + two STACKED CTAs (the fidelity pass stacks them full-width instead of
-            // squeezing them side by side; 40dp OutlinedButtons + 8dp gap = 88) + the card's own
-            // 32dp vertical padding (OverviewCardSurface) = 418dp worst case, rounded up with
-            // headroom rather than trimmed to the exact sum.
+            // Header(24, titleMedium's own line height -- the old note said 22) + spacer(12) +
+            // bar(12) + spacer(12) + legend(all six StorageKind rows, 6*16 + 5*8 gutters = 136) +
+            // spacer(8) + as-of row (48, the Rescan key's own touch target) + spacer(4) +
+            // disclaimer (2 lines at 16dp/line = 32) + spacer(12) + two STACKED CTAs (the fidelity
+            // pass stacks them full-width instead of squeezing them side by side; TactileButton's
+            // cap is a fixed 48dp, so 48 + 8 gap + 48 = 104, not the 88 the old note claimed for
+            // 40dp OutlinedButtons that were replaced) = 404 inside the 408dp this leaves after
+            // OverviewCardSurface's own 32dp of padding. Four dp, not the headroom the old sum
+            // read as -- see this file's own KDoc for why it cannot be corrected here alone.
             height = 440.dp,
         )
         DesktopWidgetType.QUICK_ACCESS -> WidgetRegistration(
@@ -68,7 +110,9 @@ object WidgetRegistry {
             defaultSize = DesktopItemSize.MEDIUM,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
             // Header row (its overflow button is now a real 48dp touch target) + thumbnail row +
-            // item count.
+            // item count = 132 of 192, comfortable. Its NO-ACCESS state is not: EmptyFolderState's
+            // icon, title, four-line body and "Grant access" cap come to 188, which with the
+            // header is 244 -- the cap is the part that used to fall off the bottom.
             height = 224.dp,
         )
         DesktopWidgetType.RECYCLE_BIN -> WidgetRegistration(
@@ -82,6 +126,9 @@ object WidgetRegistry {
             defaultSize = DesktopItemSize.LARGE,
             allowedSizes = setOf(DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
             // Header row + one count-chip row -- short, honest content, not the old 360dp blanket.
+            // Header 48 (the "See Files" cap) + 12 + 56 (the count chip: headlineSmall 32 plus its
+            // 12dp padding either side) = 116 against 112, so the retention sentence beside the
+            // chip loses its second line wherever it wraps.
             height = 144.dp,
         )
         DesktopWidgetType.TAGS -> WidgetRegistration(
@@ -89,7 +136,12 @@ object WidgetRegistry {
             displayNameRes = R.string.desktop_widget_tags,
             defaultSize = DesktopItemSize.SMALL,
             allowedSizes = setOf(DesktopItemSize.SMALL, DesktopItemSize.MEDIUM, DesktopItemSize.LARGE),
-            // Header + one scrollable chip row.
+            // Header + one scrollable chip row = 64 of 80, and 104 of 112 even at fontScale 1.3.
+            // Left at 112 deliberately, against the obvious reading of "Tags is a tiny thing":
+            // this card is not short of room, it is short of a DESTINATION -- every route out of a
+            // chip ends in an AlertDialog, and there is no tags place in
+            // [io.github.mbaliga.fylz.ui.landing.HomeMode] for one to lead to. A taller card here
+            // would buy whitespace, not reach.
             height = 112.dp,
         )
         DesktopWidgetType.PINNED -> WidgetRegistration(

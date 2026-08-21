@@ -41,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -73,6 +74,7 @@ import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageScanScheduler
 import io.github.mbaliga.fylz.storage.StorageUsageSnapshot
 import io.github.mbaliga.fylz.storage.StorageUsageStore
+import io.github.mbaliga.fylz.ui.overview.OVERVIEW_LIST_CARD_VISIBLE_ROWS
 import io.github.mbaliga.fylz.ui.overview.OverviewCard
 import io.github.mbaliga.fylz.ui.overview.tallyBytes
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
@@ -310,6 +312,17 @@ fun DesktopScreen(
         reload()
     }
 
+    // How much vertical room the floating cap column at the bottom-right actually occupies.
+    // Measured off that Column where it is mounted below, not restated from TactileButton's own
+    // cap height (private to the kit) -- the same "measure the chrome, don't copy its constant"
+    // shape io.github.mbaliga.fylz.ui.FylzV1App already uses for the ActionsBar's width. Measuring
+    // is also what keeps the editing case honest for free: the extra "Done" cap and its 8dp gap
+    // grow the Column, and the reserve grows with it. Starts at zero and is correct from the first
+    // layout pass; the band it reserves is at the very bottom of a world nobody can have scrolled
+    // to yet on frame one.
+    var capColumnHeight by remember { mutableStateOf(0.dp) }
+    val capDensity = LocalDensity.current
+
     Box(modifier.fillMaxSize()) {
         WallpaperLayer(wallpaperSpec, Modifier.fillMaxSize(), bottomInset = bottomReserve)
 
@@ -320,8 +333,7 @@ fun DesktopScreen(
             // fixed dp, so viewport-fraction rows would collide on short phones and gap on tall
             // ones. The world is floored at WORLD_MIN_HEIGHT_DP -- itself derived from
             // defaultSeed's own content bottom plus a fixed bottom margin (see that constant's own
-            // KDoc), so there is no further dead-scroll pad to add here beyond bottomReserve, the
-            // real space the bottom chrome occupies.
+            // KDoc).
             val worldHeightDp = maxOf(maxHeight, DesktopPolicy.WORLD_MIN_HEIGHT_DP.dp)
             val worldHeightPx = with(LocalDensity.current) { worldHeightDp.toPx() }
             val maxZ = items.maxOfOrNull { it.placement.z } ?: 0
@@ -331,7 +343,18 @@ fun DesktopScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
             ) {
-                Box(Modifier.fillMaxWidth().height(worldHeightDp + bottomReserve)) {
+                // Two bands sit below the world's own content and neither belongs to any card.
+                // bottomReserve is the bottom chrome's. capColumnHeight + CAP_COLUMN_MARGIN is the
+                // floating "+ Add to desktop" cap's: that cap is anchored to the VIEWPORT, not to
+                // the world -- it has to stay reachable at every scroll offset -- so it never
+                // scrolls out of anybody's way and it reserves nothing simply by being placed.
+                // Without this band the world's last row can never be scrolled clear of it, and
+                // the bottom-right corner it occupies is exactly where ShelfCard pins its own
+                // "Open shelf" cap (Spacer(weight)/align(End) in OverviewCards) -- the two land on
+                // the same pixels at full scroll, which is what the owner photographed. Reserving
+                // the band here, rather than padding one card, is the fix that holds for whatever
+                // the user drags down there next.
+                Box(Modifier.fillMaxWidth().height(worldHeightDp + bottomReserve + capColumnHeight + CAP_COLUMN_MARGIN)) {
             items.forEach { item ->
                 DesktopTile(
                     item = item,
@@ -382,7 +405,13 @@ fun DesktopScreen(
         }
 
         Column(
-            Modifier.align(Alignment.BottomEnd).padding(bottom = bottomReserve + 16.dp, end = 16.dp),
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = bottomReserve + CAP_COLUMN_MARGIN, end = CAP_COLUMN_MARGIN)
+                // What the world above reserves a band for -- see that Box's own note. Reported
+                // rather than assumed, so the reserve stays right whatever this column grows to
+                // hold.
+                .onSizeChanged { size -> capColumnHeight = with(capDensity) { size.height.toDp() } },
             horizontalAlignment = Alignment.End,
         ) {
             if (editing) {
@@ -512,5 +541,12 @@ private fun EmptyDesktopHint(modifier: Modifier = Modifier) {
 
 private const val DESKTOP_SCAN_POLL_ATTEMPTS = 40
 private const val DESKTOP_SCAN_POLL_INTERVAL_MILLIS = 500L
-private const val DESKTOP_TOP_TAGS = 12
+
+/** Exactly what the Tags card draws -- it takes its own first `OVERVIEW_LIST_CARD_VISIBLE_ROWS * 2`
+ *  chips and drops the rest. Was a flat 12, so four tags were ranked here and thrown away there. */
+private const val DESKTOP_TOP_TAGS = OVERVIEW_LIST_CARD_VISIBLE_ROWS * 2
 private const val DESKTOP_SHELF_PREVIEW = 3
+
+/** The floating cap column's own margin off the bottom-right corner, and the same figure the world
+ *  above adds to its reserve for that column -- one constant so the two can never disagree. */
+private val CAP_COLUMN_MARGIN = 16.dp

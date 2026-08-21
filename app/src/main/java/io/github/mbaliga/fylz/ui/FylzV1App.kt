@@ -59,6 +59,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -95,7 +96,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -730,6 +733,17 @@ private fun FylzV1Workspace(
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
+    // A tab the user has opened but not yet given a folder. [FolderTab] cannot hold this state --
+    // its `treeUri` is non-null and `current` is `locations.last()`, so a folder-less FolderTab
+    // has no honest value for either and throws the first time anything reads it -- so it is an
+    // id on its own here, and the launch surface is what that tab shows until a root is picked.
+    // [activeTabId] deliberately stays null meanwhile: it names a tab in [tabs] or nothing, which
+    // is what every reader of it already assumes (the locations wheel resolves it as
+    // `activeTabId ?: HOME_WHEEL_ID`).
+    var newTabId by remember { mutableStateOf<String?>(null) }
+    // Which tab "+" was pressed from, so Back out of a new tab that never got a folder returns to
+    // where the user was rather than to the home surface.
+    var newTabOrigin by remember { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     var selectedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     // Backfill for uris [entries] doesn't cover -- home-surface selections (Locations/Bento/
@@ -916,6 +930,13 @@ private fun FylzV1Workspace(
     // browser's own sort column says, which is exactly the ordering a live search must not use.
     val searchHits = remember(searchProgress) { searchProgress?.hits.orEmpty() }
 
+    // Whether the ranked result list, not the folder listing, is what the user is looking at.
+    // Hoisted to the one place both the chrome and the browser can read it: the top bar's own
+    // arrange/sort controls have to know (results honour neither view mode nor sort order), and
+    // select-all has to know which of the two lists "all" means. FileBrowser derives the same
+    // thing from its own copies of these two parameters.
+    val searchActive = searchRecursive && query.isNotBlank()
+
     // The Stacks grouping of visibleEntries, computed here once rather than separately inside
     // FileBrowser (which renders it) and again below (where the edge scrubber's stops come from
     // its headers) -- one GroupedListing, two readers.
@@ -972,7 +993,7 @@ private fun FylzV1Workspace(
      *  folder listing otherwise -- shared by the pill's own select-all and the top bar's, so the
      *  two can never disagree about what "all" means for the list currently in view. */
     fun selectAllVisible() {
-        selectedUris = if (searchRecursive && query.isNotBlank()) {
+        selectedUris = if (searchActive) {
             searchHits.map { it.entry.uri }.toSet()
         } else {
             visibleEntries.map { it.uri }.toSet()
@@ -1018,7 +1039,25 @@ private fun FylzV1Workspace(
         }
     }
 
+    /** Drops a "+" tab that never chose a folder. Every route that navigates somewhere else goes
+     *  through here, so the placeholder can never outlive the surface it was standing in for. */
+    fun discardNewTab() {
+        newTabId = null
+        newTabOrigin = null
+    }
+
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
+        // A waiting "+" tab outranks the reuse below: it is a promise of a NEW tab, and adopting
+        // the existing tab on this tree would rewind that tab to the folder just picked instead
+        // of opening the one that was asked for. Two tabs may therefore share a treeUri -- the
+        // reuse lookup takes the first, and every other tab lookup in this file keys by id.
+        val pending = newTabId
+        if (pending != null) {
+            tabs += FolderTab(id = pending, treeUri = treeUri, locations = listOf(location))
+            activeTabId = pending
+            discardNewTab()
+            return
+        }
         val existing = tabs.indexOfFirst { it.treeUri == treeUri }
         if (existing >= 0) {
             tabs[existing] = tabs[existing].copy(locations = listOf(location))
@@ -1028,6 +1067,25 @@ private fun FylzV1Workspace(
         val tab = FolderTab(treeUri = treeUri, locations = listOf(location))
         tabs += tab
         activeTabId = tab.id
+    }
+
+    /** Leaves a "+" tab without choosing anything: back to the tab it was opened from, or the
+     *  home surface when that tab has since been closed -- [activeTabId] must only ever name a
+     *  tab that is actually in [tabs], or nothing. */
+    fun cancelNewTab() {
+        activeTabId = newTabOrigin?.takeIf { origin -> tabs.any { it.id == origin } }
+        discardNewTab()
+    }
+
+    /** Opens a new tab: a real tab of this app's own, showing the launch surface until the user
+     *  picks a location for it -- not the system folder picker, which is a grant, not a tab. */
+    fun addTab() {
+        newTabOrigin = activeTabId
+        newTabId = UUID.randomUUID().toString()
+        activeTabId = null
+        // The file's own go-home idiom -- it re-keys the launch surface's own produceState, so a
+        // tree granted a moment ago is in the list this new tab is about to offer.
+        homeRefreshKey += 1
     }
 
     /** Closes [tab] -- shared by the locations room's own row and the pill's tab strip, so the
@@ -1395,6 +1453,29 @@ private fun FylzV1Workspace(
         delay(SEARCH_DEBOUNCE_MILLIS)
         preferencesStore.addRecentSearch(query)
         recentSearches = preferencesStore.recentSearches()
+    }
+
+    // A query belongs to the folder you are looking at, not to the whole app.
+    //
+    // Without this, one `query` stayed live through every navigation and every tab switch, and
+    // the effect above that runs the recursive walk is keyed on the folder -- so opening any
+    // folder while a search was live immediately re-ran that same search inside it. The owner's
+    // recording shows the result: searching "pass" in Internal shared storage, then opening
+    // Alarms, gives "Searching... 0 folders scanned" and then "No matches" instead of the
+    // folder's own contents, and so does every folder opened after it. Paired with a search
+    // field that was being clipped off screen entirely, there was no visible query to see and no
+    // reachable clear button, so the app simply looked empty from there on.
+    //
+    // Keyed on the tab AND its current folder, deliberately NOT on refreshKey: refreshing while
+    // a search is live has to keep the search, which is why this cannot just fold into the
+    // selection-clearing effect below. `searchRecursive` is left alone on purpose -- the scope
+    // toggle is a stated preference about how to search, not a leftover of one search.
+    //
+    // Clearing, rather than remembering a query per tab: a restored search would have to restore
+    // its results and its scroll position too to be worth anything, and a tab silently filtered
+    // by something typed minutes ago is the same trap in a smaller room.
+    LaunchedEffect(activeTabId, activeTab?.current?.uri) {
+        query = ""
     }
 
     LaunchedEffect(activeTab?.current?.uri, refreshKey) {
@@ -2005,10 +2086,11 @@ private fun FylzV1Workspace(
     // The rungs below a folder's own back stack was always missing: an up-arrow tap could walk
     // it, but Back itself only ever reached the rooms handler and then finish(). Composed here,
     // immediately before that rooms handler, so BackHandler's own "last composed wins" order
-    // ranks these three below it -- a room open still closes first, matching the comment there.
-    // Individually enabled and mutually exclusive on activeTab/locations, so with no room open
-    // exactly one governs any given press: drop a folder level, land on the storage home once
-    // there is no level left to drop, then require a second press to actually leave the app.
+    // ranks these below it -- a room open still closes first, matching the comment there.
+    // Individually enabled and mutually exclusive on activeTab/locations/newTabId, so with no
+    // room open exactly one governs any given press: drop a folder level, land on the storage
+    // home once there is no level left to drop, abandon a "+" tab that never chose a folder, then
+    // require a second press to actually leave the app.
     BackHandler(enabled = shell.atHome && (activeTab?.locations?.size ?: 0) > 1) {
         val tab = activeTab
         if (tab != null) {
@@ -2020,7 +2102,12 @@ private fun FylzV1Workspace(
         activeTabId = null
         homeRefreshKey += 1
     }
-    BackHandler(enabled = shell.atHome && activeTab == null) {
+    // A waiting "+" tab makes activeTab null, so without this rung the exit handler below would
+    // fire on the first Back out of a new tab. The two conditions are kept mutually exclusive by
+    // hand rather than by composition order -- re-broadening either one turns the first Back out
+    // of a new tab back into "press back again to exit".
+    BackHandler(enabled = shell.atHome && newTabId != null) { cancelNewTab() }
+    BackHandler(enabled = shell.atHome && activeTab == null && newTabId == null) {
         val now = System.currentTimeMillis()
         if (now - pendingExitAt < EXIT_CONFIRM_WINDOW_MS) {
             activity?.finish()
@@ -2062,18 +2149,23 @@ private fun FylzV1Workspace(
                         shell.closeAll()
                     },
                     onSelect = { id ->
+                        discardNewTab()
                         activeTabId = id
                         shell.closeAll()
                     },
                     onOpenHome = {
+                        discardNewTab()
                         activeTabId = null
                         homeRefreshKey += 1
                         shell.closeAll()
                     },
                     onClose = ::closeTab,
+                    // "Add a location…" is the wheel's own "+", and it opens a tab here the same
+                    // way the band's does. Granting access to a tree Fylz has no permission for
+                    // is a separate, deliberate step the launch surface itself offers.
                     onAdd = {
                         shell.closeAll()
-                        rootPicker.launch(null)
+                        addTab()
                     },
                     onOpenSettings = {
                         shell.closeAll()
@@ -2146,6 +2238,14 @@ private fun FylzV1Workspace(
     // stays for anyone who would rather tap than shake.
     ShakeToRefresh(onShake = { refresh() })
 
+    // How much of the top bar's leading edge the ActionsBar is covering. Measured off the bar
+    // itself where it is mounted below, not restated from its own width constant -- that constant
+    // is private to ui/chrome and this is the caller's business anyway. The seed is a first-frame
+    // estimate of that same width and is overwritten by the real measurement on the first layout
+    // pass after a selection starts.
+    val layoutDensity = LocalDensity.current
+    var actionsBarWidth by remember { mutableStateOf(209.dp) }
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
         Scaffold(
@@ -2164,6 +2264,11 @@ private fun FylzV1Workspace(
                         if (activeTab != null) {
                             Text(
                                 activeTab.current.name,
+                                // One line, ellipsised: the bar clips whatever overflows it, and a
+                                // name cut by the clip looks like the name, while one cut by an
+                                // ellipsis reads as a name that did not fit.
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 // heightIn before clickable so the target is the 48dp DESIGN.md
                                 // asks for rather than the height of the glyphs; wrapContentHeight
                                 // then re-centres the text inside it.
@@ -2181,6 +2286,17 @@ private fun FylzV1Workspace(
                             // "Show details" semantics to announce a room with nothing in it.
                             Text("Fylz")
                         }
+                    },
+                    navigationIcon = {
+                        // The ActionsBar stays an overlay at the outer Box below -- its square
+                        // top-left corner has to sit flush against the screen edge, which this
+                        // slot's own 4dp inset and vertical centring would break. What lives here
+                        // is only its FOOTPRINT: material3 places the title at
+                        // max(title inset, navigationIcon width), so a spacer as wide as the bar
+                        // is what pushes the title out from under it. Without this the title is
+                        // laid out at 16dp with nothing told about the ~209dp slab drawn on top
+                        // of it, and a folder name simply disappears behind the bar.
+                        if (selectedUris.isNotEmpty()) Spacer(Modifier.width(actionsBarWidth))
                     },
                     actions = {
                         if (selectedUris.isNotEmpty()) {
@@ -2246,13 +2362,28 @@ private fun FylzV1Workspace(
                                         density = mode
                                         preferencesStore.setDensity(mode)
                                     },
+                                    // Results are one ranked list in every view mode, so the five
+                                    // modes cannot change what is on screen while a search is
+                                    // showing. The S/M/L axis still can, and stays live.
+                                    viewModesEnabled = !searchActive,
                                 )
                                 // Sort and select-all used to ride the floating command pill,
                                 // which was a permanent fixture over the listing; now that the
                                 // pill only shows while search is pulled down (PullDownSearchHost),
                                 // both moved to the one row that is always on screen while a
                                 // folder is open.
-                                SortMenu(sortSpec, onChange = { sortSpec = it })
+                                //
+                                // Withdrawn outright during a recursive search, rather than shown
+                                // disabled: unlike Arrange it has no half that still works. Hits
+                                // arrive ranked by the search engine and re-sorting them by the
+                                // browser's sort column is exactly the ordering a live search must
+                                // not use (see searchHits' own comment) -- so every field this
+                                // menu edits is unread, with nothing to enable later. Same
+                                // reasoning, and the same precedent, as the edge scrubber's own
+                                // `query.isBlank()` gate below.
+                                if (!searchActive) {
+                                    SortMenu(sortSpec, onChange = { sortSpec = it })
+                                }
                                 TactileIconKey(
                                     icon = Icons.Outlined.Refresh,
                                     contentDescription = "Refresh",
@@ -2281,7 +2412,7 @@ private fun FylzV1Workspace(
                                     scope.launch { WidgetRefresher.refreshAll(context) }
                                 }
                             },
-                            onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
+                            onOpenRoot = { discardNewTab(); activeTabId = null; homeRefreshKey += 1 },
                             onRecycle = { trashSheetOpen = true },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
@@ -2341,7 +2472,11 @@ private fun FylzV1Workspace(
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
-                        homeMode = homeMode,
+                        // A "+" tab is asking "which location", and the desktop and the subject
+                        // views do not answer that -- the launch surface is the only home surface
+                        // that lists roots to open. Deliberately overriding the stored home
+                        // preference for this one case; do not "fix" it back.
+                        homeMode = if (newTabId != null) HomeMode.LOCATIONS else homeMode,
                         landingSubject = landingSubject,
                         onOpenHomeFolder = { location ->
                             landingSubject?.let { subject -> openTabAt(subject.treeUri, location) }
@@ -2454,33 +2589,59 @@ private fun FylzV1Workspace(
         // shrinks FileBrowser's own Box in turn — a tab band mounted inside that Box, or in the
         // bottomBar itself, would slide up and down every time a selection starts or ends. Mounted
         // as a plain overlay instead, both pieces hold one fixed position regardless of selection.
-        // The tab band itself only shows while a folder tab is open, matching the old tab strip's
-        // own scope (LocationsRoom's word wheel is still how tabs switch from the home surfaces).
+        // The tab band shows while a tab is open -- including a "+" tab that has not chosen its
+        // folder yet, which is showing the launch surface behind it (LocationsRoom's word wheel
+        // is still how tabs switch from the home surfaces).
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
-            // Self-gating: draws nothing at count <= 0, so this is safe to mount unconditionally
-            // for a selection made on a home surface too, where there is no tab band beneath it.
             // Wrapped in its own clickable rather than SelectionRow growing an onOpenDeck param
             // (that composable is Workstream A's, and its own contract carries no such callback):
             // the close button's own, more specific clickable inside SelectionRow wins a tap
             // squarely on it, so this outer one only ever fires for the count pill and the row's
             // own dead space -- the exact "tap the count to riffle the deck" behaviour
             // SelectionSummaryBar carried, preserved rather than dropped.
-            Box(
-                Modifier.clickable(onClick = { deckOpen = DeckSource.SELECTION })
-                    .semantics { contentDescription = "Review ${selectedUris.size} selected" },
-            ) {
-                SelectionRow(
-                    count = selectedUris.size,
-                    onClose = { selectedUris = emptySet(); selectedEntryDetails = emptyMap() },
-                )
+            //
+            // SelectionRow itself draws nothing at count <= 0, but this wrapper is not part of
+            // it: mounted unconditionally it left a zero-size clickable node announcing
+            // "Review 0 selected" to a screen reader at rest, a count with nothing behind it.
+            if (selectedUris.isNotEmpty()) {
+                Box(
+                    Modifier.clickable(onClick = { deckOpen = DeckSource.SELECTION })
+                        .semantics { contentDescription = "Review ${selectedUris.size} selected" },
+                ) {
+                    SelectionRow(
+                        count = selectedUris.size,
+                        onClose = { selectedUris = emptySet(); selectedEntryDetails = emptyMap() },
+                    )
+                }
             }
-            if (activeTab != null) {
+            // Also while a "+" tab is waiting for its folder: that tab has no listing behind it
+            // yet, but it is on screen and it is what the band's front chip is naming, so the
+            // band has to be there for the user to leave it by.
+            if (activeTab != null || newTabId != null) {
                 TabBand(
-                    tabs = tabs.map { TabBandItem(it.id, it.current.name.ifBlank { "Folder" }) },
-                    activeTabId = activeTabId,
-                    onTabSelected = { id -> activeTabId = id },
-                    onTabClosed = { item -> tabs.firstOrNull { it.id == item.id }?.let(::closeTab) },
-                    onAddTab = { rootPicker.launch(null) },
+                    // The pending chip is appended, never merged into [tabs] -- a FolderTab with
+                    // no location cannot be constructed (see [newTabId]), and TabBandItem is a
+                    // plain id/label pair that needs nothing from the model to carry one.
+                    tabs = tabs.map { TabBandItem(it.id, it.current.name.ifBlank { "Folder" }) } +
+                        listOfNotNull(newTabId?.let { TabBandItem(it, "New tab") }),
+                    activeTabId = activeTabId ?: newTabId,
+                    onTabSelected = { id ->
+                        // Leaving an empty new tab for a real one discards it: there is nothing
+                        // in it to come back to, and keeping it would leave a second at-home-ish
+                        // place behind the one the user just went to.
+                        if (id != newTabId) {
+                            discardNewTab()
+                            activeTabId = id
+                        }
+                    },
+                    onTabClosed = { item ->
+                        if (item.id == newTabId) {
+                            cancelNewTab()
+                        } else {
+                            tabs.firstOrNull { it.id == item.id }?.let(::closeTab)
+                        }
+                    },
+                    onAddTab = ::addTab,
                     onTrashTap = { trashSheetOpen = true },
                     frosted = themeStyle == ThemeStyle.FYLZ,
                 )
@@ -2495,7 +2656,14 @@ private fun FylzV1Workspace(
                 onZip = { runAction(FylzAction.ARCHIVE) },
                 onMove = { runAction(FylzAction.MOVE) },
                 onCopy = { runAction(FylzAction.COPY) },
-                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding(),
+                // The measurement the top bar reserves against -- see [actionsBarWidth]. Chained
+                // after statusBarsPadding so what is reported is the bar's whole occupied width,
+                // whatever ui/chrome sizes it to, rather than a number copied out of that file.
+                modifier = Modifier.align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .onSizeChanged { size ->
+                        actionsBarWidth = with(layoutDensity) { size.width.toDp() }
+                    },
             )
         }
 
@@ -3437,9 +3605,10 @@ private fun FileBrowser(
         return
     }
 
-    // Whether SearchResults, not the plain listing, is on screen -- read in two places below
-    // (which branch renders, and what select-all's enabled state means, up in the top bar) so
-    // they can never disagree about which list the user is actually looking at.
+    // Whether SearchResults, not the plain listing, is on screen -- read by both render branches
+    // below (CANVAS's own Box and the PullDownSearchHost content) so the two can never disagree
+    // about which list the user is actually looking at. The caller derives the same flag from the
+    // same two values to decide which top-bar controls that list can honour.
     val searchActive = searchRecursive && query.isNotBlank()
 
     // FocusSearch's real readiness signal for the "no tab was open yet" path: this LaunchedEffect
@@ -3469,18 +3638,50 @@ private fun FileBrowser(
             // No scroll container to hang the pull-down reveal's NestedScrollConnection off --
             // search here stays reachable from the permanent floating pill, the one mode that
             // keeps it (PullDownSearch's own contract: "CANVAS has no scroll container").
+
+            // How much of the bottom of this Box the floating pill is occupying, measured off the
+            // pill itself: it is the only branch whose search field sits ON the content rather
+            // than above it, and its height is the pill's own business (a live query grows it).
+            var pillHeight by remember { mutableStateOf(0.dp) }
+            val pillDensity = LocalDensity.current
             Box(Modifier.weight(1f)) {
-                SubjectCanvas(
-                    subject = LandingSubject(activeTab.treeUri, activeTab.current.uri, activeTab.current.name),
-                    repository = repository,
-                    refreshKey = refreshKey,
-                    onOpenFolder = onOpenTabFolder,
-                    onOpenFile = onOpen,
-                    selectedUris = selectedUris,
-                    selectionActive = selectionActive,
-                    onToggleSelection = onToggleSelection,
-                    cluster = cluster,
-                )
+                if (searchActive) {
+                    // Search wins here as it does in every other view mode. Before this, the
+                    // CANVAS test ran ahead of searchActive and never consulted it, so a recursive
+                    // search in this mode ran, counted folders in the pill, and then drew the
+                    // unfiltered folder underneath: the results reached no surface at all.
+                    //
+                    // Swapped underneath the pill rather than falling through to
+                    // PullDownSearchHost: that would remount the field from floating to pull-down
+                    // mid-keystroke and take focus away from someone still typing.
+                    SearchResults(
+                        progress = searchProgress,
+                        hits = searchHits,
+                        selectedUris = selectedUris,
+                        focusedEntry = focusedEntry,
+                        onOpen = onOpen,
+                        onOpenExternal = onOpenExternal,
+                        onToggleSelection = onToggleSelection,
+                        listState = listState,
+                        // Clears the pill as well as the chrome -- the pill floats over this
+                        // list, so the chrome reserve alone would leave the last hits under it.
+                        bottomPadding = bottomChromeReserve + pillHeight,
+                        density = density,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    SubjectCanvas(
+                        subject = LandingSubject(activeTab.treeUri, activeTab.current.uri, activeTab.current.name),
+                        repository = repository,
+                        refreshKey = refreshKey,
+                        onOpenFolder = onOpenTabFolder,
+                        onOpenFile = onOpen,
+                        selectedUris = selectedUris,
+                        selectionActive = selectionActive,
+                        onToggleSelection = onToggleSelection,
+                        cluster = cluster,
+                    )
+                }
                 CommandPill(
                     query = query,
                     onQueryChange = onQueryChange,
@@ -3498,7 +3699,11 @@ private fun FileBrowser(
                     // CANVAS has no scroll container to reserve contentPadding on, so this is
                     // the one branch that has to clear the bottom chrome by hand -- without it
                     // the tab band (and, mid-selection, the selection row) draws over the pill.
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomChromeReserve),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .padding(bottom = bottomChromeReserve)
+                        .onSizeChanged { size ->
+                            pillHeight = with(pillDensity) { size.height.toDp() }
+                        },
                     trailing = {},
                 )
             }
@@ -3548,6 +3753,7 @@ private fun FileBrowser(
                             onToggleSelection = onToggleSelection,
                             listState = listState,
                             bottomPadding = bottomChromeReserve,
+                            density = density,
                             modifier = listModifier,
                         )
                     } else if (loading) {
@@ -3581,7 +3787,12 @@ private fun FileBrowser(
                             onOpenFile = onOpen,
                             onToggleSelect = onToggleSelection,
                             listState = listState,
-                            modifier = listModifier,
+                            // The one listing branch that reserved nothing for the bottom chrome:
+                            // CliListing exposes no contentPadding, so its last rows sat under
+                            // the tab band with no way to scroll them out. Padded on the outside
+                            // instead -- it shortens the viewport rather than the scroll extent,
+                            // which is the same result here since the band is opaque.
+                            modifier = listModifier.padding(bottom = bottomChromeReserve),
                         )
                     } else if (viewMode == ViewMode.GRID) {
                         // Build 11.5 frames 1/3: a directory cell is FolderGridCell (the floating
@@ -3926,6 +4137,12 @@ private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
  * covers; sort field/direction and Stacks' own group-by stay in [SortMenu], reached from the
  * pill, since both already operate on [SortSpec] and gained a second control here would just be
  * the same state edited from two unrelated places.
+ *
+ * @param viewModesEnabled false while search results, not the folder, are on screen. Results are
+ *   one ranked list whatever the view mode says, so the five modes are shown as the remembered
+ *   folder setting they still are, and not as a choice about the list in front of the user --
+ *   including the trigger glyph, which otherwise sits in always-visible chrome asserting Canvas
+ *   or Stacks over a flat list. Density is unaffected: it reaches the result rows and works.
  */
 @Composable
 private fun ArrangeMenu(
@@ -3933,20 +4150,38 @@ private fun ArrangeMenu(
     onViewModeChange: (ViewMode) -> Unit,
     density: DensityMode,
     onDensityChange: (DensityMode) -> Unit,
+    viewModesEnabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         TactileIconKey(
-            icon = viewMode.arrangeIcon(),
+            icon = if (viewModesEnabled) viewMode.arrangeIcon() else Icons.Outlined.Tune,
             contentDescription = "Arrange",
             onClick = { expanded = true },
             latched = expanded,
         )
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            if (!viewModesEnabled) {
+                // What makes the retained check mark below substantiable: it reads as "what this
+                // folder is set to", which is true, instead of "what you are looking at", which
+                // while results are showing is not.
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Results are one ranked list. Arrange applies to the folder.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    enabled = false,
+                    onClick = {},
+                )
+            }
             ViewMode.entries.forEach { mode ->
                 DropdownMenuItem(
                     text = { Text(mode.arrangeLabel()) },
                     trailingIcon = { if (mode == viewMode) Icon(Icons.Filled.CheckCircle, contentDescription = null) },
+                    enabled = viewModesEnabled,
                     onClick = {
                         onViewModeChange(mode)
                         expanded = false
@@ -4137,6 +4372,10 @@ private fun SearchResults(
     // a downward drag.
     listState: LazyListState,
     bottomPadding: Dp,
+    // The one display axis results CAN honour: unlike the five view modes (a ranked list has no
+    // grid or canvas reading) and unlike sort order (the ranking is the point), S/M/L is just the
+    // row's own size, so Arrange's S/M/L keeps working while this list is the one on screen.
+    density: DensityMode,
     modifier: Modifier = Modifier,
 ) {
     val selectionActive = selectedUris.isNotEmpty()
@@ -4181,6 +4420,11 @@ private fun SearchResults(
                     detail = hit.snippet?.let { "\u201c$it\u201d" }
                         ?: if (hit.source == SearchMatchSource.CONTENT) "Matched file contents" else null,
                     nameHighlights = hit.nameHighlights,
+                    // The same two helpers the plain LIST and STACKS branches feed this same
+                    // composable; omitting them here silently took FileRowV1's own COMFORTABLE
+                    // defaults, which is what made S/M/L do nothing while results were showing.
+                    rowHeight = Density.listRowHeight(density),
+                    thumbSize = Density.listThumb(density),
                 )
             }
         }
@@ -4878,6 +5122,13 @@ private fun LocationsRoom(
     val items = remember(tabs) {
         buildList {
             add(WheelItem(HOME_WHEEL_ID, "Home"))
+            // Tags rides the wheel beside Home because it IS a place: tapping a tag runs
+            // LibraryStore.itemsWithTag device-wide and opens a real listing of every file
+            // carrying it, which is the same kind of destination a folder tab is. It used to be a
+            // 40dp row wedged under a divider next to the settings gear -- the owner's words were
+            // "Tags is a tiny thing above settings", and the code's own comment called it "the
+            // quiet way in". The feature was never the problem; where it was reachable from was.
+            add(WheelItem(TAGS_WHEEL_ID, "Tags"))
             tabs.forEach { add(WheelItem(it.id, it.current.name.ifBlank { "Folder" })) }
             add(WheelItem(ADD_WHEEL_ID, "Add a location…"))
         }
@@ -4895,6 +5146,7 @@ private fun LocationsRoom(
             onSelect = { id ->
                 when (id) {
                     HOME_WHEEL_ID -> onOpenHome()
+                    TAGS_WHEEL_ID -> onOpenTags()
                     ADD_WHEEL_ID -> onAdd()
                     else -> onSelect(id)
                 }
@@ -4941,28 +5193,8 @@ private fun LocationsRoom(
         // more, if you want it" rather than as a fourth thing to navigate. Tags rides beside it
         // for the same reason -- the owner's own "is that done?" needed somewhere to browse from
         // that asks for no folder tab to be open, which the query box (folder-scoped) cannot be.
+        // Settings alone down here now. Tags moved up to the wheel -- see the item list above.
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = 40.dp)
-                .clickable(onClick = onOpenTags)
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Outlined.Sell,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-            Text(
-                "Tags",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 10.dp),
-            )
-        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -5055,3 +5287,6 @@ private const val HOME_WHEEL_ID = "__home__"
 
 /** The picker's row. A verb in a list of nouns, which is why it sits at the end. */
 private const val ADD_WHEEL_ID = "__add__"
+
+/** The wheel's own Tags destination -- a place beside Home, not a row beside the gear. */
+private const val TAGS_WHEEL_ID = "__tags__"

@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -93,6 +94,9 @@ private const val ARRANGE_ELEVATION = 10f
  * on screen, so the three can never drift), height is [WidgetRegistry]'s own content-fit constant
  * for [item]'s TYPE -- not a blanket SMALL/MEDIUM/LARGE table, since two widgets of the same size
  * class can need very different room (a Storage card's legend versus a Deleted-files count chip).
+ *
+ * The height is the footprint the layout RESERVES, i.e. a floor -- see [WidgetTileContent] for why
+ * it is applied as a minimum rather than an exact size.
  */
 internal fun desktopWidgetSize(item: DesktopItem.Widget, viewportWidthDp: Dp): DpSize {
     val height = WidgetRegistry.of(item.type).height
@@ -504,13 +508,33 @@ private fun WidgetTileContent(
     // SearchPill's own stadium Surface) already draws the one and only surface a card needs; a
     // second, identically-coloured surface underneath it was pure Z-fighting (this composable's
     // own KDoc point 1).
-    Box(Modifier.size(size.width, size.height)) {
+    //
+    // heightIn(min = ...), not size(...): OverviewCardSurface is a Material3 Surface, which clips
+    // to its own shape, wrapping a plain top-anchored Column. Given an EXACT height, a Column hands
+    // each successive child `remaining` space and zero once that runs out, so a card whose content
+    // outgrows its registration loses its LAST children silently -- the Storage card's two CTAs,
+    // the Large files card's "As of" line, the Deleted files card's retention sentence. That is
+    // reachable at the shipped constants, not just in theory: several registrations sit within
+    // 0-4dp of their own content at fontScale 1.0 (see WidgetRegistry.height's own KDoc for the
+    // measured table), so any accessibility font scale, a wrapped title or a third disclaimer line
+    // amputates a control the user is meant to press. A minimum keeps the reserved footprint the
+    // desktop grid is laid out against (io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed's
+    // hand-laid y values, and the exact-16dp gutters DesktopPolicyTest pins, are derived from these
+    // same constants) while letting a card that genuinely needs more room take it. Overflowing into
+    // the 16dp gutter below is a visible, self-explaining crowding; a button cut off at the card
+    // edge is not. It is not a cure-all: a card whose own body sits in a `Modifier.weight(1f)`
+    // child (Shelf, Quick access) is measured at exactly its share whatever the card is allowed to
+    // grow to, so the floor never reaches it -- see WidgetRegistry.height's KDoc for which two.
+    //
+    // width(), not fillMaxWidth(): the card must keep the exact column width
+    // DesktopPolicy.clampWidget/snapWidget keep on screen, not whatever the world Box offers.
+    Box(Modifier.width(size.width).heightIn(min = size.height)) {
         DesktopWidgetContent(
             item = item,
             data = widgetData,
             quickAccess = quickAccess,
             callbacks = callbacks,
-            modifier = Modifier.size(size.width, size.height),
+            modifier = Modifier.width(size.width).heightIn(min = size.height),
         )
     }
 }
