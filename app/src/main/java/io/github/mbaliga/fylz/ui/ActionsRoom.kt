@@ -281,7 +281,13 @@ internal fun ActionCard(
         onClick = onClick,
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.width(ACTION_CARD_WIDTH),
+        // A FIXED height, not just a width: the title already wraps to two lines and the subtitle
+        // now may too, so cards left to size themselves end up different heights and the carousel
+        // reads ragged along its bottom edge (the owner's recording shows exactly that, with
+        // "Operation history" standing a line taller than its neighbours). Sized to the tallest
+        // legal card -- icon 24 + 12 + two title lines + 2 + two subtitle lines + 16dp padding
+        // top and bottom -- so every card in every row matches whatever its own copy needs.
+        modifier = Modifier.width(ACTION_CARD_WIDTH).height(ACTION_CARD_HEIGHT),
     ) {
         Column(Modifier.padding(16.dp)) {
             Icon(
@@ -302,7 +308,12 @@ internal fun ActionCard(
                 subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                // Two lines, not one. A 150dp card minus 16dp of padding each side leaves 118dp of
+                // text, and at labelSmall essentially EVERY subtitle in this room overflows that:
+                // "Start an empty folder here", "Capture pages with the camera", "Review past file
+                // operations" all cut mid-word at one line, which is what made the whole room read
+                // as broken rather than merely tight.
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp),
             )
@@ -311,5 +322,7 @@ internal fun ActionCard(
 }
 
 internal val ACTION_CARD_WIDTH = 150.dp
+/** Every card in every [ActionCardRow] stands exactly this tall -- see [ActionCard]'s own note. */
+private val ACTION_CARD_HEIGHT = 148.dp
 private val ACTION_CARD_SPACING = 12.dp
 private val ACTION_CARD_PEEK = 32.dp
