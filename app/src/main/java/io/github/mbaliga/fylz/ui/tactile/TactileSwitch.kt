@@ -33,10 +33,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
-import io.github.mbaliga.fylz.ui.chrome.FolderTabSlant
 import io.github.mbaliga.fylz.ui.motion.FylzMotion
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 import io.github.mbaliga.fylz.ui.theme.softShadow
 
@@ -79,7 +79,11 @@ fun TactileSwitch(
     val offLabel = stringResource(R.string.tactile_switch_off)
 
     val knobSide = if (checked) TactileSlantSide.LEADING else TactileSlantSide.TRAILING
-    val knobShape = remember(knobSide) { TactileSlantShape(knobSide, FolderTabSlant, (SwitchHeight - KnobGap * 2) / 2) }
+    // FylzGeometry.RadiusMd, NOT half the knob's height: a radius of half turns the knob into a
+    // perfect circle, and a circle has no straight edge left to lean, so the slant vocabulary that
+    // every other control in this kit shares vanished here and the knob read as a stock Material
+    // disc sliding in a pill.
+    val knobShape = remember(knobSide) { TactileSlantShape(knobSide, FylzGeometry.RadiusMd) }
 
     Box(
         modifier
@@ -136,10 +140,16 @@ fun TactileSwitch(
                             // A plain light cap, not the full RAISED CAP recipe: that recipe's
                             // white-alpha rim/lip strokes exist to catch light on a DARK cap and
                             // would be invisible against this one's own near-white fill.
+                            //
+                            // "Light" means light FOR THE SKIN, though. Pure white is the owner's
+                            // light-frame value and reads as a stray white pill on the jet plate,
+                            // so the dark skin raises its off-knob to the cap's own top stop
+                            // instead -- still the lightest thing in the control, still clearly a
+                            // key, without punching a hole in a dark screen.
                             Modifier
                                 .softShadow(ShadowLevel.SM, knobShape)
                                 .clip(knobShape)
-                                .background(Color.White)
+                                .background(if (palette.isDark) palette.capHigh else Color.White)
                                 .border(1.dp, palette.edge, knobShape)
                         },
                     ),

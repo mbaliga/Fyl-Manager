@@ -19,44 +19,76 @@ class TactileRecipesTest {
     // -- slant edge ---------------------------------------------------------------------------
 
     @Test
-    fun `LEADING keeps the top endpoint at the true edge, pulls the bottom in by the cut`() {
-        val (top, bottom) = tactileSlantEdge(width = 100f, slant = 22f, side = TactileSlantSide.LEADING)
-        assertEquals(0f, top, 0f)
-        assertEquals(22f, bottom, 0f)
+    fun `LEADING keeps the top corner at the true edge, pulls the bottom in by the run`() {
+        val quad = tactileSlantPolygon(width = 200f, height = 48f, side = TactileSlantSide.LEADING)
+        assertEquals("top-left sits at the un-cut edge", 0f, quad[0].x, 0f)
+        assertEquals("bottom-left is pulled in by the run", 48f * TactileSlantRatio, quad[3].x, 0.001f)
     }
 
     @Test
-    fun `TRAILING keeps the top endpoint at the true edge, pulls the bottom in by the cut`() {
-        val (top, bottom) = tactileSlantEdge(width = 100f, slant = 22f, side = TactileSlantSide.TRAILING)
-        assertEquals(100f, top, 0f)
-        assertEquals(78f, bottom, 0f)
+    fun `TRAILING keeps the top corner at the true edge, pulls the bottom in by the run`() {
+        val quad = tactileSlantPolygon(width = 200f, height = 48f, side = TactileSlantSide.TRAILING)
+        assertEquals("top-right sits at the un-cut edge", 200f, quad[1].x, 0f)
+        assertEquals("bottom-right is pulled in by the run", 200f - 48f * TactileSlantRatio, quad[2].x, 0.001f)
+    }
+
+    /**
+     * The Build-11.5 shard regression, pinned: the lean is a fraction of the element's own HEIGHT,
+     * so a short knob gets a short run instead of the chrome's fixed 22dp gash. A 30dp knob used
+     * to lose 22 of its 30dp to the cut; here the same knob loses barely five.
+     */
+    @Test
+    fun `the lean scales with height, so a small knob keeps almost all of its width`() {
+        val knobRun = tactileSlantRun(width = 30f, height = 30f)
+        assertTrue("a 30dp knob must not lose most of its width to the lean", knobRun < 30f * 0.3f)
+        val fieldRun = tactileSlantRun(width = 300f, height = 52f)
+        assertTrue("a taller body leans further than a shorter one", fieldRun > knobRun)
     }
 
     @Test
-    fun `slant clamps to the element's own width, mirroring FolderTabShape's own invariant`() {
-        val (topLeading, bottomLeading) = tactileSlantEdge(width = 10f, slant = 22f, side = TactileSlantSide.LEADING)
-        assertEquals(0f, topLeading, 0f)
-        assertEquals(10f, bottomLeading, 0f) // the cut cannot exceed the element's own width
-        val (topTrailing, bottomTrailing) = tactileSlantEdge(width = 10f, slant = 22f, side = TactileSlantSide.TRAILING)
-        assertEquals(10f, topTrailing, 0f)
-        assertEquals(0f, bottomTrailing, 0f)
+    fun `the run never exceeds a quarter of the element's own width`() {
+        listOf(8f to 48f, 20f to 52f, 30f to 90f, 200f to 56f).forEach { (w, h) ->
+            val run = tactileSlantRun(w, h)
+            assertTrue("run $run must stay within a quarter of width $w", run <= w * 0.25f + 0.001f)
+            assertTrue("run must never be negative", run >= 0f)
+        }
     }
 
     @Test
-    fun `LEADING and TRAILING mirror each other at the same width and slant`() {
-        val width = 64f
-        val slant = 18f
-        val (topL, bottomL) = tactileSlantEdge(width, slant, TactileSlantSide.LEADING)
-        val (topT, bottomT) = tactileSlantEdge(width, slant, TactileSlantSide.TRAILING)
-        assertEquals(width - topT, topL, 0f)
-        assertEquals(width - bottomT, bottomL, 0f)
+    fun `LEADING and TRAILING mirror each other at the same size`() {
+        val leading = tactileSlantPolygon(64f, 48f, TactileSlantSide.LEADING)
+        val trailing = tactileSlantPolygon(64f, 48f, TactileSlantSide.TRAILING)
+        assertEquals(64f - trailing[2].x, leading[3].x, 0.001f)
+        assertEquals(64f - trailing[1].x, leading[0].x, 0.001f)
     }
 
     @Test
-    fun `a negative slant request never produces an out-of-bounds edge`() {
-        val (top, bottom) = tactileSlantEdge(width = 50f, slant = -10f, side = TactileSlantSide.LEADING)
-        assertTrue(top in 0f..50f)
-        assertTrue(bottom in 0f..50f)
+    fun `a zero-width element never produces an out-of-bounds corner`() {
+        val quad = tactileSlantPolygon(width = 0f, height = 48f, side = TactileSlantSide.LEADING)
+        assertEquals(4, quad.size)
+        quad.forEach { assertTrue(it.x.isFinite() && it.y.isFinite()) }
+        assertEquals(0f, tactileSlantRun(0f, 48f), 0f)
+    }
+
+    // -- slanted body polygon ---------------------------------------------------------------------
+
+    @Test
+    fun `the slanted body is a four-corner quad with only one leaning edge`() {
+        val w = 120f
+        val h = 48f
+        val run = tactileSlantRun(w, h)
+        val leading = tactileSlantPolygon(w, h, TactileSlantSide.LEADING)
+        assertEquals(4, leading.size)
+        assertEquals(Offset(0f, 0f), leading[0])
+        assertEquals(Offset(w, 0f), leading[1])
+        assertEquals(Offset(w, h), leading[2])
+        assertEquals(Offset(run, h), leading[3])
+        // The trailing/right edge stays perfectly vertical -- only the leading one leans.
+        assertEquals(leading[1].x, leading[2].x, 0f)
+
+        val trailing = tactileSlantPolygon(w, h, TactileSlantSide.TRAILING)
+        assertEquals(Offset(w - run, h), trailing[2])
+        assertEquals(trailing[0].x, trailing[3].x, 0f)
     }
 
     // -- glint geometry -------------------------------------------------------------------------
@@ -76,13 +108,30 @@ class TactileRecipesTest {
         }
     }
 
+    /**
+     * The other half of the Build-11.5 regression: the dot used to be pinned to the element's
+     * extreme corner pixel while the arc sat on its own inset circle, so the two read as an
+     * unrelated comma and a speck of dirt. One mark means one circle.
+     */
     @Test
-    fun `glint always hugs the top-right corner`() {
+    fun `the glint dot rides the same circle as the arc`() {
+        listOf(20f to 20f, 48f to 44f, 100f to 48f, 200f to 56f).forEach { (w, h) ->
+            val g = tactileGlintGeometry(w, h)
+            val distance = hypot(g.dotCenter.x - g.arcCenter.x, g.dotCenter.y - g.arcCenter.y)
+            assertEquals("dot must sit on the arc's radius ($w x $h)", g.arcRadius, distance, 0.01f)
+        }
+    }
+
+    @Test
+    fun `the glint dot follows the arc round the corner, never overlapping it`() {
         val g = tactileGlintGeometry(100f, 48f)
         assertTrue("arc centre sits in the right half", g.arcCenter.x > 50f)
         assertTrue("arc centre sits in the top half", g.arcCenter.y < 24f)
-        assertTrue("the dot sits further into the corner than the arc centre", g.dotCenter.x > g.arcCenter.x)
-        assertTrue(g.dotCenter.y < g.arcCenter.y)
+        // The dot picks up after the arc's sweep ends, so it is further clockwise: further right
+        // and further down the corner than where the stroke stopped.
+        val arcEnd = g.startAngleDegrees + g.sweepAngleDegrees
+        assertTrue("the dot must start after the arc ends", 336f > arcEnd)
+        assertTrue(g.dotCenter.x > g.arcCenter.x)
     }
 
     // -- slash-tick geometry --------------------------------------------------------------------

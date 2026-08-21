@@ -17,14 +17,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -35,7 +32,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.ui.chrome.folderTabSlant
 import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.ShadowLevel
 import io.github.mbaliga.fylz.ui.theme.softShadow
@@ -55,21 +51,69 @@ import kotlin.math.sin
 internal enum class TactileSlantSide { LEADING, TRAILING }
 
 /**
- * The slanted edge's two endpoint x-coordinates (top, bottom), reusing
- * [io.github.mbaliga.fylz.ui.chrome.folderTabSlant]'s own width-clamping so a cap or field
- * squeezed narrower than its slant still produces a closed, non-crossing edge -- the same
- * invariant `FolderTabShapeTest` proves for the chrome's own tabs.
+ * How far the slanted edge's bottom is pulled in from its top, as a fraction of the element's
+ * HEIGHT -- about 9.6 degrees off vertical.
  *
- * The TOP endpoint always sits at the true, un-cut edge (the maximal reach toward the "away"
- * side) while the BOTTOM endpoint is pulled inward by the clamped cut -- the owner frames' "top
- * overhanging toward the inactive side" line, expressed once here instead of re-derived per shape.
+ * Deliberately NOT [io.github.mbaliga.fylz.ui.chrome.FolderTabSlant] (22dp). That constant is an
+ * absolute run tuned for the chrome's own wide, short folder tabs; reused verbatim on a 30dp knob
+ * or a 42dp cap it consumes most of the element's width and the "lean" reads as a torn shard --
+ * the Build-11.5 render pass shipped exactly that. The lean has to scale with the thing it is
+ * cutting, so it is a ratio of height here, clamped below against the element's own width.
  */
-internal fun tactileSlantEdge(width: Float, slant: Float, side: TactileSlantSide): Pair<Float, Float> {
-    val cut = folderTabSlant(slant, width)
+internal const val TactileSlantRatio: Float = 0.17f
+
+/** The slanted edge's horizontal run for a [width] x [height] element: [TactileSlantRatio] of the
+ *  height, but never more than a quarter of the width, so a narrow knob still reads as a keycap
+ *  with a leaning edge rather than a wedge. */
+internal fun tactileSlantRun(width: Float, height: Float): Float =
+    (height * TactileSlantRatio).coerceAtMost(width * 0.25f).coerceAtLeast(0f)
+
+/**
+ * The four corners of a slanted keycap/field body, clockwise from the top-left, ready for
+ * [roundedPolygonPath]. Only ONE vertical edge leans; the other three sides stay axis-aligned.
+ */
+internal fun tactileSlantPolygon(width: Float, height: Float, side: TactileSlantSide): List<Offset> {
+    val run = tactileSlantRun(width, height)
     return when (side) {
-        TactileSlantSide.LEADING -> 0f to cut
-        TactileSlantSide.TRAILING -> width to (width - cut)
+        TactileSlantSide.LEADING -> listOf(
+            Offset(0f, 0f), Offset(width, 0f), Offset(width, height), Offset(run, height),
+        )
+        TactileSlantSide.TRAILING -> listOf(
+            Offset(0f, 0f), Offset(width, 0f), Offset(width - run, height), Offset(0f, height),
+        )
     }
+}
+
+/**
+ * A closed path through [points] with every corner rounded to [radius] -- including the two on a
+ * slanted edge, which is the whole point of it.
+ *
+ * The previous implementation intersected a rounded rect with a straight-edged keep region, which
+ * necessarily squared off BOTH corners of the slanted side (a hard point at each end of the lean).
+ * Walking the polygon and easing each vertex with a quadratic instead keeps all four corners round
+ * on any convex quad, so a leaning cap still reads as a keycap. Each corner's radius is clamped to
+ * half of its shorter adjacent edge, so a short edge cannot produce crossing control points.
+ */
+internal fun roundedPolygonPath(points: List<Offset>, radius: Float): Path {
+    val path = Path()
+    if (points.size < 3) return path
+    val n = points.size
+    points.forEachIndexed { i, v ->
+        val prev = points[(i - 1 + n) % n]
+        val next = points[(i + 1) % n]
+        val toPrev = prev - v
+        val toNext = next - v
+        val lenPrev = toPrev.getDistance()
+        val lenNext = toNext.getDistance()
+        if (lenPrev <= 0f || lenNext <= 0f) return@forEachIndexed
+        val r = minOf(radius, lenPrev / 2f, lenNext / 2f)
+        val entry = v + toPrev * (r / lenPrev)
+        val exit = v + toNext * (r / lenNext)
+        if (i == 0) path.moveTo(entry.x, entry.y) else path.lineTo(entry.x, entry.y)
+        path.quadraticTo(v.x, v.y, exit.x, exit.y)
+    }
+    path.close()
+    return path
 }
 
 /** The glint's arc + dot placement, always hugging the cap's own top-right corner. */
@@ -77,19 +121,50 @@ internal data class TactileGlintGeometry(
     val arcCenter: Offset,
     val arcRadius: Float,
     val strokeWidth: Float,
+    val startAngleDegrees: Float,
+    val sweepAngleDegrees: Float,
     val dotCenter: Offset,
     val dotRadius: Float,
 )
 
+/** Where the arc stops and the dot picks up again, in degrees on the glint's own circle. 270 is
+ *  straight up (the top edge) and 360 is straight right (the trailing edge), so the pair rides the
+ *  corner's own diagonal at 315. */
+private const val GlintArcStart = 274f
+private const val GlintArcSweep = 44f
+private const val GlintDotAngle = 336f
+
+/**
+ * The comic shine mark: a short stroke riding the cap's top-right corner, then a smaller dot
+ * continuing along the SAME circle after a gap.
+ *
+ * Both marks share one centre and one radius, which is what makes them read as a single highlight
+ * catching the corner. The previous implementation centred the arc's sweep on 285 degrees (the top
+ * of the circle, not the corner) and then placed the dot at the element's extreme corner pixel --
+ * off the arc's circle entirely, and far enough away that the two read as an unrelated comma and a
+ * crumb of dirt rather than one mark. Keep them concentric.
+ */
 internal fun tactileGlintGeometry(width: Float, height: Float): TactileGlintGeometry {
     val short = minOf(width, height)
-    val margin = short * 0.16f
-    val arcRadius = short * 0.14f
-    val stroke = height * 0.045f
-    val arcCenter = Offset(width - margin - arcRadius, margin + arcRadius)
-    val dotRadius = stroke * 0.7f
-    val dotCenter = Offset(width - margin * 0.5f, margin * 0.5f)
-    return TactileGlintGeometry(arcCenter, arcRadius, stroke, dotCenter, dotRadius)
+    // Sized off the SHORT side so a wide, flat cap's glint does not grow past its own corner.
+    val arcRadius = short * 0.20f
+    val pad = short * 0.11f
+    val stroke = (short * 0.055f).coerceAtLeast(1f)
+    val arcCenter = Offset(width - arcRadius - pad, arcRadius + pad)
+    val dotAngle = Math.toRadians(GlintDotAngle.toDouble())
+    val dotCenter = Offset(
+        arcCenter.x + arcRadius * cos(dotAngle).toFloat(),
+        arcCenter.y + arcRadius * sin(dotAngle).toFloat(),
+    )
+    return TactileGlintGeometry(
+        arcCenter = arcCenter,
+        arcRadius = arcRadius,
+        strokeWidth = stroke,
+        startAngleDegrees = GlintArcStart,
+        sweepAngleDegrees = GlintArcSweep,
+        dotCenter = dotCenter,
+        dotRadius = stroke * 0.55f,
+    )
 }
 
 /** The state slash's parallelogram (4 points, clockwise) plus an optional floating dot above it
@@ -101,16 +176,18 @@ internal data class TactileSlashGeometry(
 )
 
 internal fun tactileSlashGeometry(height: Float, withErrorDot: Boolean): TactileSlashGeometry {
-    val barHeight = height * 0.42f
-    val barWidth = height * 0.16f
-    val skew = height * 0.09f
-    val dotClearance = if (withErrorDot) height * 0.16f else 0f
-    val top = (height - barHeight) / 2f + dotClearance / 2f
+    val barHeight = height * 0.38f
+    val barWidth = height * 0.125f
+    // The bar leans at exactly the body's own [TactileSlantRatio], so it reads as a tick cut from
+    // the same leading edge it sits on rather than an unrelated floating parallelogram.
+    val skew = barHeight * TactileSlantRatio
+    val dotGap = if (withErrorDot) height * 0.10f else 0f
+    val top = (height - barHeight) / 2f + dotGap / 2f
     val bottom = top + barHeight
-    // Hugs/pokes past the field's own leading edge: local x runs slightly negative so the caller
-    // (which positions this DrawScope just inside the slanted leading edge) reads the bar as
-    // poking past it rather than floating fully inside the field body.
-    val left = -barWidth * 0.35f
+    // Straddles the field's own leading edge: the caller positions this DrawScope at the body's
+    // left, and the body's edge at mid-height sits half a slant-run in, so a bar spanning a little
+    // either side of x=0 pokes past the edge instead of floating clear of it.
+    val left = -barWidth * 0.30f
     val right = left + barWidth
     val bar = listOf(
         Offset(left + skew, top),
@@ -118,9 +195,9 @@ internal fun tactileSlashGeometry(height: Float, withErrorDot: Boolean): Tactile
         Offset(right, bottom),
         Offset(left, bottom),
     )
-    val dotRadius = height * 0.045f
+    val dotRadius = barWidth * 0.42f
     val dotCenter = if (withErrorDot) {
-        Offset((left + right) / 2f + skew * 1.5f, top - dotClearance)
+        Offset((left + right) / 2f + skew, top - dotGap - dotRadius * 0.4f)
     } else {
         null
     }
@@ -189,41 +266,28 @@ internal fun tactileFractionAtOffsetX(x: Float, trackWidth: Float, thumbRadius: 
 // ---------------------------------------------------------------------------------------------
 
 /**
- * A rounded rect with one vertical edge replaced by [tactileSlantEdge]'s diagonal -- the shared
- * outline for both a toggle/switch cap and a [TactileField]'s own slanted-leading-edge body.
- * Built the same subtract/intersect way [io.github.mbaliga.fylz.ui.components.DogEarPage]'s own
- * shape cuts its dog-ear corner: a full rounded rect intersected with a straight-edged keep
- * region, so the three un-slanted corners stay perfectly round and only the slanted edge is sharp.
+ * A keycap/field body with one vertical edge leaning at [TactileSlantRatio] and all four corners
+ * still rounded to [cornerRadius] -- the shared outline for a toggle cap, a switch knob and a
+ * [TactileField]'s own slanted leading edge.
+ *
+ * Built by rounding the corners of [tactileSlantPolygon] rather than by intersecting a rounded
+ * rect with a straight-edged keep region: that older construction squared off both ends of the
+ * lean into hard points, which is most of why the shipped Build-11.5 caps read as torn shards.
  */
 internal class TactileSlantShape(
     private val side: TactileSlantSide,
-    private val slant: Dp,
     private val cornerRadius: Dp,
 ) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
         with(density) {
-            val w = size.width
-            val h = size.height
-            val radius = cornerRadius.toPx().coerceAtMost(minOf(w, h) / 2f)
-            val (topX, bottomX) = tactileSlantEdge(w, slant.toPx(), side)
-            val base = Path().apply { addRoundRect(RoundRect(Rect(0f, 0f, w, h), CornerRadius(radius))) }
-            val keep = Path().apply {
-                when (side) {
-                    TactileSlantSide.LEADING -> {
-                        moveTo(topX, 0f); lineTo(w, 0f); lineTo(w, h); lineTo(bottomX, h); close()
-                    }
-                    TactileSlantSide.TRAILING -> {
-                        moveTo(0f, 0f); lineTo(topX, 0f); lineTo(bottomX, h); lineTo(0f, h); close()
-                    }
-                }
-            }
-            Outline.Generic(Path().apply { op(base, keep, PathOperation.Intersect) })
+            val radius = cornerRadius.toPx().coerceAtMost(minOf(size.width, size.height) / 2f)
+            Outline.Generic(roundedPolygonPath(tactileSlantPolygon(size.width, size.height, side), radius))
         }
 
     override fun equals(other: Any?): Boolean =
-        other is TactileSlantShape && other.side == side && other.slant == slant && other.cornerRadius == cornerRadius
+        other is TactileSlantShape && other.side == side && other.cornerRadius == cornerRadius
 
-    override fun hashCode(): Int = (side.hashCode() * 31 + slant.hashCode()) * 31 + cornerRadius.hashCode()
+    override fun hashCode(): Int = side.hashCode() * 31 + cornerRadius.hashCode()
 }
 
 /** A [shape]'s outline as a plain [Path], for the rare case a caller needs to stroke it directly
@@ -245,8 +309,8 @@ internal fun DrawScope.drawTactileGlint(color: Color) {
     val g = tactileGlintGeometry(size.width, size.height)
     drawArc(
         color = color,
-        startAngle = 250f,
-        sweepAngle = 70f,
+        startAngle = g.startAngleDegrees,
+        sweepAngle = g.sweepAngleDegrees,
         useCenter = false,
         topLeft = Offset(g.arcCenter.x - g.arcRadius, g.arcCenter.y - g.arcRadius),
         size = Size(g.arcRadius * 2f, g.arcRadius * 2f),
@@ -274,7 +338,7 @@ internal fun DrawScope.drawTactileAsterisk(color: Color) {
     val dim = size.minDimension
     val shift = Offset((size.width - dim) / 2f, (size.height - dim) / 2f)
     val center = Offset(dim / 2f, dim / 2f) + shift
-    val strokeWidth = dim * 0.16f
+    val strokeWidth = dim * 0.12f
     tactileAsteriskSpokes(dim).forEach { p ->
         drawLine(color = color, start = center, end = p + shift, strokeWidth = strokeWidth, cap = StrokeCap.Round)
     }
@@ -291,28 +355,47 @@ internal fun DrawScope.drawTactileAsterisk(color: Color) {
  */
 private val TactileDefaultPlateShape = RoundedCornerShape(FylzGeometry.RadiusXl)
 
-/** PLATE (container): flat fill + a bevel channel (thin top/left inner highlight) + [softShadow]. */
+/**
+ * PLATE (container): a shallow WELL for a cap to sit in -- fill, top-down inset shading, a light
+ * lip along the bottom wall, and a hairline following the plate's own outline.
+ *
+ * The previous version drew a 1dp white highlight along the top and left instead, which is the
+ * bevel of a RAISED slab: it fought the cap's own "floating above the plate" story and, at 1dp on
+ * a light-gray fill, was invisible anyway, leaving the plate reading as a flat blob. Light falls
+ * from above in this kit, so a recess is dark at its top wall and light at its bottom one.
+ */
 internal fun Modifier.tactilePlate(palette: TactilePalette, shape: Shape = TactileDefaultPlateShape): Modifier =
     this
         .softShadow(ShadowLevel.SM, shape)
         .clip(shape)
         .drawWithContent {
             drawRect(palette.plate)
+            val well = size.height * 0.34f
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        TactileBevelDark2.copy(alpha = if (palette.isDark) 0.30f else 0.11f),
+                        Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = well,
+                ),
+                size = Size(size.width, well),
+            )
             drawContent()
             val stroke = 1.dp.toPx()
-            val topAlpha = if (palette.isDark) 0.5f else 0.75f
-            val sideAlpha = if (palette.isDark) 0.35f else 0.5f
             drawLine(
-                color = palette.plateHighlight.copy(alpha = topAlpha),
-                start = Offset(stroke, stroke / 2f),
-                end = Offset(size.width - stroke, stroke / 2f),
+                color = palette.plateHighlight.copy(alpha = if (palette.isDark) 0.14f else 0.9f),
+                start = Offset(stroke * 3f, size.height - stroke * 0.5f),
+                end = Offset(size.width - stroke * 3f, size.height - stroke * 0.5f),
                 strokeWidth = stroke,
             )
-            drawLine(
-                color = palette.plateHighlight.copy(alpha = sideAlpha),
-                start = Offset(stroke / 2f, stroke),
-                end = Offset(stroke / 2f, size.height - stroke),
-                strokeWidth = stroke,
+            // Follows the plate's OWN outline -- a pill or slanted plate must not get a
+            // rectangular ring, the same reasoning as [tactileCap]'s rim below.
+            drawPath(
+                path = tactileOutlinePath(shape, size, layoutDirection, this),
+                color = palette.edge,
+                style = Stroke(width = stroke),
             )
         }
 
@@ -405,11 +488,16 @@ internal fun Modifier.tactileFieldGroove(palette: TactilePalette, shape: Shape):
                     listOf(palette.fieldGradientTop, palette.fieldGradientMid, palette.fieldGradientBase),
                 ),
             )
-            drawContent()
-            val shadowHeight = 6.dp.toPx()
+            // Inset shading and lip are painted BEFORE the caller's content, not after: drawn on
+            // top they veiled the first few dp of the field's own text, dimming exactly the line
+            // the user is reading. The groove is behind the text, so it paints behind the text.
+            val shadowHeight = (size.height * 0.16f).coerceAtMost(8.dp.toPx())
             drawRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(TactileBevelDark2.copy(alpha = TactileBevelDark2.alpha * 0.5f), Color.Transparent),
+                    colors = listOf(
+                        TactileBevelDark2.copy(alpha = if (palette.isDark) 0.5f else 0.07f),
+                        Color.Transparent,
+                    ),
                     startY = 0f,
                     endY = shadowHeight,
                 ),
@@ -417,6 +505,40 @@ internal fun Modifier.tactileFieldGroove(palette: TactilePalette, shape: Shape):
             )
             val lip = 1.dp.toPx()
             drawRect(color = TactileBevelLip, topLeft = Offset(0f, size.height - lip), size = Size(size.width, lip))
+            drawContent()
+        }
+
+/**
+ * A slider's CHANNEL: the same recessed read as [tactileFieldGroove] but over the PLATE tone
+ * rather than the field body's own fill.
+ *
+ * A field is a light figure sitting ON the page; a slider track is a groove cut INTO it. Sharing
+ * the field's fill meant the light skin drew a white channel on a near-white ground -- the unfilled
+ * part of the track simply was not there, leaving a bare violet bar floating in space.
+ */
+internal fun Modifier.tactileTrackGroove(palette: TactilePalette, shape: Shape): Modifier =
+    this
+        .clip(shape)
+        .drawWithContent {
+            drawRect(palette.plate)
+            val inset = size.height * 0.45f
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        TactileBevelDark2.copy(alpha = if (palette.isDark) 0.55f else 0.16f),
+                        Color.Transparent,
+                    ),
+                    startY = 0f,
+                    endY = inset,
+                ),
+                size = Size(size.width, inset),
+            )
+            drawContent()
+            drawPath(
+                path = tactileOutlinePath(shape, size, layoutDirection, this),
+                color = palette.edge,
+                style = Stroke(width = 1.dp.toPx()),
+            )
         }
 
 /** Interior accent wash for a latched/ON/checked control -- the ON state's second channel, drawn

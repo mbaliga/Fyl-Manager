@@ -85,7 +85,12 @@ fun TactileButton(
                 onClick = onClick,
             )
             .then(
-                when (style) {
+                // A DISABLED button drops to the plate recipe whatever its style: a dark PRIMARY
+                // cap faded to 38% is still a big mid-gray slab that reads HEAVIER than the
+                // enabled SECONDARY next to it, which is backwards. Un-pressing it into the
+                // surface is the honest "not actionable" read, and it keeps the 38% fade the
+                // owner's state sheet asks for instead of inventing a second disabled language.
+                when (if (enabled) style else TactileButtonStyle.SECONDARY) {
                     TactileButtonStyle.SECONDARY -> Modifier.tactilePlate(palette, shape).drawWithContent {
                         drawContent()
                         drawRect(Color.Black.copy(alpha = 0.06f * press.shadow))
@@ -99,7 +104,7 @@ fun TactileButton(
         Text(
             text,
             style = MaterialTheme.typography.labelLarge,
-            color = if (style == TactileButtonStyle.SECONDARY) palette.onPlate else palette.onCap,
+            color = if (style == TactileButtonStyle.SECONDARY || !enabled) palette.onPlate else palette.onCap,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(horizontal = ButtonHorizontalPadding, vertical = ButtonVerticalPadding),
@@ -113,17 +118,20 @@ fun TactileButton(
  *
  * All three stops shade TOWARD black rather than straddling [TactilePalette.danger] itself: the
  * raw token (`#E5564B`) is light enough that the white label above it would dip under the 4.5:1
- * text-contrast floor wherever it happens to sit on the gradient. Darkening throughout (down to
- * roughly a `#95382E`-`#661E19` range) keeps every stop comfortably past that floor while still
- * reading as the same danger-red family, the same way most real destructive-action reds run
- * darker than their own "danger" accent swatch for exactly this reason.
+ * text-contrast floor wherever it happens to sit on the gradient.
+ *
+ * The shading is deliberately SHALLOW (roughly `#C44A41` down to `#8E3630`). The first pass drove
+ * it to 30-60% black, which lands around `#95382E`-`#661E19` -- past "dark red" and into a muddy
+ * near-brown that reads as a rendering fault rather than a destructive action. Every stop here
+ * still clears the 4.5:1 floor against a white label (the lightest measures ~4.8:1) while staying
+ * recognisably the danger family's own red.
  */
 private fun dangerCapPalette(palette: TactilePalette): TactilePalette {
     val danger = palette.danger
     return palette.copy(
-        capHigh = lerp(danger, Color.Black, 0.30f),
-        capMid = lerp(danger, Color.Black, 0.45f),
-        capBase = lerp(danger, Color.Black, 0.60f),
+        capHigh = lerp(danger, Color.Black, 0.14f),
+        capMid = lerp(danger, Color.Black, 0.26f),
+        capBase = lerp(danger, Color.Black, 0.38f),
     )
 }
 

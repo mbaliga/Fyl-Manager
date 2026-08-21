@@ -1,6 +1,5 @@
 package io.github.mbaliga.fylz.ui.tactile
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.Orientation
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.progressSemantics
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
@@ -43,12 +41,16 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
 import kotlin.math.roundToInt
 
-private val TrackHeight = 8.dp
-private val ThumbSize = 28.dp
+private val TrackHeight = 10.dp
+/** The thumb is a KEYCAP, not a disc -- same vocabulary as every other control in this kit, where
+ *  a round thumb on a flat bar is exactly the stock-Material read the kit exists to replace. */
+private val ThumbWidth = 30.dp
+private val ThumbHeight = 22.dp
 private val TouchTargetBand = 48.dp
 
 /**
@@ -73,7 +75,7 @@ fun TactileSlider(
 
     val palette = tactilePalette()
     val density = LocalDensity.current
-    val thumbRadiusPx = with(density) { (ThumbSize / 2).toPx() }
+    val thumbRadiusPx = with(density) { (ThumbWidth / 2).toPx() }
     var trackWidthPx by remember { mutableFloatStateOf(0f) }
     var dragXPx by remember { mutableFloatStateOf(0f) }
     val fraction = tactileSliderFraction(value, valueRange)
@@ -94,7 +96,7 @@ fun TactileSlider(
             .heightIn(min = TouchTargetBand)
             .alpha(if (enabled) 1f else 0.38f)
             .onSizeChanged { trackWidthPx = it.width.toFloat() }
-            .tactileFocusRing(focused, palette.accent, cornerRadius = ThumbSize / 2)
+            .tactileFocusRing(focused, palette.accent, cornerRadius = TrackHeight / 2)
             .focusable(enabled = enabled, interactionSource = focusInteraction)
             .progressSemantics(value, valueRange)
             .semantics {
@@ -128,31 +130,30 @@ fun TactileSlider(
                 .fillMaxWidth()
                 .height(TrackHeight)
                 .align(Alignment.Center)
-                .tactileFieldGroove(palette, RoundedCornerShape(50)),
+                .tactileTrackGroove(palette, RoundedCornerShape(50)),
         )
         if (trackWidthPx > 0f) {
             val thumbCenterXPx = tactileThumbCenterX(fraction, trackWidthPx, thumbRadiusPx)
             val fillWidthDp = with(density) { thumbCenterXPx.toDp() }
+            // Inset by 1dp top and bottom so the groove's own dark lip still frames the fill --
+            // a fill flush to the channel's edges just reads as a flat painted bar.
             Box(
                 Modifier
                     .width(fillWidthDp)
-                    .height(TrackHeight)
+                    .height(TrackHeight - 2.dp)
                     .align(Alignment.CenterStart)
+                    .padding(horizontal = 1.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(palette.accent.copy(alpha = 0.9f)),
+                    .background(palette.accent),
             )
             val thumbXDp = with(density) { (thumbCenterXPx - thumbRadiusPx).toDp() }
             Box(
                 Modifier
                     .offset(x = thumbXDp)
                     .align(Alignment.CenterStart)
-                    .size(ThumbSize)
-                    .tactileCap(palette, CircleShape, showGlint = false) { 0f },
-            ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    drawCircle(TactileBevelDark2.copy(alpha = 0.35f), radius = size.minDimension * 0.14f, center = center)
-                }
-            }
+                    .size(width = ThumbWidth, height = ThumbHeight)
+                    .tactileCap(palette, RoundedCornerShape(FylzGeometry.RadiusMd)) { 0f },
+            )
         }
     }
 }

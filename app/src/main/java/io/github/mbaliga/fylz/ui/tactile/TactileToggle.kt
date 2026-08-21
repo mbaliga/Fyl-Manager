@@ -41,7 +41,6 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.ui.chrome.FolderTabSlant
 import io.github.mbaliga.fylz.ui.motion.FylzMotion
 import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
@@ -58,8 +57,8 @@ data class TactileToggleOption(
 )
 
 private val ToggleHeight = 48.dp
-private val SegmentMinWidth = 56.dp
-private val CapGap = 3.dp
+private val SegmentMinWidth = 44.dp
+private val CapGap = 4.dp
 
 /**
  * The owner's reference segmented control: a plate with a sliding keycap under whichever segment
@@ -129,7 +128,7 @@ fun TactileToggle(
         // inactive content on both sides -- TRAILING is an arbitrary but deterministic default
         // for that case, same as any other segment that isn't an end.
         val capSide = if (clampedSelected == options.lastIndex) TactileSlantSide.LEADING else TactileSlantSide.TRAILING
-        val capShape = remember(capSide) { TactileSlantShape(capSide, FolderTabSlant, FylzGeometry.RadiusLg) }
+        val capShape = remember(capSide) { TactileSlantShape(capSide, FylzGeometry.RadiusMd) }
 
         if (capWidth > 0f) {
             Box(

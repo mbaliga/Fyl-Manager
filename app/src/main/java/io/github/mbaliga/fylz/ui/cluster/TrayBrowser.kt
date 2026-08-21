@@ -22,7 +22,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -52,6 +51,8 @@ import io.github.mbaliga.fylz.ui.components.StackCard
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileToggle
+import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
 
 /**
  * The expanded clipboard/move bulge: the tray's contents, browsable.
@@ -115,23 +116,21 @@ internal fun TrayBrowserSheet(
                     )
                 }
 
-                // Kept stock: only two chips ever appear here (clipboard vs. move tray) in one
-                // tightly-spaced row (spacedBy 8dp) sharing the sheet's own 20dp side padding --
-                // FilterChip's compact selected/unselected pill is exactly what that row has room
-                // for, and a TactileButton pair would either crowd the row or force a wider sheet.
+                // Genuinely a 2-way single-select -- TrayKind has exactly CLIPBOARD/MOVE, never
+                // more -- so this is TactileToggle's own shape (2-3 segments) rather than the
+                // stock FilterChip pair it replaces. selectedIndex/onSelect map straight onto
+                // the same two-candidate list the chips iterated.
                 if (otherTray != null && !otherTray.isEmpty) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    val candidates = listOf(tray, otherTray).sortedBy { it.kind }
+                    TactileToggle(
+                        options = candidates.map { candidate ->
+                            val text = "${candidate.kind.title()} · ${candidate.size}"
+                            TactileToggleOption(label = text, contentDescription = text)
+                        },
+                        selectedIndex = candidates.indexOfFirst { it.kind == tray.kind },
+                        onSelect = { index -> onPickTray(candidates[index].kind) },
                         modifier = Modifier.padding(horizontal = 20.dp),
-                    ) {
-                        listOf(tray, otherTray).sortedBy { it.kind }.forEach { candidate ->
-                            FilterChip(
-                                selected = candidate.kind == tray.kind,
-                                onClick = { onPickTray(candidate.kind) },
-                                label = { Text("${candidate.kind.title()} · ${candidate.size}") },
-                            )
-                        }
-                    }
+                    )
                 }
 
                 LoopedTrayRow(

@@ -77,7 +77,6 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
-import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -489,17 +488,25 @@ private fun QuickLookCard(
             // One tiny close, nothing else -- the rail and the anchor/dock/close trio only make
             // sense at a size where their own pills fit.
             //
-            // TactileIconKey's own >=48dp touch-target floor (the kit's hard rule) is a large
-            // fraction of this whole 132x96dp mini card -- the old 20dp glyph undershot that floor
-            // outright, so this also fixes a pre-existing touch-target violation, not just a style
-            // swap. Flagged for the render pass: verify the docked card still reads as a mini
-            // preview once this corner grows.
-            TactileIconKey(
-                icon = Icons.Outlined.Close,
-                contentDescription = "Close preview",
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.TopEnd),
-            )
+            // This needs a >=48dp touch target (the kit's hard rule) without the drawn control
+            // itself swallowing a card that is only 132x84-96dp: a 48x44dp TactileIconKey keycap
+            // (plate + focus ring + a 22dp glyph) covers over a third of the card's width and more
+            // than half its height. TactileIconKey has no parameter to shrink that visual box
+            // independently of the touch target -- read its source: the outer Box's `sizeIn(min =
+            // 48dp)` is a FLOOR the caller's modifier can widen but the inner visual Box is a
+            // hardcoded `.size(48.dp, 44.dp)` no modifier passed in here ever reaches -- and this
+            // file doesn't own that kit file to add one. [PreviewChromeButton] just below is this
+            // same file's own existing answer to "a small floating icon control over arbitrary
+            // preview content": a 48dp touch target (`Modifier.size(QuickLookSlot)`, same floor)
+            // around a bare 22dp glyph with no keycap plate at all. Reusing it here keeps the
+            // touch target and drops the visible footprint to that one glyph.
+            Box(Modifier.align(Alignment.TopEnd)) {
+                PreviewChromeButton(
+                    icon = Icons.Outlined.Close,
+                    label = "Close preview",
+                    onClick = onDismiss,
+                )
+            }
         } else {
             // Drawn before the chrome pills, not after: the two overlap by design in the very
             // corner (the pill floats 10dp in, the drag target starts flush at the edge), and a

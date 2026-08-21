@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -40,7 +39,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
-import io.github.mbaliga.fylz.ui.chrome.FolderTabSlant
 import io.github.mbaliga.fylz.ui.theme.FylzGeometry
 import io.github.mbaliga.fylz.ui.theme.LocalThemeStyle
 import io.github.mbaliga.fylz.ui.theme.ThemeStyle
@@ -59,10 +57,10 @@ sealed interface TactileFieldState {
     data class Error(val message: String? = null) : TactileFieldState
 }
 
-private val FieldHeight = 48.dp
+private val FieldHeight = 52.dp
 private val FieldRadius = FylzGeometry.RadiusLg
-private val SlashSlotWidth = 20.dp
-private val AsteriskSlot = 16.dp
+private val SlashSlotWidth = 18.dp
+private val AsteriskSlot = 12.dp
 
 /**
  * A text-entry field in the owner's state-sheet anatomy: a near-white (dark: recessed groove)
@@ -105,7 +103,10 @@ fun TactileField(
     Column(modifier.semantics(mergeDescendants = true) {}) {
         label?.let {
             Text(
-                it,
+                // microLabel() carries Hyle's 0.2em tracking, which is a signature only when the
+                // text is also uppercase -- applied to mixed-case text the wide spacing just reads
+                // as broken kerning. Compose has no text-transform, so fold the case here.
+                it.uppercase(),
                 style = microLabel(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 6.dp, start = SlashSlotWidth + 8.dp),
@@ -121,7 +122,7 @@ fun TactileField(
         ) {
             Box(Modifier.weight(1f)) {
                 if (value.isEmpty() && placeholder != null) {
-                    Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = palette.indicatorIdle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(placeholder, style = MaterialTheme.typography.bodyMedium, color = palette.indicatorIdle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 BasicTextField(
                     value = value,
@@ -130,7 +131,7 @@ fun TactileField(
                     singleLine = singleLine,
                     keyboardOptions = keyboardOptions,
                     visualTransformation = visualTransformation,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = if (enabled) ink else palette.indicatorIdle),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = if (enabled) ink else palette.indicatorIdle),
                     cursorBrush = SolidColor(palette.accent),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -202,7 +203,7 @@ fun TactileOptionRow(
         Text(
             text,
             modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -228,7 +229,12 @@ private fun FieldChrome(
         TactileFieldState.Selected -> palette.accent to false
         TactileFieldState.Idle -> palette.indicatorIdle to false
     }
-    val shape = remember { TactileSlantShape(TactileSlantSide.LEADING, FolderTabSlant, FieldRadius) }
+    // The BORDER carries a neutral hairline while idle and only takes the state colour once there
+    // IS a state -- "neutral hairline; violet hairline when selected/focused; red when error" in
+    // the owner's state sheet. The slash-tick keeps the darker indicator tint in every state, so
+    // idle still has its own visible second channel without ringing the whole body in gray.
+    val borderColor = if (effectiveState is TactileFieldState.Idle) palette.edge else stateColor
+    val shape = remember { TactileSlantShape(TactileSlantSide.LEADING, FieldRadius) }
 
     Box(modifier.alpha(if (enabled) 1f else 0.38f)) {
         Box(
@@ -237,10 +243,19 @@ private fun FieldChrome(
                 .heightIn(min = FieldHeight)
                 .tactileFocusRing(focused, palette.accent, cornerRadius = FieldRadius, shape = shape)
                 .tactileFieldGroove(palette, shape)
-                .border(1.dp, stateColor, shape),
+                .border(1.dp, borderColor, shape),
         ) {
+            // fillMaxWidth + a minimum height, NOT fillMaxSize: the latter gave the field no
+            // intrinsic height at all, so it grew to whatever vertical space its parent happened
+            // to have going spare. In a crowded column that merely made the fields inconsistently
+            // chunky; given real room it stretched one field to hundreds of dp, which also dragged
+            // the leading edge's lean (a ratio of height) out into a full-body diagonal and pushed
+            // the text out through the clipped edge. A field is as tall as its content, floored.
             Row(
-                Modifier.fillMaxSize().padding(start = SlashSlotWidth + 8.dp, end = 12.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = FieldHeight)
+                    .padding(start = SlashSlotWidth + 8.dp, end = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 content()

@@ -1,8 +1,9 @@
 package io.github.mbaliga.fylz.ui.tactile
 
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import dev.aarso.hyle.tokens.HyleTokens
 
 /**
@@ -85,10 +86,27 @@ data class TactilePalette(
     val dangerText: Color,
 )
 
-/** Resolves [TactilePalette] for the current system dark/light state. */
+/**
+ * True when [surface] is dark enough that the kit should paint its jet skin. Split out as a pure
+ * function so the choice is unit-testable without a Compose harness.
+ */
+internal fun tactileIsDarkSkin(surface: Color): Boolean = surface.luminance() < 0.5f
+
+/**
+ * Resolves [TactilePalette] against the APP's own resolved theme, not the system's.
+ *
+ * This deliberately does NOT read `isSystemInDarkTheme()`. Fylz has its own `ThemeMode`
+ * (LIGHT/DARK/SYSTEM) and its own per-`ThemeStyle` colour schemes, so a user running the app in
+ * Dark on a Light phone -- or in Light on a Dark phone -- got a kit skinned for the wrong one:
+ * light-gray plates and WHITE field bodies sitting on the app's dark surfaces, with the near-white
+ * body text of a dark scheme printed on top of them. That is an illegibility bug, not a cosmetic
+ * one, and the Build-11.5 kit shipped with it. Reading the luminance of the scheme `FylzTheme`
+ * actually resolved follows every one of those inputs at once -- theme mode, theme style, dynamic
+ * colour -- with no new plumbing to keep in sync.
+ */
 @Composable
 fun tactilePalette(): TactilePalette {
-    val dark = isSystemInDarkTheme()
+    val dark = tactileIsDarkSkin(MaterialTheme.colorScheme.surface)
     val accent = Color(HyleTokens.Color.colorPaletteAccentViolet)
     val danger = Color(HyleTokens.Color.colorPaletteSignalDanger)
     val indicator = Color(HyleTokens.Color.controlIndicator)
@@ -97,9 +115,13 @@ fun tactilePalette(): TactilePalette {
             isDark = true,
             plate = Color(HyleTokens.Color.controlSurface),
             plateHighlight = Color(HyleTokens.Color.controlRimSoft),
+            // The cap's DARKEST stop is controlSurfaceRaised, not controlSurface: bottoming the
+            // gradient out on the plate's own colour made the lower half of every dark keycap
+            // melt into the plate behind it, so a selected segment read as a smudge rather than a
+            // key. A raised thing stays lighter than the well it sits in, all the way down.
             capHigh = Color(HyleTokens.Color.controlSurfaceHigh),
-            capMid = Color(HyleTokens.Color.controlSurfaceRaised),
-            capBase = Color(HyleTokens.Color.controlSurface),
+            capMid = Color(0xFF26262D),
+            capBase = Color(HyleTokens.Color.controlSurfaceRaised),
             onCap = Color(HyleTokens.Color.colorTextPrimary),
             onPlate = Color(HyleTokens.Color.colorTextPrimary),
             glint = Color.White,
@@ -127,15 +149,25 @@ fun tactilePalette(): TactilePalette {
             onCap = Color(0xFFFFFFFF),
             onPlate = Color(0xFF1B1B1F),
             glint = Color.White,
-            fieldFill = Color(0xFFF7F7F8),
+            // WHITE, not the near-white #F7F7F8 the first pass used: this app's own light ground
+            // is already #F9F9FA, so a #F7F7F8 field body differed from the page behind it by two
+            // levels of luminance and the fields read as bare floating outlines with no body at
+            // all. The field has to be the LIGHTER figure against the near-white ground -- which
+            // is also how the owner's state-sheet frame reads, white cards on a light sheet.
+            fieldFill = Color(0xFFFFFFFF),
             // Light's field is a flat body, not a 3-stop groove -- these three collapse to the
             // same flat fill so tactileFieldGroove() can share one gradient-brush code path
             // instead of branching its whole implementation on isDark.
-            fieldGradientTop = Color(0xFFF7F7F8),
-            fieldGradientMid = Color(0xFFF7F7F8),
-            fieldGradientBase = Color(0xFFF7F7F8),
-            edge = Color(0xFFDCDCDF),
-            indicatorIdle = indicator,
+            fieldGradientTop = Color(0xFFFFFFFF),
+            fieldGradientMid = Color(0xFFFFFFFF),
+            fieldGradientBase = Color(0xFFFFFFFF),
+            // Dark enough to actually register as a hairline against BOTH the white field body
+            // and the #DEDEDE plate; the previous #DCDCDF vanished against the plate entirely.
+            edge = Color(0xFFC9C9D1),
+            // HyleTokens' own controlIndicator is tuned for the jet skin, where it sits on
+            // near-black; dropped straight onto a white field body it reads as a heavy black stub
+            // rather than the mid-gray idle tick the owner's state sheet shows.
+            indicatorIdle = Color(0xFF8E8E97),
             accent = accent,
             danger = danger,
             // Material 3's own baseline light-scheme error red (~6:1 on this kit's near-white

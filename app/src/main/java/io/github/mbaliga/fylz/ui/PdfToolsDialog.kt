@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
@@ -29,9 +30,8 @@ import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
-import io.github.mbaliga.fylz.ui.tactile.TactileToggle
-import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
 
 /**
  * PDF page tools: the UI for `pdf/PdfToolService`, `pdf/PdfPageTools` and
@@ -118,13 +118,23 @@ fun PdfToolsDialog(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Rotate", style = MaterialTheme.typography.labelLarge)
-                        TactileToggle(
-                            options = ROTATION_DEGREES.map { degrees ->
-                                TactileToggleOption(label = "$degrees°", contentDescription = "Rotate $degrees degrees")
-                            },
-                            selectedIndex = ROTATION_DEGREES.indexOf(rotation).coerceAtLeast(0),
-                            onSelect = { index -> rotation = ROTATION_DEGREES[index] },
-                        )
+                        // Four rotation choices is past what TactileToggle supports (its cap-slant
+                        // rule only distinguishes a first/last segment, per the type's own KDoc) --
+                        // and well before that, 4 segments plus "180°"/"270°" widening two of them
+                        // need more room than an AlertDialog's ~240-280dp usable content width
+                        // reliably has on a phone. A vertical stack of TactileOptionRow is the
+                        // kit's own idiom for a single-select group that doesn't fit a segmented
+                        // toggle -- same pattern SettingsOverlay uses for its
+                        // ThemeMode/HomeMode/DensityMode rows.
+                        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            ROTATION_DEGREES.forEach { degrees ->
+                                TactileOptionRow(
+                                    text = "$degrees°",
+                                    selected = rotation == degrees,
+                                    onClick = { rotation = degrees },
+                                )
+                            }
+                        }
                     }
                 }
 

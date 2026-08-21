@@ -1,9 +1,7 @@
 package io.github.mbaliga.fylz.ui.components
 
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -51,8 +49,6 @@ import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
-import io.github.mbaliga.fylz.ui.tactile.TactileButton
-import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -267,23 +263,6 @@ private fun ArchiveMetric(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.titleSmall)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-}
-
-@Composable
-fun ExternalOpenButton(entry: FileEntry) {
-    val context = LocalContext.current
-    // Icon dropped -- no leading-icon slot on TactileButton.
-    TactileButton(
-        text = "Open with…",
-        onClick = {
-            val intent = Intent(Intent.ACTION_VIEW)
-                .setDataAndType(entry.uri, entry.mimeType)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            runCatching { context.startActivity(intent) }
-                .onFailure { Toast.makeText(context, "No installed app advertises support for this type.", Toast.LENGTH_SHORT).show() }
-        },
-        style = TactileButtonStyle.PRIMARY,
-    )
 }
 
 private fun formatSpecializedBytes(bytes: Long): String {

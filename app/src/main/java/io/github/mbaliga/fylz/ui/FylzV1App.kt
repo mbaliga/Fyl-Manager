@@ -55,6 +55,8 @@ import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Sell
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sort
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
@@ -3231,27 +3233,33 @@ private fun LibraryRail(
     onRecycle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // The current folder's own favourited state, same lookup toggleFavorite itself uses (uri
+    // membership in the favorites list) -- there is no separate isFavorite flag threaded down
+    // from the caller, and this is the only fact LibraryRail needs to know to answer it.
+    val isFavorited = activeTab != null && favorites.any { it.uri == activeTab.current.uri }
     Surface(modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Workspace", style = MaterialTheme.typography.titleMedium)
             // TactileButton (the kit's own fixed contract) is a text-only keycap -- no leading-icon
-            // slot -- so the FolderOpen/Star-StarBorder/RestoreFromTrash glyphs these three used to
-            // carry are dropped here. Most visibly on "Favourite": the star used to be the ONLY
-            // channel telling the current folder is already favourited (the label itself never
-            // changed); that state cue has no home left on this button now. Flagged loudly for the
-            // owner/a later pass -- either TactileButton grows an optional leading-icon slot
-            // upstream, or this call site moves to a differently-shaped tactile control.
+            // slot -- so "Open root"/"Recycle Bin" drop the FolderOpen/RestoreFromTrash glyphs they
+            // used to carry; that's cosmetic, both are still legible one-shot actions from the
+            // label alone. "Favourite" was the regression: its star used to be the ONLY channel
+            // telling the current folder is already favourited (the label itself never changed),
+            // and a stateless TactileButton has nowhere to put that back -- it has no latched
+            // state. TactileIconKey does (see SortMenu/ArrangeMenu's own `latched = expanded`
+            // above), so that one call site moves there instead, carrying the same
+            // Star/StarBorder pair the pre-kit OutlinedButton used.
             TactileButton(
                 text = "Open root",
                 onClick = onOpenRoot,
                 fillWidth = true,
             )
-            TactileButton(
-                text = "Favourite",
+            TactileIconKey(
+                icon = if (isFavorited) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                contentDescription = "Favourite",
                 onClick = onToggleFavorite,
                 enabled = activeTab != null,
-                style = TactileButtonStyle.SECONDARY,
-                fillWidth = true,
+                latched = isFavorited,
             )
             TactileButton(
                 text = "Recycle Bin",

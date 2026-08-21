@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.ui.components
 
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -26,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.core.model.EntryKind
@@ -34,6 +39,7 @@ import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.ui.tactile.tactileFieldGroove
 import io.github.mbaliga.fylz.ui.tactile.tactilePalette
 import io.github.mbaliga.fylz.ui.theme.FylzGeometry
@@ -104,20 +110,26 @@ fun PreviewPane(
                     )
                 }
                 if (FileType.isEditable(entry.kind)) {
-                    // Icon dropped (no leading-icon slot on TactileButton); the label itself
-                    // already carries the Edit<->Preview state, so no separate latched cap is
-                    // needed here -- this button isn't icon-shaped, so it stays a plain SECONDARY
-                    // cap rather than a latched TactileIconKey per the mission's own branch.
-                    TactileButton(
-                        text = if (editing) "Preview" else "Edit",
+                    // This pane is mounted at a FIXED 380dp width (FylzV1App), and three text
+                    // keycaps here (Edit/Preview, Save, Open with...) wanted ~260-280dp of it,
+                    // squeezing the filename column above to under 80dp. Edit<->Preview has no
+                    // label text to lose by going icon-only -- `latched = editing` is exactly the
+                    // two-state toggle the "Edit"/"Preview" label used to carry, and the
+                    // per-state contentDescription below keeps those same words for a screen
+                    // reader even though they no longer render as a visible label.
+                    TactileIconKey(
+                        icon = Icons.Outlined.Edit,
+                        contentDescription = if (editing) "Preview" else "Edit",
                         onClick = { editing = !editing },
-                        style = TactileButtonStyle.SECONDARY,
+                        latched = editing,
                     )
                     if (editing) {
+                        // Save stays a labelled TactileButton: it's a commit action, not a mode
+                        // switch, and earns a real keycap rather than an icon-only affordance.
                         TactileButton(text = "Save", onClick = onSave, style = TactileButtonStyle.PRIMARY)
                     }
                 }
-                ExternalOpenButton(entry)
+                ExternalOpenIconButton(entry)
             }
             HorizontalDivider()
 
@@ -184,6 +196,31 @@ fun PreviewPane(
             }
         }
     }
+}
+
+/**
+ * "Open with…" as an icon key rather than a text keycap: this pane is mounted at a fixed 380dp,
+ * and three text keycaps in its header left under 80dp for the filename itself. The label's exact
+ * words survive as the contentDescription, so nothing is lost to a screen reader.
+ *
+ * This is the only implementation -- the `ExternalOpenButton` that used to live in
+ * `SpecializedDocumentPreview.kt` had no other caller and was deleted rather than left as a second
+ * copy of the same Intent + Toast fallback.
+ */
+@Composable
+private fun ExternalOpenIconButton(entry: FileEntry) {
+    val context = LocalContext.current
+    TactileIconKey(
+        icon = Icons.AutoMirrored.Outlined.OpenInNew,
+        contentDescription = "Open with…",
+        onClick = {
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(entry.uri, entry.mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            runCatching { context.startActivity(intent) }
+                .onFailure { Toast.makeText(context, "No installed app advertises support for this type.", Toast.LENGTH_SHORT).show() }
+        },
+    )
 }
 
 @Composable

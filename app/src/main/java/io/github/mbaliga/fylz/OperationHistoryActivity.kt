@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
@@ -39,6 +42,7 @@ import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.core.operations.OperationState
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import java.text.DateFormat
 import java.util.Date
@@ -78,14 +82,24 @@ private fun OperationHistoryScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Activity") },
+                // TopAppBar's navigationIcon/actions slots are sized for a ~48dp icon square; a
+                // TactileButton keycap's 20dp horizontal padding plus a multi-word label ate into
+                // the title's width budget in this fixed-height bar. TactileIconKey is the kit's
+                // icon-square control, so both slots move there -- onClick/enabled unchanged,
+                // and each contentDescription carries the words the removed label carried so
+                // screen readers lose nothing.
                 navigationIcon = {
-                    TactileButton(text = "Back", onClick = onBack, style = TactileButtonStyle.SECONDARY)
+                    TactileIconKey(
+                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "Back",
+                        onClick = onBack,
+                    )
                 },
                 actions = {
-                    TactileButton(
-                        text = "Clear finished",
+                    TactileIconKey(
+                        icon = Icons.Outlined.DeleteSweep,
+                        contentDescription = "Clear finished",
                         onClick = { confirmClear = true },
-                        style = TactileButtonStyle.SECONDARY,
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
