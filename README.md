@@ -68,7 +68,8 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 
 - Scan-to-PDF.
 - Duplicate detection, batch rename and saved-library metadata.
-- Optional WebDAV, local-model and BYOK adapter foundations kept separate from deterministic file operations.
+- Optional remote-provider foundations — WebDAV, SFTP, SMB and S3-compatible — plus local-model and BYOK adapter foundations, kept separate from deterministic file operations.
+- PDF page tools (inspect, per-page export with rotation, merge, split) and on-device OCR for searchable PDFs.
 
 ## Required before stable v1
 
@@ -97,7 +98,7 @@ Requirements:
 
 - JDK 17
 - Android SDK 36
-- Gradle 8.11.1, or the version provisioned by CI
+- Gradle 8.14.3 (the version the wrapper and CI both pin)
 
 ```bash
 gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug

@@ -4,6 +4,10 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 ## Unreleased — v1 alpha
 
+### Data safety
+
+- Removed `library/LocalFileIndex`, an unreferenced second on-device index that wrote to the same `files.json` path as the real one with a different schema — a latent data hazard for whichever store read second. The `index` package is now the only rule engine and on-device index. Two further dead smart-collection engines and their tests were removed with it.
+
 ### Workspace
 
 - Added SAF-scoped multi-root browsing with tabs, breadcrumbs, search, list/grid/details views and adaptive preview layouts.

@@ -17,6 +17,10 @@ Reliability, data safety and provider behavior remain more important than parity
 
 - SAF folder selection and persisted user grants.
 - Multiple roots and tabs, breadcrumbs, parent navigation, refresh and in-folder filtering.
+- The spatial shell: four rooms parked off the browser's edges (locations left, tools and
+  settings right, details up, actions down) with 1:1 drag physics, replacing tab bars and
+  overflow menus.
+- The Desktop: a customizable landing surface with widgets, wallpapers and a launcher.
 - List, grid and details views.
 - Adaptive phone, landscape, tablet/foldable and desktop-style window layouts.
 - Docked and floating previews.
@@ -80,10 +84,15 @@ Reliability, data safety and provider behavior remain more important than parity
 ### Additional v1 utilities
 
 - Scan-to-PDF through the platform scanner integration and SAF export.
-- Duplicate detection.
+- Duplicate detection, and duplicate cleanup that recycles never-canonical copies through the
+  ordinary reversible path.
 - Batch rename planning/execution foundations.
-- Favourites, tags and saved-library metadata.
-- Optional WebDAV, local-model and BYOK adapter foundations isolated from deterministic file operations.
+- Favourites, tags and saved-library metadata, with portable secret-free export/import.
+- Optional remote-provider foundations — WebDAV, SFTP, SMB and S3-compatible object storage —
+  behind one `RemoteProvider` interface and a connections dialog, isolated from deterministic
+  file operations.
+- Optional local-model and BYOK adapter foundations: checksum-verified signed model packs, and a
+  per-request transmission preview with redaction rules before anything leaves the device.
 
 ### Release engineering
 
@@ -143,27 +152,42 @@ Follow [`RELEASE.md`](RELEASE.md):
 
 A failure involving data loss, unsafe overwrite/delete, provider-boundary bypass, credential exposure, parser traversal, incomplete rollback or unrecoverable migration blocks release.
 
+## Landed after alpha01, still acceptance-gated
+
+Everything here was on the post-v1 backlog, has since been implemented and unit-tested in the
+alpha line, and now sits behind the same device-acceptance gates as the rest of v1. It is listed
+separately so the backlog below only contains work that does not exist yet.
+
+- PDF page inspection, per-page export with rotation, merge and split
+  (`pdf/PdfPageTools`, `pdf/PdfToolService`).
+- On-device OCR/searchable PDF via ML Kit text recognition, Latin and Devanagari
+  (`pdf/SearchablePdfService`); recognition is local, no text leaves the device.
+- Deep previews: browsable archives with single-member extraction, spreadsheet value grids with
+  a reported read ceiling, slide-by-slide presentations, and a pan/zoom wireframe viewer.
+- Export/import for favourites, tags and saved searches (`library/LibraryMetadataTransfer`).
+- Smart collections and rule predicates on the local index
+  (`index/SmartCollectionEngine`, built from `IndexManagerActivity`).
+- Duplicate cleanup through the reversible recycle path (`operations/DuplicateCleanupService`).
+- Background local index with explicit scopes, pause/resume, rebuild and delete
+  (`index/LocalIndexScheduler`, controls in `PostV1ToolsActivity`).
+- Signed model-pack manifests with checksums and removal controls
+  (`ai/SignedModelCatalog`, `ai/LocalModelManager`).
+- Per-request transmission preview with redaction rules for remote connectors
+  (`ai/AiTransmissionPolicy`).
+- Dedicated SFTP, SMB and S3-compatible provider modules joining WebDAV behind one
+  `RemoteProvider` interface (`network/`).
+
 ## Post-v1 backlog
 
 ### Document and media utilities
 
-- PDF page thumbnails and navigation.
-- PDF merge, split, rotate, reorder and metadata editing after choosing a safe licence-compatible stack.
-- Optional OCR/searchable PDF with explicit local/remote disclosure.
-- Richer media/font/office-document preview plug-ins.
+- PDF reorder and metadata editing.
+- Richer font/office-document preview plug-ins beyond the current spreadsheet/presentation set.
 - Gallery view and deeper metadata inspection.
 
 ### Organization and indexing
 
-- Export/import for tags and workspace metadata.
-- Smart collections and rule predicates.
-- Expanded batch-rename templates and dry-run review.
-- Duplicate cleanup workflow with cautious deletion.
-- Background local index with explicit scope, pause, rebuild and delete controls.
-
-### Optional local models
-
-- Signed model-pack manifests, checksums, licences and removal controls.
+- Expanded batch-rename templates and dry-run review (only prefix templates ship today).
 - Semantic-search embeddings, suggested tags/names/clusters and bounded summaries.
 - Structured proposal review with confidence/rationale.
 - No autonomous destructive operations.
@@ -171,14 +195,11 @@ A failure involving data loss, unsafe overwrite/delete, provider-boundary bypass
 ### Optional remote-model connectors
 
 - Provider-neutral connector catalogue.
-- Per-request transmission preview and local-only override.
-- Redaction and maximum-content controls.
 - Cost/token estimate where APIs allow it.
 - Settings export without secrets.
 
 ### Provider and desktop expansion
 
-- Dedicated SMB, SFTP, WebDAV and object-storage modules after security/maintenance review.
 - Better cloud offline/cache status.
 - Optional dual-pane transfer mode.
 - Full keyboard shortcut map and Chromebook/desktop-mode polish.
