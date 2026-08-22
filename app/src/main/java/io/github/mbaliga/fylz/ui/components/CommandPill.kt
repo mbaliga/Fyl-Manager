@@ -1,8 +1,10 @@
 package io.github.mbaliga.fylz.ui.components
 
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,13 +24,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,6 +45,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -49,7 +55,16 @@ import dev.aarso.search.ChipKind
 import dev.aarso.search.Diagnostic
 import dev.aarso.search.QueryChip
 import io.github.mbaliga.fylz.R
+import io.github.mbaliga.fylz.search.FylzSearch
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
+import io.github.mbaliga.fylz.ui.search.SearchCompletionRow
+import io.github.mbaliga.fylz.ui.search.SearchStarterRow
+import io.github.mbaliga.fylz.ui.search.SearchSyntaxHelp
+import io.github.mbaliga.fylz.ui.search.ZeroResultEscalation
+import io.github.mbaliga.fylz.ui.search.applySearchCompletion
+import io.github.mbaliga.fylz.ui.search.rememberLibraryTagCounts
+import io.github.mbaliga.fylz.ui.search.searchCompletionsFor
+import io.github.mbaliga.fylz.ui.search.searchStartersFor
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.ui.tactile.TactileToggle
 import io.github.mbaliga.fylz.ui.tactile.TactileToggleOption
@@ -67,12 +82,15 @@ import io.github.mbaliga.fylz.ui.theme.ThemeStyle
  * which this change does not own).
  *
  * The distinction is the whole defect it was in: [CommandPill] has no single height. A live query
- * adds the scope toggle, the parser's chips, the syntax hint and a diagnostic line, and the hint
- * wraps to two lines on a narrow frame or at a raised font scale -- from 80dp empty to past 240dp
- * with all of it showing. Imposing this constant on it as a height did not overflow the extra
- * rows, it starved them: a Column short of room hands each child the remainder and coerces a
- * fixed `height` into whatever is left, and the field is the last child in every state, so it was
- * the one measured at nothing. The host measures the pill instead and draws its band to that.
+ * adds the scope toggle, the parser's chips, a completion row and a diagnostic line -- and, once a
+ * query is known to have matched nothing, the escalation offer, which is the tallest state this
+ * pill has -- from 80dp empty to past 240dp with all of it showing. The syntax hint that used to
+ * ride along unconditionally is now one discreet line under an empty box, or the help panel, and
+ * either can also wrap at a raised font scale. Imposing this constant on it as a height did not
+ * overflow the extra rows, it starved them: a Column short of room hands each child the remainder
+ * and coerces a fixed `height` into whatever is left, and the field is the last child in every
+ * state, so it was the one measured at nothing. The host measures the pill instead and draws its
+ * band to that.
  *
  * Kept a constant rather than derived from that measurement because it keys the gesture
  * ([io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState]): a value that moved when the
@@ -102,13 +120,20 @@ private val PillSlashWidth: Dp = 20.dp
  * *changes* a file lives in the actions room; a button that *does* something to the current file
  * has no business here even now that the pill has more room to spare.
  *
- * The search-scope chips and the query-syntax hint appear above the field only while a query is
- * live: the scope choice is meaningless with an empty box, and drawing both unconditionally is
- * how the old row ended up as tall as it was. Once the parser has an opinion about the query, its
- * reading appears the same way Spotlight's does: a row of removable [chips], one filter each, so
- * the interpretation is visible and correctable rather than a black box. An empty, focused box
- * shows [recentSearches] instead — the two rows never compete for the same line because one only
- * exists when the other cannot.
+ * The search-scope chips appear above the field only while a query is live: the scope choice is
+ * meaningless with an empty box, and drawing everything unconditionally is how the old row ended
+ * up as tall as it was. Once the parser has an opinion about the query, its reading appears the
+ * same way Spotlight's does: a row of removable [chips], one filter each, so the interpretation is
+ * visible and correctable rather than a black box. An empty, focused box shows starting points
+ * instead — the two rows never compete for the same line because one only exists when the other
+ * cannot.
+ *
+ * **Where the syntax hint went.** It used to print unconditionally under every live query, a full
+ * sentence stapled over a box someone was already typing in. The grammar genuinely is not
+ * guessable, so it is not gone — it is where it can teach and nowhere else: one discreet line
+ * under an EMPTY focused box, and the whole reference behind the pill's own help key
+ * ([SearchSyntaxHelp]), which latches so it stays open while it is being read. A live query gets
+ * completions it can act on ([SearchCompletionRow]) rather than prose it cannot.
  *
  * @param chips the parser's reading of [query] ([dev.aarso.search.ParsedQuery.chips]) — one
  *   removable chip per recognised term or facet.
@@ -120,8 +145,24 @@ private val PillSlashWidth: Dp = 20.dp
  *   gets one quiet line, not a stack of them.
  * @param recentSearches up to eight prior queries, most recent first, shown only while the field
  *   is focused and [query] is blank.
- * @param onRecentSearchSelected called with the tapped recent query; the caller sets it as the
- *   live query.
+ * @param onRecentSearchSelected called with a tapped starting point — a recent query, a tag or a
+ *   kind — which the caller sets as the live query, exactly as it already does for a recent one.
+ *   The name predates tags and kinds joining that row; the contract ("this text becomes the
+ *   query") is unchanged, so the parameter was widened rather than duplicated.
+ * @param resultCount how many results the CALLER is showing for this query right now, or null
+ *   when it has no count to give (still searching, or a surface that does not count). Exactly `0`
+ *   is what opens the zero-result escalation, so a caller that cannot substantiate a zero must
+ *   pass null rather than guess one.
+ * @param kindStarters canonical `type:` values the caller has established are actually present
+ *   here ([io.github.mbaliga.fylz.ui.search.kindStartersFrom] over its own listing). Empty means
+ *   the caller could not vouch for any and none are offered — a kind that would return nothing is
+ *   never suggested.
+ * @param tagCounts the caller's own cached [io.github.mbaliga.fylz.library.LibraryStore.allTags]
+ *   map, when it keeps one (`FylzV1App`'s `allTagsMap`). Null makes the pill read the store itself
+ *   on focus, off the main thread — a real read either way, never an empty stand-in.
+ * @param onOpenDeviceHit what a device-index hit does when tapped, after the user has accepted the
+ *   zero-result escalation. Null (the default) leaves those hits listed but not tappable rather
+ *   than giving them a tap that does nothing.
  * @param trailing the controls shown outright to the right of the box — sort and select-all.
  */
 @Composable
@@ -144,9 +185,41 @@ fun CommandPill(
     // command -- see FylzV1App.kt) attaches one so the reveal actually lands the keyboard, not
     // just the field's visibility.
     focusRequester: FocusRequester? = null,
+    resultCount: Int? = null,
+    kindStarters: List<String> = emptyList(),
+    tagCounts: Map<String, Int>? = null,
+    onOpenDeviceHit: ((Uri) -> Unit)? = null,
     trailing: @Composable () -> Unit,
 ) {
     var fieldFocused by remember { mutableStateOf(false) }
+    // Latched, not hover/press: the reference is there to be read while typing continues, so it
+    // closes on the same key that opened it and on nothing else.
+    var helpOpen by remember { mutableStateOf(false) }
+    // Read once, up here: it decides where the help toggle goes as well as how the pill body is
+    // painted, and the two must never disagree about which theme is on.
+    val cli = LocalThemeStyle.current == ThemeStyle.CLI
+    val helpLabel = stringResource(
+        if (helpOpen) R.string.search_syntax_help_close else R.string.search_syntax_help_open,
+    )
+
+    // Both vocabularies are static tables owned by FylzSearch -- the same ones the parser
+    // validates against -- so they are built once per pill rather than per keystroke.
+    val facetKeys = remember { FylzSearch.registry().keys }
+    val kindValues = remember { FylzSearch.vocabulary.kinds.values.distinct().sorted() }
+    // The store scan is the expensive one and carries its own caching obligation; a caller that
+    // already keeps the map hands it over instead.
+    val tags = if (tagCounts != null) tagCounts else rememberLibraryTagCounts(active = fieldFocused)
+    val completions = remember(query, facetKeys, kindValues, tags) {
+        if (query.isBlank()) emptyList() else searchCompletionsFor(query, facetKeys, kindValues, tags)
+    }
+    val starters = remember(recentSearches, tags, kindStarters) {
+        searchStartersFor(
+            recentSearches = recentSearches,
+            tagCounts = tags,
+            kinds = kindStarters,
+            kindLabel = { KIND_CHIP_LABELS[it] ?: it },
+        )
+    }
 
     // No navigationBarsPadding here: the pill lives inside the Scaffold's content, which is
     // already inset for the system bars. Applying it again floats the pill a nav bar's
@@ -208,14 +281,15 @@ fun CommandPill(
                     }
                 }
             }
-            // The query syntax is not guessable, so it is taught where it is used. Only
-            // while a query is live: on an empty box it is a tip about nothing.
-            Text(
-                stringResource(R.string.browser_search_hint),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
+            // What a live query gets instead of the old always-on sentence: the completions for
+            // the token still being typed. Focused only -- an unfocused box is a query someone
+            // has finished with, and completing it is an offer nobody asked for.
+            if (fieldFocused) {
+                SearchCompletionRow(
+                    completions = completions,
+                    onPick = { onQueryChange(applySearchCompletion(query, it)) },
+                )
+            }
             // One line, not one per diagnostic: a query malformed several ways at once still owes
             // the user a single, readable notice rather than a stack that pushes the pill down.
             diagnostics.firstOrNull()?.let {
@@ -228,24 +302,55 @@ fun CommandPill(
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
-        } else if (fieldFocused && recentSearches.isNotEmpty()) {
-            // Kept stock for the same reason as the InputChip row above -- a horizontally-scrolling
-            // row of recent queries reads as chips, not keycaps.
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                recentSearches.forEach { recent ->
-                    SuggestionChip(
-                        onClick = { onRecentSearchSelected(recent) },
-                        label = { Text(recent, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    )
-                }
+            // A zero the caller can substantiate, and not while it is still counting: an offer to
+            // widen, never a widening. See ZeroResultEscalation on why the device index is
+            // described before it is consulted rather than after.
+            if (resultCount == 0 && !searchBusy) {
+                ZeroResultEscalation(
+                    query = query,
+                    canWidenScope = !searchRecursive,
+                    onWidenScope = { onSearchRecursiveChange(true) },
+                    onOpenDeviceHit = onOpenDeviceHit,
+                )
+            }
+        } else if (fieldFocused) {
+            // Starting points for an empty box: prior queries, then tags and kinds that are known
+            // to have something behind them. All three set the query, which is what
+            // onRecentSearchSelected already did for the recents this row grew out of.
+            SearchStarterRow(starters = starters, onPick = { onRecentSearchSelected(it.query) })
+            // The one place a hint can still teach unprompted, and one discreet line of it -- the
+            // full reference is behind the help key. Suppressed while that panel is open, so the
+            // two never say the same thing twice.
+            if (!helpOpen) {
+                Text(
+                    stringResource(R.string.search_hint_compact),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
             }
         }
+
+        // CLI's half of the help toggle -- see the note on the key inside the field row. Bracketed
+        // rather than iconic because that is the only vocabulary this theme has, and given the
+        // touch floor by hand since it is a plain Text, not one of the kit's keys.
+        if (cli) {
+            Text(
+                if (helpOpen) "[$helpLabel]" else " $helpLabel ",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(role = Role.Button, onClickLabel = helpLabel) { helpOpen = !helpOpen }
+                    .semantics { selected = helpOpen }
+                    .padding(vertical = 14.dp),
+            )
+        }
+
+        if (helpOpen) SearchSyntaxHelp()
 
         // The pill keeps its own exact geometry (stadium shape, 56dp height, back/field/clear/
         // trailing Row) rather than wrapping in the kit's own TactileField -- that component's
@@ -260,7 +365,6 @@ fun CommandPill(
         // pill CommandPill paints itself instead of handing to the kit -- never a faked cap/groove
         // in CLI, per the hard rule; the plain flat pill it falls back to is exactly what shipped
         // before this conversion.
-        val cli = LocalThemeStyle.current == ThemeStyle.CLI
         val palette = if (cli) null else tactilePalette()
         val pillShape = remember { RoundedCornerShape(50) }
         val stateColor = palette?.let { if (fieldFocused) it.accent else it.indicatorIdle }
@@ -338,6 +442,26 @@ fun CommandPill(
                         icon = Icons.Outlined.Close,
                         contentDescription = "Clear search",
                         onClick = { onQueryChange("") },
+                    )
+                }
+                // The concealed half of the hint. A permanent key rather than a state-dependent
+                // one: an affordance that appears only once you are already typing is not one you
+                // can go looking for. It latches, so its own label says which way it goes and
+                // TalkBack reads the panel as open (TactileIconKey publishes `latched` as
+                // `selected`), and it is the kit's own 48dp key, not a shrunken glyph.
+                //
+                // Not in CLI. That theme's keys degrade to their own contentDescription as plain
+                // text (see TactileIconKey's CliIconKey), so this row already carries "Parent
+                // folder" and "Clear search" in full; a third label would leave the weighted
+                // field with nothing to measure at on a narrow screen -- the same starve the band
+                // fix was about. CLI gets the same toggle as its own row above the field instead,
+                // where a line of text costs it nothing.
+                if (!cli) {
+                    TactileIconKey(
+                        icon = Icons.Outlined.HelpOutline,
+                        contentDescription = helpLabel,
+                        onClick = { helpOpen = !helpOpen },
+                        latched = helpOpen,
                     )
                 }
                 trailing()

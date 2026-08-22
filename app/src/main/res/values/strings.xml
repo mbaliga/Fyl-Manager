@@ -44,6 +44,43 @@
     <string name="browser_search_none">No matches.</string>
     <string name="browser_empty_folder">This folder is empty</string>
 
+    <!--
+        Search: the syntax help, the completions offered while typing, the starting points an
+        empty box offers, and what a query that matched nothing can escalate to. browser_search_hint
+        above is still the opening line of the help panel — the syntax is not guessable, so it is
+        kept and concealed behind the pill's help key rather than printed over every live query.
+    -->
+    <string name="search_syntax_help_open">Search filter help</string>
+    <string name="search_syntax_help_close">Hide search filter help</string>
+    <string name="search_hint_compact">Filters like type:image or size:&gt;10mb narrow a search.</string>
+    <string name="search_syntax_example_type">type:image — image, video, audio, pdf, archive, folder</string>
+    <string name="search_syntax_example_ext">ext:pdf — by file extension</string>
+    <string name="search_syntax_example_size">size:&gt;10mb — larger or smaller than a size</string>
+    <string name="search_syntax_example_modified">modified:last-week — by when it changed</string>
+    <string name="search_syntax_example_tag">tag:work — by one of your tags</string>
+    <string name="search_syntax_example_phrase">\"exact words\" — also reads inside text files</string>
+    <string name="search_completion_insert">Insert %1$s</string>
+    <string name="search_starter_recent">Search again for %1$s</string>
+    <string name="search_starter_tag">Search the tag %1$s, carried by %2$s items</string>
+    <string name="search_starter_kind">Search for %1$s here</string>
+    <string name="search_zero_here">Nothing here matches this search.</string>
+    <string name="search_zero_widen">Search everything below this folder</string>
+    <string name="search_zero_device">Search the device index</string>
+    <string name="search_device_needle">The device index matches names and tags only, so it would be searched for %1$s.</string>
+    <string name="search_device_needs_word">The device index matches names and tags only, so a filter on its own cannot be searched there.</string>
+    <string name="search_device_coverage">Device index: %1$d files as of its last build %3$s, over %2$d indexed folders.</string>
+    <string name="search_device_coverage_undated">Device index: %1$d files, with no recorded build time.</string>
+    <string name="search_device_truncated">It stopped at its size limit, so it does not cover everything.</string>
+    <string name="search_device_paused">Indexing is paused, so anything changed since that build is missing.</string>
+    <string name="search_device_error">The last index build reported: %1$s</string>
+    <string name="search_device_none">There is no device index yet, so nothing here can answer for the whole device.</string>
+    <string name="search_device_setup">Set up the device index</string>
+    <string name="search_device_searching">Searching the device index…</string>
+    <string name="search_device_results">%1$d matches in the device index.</string>
+    <string name="search_device_no_results">Nothing in the device index either.</string>
+    <string name="search_device_more">and %1$d more</string>
+    <string name="search_device_open">Open %1$s</string>
+
     <!-- Remote connections -->
     <string name="remotes_title">Network locations</string>
     <string name="remotes_add">Add a connection</string>
@@ -59,4 +96,5 @@
     <string name="tools_index_summary">Build an on-device index and run smart collections over it.</string>
     <string name="tools_library">Library and organization</string>
     <string name="tools_library_summary">Tags, saved searches and deterministic organization rules.</string>
+    <string name="search_device_hit_gone">That file has moved or been deleted since it was indexed.</string>
 </resources>

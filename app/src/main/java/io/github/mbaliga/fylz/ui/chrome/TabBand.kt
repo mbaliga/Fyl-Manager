@@ -27,12 +27,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -117,9 +120,20 @@ private val TabShadowColor = Color.Black.copy(alpha = 0.25f)
  *   is translucency alone.
  * @param trashProximity 0 at rest, 1 with a dragged cluster over the trash tab -- forwarded
  *   straight to [TrashGlyph], the same reactive glyph the corner bulge used, so retiring that
- *   bulge in favour of this tab loses none of its "the can notices you" motion.
+ *   bulge in favour of this tab loses none of its "the can notices you" motion. Unused today:
+ *   the drag layer draws its own can, at zIndex 20, directly over this tab, so a cue painted
+ *   here would be behind it. See ClusterDragLayer's trash bulge.
  * @param trashModifier extra modifier chained onto the trash tab alone, for a caller that needs
  *   to read its screen position as a cluster-drag drop target.
+ * @param onTabBounds each folder tab's measured position, in root coordinates, reported as it is
+ *   laid out -- the same space a cluster drag reports the finger in, so a caller can hit-test a
+ *   drop against the tabs themselves rather than against guessed geometry. The pending "+" chip
+ *   reports too; it is the caller's job to know that its id names no open folder.
+ * @param armedTabId the tab a dragged cluster is currently over AND would really land in, or
+ *   null. A LAMBDA, not a value: it is read inside each chip, so a drag crossing the strip
+ *   invalidates the chips rather than this whole band and its caller. The caller returns null
+ *   for a drop that would do nothing (the folder already open, a folder into itself), which is
+ *   what keeps an ineligible tab from lighting up.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -134,6 +148,8 @@ fun TabBand(
     frosted: Boolean = false,
     trashProximity: Float = 0f,
     trashModifier: Modifier = Modifier,
+    onTabBounds: (String, Rect) -> Unit = { _, _ -> },
+    armedTabId: () -> String? = { null },
 ) {
     val family = chromeFontFamily()
     Box(modifier.fillMaxWidth().background(ChromeInk)) {
@@ -176,8 +192,10 @@ fun TabBand(
                         family = family,
                         onClick = { onTabSelected(tab.id) },
                         onLongClick = { onTabClosed(tab) },
+                        armed = { armedTabId() == tab.id },
                         modifier = Modifier
                             .zIndex(if (isActive) 1f else 0f)
+                            .onGloballyPositioned { onTabBounds(tab.id, it.boundsInRoot()) }
                             .semantics { selected = isActive },
                     )
                 }
@@ -211,6 +229,7 @@ private fun FolderTabChip(
     family: FontFamily,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    armed: () -> Boolean = { false },
     modifier: Modifier = Modifier,
 ) {
     Box(
@@ -220,6 +239,12 @@ private fun FolderTabChip(
             .drawBehind { drawTabShadow(front) }
             .clip(FolderTabShape(mirrored = front))
             .background(fill)
+            // The drop cue: nothing at rest, a pale lift over this tab's own fill while a
+            // dragged cluster is over it and would really land here. Invoked in this chip so a
+            // drag across the strip costs a redraw per chip, not a recomposition of the band --
+            // see [TabBand]'s armedTabId. Only ever seen on an INACTIVE tab: the tab you are
+            // already in is never an eligible destination, so this never washes white on white.
+            .background(ChromeOn.copy(alpha = if (armed()) 0.28f else 0f))
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,

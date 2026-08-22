@@ -88,6 +88,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -95,6 +96,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -174,6 +177,7 @@ import io.github.mbaliga.fylz.ui.components.CommandPill
 import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
 import io.github.mbaliga.fylz.ui.components.CountChip
 import io.github.mbaliga.fylz.ui.components.DogEarPage
+import io.github.mbaliga.fylz.ui.components.EntryAction
 import io.github.mbaliga.fylz.ui.components.FolderFace
 import io.github.mbaliga.fylz.ui.components.FolderHero
 import io.github.mbaliga.fylz.ui.components.LeftTimelineRail
@@ -201,6 +205,7 @@ import io.github.mbaliga.fylz.ui.chrome.TabBand
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.chrome.TabBandItem
 import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
+import io.github.mbaliga.fylz.ui.search.kindStartersFrom
 import io.github.mbaliga.fylz.ui.search.PullDownSearchState
 import io.github.mbaliga.fylz.ui.search.rememberPullDownSearchState
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
@@ -269,6 +274,7 @@ import dev.aarso.cellshell.rememberSpatialController
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.operations.RecycleRecord
 import io.github.mbaliga.fylz.settings.AppPreferencesStore
@@ -277,6 +283,7 @@ import io.github.mbaliga.fylz.staging.ShelfItem
 import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.staging.StagedItem
 import io.github.mbaliga.fylz.staging.StagingTray
+import io.github.mbaliga.fylz.staging.TargetReaction
 import io.github.mbaliga.fylz.staging.TrayKind
 import io.github.mbaliga.fylz.ui.canvas.BentoMosaic
 import io.github.mbaliga.fylz.ui.canvas.SelectionMark
@@ -751,6 +758,11 @@ private fun FylzV1Workspace(
     // every full selectedUris reset so it never outlives the selection it describes.
     var selectedEntryDetails by remember { mutableStateOf<Map<Uri, FileEntry>>(emptyMap()) }
     var focusedEntry by remember { mutableStateOf<FileEntry?>(null) }
+    // Which row's long-press menu is open, or null. Workspace state rather than the row's own:
+    // the rows live inside LazyColumn/LazyVerticalGrid items that scroll (and recycle) out from
+    // under anything they might have anchored, and every action on the menu is this scope's to
+    // perform anyway. See [EntryMenuHooks].
+    var entryMenuFor by remember { mutableStateOf<FileEntry?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
     // `library` is a stable singleton mutated out-of-band (setTags below writes straight into
     // its SharedPreferences-backed store with no Compose state to invalidate on). Bumped
@@ -832,6 +844,19 @@ private fun FylzV1Workspace(
     // separate route (now the same sheet), and the trash tab's own entry point alike.
     var trashSheetOpen by remember { mutableStateOf(false) }
     var trashRefreshKey by remember { mutableIntStateOf(0) }
+    // Where the tab band's trash tab actually IS, in root coordinates, reported by the band's own
+    // layout. The drag layer's bottom-right can is drawn at a fixed geometric inset and is only
+    // approximately over this tab; a drop is accepted against these MEASURED bounds so the thing
+    // aimed at is the thing that catches. Null until the band has been laid out at least once --
+    // and stale after it stops composing, which is why every reader also requires an active tab.
+    var trashTabBounds by remember { mutableStateOf<Rect?>(null) }
+    // The same, per folder tab. A plain map, not a SnapshotStateMap: it is written from layout
+    // and read either from a pointer callback (the release) or from a chip already recomposing
+    // because the drag position it also reads changed this frame -- so nothing needs the write
+    // itself to invalidate anything, and a snapshot map would invalidate every chip on every
+    // key's write for no gain. Entries for closed tabs are never pruned; every reader resolves
+    // an id against [tabs] first, so a stale rect can only ever name a tab that no longer is.
+    val tabChipBounds = remember { mutableMapOf<String, Rect>() }
     var shredTargets by remember { mutableStateOf<List<RecycleRecord>?>(null) }
     var shredding by remember { mutableStateOf(false) }
     var pendingFolderItems by remember { mutableStateOf<List<StagedItem>>(emptyList()) }
@@ -1083,6 +1108,75 @@ private fun FylzV1Workspace(
         // The file's own go-home idiom -- it re-keys the launch surface's own produceState, so a
         // tree granted a moment ago is in the list this new tab is about to offer.
         homeRefreshKey += 1
+    }
+
+    /**
+     * Opens [entry] -- a folder in the listing on screen -- as a second tab, IN THE BACKGROUND.
+     *
+     * **Focus deliberately stays where it is.** This is reached by holding a folder while
+     * browsing, which is the moment you have found somewhere to go *later*; stealing focus would
+     * make it a slower version of the tap that is already right there, and it would lose the
+     * place you were reading. Held-then-held-again queues several folders up and you pick from
+     * the band. The band is the receipt: a new chip appears the instant this returns, and the
+     * toast names it for the case where the strip has scrolled past its own end.
+     *
+     * Not [openTabAt]: that one adopts a waiting "+" tab and reuses any tab already on this tree,
+     * both of which would rewind an existing tab instead of adding one. The new tab inherits the
+     * current tab's whole breadcrumb plus this folder, the same shape [openFolderInActiveTab]
+     * builds, so Up out of it walks back through the real ancestry rather than dead-ending.
+     */
+    fun openInNewTab(entry: FileEntry) {
+        // Both guards are unreachable from the menu as it stands (its only rows are folders, and
+        // every surface that offers it has a tab open) -- said out loud anyway, because a route
+        // that silently does nothing is exactly what a later call site would fall into.
+        if (!entry.isDirectory) return
+        val tab = activeTab ?: run {
+            toast("Open a folder first")
+            return
+        }
+        tabs += FolderTab(
+            treeUri = tab.treeUri,
+            locations = tab.locations + FolderLocation(entry.uri, entry.name),
+        )
+        toast("${entry.name} opened in a new tab")
+    }
+
+    /**
+     * Adds or removes [entry] from the live selection. A named function rather than the lambda
+     * literal it used to be: the row long-press menu's own "Select" has to do exactly this, and
+     * two copies of a selection toggle is how a selection and its details map drift apart.
+     *
+     * Selection and focus are fully decoupled: a checkbox tap used to retarget the preview on
+     * every toggle, including on deselection, so quick-look chased the selection instead of
+     * showing what was opened.
+     */
+    fun toggleSelection(entry: FileEntry) {
+        if (entry.uri in selectedUris) {
+            selectedUris = selectedUris - entry.uri
+            selectedEntryDetails = selectedEntryDetails - entry.uri
+        } else {
+            selectedUris = selectedUris + entry.uri
+            selectedEntryDetails = selectedEntryDetails + (entry.uri to entry)
+        }
+    }
+
+    /**
+     * What holding [entry] offers -- read by BOTH the sheet and every row's custom accessibility
+     * actions, which is the whole reason it is one function rather than a lambda at each.
+     *
+     * Folders only, and only the two things a held folder can offer that a tap cannot: a second
+     * tab, and the selection this long press would otherwise have made on its own. "Select" is
+     * not a courtesy item -- it is what keeps long-press-to-start-a-selection reachable on a
+     * folder now that the menu owns that press (see `resolveEntryLongPress`). A file gets an
+     * empty list, which is what leaves its long press exactly as it was: toggle, no menu.
+     */
+    fun entryMenuActions(entry: FileEntry): List<EntryAction> = if (entry.isDirectory) {
+        listOf(
+            EntryAction("Open in a new tab") { openInNewTab(entry) },
+            EntryAction("Select") { toggleSelection(entry) },
+        )
+    } else {
+        emptyList()
     }
 
     /** Closes [tab] -- shared by the locations room's own row and the pill's tab strip, so the
@@ -1686,7 +1780,14 @@ private fun FylzV1Workspace(
     }
 
     fun recycleUris(uris: List<Uri>) {
-        val tab = activeTab ?: return
+        // The bin lives inside the open tab's own tree (.fylz-trash under its root), so with no
+        // tab there is nowhere to recycle TO. Said out loud rather than returned silently: this
+        // is reachable from the home surfaces' own cluster drag, and a genie animation followed
+        // by nothing at all is the worst possible answer.
+        val tab = activeTab ?: run {
+            toast("Open a folder to recycle into")
+            return
+        }
         if (uris.isEmpty()) return
         scope.launch {
             loading = true
@@ -1854,9 +1955,126 @@ private fun FylzV1Workspace(
         }
     }
 
+    /**
+     * The entry behind a uri a gesture just handed back, looked up in what is actually on screen.
+     *
+     * [ClusterGestureHooks.onStartSolo] names its cargo by uri because that is all a row's
+     * `entryGestures(key = ...)` carries. Three sources, in the order a row could have come from:
+     * the open folder's listing, the search results replacing it, and the details map that
+     * backfills home-surface selections [entries] never held. Null means the row that started
+     * this drag is not one this workspace can describe -- no drag rather than an invented one.
+     */
+    fun entryForDrag(uri: Uri): FileEntry? = entries.find { it.uri == uri }
+        ?: searchHits.firstOrNull { it.entry.uri == uri }?.entry
+        ?: selectedEntryDetails[uri]
+
+    /**
+     * Is the tab band's trash tab a live drop target for what is currently in flight, and is the
+     * finger on it? Both halves matter: a target that lights up for a drop it cannot perform is
+     * worse than no target, and the recycle path needs an open tab to have a bin at all.
+     */
+    fun overTrashTab(at: Offset): Boolean {
+        val bounds = trashTabBounds ?: return false
+        return activeTab != null && clusterController.items.isNotEmpty() && bounds.contains(at)
+    }
+
+    /**
+     * Would dropping [cargo] on [destination]'s chip actually move anything?
+     *
+     * The three no-ops, each of which must NOT light the tab up:
+     * - the tab you are already in, and the same folder reached through a second tab -- either
+     *   way the files are already there;
+     * - a folder dropped onto a tab standing inside it (or inside one of its children): the
+     *   destination's own breadcrumb IS its ancestry, so a cargo uri appearing anywhere in
+     *   [FolderTab.locations] means this move would put a folder inside itself and lose the
+     *   subtree. Checked against the breadcrumb rather than by walking the provider, because the
+     *   breadcrumb is exact, already in memory, and cannot fail;
+     * - nothing aboard.
+     */
+    fun dropIntoTabIsReal(destination: FolderTab, cargo: Set<Uri>, source: FolderTab?): Boolean = when {
+        cargo.isEmpty() -> false
+        destination.id == source?.id -> false
+        destination.current.uri == source?.current?.uri -> false
+        destination.locations.any { it.uri in cargo } -> false
+        else -> true
+    }
+
+    /**
+     * Which open tab a release at [at] would move the cluster into, or null.
+     *
+     * Bounds come from the band's own layout ([tabChipBounds]), so this is the tab the finger is
+     * actually on rather than a guess at where the strip put it. Three ordering rules mirror how
+     * the band paints, because every chip in the strip overlaps its neighbour: the TRASH chip is
+     * front-most and wins its overlap outright; the ACTIVE chip is drawn above the rest (zIndex
+     * 1) and is never a real destination, so a point on it is nobody's; and among the remainder
+     * the later chip is on top, so the last match wins.
+     */
+    fun tabDropTarget(at: Offset): FolderTab? {
+        val cargo = clusterController.items.map(StagedItem::uri).toSet()
+        if (cargo.isEmpty()) return null
+        // Trash outranks the strip. Its chip is pinned 40dp INTO its left neighbour and drawn
+        // front-most, so the overlap belongs to the can, not to the folder tab whose bounds also
+        // cover it -- without this, aiming at the left half of the bin would move the files into
+        // Documents instead. One guard, so the cue and the release cannot disagree about it.
+        if (overTrashTab(at)) return null
+        if (activeTabId?.let { tabChipBounds[it] }?.contains(at) == true) return null
+        val landed = tabs.lastOrNull { tabChipBounds[it.id]?.contains(at) == true } ?: return null
+        return landed.takeIf { dropIntoTabIsReal(it, cargo, activeTab) }
+    }
+
+    /**
+     * The tab drop itself: move [cargo] into [destination]'s current folder, through the same
+     * [FileOperationService.move] every other move in this file goes through -- same conflict
+     * policy, same progress line, same identity migration on the way. An accelerator for the
+     * actions room's own Move, not a second implementation of it.
+     */
+    fun moveCargoIntoTab(destination: FolderTab, cargo: List<StagedItem>) {
+        val uris = cargo.map(StagedItem::uri)
+        if (uris.isEmpty()) return
+        val segments = destination.locations.drop(1).map(FolderLocation::name)
+        scope.launch {
+            loading = true
+            runCatching {
+                fileOperations.move(uris, destination.treeUri, ConflictPolicy.KEEP_BOTH, segments) { progress ->
+                    operationMessage = "Moving ${progress.displayName}"
+                }
+            }.onSuccess {
+                toast("Moved to ${destination.current.name}")
+                selectedUris = emptySet()
+                selectedEntryDetails = emptyMap()
+                refresh()
+                WidgetRefresher.refreshAll(context)
+            }.onFailure { toast(it.message ?: "The move failed") }
+            operationMessage = null
+            loading = false
+        }
+    }
+
     /** The row's press-hold drag ended; targets without a flight commit right here. */
     fun clusterReleased() {
         val cargo = clusterController.items
+        // Another tab, first: the band's own chips are targets the drag layer knows nothing
+        // about, so they are resolved here, before release() is asked what the layer's corner
+        // slots think. (Trash still outranks them -- tabDropTarget refuses the bin's own chip
+        // itself, so the two orderings cannot drift apart.) No flight is drawn for this one --
+        // the same immediate commit SHELF, NEW_FOLDER and COMPRESS already take, for the same
+        // reason: there is nowhere for the cards to fly TO but the chip already under the finger.
+        val intoTab = tabDropTarget(clusterController.dragPosition)
+        if (intoTab != null) {
+            clusterController.settle()
+            moveCargoIntoTab(intoTab, cargo)
+            return
+        }
+        // The band's measured trash tab overrides the drag layer's own fixed corner geometry.
+        // ClusterDragLayer hit-tests DropTarget.TRASH against DropTargetPolicy.trashCentre -- an
+        // inset struck from the bottom-right corner, which only approximately covers where the
+        // tab really sits -- and this file cannot change that from outside the layer. What it CAN
+        // do is write the one reaction release() reads, which routes the drop through exactly the
+        // same genie flight and exactly the same recycleUris() the corner can always used: same
+        // bin, same journal, same "Put back", never a hard delete.
+        if (overTrashTab(clusterController.dragPosition)) {
+            clusterController.reactions = listOf(TargetReaction(DropTarget.TRASH, proximity = 1f, hit = true))
+        }
         when (clusterController.release()) {
             DropTarget.NEW_FOLDER -> {
                 clusterController.settle()
@@ -1866,7 +2084,11 @@ private fun FylzV1Workspace(
             }
             DropTarget.COMPRESS -> {
                 clusterController.settle()
-                archiveSources = selectedEntries.map { it.uri }
+                // [cargo], not selectedEntries: every other branch here already acts on what was
+                // actually in flight, and a solo drag (onStartSolo) carries one entry with no
+                // selection behind it at all -- read the selection and this slot would have
+                // launched a save dialog for an archive of nothing.
+                archiveSources = cargo.map(StagedItem::uri)
                 archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip")
             }
             DropTarget.SHELF -> {
@@ -2520,18 +2742,11 @@ private fun FylzV1Workspace(
                         onOpen = ::openEntry,
                         onOpenTabFolder = ::openFolderInActiveTab,
                         onOpenExternal = ::openExternal,
-                        onToggleSelection = { entry ->
-                            // Selection and focus are fully decoupled: a checkbox tap used to
-                            // retarget the preview on every toggle, including on deselection, so
-                            // quick-look chased the selection instead of showing what was opened.
-                            if (entry.uri in selectedUris) {
-                                selectedUris = selectedUris - entry.uri
-                                selectedEntryDetails = selectedEntryDetails - entry.uri
-                            } else {
-                                selectedUris = selectedUris + entry.uri
-                                selectedEntryDetails = selectedEntryDetails + (entry.uri to entry)
-                            }
-                        },
+                        onToggleSelection = ::toggleSelection,
+                        entryMenu = EntryMenuHooks(
+                            actionsFor = ::entryMenuActions,
+                            show = { entry -> entryMenuFor = entry },
+                        ),
                         listState = listState,
                         gridState = gridState,
                         cluster = ClusterGestureHooks(
@@ -2546,6 +2761,20 @@ private fun FylzV1Workspace(
                                     origins = clusterOrigins.toMap(),
                                     at = at,
                                 )
+                            },
+                            onStartSolo = { uri, at ->
+                                // One entry, named by the row that was held -- no selection is
+                                // consulted and none is made. Everything downstream (the layer,
+                                // the targets, the flights, clusterReleased) is identical to a
+                                // one-item selection drag; only the gathering differs.
+                                entryForDrag(uri)?.let { entry ->
+                                    warmThumbnails(listOf(entry), context.contentResolver)
+                                    clusterController.start(
+                                        items = listOf(StagedItem(entry.uri, entry.name, entry.kind, entry)),
+                                        origins = clusterOrigins.toMap(),
+                                        at = at,
+                                    )
+                                }
                             },
                             onDrag = clusterController::drag,
                             onEnd = ::clusterReleased,
@@ -2645,6 +2874,37 @@ private fun FylzV1Workspace(
                     onAddTab = ::addTab,
                     onTrashTap = { trashSheetOpen = true },
                     frosted = themeStyle == ThemeStyle.FYLZ,
+                    // What makes the trash tab a real drop target rather than a picture of one:
+                    // its own measured position, in the same root coordinate space entryGestures
+                    // reports every drag position in. Read by [overTrashTab] at release.
+                    //
+                    // The tab draws no cue of its own (TabBand's trashProximity stays unused):
+                    // ClusterDragLayer's trash bulge is composed at zIndex 20 over this whole
+                    // corner, so the can the finger approaches -- swelling, tilting, lid opening,
+                    // washing red once the drop would commit -- is the layer's, drawn directly on
+                    // top of this tab. A second cue painted here would be behind it.
+                    trashModifier = Modifier.onGloballyPositioned {
+                        trashTabBounds = it.boundsInRoot()
+                    },
+                    onTabBounds = { id, bounds -> tabChipBounds[id] = bounds },
+                    // The folder chips are far enough from the corner that the drag layer's
+                    // bulges do NOT cover them, so unlike the trash tab this cue is really seen:
+                    // the chip a cluster is over lifts before the finger lets go. Evaluated in
+                    // the chip, and deliberately the very same predicate the release runs, so a
+                    // tab that lights up is a tab that will take the drop.
+                    // `active` is read first for two reasons: at rest it costs one boolean
+                    // instead of a hit test per chip per frame, and -- less obviously -- it is
+                    // the OBSERVABLE that ends the cue. dragPosition is not cleared when a drag
+                    // finishes, so a chip subscribed only to that would sit lit until something
+                    // unrelated happened to recompose it; the phase changing is what actually
+                    // tells these chips the drag is over.
+                    armedTabId = {
+                        if (clusterController.active) {
+                            tabDropTarget(clusterController.dragPosition)?.id
+                        } else {
+                            null
+                        }
+                    },
                 )
             }
         }
@@ -2817,6 +3077,19 @@ private fun FylzV1Workspace(
                 },
                 onDismiss = { openTray = null },
             )
+        }
+
+        // The held row's own menu. Its contents come from the same [entryMenuActions] the row
+        // published as accessibility actions, so what the sheet offers and what TalkBack offers
+        // cannot disagree. The emptiness check is belt-and-braces rather than a real state --
+        // entryGestures only ever reaches its menu branch for a row whose actions were non-empty
+        // -- and it stays a plain skip rather than clearing entryMenuFor, because a state write
+        // during composition is a recomposition loop waiting for its first real caller.
+        entryMenuFor?.let { entry ->
+            val actions = entryMenuActions(entry)
+            if (actions.isNotEmpty()) {
+                EntryMenuSheet(entry = entry, actions = actions, onDismiss = { entryMenuFor = null })
+            }
         }
 
         if (trashSheetOpen) {
@@ -3485,6 +3758,7 @@ private fun FileBrowser(
     listState: LazyListState,
     gridState: LazyGridState,
     cluster: ClusterGestureHooks?,
+    entryMenu: EntryMenuHooks? = null,
     chips: List<QueryChip>,
     onRemoveChip: (QueryChip) -> Unit,
     diagnostics: List<Diagnostic>,
@@ -3599,6 +3873,33 @@ private fun FileBrowser(
         return
     }
 
+    // The kind starters offered on an empty search box, derived from the listing about to be
+    // searched rather than from a fixed menu: a "type:pdf" starter is only worth offering where a
+    // pdf actually is. Recomputed with the listing, which is the only thing that can change it.
+    val kindStarters = remember(entries) { kindStartersFrom(entries) }
+
+    // A device-index hit lives outside this tab's tree, so there is no FileEntry in hand for it --
+    // probe it into one and open it the ordinary way. A probe that comes back null means the index
+    // is describing a file that is no longer there; say so rather than opening nothing.
+    val deviceHitScope = rememberCoroutineScope()
+    val deviceHitContext = LocalContext.current
+    // Resolved at composition, not inside the lambda: reading a resource off LocalContext at call
+    // time is not invalidated by a Configuration change, so a locale switch would keep handing back
+    // the stale string (lint's LocalContextGetResourceValueCall).
+    val deviceHitGoneMessage = stringResource(R.string.search_device_hit_gone)
+    val onOpenDeviceIndexHit: (Uri) -> Unit = { uri ->
+        deviceHitScope.launch {
+            val probed = runCatching { repository.probe(uri) }.getOrNull()
+            if (probed != null) {
+                onOpen(probed)
+            } else {
+                // The index is describing a file that is no longer where it was recorded. Say so:
+                // a tapped result that simply does nothing is the worse failure.
+                Toast.makeText(deviceHitContext, deviceHitGoneMessage, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // Whether SearchResults, not the plain listing, is on screen -- read by both render branches
     // below (CANVAS's own Box and the PullDownSearchHost content) so the two can never disagree
     // about which list the user is actually looking at. The caller derives the same flag from the
@@ -3656,6 +3957,7 @@ private fun FileBrowser(
                         onOpen = onOpen,
                         onOpenExternal = onOpenExternal,
                         onToggleSelection = onToggleSelection,
+                        entryMenu = entryMenu,
                         listState = listState,
                         // Clears the pill as well as the chrome -- the pill floats over this
                         // list, so the chrome reserve alone would leave the last hits under it.
@@ -3689,6 +3991,16 @@ private fun FileBrowser(
                     diagnostics = diagnostics,
                     recentSearches = recentSearches,
                     onRecentSearchSelected = onRecentSearchSelected,
+                    // Wired, not defaulted. These three arrived with safe defaults so the pill
+                    // could land before this file did; left unsupplied they make the owner's own
+                    // zero-result ask ("if no results found, prompt to ask if the user wants to
+                    // search all locations on the device instead") unreachable dead code -- the
+                    // escalation is gated on resultCount == 0, and null is not 0. kindStarters is
+                    // the honesty half: derived from the very listing about to be searched, so a
+                    // starter is never offered for a kind with nothing behind it here.
+                    resultCount = if (searchActive) searchHits.size else null,
+                    kindStarters = kindStarters,
+                    onOpenDeviceHit = { uri -> onOpenDeviceIndexHit(uri) },
                     focusRequester = searchFocusRequester,
                     // CANVAS has no scroll container to reserve contentPadding on, so this is
                     // the one branch that has to clear the bottom chrome by hand -- without it
@@ -3731,6 +4043,16 @@ private fun FileBrowser(
                         diagnostics = diagnostics,
                         recentSearches = recentSearches,
                         onRecentSearchSelected = onRecentSearchSelected,
+                        // Wired, not defaulted. These three arrived with safe defaults so the pill
+                        // could land before this file did; left unsupplied they make the owner's own
+                        // zero-result ask ("if no results found, prompt to ask if the user wants to
+                        // search all locations on the device instead") unreachable dead code -- the
+                        // escalation is gated on resultCount == 0, and null is not 0. kindStarters is
+                        // the honesty half: derived from the very listing about to be searched, so a
+                        // starter is never offered for a kind with nothing behind it here.
+                        resultCount = if (searchActive) searchHits.size else null,
+                        kindStarters = kindStarters,
+                        onOpenDeviceHit = { uri -> onOpenDeviceIndexHit(uri) },
                         focusRequester = searchFocusRequester,
                         trailing = {},
                     )
@@ -3745,6 +4067,7 @@ private fun FileBrowser(
                             onOpen = onOpen,
                             onOpenExternal = onOpenExternal,
                             onToggleSelection = onToggleSelection,
+                            entryMenu = entryMenu,
                             listState = listState,
                             bottomPadding = bottomChromeReserve,
                             density = density,
@@ -3816,6 +4139,7 @@ private fun FileBrowser(
                                         onOpen = onOpen,
                                         onToggleSelection = onToggleSelection,
                                         cluster = cluster,
+                                        entryMenu = entryMenu,
                                         treeUri = activeTab.treeUri,
                                         repository = repository,
                                         showHidden = showHidden,
@@ -3856,6 +4180,7 @@ private fun FileBrowser(
                                         onOpenExternal = onOpenExternal,
                                         onToggleSelection = onToggleSelection,
                                         cluster = cluster,
+                                        entryMenu = entryMenu,
                                         rowHeight = Density.detailsRowHeight(density),
                                         thumbSize = Density.detailsThumb(density),
                                     )
@@ -3979,6 +4304,8 @@ private fun FileBrowser(
                                                 cluster = cluster,
                                                 onDoubleTap = { onOpenExternal(entry) },
                                                 contentDescription = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
+                                                menuActions = entryMenu.actionsOn(entry),
+                                                onOpenMenu = entryMenu.openerFor(entry),
                                             ),
                                         contentAlignment = Alignment.Center,
                                     ) {
@@ -4020,6 +4347,7 @@ private fun FileBrowser(
                                         onOpenExternal = onOpenExternal,
                                         onToggleSelection = onToggleSelection,
                                         cluster = cluster,
+                                        entryMenu = entryMenu,
                                         rowHeight = Density.listRowHeight(density),
                                         thumbSize = Density.listThumb(density),
                                     )
@@ -4042,6 +4370,7 @@ private fun FileBrowser(
                                     onOpenExternal = onOpenExternal,
                                     onToggleSelection = onToggleSelection,
                                     cluster = cluster,
+                                    entryMenu = entryMenu,
                                     rowHeight = Density.listRowHeight(density),
                                     thumbSize = Density.listThumb(density),
                                 )
@@ -4361,6 +4690,7 @@ private fun SearchResults(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    entryMenu: EntryMenuHooks? = null,
     // Hoisted rather than internal, matching every other listing surface here -- the pull-down
     // search reveal above needs this list's own "at top" reading to decide whether it may claim
     // a downward drag.
@@ -4408,6 +4738,7 @@ private fun SearchResults(
                     onOpen = onOpen,
                     onOpenExternal = onOpenExternal,
                     onToggleSelection = onToggleSelection,
+                    entryMenu = entryMenu,
                     // Where the file lives, plus the matched line for a content hit -- a result
                     // list without a path is unusable once the search leaves one folder.
                     overline = hit.relativePath,
@@ -4440,10 +4771,91 @@ private fun SearchResults(
 class ClusterGestureHooks(
     val onPositioned: (Uri, Offset) -> Unit,
     val onStart: (Offset) -> Unit,
+    /**
+     * Pick up ONE entry, named by its uri, with no selection behind it.
+     *
+     * [onStart] gathers whatever is selected, which is why a drag used to need two long presses
+     * to begin: the first one selected the row and the second one lifted it. That is the whole of
+     * "I wasn't able to drag a file to one of the actions" -- the targets were always there, but
+     * nothing that started with a plain held finger ever reached them.
+     *
+     * The uri rather than the entry because that is all
+     * [io.github.mbaliga.fylz.ui.components.entryGestures] has: its `key` IS the row's uri, and a
+     * host that offers this hook is a host that can resolve one.
+     */
+    val onStartSolo: (Uri, Offset) -> Unit,
     val onDrag: (Offset) -> Unit,
     val onEnd: () -> Unit,
     val onCancel: () -> Unit,
 )
+
+/**
+ * The row long-press menu, threaded down beside [ClusterGestureHooks] for the same reason it is:
+ * every listing branch draws its own rows, and one nullable parameter is what keeps the eight of
+ * them from each growing their own idea of what a held folder offers.
+ *
+ * Two halves because the two live in different places. [actionsFor] belongs on the ROW -- it is
+ * also what [io.github.mbaliga.fylz.ui.components.entryGestures] publishes as that row's custom
+ * accessibility actions, so anything in the menu is reachable with no long press at all. [show]
+ * belongs to the WORKSPACE, which owns the sheet; a `Modifier` cannot emit one.
+ *
+ * Null (and an empty [actionsFor] result) means "this row has no menu" -- the long press then
+ * resolves exactly as it always did. Files pass nothing: a file has no second destination worth
+ * offering, and turning its long press into a menu would cost the selection gesture for nothing.
+ */
+private class EntryMenuHooks(
+    val actionsFor: (FileEntry) -> List<EntryAction>,
+    val show: (FileEntry) -> Unit,
+)
+
+/** [EntryMenuHooks.actionsFor] through the nullable, since "no hooks" and "no actions for this
+ *  entry" are the same answer to every row that asks. */
+private fun EntryMenuHooks?.actionsOn(entry: FileEntry): List<EntryAction> =
+    this?.actionsFor(entry).orEmpty()
+
+/** [EntryMenuHooks.show] bound to one entry, or null when there are no hooks -- the shape
+ *  `entryGestures(onOpenMenu = ...)` wants, written once instead of at each of its call sites. */
+private fun EntryMenuHooks?.openerFor(entry: FileEntry): (() -> Unit)? =
+    this?.let { hooks -> { hooks.show(entry) } }
+
+/**
+ * The menu itself: this row's [EntryAction]s, one per line, on the same bottom sheet every other
+ * secondary surface in this file uses. Deliberately not a [DropdownMenu] -- the anchor for one
+ * would have to be the row, and a row inside a `LazyColumn` is recycled out from under a popup
+ * the moment the list scrolls.
+ */
+@Composable
+private fun EntryMenuSheet(entry: FileEntry, actions: List<EntryAction>, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+            Text(
+                displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+            )
+            actions.forEach { action ->
+                Text(
+                    action.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // The sheet dismisses first so the action lands with nothing on top of
+                        // it -- opening a tab under a still-settling sheet reads as a no-op.
+                        // Role.Button because a bare Text with a clickable announces as text a
+                        // screen reader happens to be able to activate, not as a menu item.
+                        .clickable(role = Role.Button) { onDismiss(); action.onSelect() }
+                        // The kit's 48dp floor, honoured here rather than assumed: a text row
+                        // sizes to its own line height, which is nowhere near a thumb.
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -4456,6 +4868,7 @@ private fun FileRowV1(
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     cluster: ClusterGestureHooks? = null,
+    entryMenu: EntryMenuHooks? = null,
     overline: String? = null,
     detail: String? = null,
     nameHighlights: List<IntRange> = emptyList(),
@@ -4480,6 +4893,8 @@ private fun FileRowV1(
                 // on double-tap same as a single tap would, a file opens externally instead.
                 onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
                 contentDescription = label,
+                menuActions = entryMenu.actionsOn(entry),
+                onOpenMenu = entryMenu.openerFor(entry),
             )
             .background(
                 when {
@@ -4643,6 +5058,7 @@ private fun FolderGridCell(
     onOpen: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     cluster: ClusterGestureHooks?,
+    entryMenu: EntryMenuHooks? = null,
     treeUri: Uri,
     repository: DocumentRepository,
     showHidden: Boolean,
@@ -4676,6 +5092,8 @@ private fun FolderGridCell(
                 onToggleSelection = { onToggleSelection(entry) },
                 cluster = cluster,
                 contentDescription = shownName,
+                menuActions = entryMenu.actionsOn(entry),
+                onOpenMenu = entryMenu.openerFor(entry),
             )
             .then(
                 if (focused) {
@@ -4811,6 +5229,7 @@ private fun DetailsRow(
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     cluster: ClusterGestureHooks? = null,
+    entryMenu: EntryMenuHooks? = null,
     rowHeight: Dp = 44.dp,
     thumbSize: Dp = 24.dp,
 ) {
@@ -4830,6 +5249,8 @@ private fun DetailsRow(
                 cluster = cluster,
                 onDoubleTap = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
                 contentDescription = label,
+                menuActions = entryMenu.actionsOn(entry),
+                onOpenMenu = entryMenu.openerFor(entry),
             )
             .background(
                 when {
