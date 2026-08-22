@@ -4,6 +4,15 @@
 declaring required capabilities and the UI deriving visibility from them — is explicitly Phase
 2 per the plan and is not part of this work package.**
 
+> **Phase 2 addendum (Aug 2026).** Consultation is now live: `SelectionActionPolicy.evaluate`
+> takes the leading provider's capability set and gates copy/move/recycle/rename/batch-rename
+> through `CapabilityPolicy`. To keep the gates truthful, both providers additionally declare
+> `READ`, `STREAM_READ`, `WRITE`, `COPY` and `MOVE` — capabilities their shipping behavior
+> (DocumentRepository streaming, the editor's writes, FileOperationService's provider-neutral
+> copy/move) has exercised daily since v1 alpha, previously undeclared only because nothing
+> consulted them. The honesty rule below is unchanged: nothing claims a value that real
+> behavior does not back.
+
 `core-model.ItemCapability` grows the old eight-value `StorageCapability` into the plan's
 grouped table: Content (`READ`, `RANGE_READ`, `STREAM_READ`, `WRITE`, `ATOMIC_REPLACE`),
 Hierarchy (`LIST`, `PAGED_LIST`, `CREATE_FILE`, `CREATE_DIRECTORY`, `RENAME`, `MOVE`, `COPY`),

@@ -21,10 +21,19 @@ class FileStorageProvider : StorageProvider {
     override val id: String = ID
 
     override val capabilities: Set<ItemCapability> = setOf(
+        // Same declaration rationale as SafStorageProvider: READ/STREAM_READ/WRITE/COPY/MOVE
+        // describe what this backend already does every day through DocumentRepository and
+        // FileOperationService, declared when Phase 2's consultation went live so the gates
+        // reflect real behavior rather than hiding it.
+        ItemCapability.READ,
+        ItemCapability.STREAM_READ,
+        ItemCapability.WRITE,
         ItemCapability.LIST,
         ItemCapability.CREATE_FILE,
         ItemCapability.CREATE_DIRECTORY,
         ItemCapability.RENAME,
+        ItemCapability.COPY,
+        ItemCapability.MOVE,
         ItemCapability.TRASH,
         ItemCapability.RESTORE_TRASH,
         ItemCapability.DELETE_PERMANENT,

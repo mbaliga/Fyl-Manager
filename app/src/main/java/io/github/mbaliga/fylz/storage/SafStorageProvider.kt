@@ -26,10 +26,21 @@ class SafStorageProvider : StorageProvider {
     override val id: String = ID
 
     override val capabilities: Set<ItemCapability> = setOf(
+        // Content: every preview and the text editor stream this provider's documents daily
+        // through DocumentRepository and ContentResolver -- READ/STREAM_READ/WRITE are
+        // observations of shipping behavior, not aspirations (WP-1.2's honesty rule). Declared
+        // when Phase 2's consultation went live in SelectionActionPolicy: an undeclared READ
+        // would have hidden copy/move on a backend that performs both every day.
+        ItemCapability.READ,
+        ItemCapability.STREAM_READ,
+        ItemCapability.WRITE,
         ItemCapability.LIST,
         ItemCapability.CREATE_FILE,
         ItemCapability.CREATE_DIRECTORY,
         ItemCapability.RENAME,
+        // FileOperationService implements provider-neutral copy/move over exactly this backend.
+        ItemCapability.COPY,
+        ItemCapability.MOVE,
         ItemCapability.TRASH,
         ItemCapability.RESTORE_TRASH,
         ItemCapability.DELETE_PERMANENT,

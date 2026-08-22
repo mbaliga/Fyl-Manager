@@ -15,6 +15,7 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
 - Finish move now compares version evidence captured when the source delete first failed: a provably modified source or destination blocks the delete and is reported (`MOVE_SOURCE_MODIFIED`, `MOVE_DESTINATION_UNVERIFIED`); providers that report no evidence keep the previous direct size cross-check.
+- Selection actions now consult the storage provider's declared capabilities (copy, move, recycle, rename, batch rename): an action a backend cannot perform is withheld instead of failing after the tap. Both shipping backends declare full support, so nothing visible changes until a more limited provider arrives.
 
 ### Preview and editing
 

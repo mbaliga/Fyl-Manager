@@ -901,9 +901,16 @@ private fun FylzV1Workspace(
 
     // What this selection may be asked to do. Derived once and handed to the actions room, so
     // "does Extract apply" is answered by one testable policy rather than by an expression
-    // written inline wherever a button happened to be drawn.
+    // written inline wherever a button happened to be drawn. Phase 2: the policy also consults
+    // the leading provider's capability set (CapabilityPolicy's first real caller). Both local
+    // backends declare identical sets today, so primary() is authoritative for any tab; a
+    // future backend that refuses an operation will see its actions withheld here, not fail
+    // downstream.
     val selectionActions = remember(selectedEntries) {
-        SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
+        SelectionActionPolicy.evaluate(
+            kinds = selectedEntries.map(FileEntry::kind),
+            offered = StorageAccess.primary(context).capabilities,
+        )
     }
 
     // Every known tag, cached once per write rather than re-scanned on every recomposition, per
