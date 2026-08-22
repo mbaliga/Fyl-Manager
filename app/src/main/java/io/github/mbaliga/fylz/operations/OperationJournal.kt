@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.model.VersionStamp
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.core.operations.FileOperationType
@@ -101,7 +102,9 @@ class OperationJournal(context: Context) {
                         .put("expectedBytes", item.expectedBytes)
                         .put("completedBytes", item.completedBytes)
                         .put("state", item.state.name)
-                        .put("errorCode", item.errorCode),
+                        .put("errorCode", item.errorCode)
+                        .put("sourceStamp", item.sourceStamp?.toJson())
+                        .put("destinationStamp", item.destinationStamp?.toJson()),
                 )
             }
             root.put(
@@ -125,6 +128,36 @@ class OperationJournal(context: Context) {
         .put("providerId", providerId)
         .put("locationId", locationId)
         .put("opaqueItemId", opaqueItemId)
+
+    private fun VersionStamp.toJson(): JSONObject = when (this) {
+        is VersionStamp.Composite -> JSONObject()
+            .put("kind", "composite")
+            .put("sizeBytes", sizeBytes)
+            .put("modifiedAtMillis", modifiedAtMillis)
+        is VersionStamp.Revision -> JSONObject()
+            .put("kind", "revision")
+            .put("token", token)
+    }
+
+    /**
+     * Reads an optional schema-v3 version stamp. Absent field, unrecognized kind, or a
+     * malformed object all decode to null — per [JournalSchema]'s contract, a field this build
+     * cannot recognize is inert, never a reason to refuse the record.
+     */
+    private fun JSONObject.decodeStamp(key: String): VersionStamp? {
+        val value = optJSONObject(key) ?: return null
+        return when (value.optString("kind")) {
+            "composite" -> VersionStamp.Composite(
+                sizeBytes = value.optLong("sizeBytes", Long.MIN_VALUE)
+                    .takeUnless { it == Long.MIN_VALUE },
+                modifiedAtMillis = value.optLong("modifiedAtMillis", Long.MIN_VALUE)
+                    .takeUnless { it == Long.MIN_VALUE },
+            )
+            "revision" -> value.optString("token").takeIf(String::isNotBlank)
+                ?.let { VersionStamp.Revision(it) }
+            else -> null
+        }
+    }
 
     /**
      * Reads a `source`/`destination` field by JSON shape rather than by the record's
@@ -168,6 +201,8 @@ class OperationJournal(context: Context) {
                                     completedBytes = item.optLong("completedBytes", 0L),
                                     state = OperationState.valueOf(item.getString("state")),
                                     errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
+                                    sourceStamp = item.decodeStamp("sourceStamp"),
+                                    destinationStamp = item.decodeStamp("destinationStamp"),
                                 ),
                             )
                         }

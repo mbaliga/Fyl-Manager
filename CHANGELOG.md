@@ -14,6 +14,7 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added file/folder creation, rename, duplicate, copy, move, recycle, restore and explicit permanent deletion.
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
+- Finish move now compares version evidence captured when the source delete first failed: a provably modified source or destination blocks the delete and is reported (`MOVE_SOURCE_MODIFIED`, `MOVE_DESTINATION_UNVERIFIED`); providers that report no evidence keep the previous direct size cross-check.
 
 ### Preview and editing
 

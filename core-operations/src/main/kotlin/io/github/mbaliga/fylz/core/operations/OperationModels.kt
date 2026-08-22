@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.core.operations
 
 import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.model.VersionStamp
 import java.util.UUID
 
 enum class FileOperationType {
@@ -57,6 +58,15 @@ data class OperationItem(
     val completedBytes: Long = 0,
     val state: OperationState = OperationState.QUEUED,
     val errorCode: String? = null,
+    /**
+     * Version evidence captured at the moment a MOVE's source delete first failed (schema v3):
+     * [sourceStamp] is the still-present source, [destinationStamp] the just-verified committed
+     * destination. Consumed by [MoveCleanupPolicy] when cleanup later retries the delete. Null
+     * on every pre-v3 record and on non-MOVE items — null decides nothing on its own; it routes
+     * the policy to [MoveCleanupPolicy.Decision.InsufficientEvidence].
+     */
+    val sourceStamp: VersionStamp? = null,
+    val destinationStamp: VersionStamp? = null,
 )
 
 data class FileOperation(
