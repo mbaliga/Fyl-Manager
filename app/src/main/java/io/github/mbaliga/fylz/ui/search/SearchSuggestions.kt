@@ -297,11 +297,10 @@ private fun canonicalKindOf(kind: EntryKind): String? = when (kind) {
  * [io.github.mbaliga.fylz.index.LocalIndexStore]'s persisted state, never assumed.
  *
  * This is the WIRED index: `IndexManagerActivity` and `PostV1ToolsActivity` build it through
- * [io.github.mbaliga.fylz.index.LocalIndexScheduler]. (`library/LocalFileIndex.kt` is a second,
- * unreferenced implementation of the same idea -- nothing in the app calls its `setRoots`/
- * `rebuild`, so its state would report an empty index whatever the user had actually indexed.
- * Reading it here would have printed a coverage line that contradicts its own results, since both
- * classes happen to write to the same `files.json` path with different schemas.)
+ * [io.github.mbaliga.fylz.index.LocalIndexScheduler]. (A second, unreferenced implementation of
+ * the same idea -- `library/LocalFileIndex.kt` -- used to sit beside it, writing to the same
+ * `files.json` path with a different schema; it has been deleted, and the `index` package is the
+ * only rule engine and on-device index in the app.)
  */
 data class DeviceIndexCoverage(
     val indexedFiles: Int,
