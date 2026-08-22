@@ -77,8 +77,14 @@ import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.data.FigJamInspector
+import io.github.mbaliga.fylz.data.PresentationDeckReader
+import io.github.mbaliga.fylz.data.WorkbookReader
 import io.github.mbaliga.fylz.data.FigJamPreviewData
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.ui.components.preview.ArchiveContentPreview
+import io.github.mbaliga.fylz.ui.components.preview.ModelWireframePreview
+import io.github.mbaliga.fylz.ui.components.preview.PresentationPreview
+import io.github.mbaliga.fylz.ui.components.preview.SpreadsheetPreview
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
@@ -915,15 +921,26 @@ private fun QuickLookContent(
             descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
             descriptor.family == PreviewFamily.DESIGN ->
                 DesignDocumentPreview(entry, descriptor, Modifier.fillMaxSize(), onIntrinsicAspect = onIntrinsicAspect)
+            // These routes mirror PreviewPane's, deliberately and in the same order. PreviewPane is
+            // only mounted on a WIDE screen in docked mode; QuickLook is what a phone gets, which
+            // is every phone, all the time. Wiring the deep previews into one and not the other
+            // would have shipped archive browsing, spreadsheets, decks and the wireframe viewer to
+            // tablets alone while the owner's own device saw none of it. Spreadsheets and decks go
+            // first for the same reason as there: a .csv classifies as TEXT and would otherwise
+            // render as a wall of commas.
+            WorkbookReader.spreadsheetKind(descriptor.extension) != null ->
+                SpreadsheetPreview(entry, descriptor, Modifier.fillMaxSize())
+            PresentationDeckReader.deckKind(descriptor.extension) != null ->
+                PresentationPreview(entry, descriptor, Modifier.fillMaxSize())
             descriptor.extension in QUICK_LOOK_SEMANTIC_ZIP_DOCUMENTS ->
                 ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
-            descriptor.extension in QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS ->
-                ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
-            descriptor.extension in QUICK_LOOK_EXTENDED_ARCHIVE_EXTENSIONS ||
+            descriptor.extension in QUICK_LOOK_ZIP_CONTAINER_EXTENSIONS ||
+                descriptor.extension in QUICK_LOOK_EXTENDED_ARCHIVE_EXTENSIONS ||
                 descriptor.extension in QUICK_LOOK_COMPRESSED_STREAM_EXTENSIONS ->
-                ExtendedArchivePreview(entry, descriptor, Modifier.fillMaxSize())
-            descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
-                GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
+                ArchiveContentPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ||
+                descriptor.rendererId == "gltf" ->
+                ModelWireframePreview(entry, descriptor, Modifier.fillMaxSize())
             else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())
         }
 

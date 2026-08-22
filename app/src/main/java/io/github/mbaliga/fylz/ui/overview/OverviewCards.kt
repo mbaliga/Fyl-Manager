@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -467,10 +468,15 @@ internal fun PinnedCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 48dp rows on a 2dp gap, not 44dp rows on an 8dp one. These cards are laid out
+            // on the desktop against a height budget WidgetRegistry records to the dp (PINNED
+            // and RECENTS both have nothing spare at four rows), so the four missing dp per row
+            // are taken out of the gap instead of added to the card: four rows now stand 198dp
+            // tall where they stood 200, and every one of them is a real 48dp target.
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 card.favorites.take(OVERVIEW_LIST_CARD_VISIBLE_ROWS).forEach { favorite ->
                     Row(
-                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { onOpenFavorite(favorite) },
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onOpenFavorite(favorite) },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(Icons.Outlined.Star, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
@@ -598,10 +604,15 @@ internal fun RecentsCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 48dp rows on a 2dp gap, not 44dp rows on an 8dp one. These cards are laid out
+            // on the desktop against a height budget WidgetRegistry records to the dp (PINNED
+            // and RECENTS both have nothing spare at four rows), so the four missing dp per row
+            // are taken out of the gap instead of added to the card: four rows now stand 198dp
+            // tall where they stood 200, and every one of them is a real 48dp target.
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 items.take(4).forEach { item ->
                     Row(
-                        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable { onOpenFile(item.uri) },
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onOpenFile(item.uri) },
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -660,27 +671,51 @@ internal fun QuickActionsCard(
     OverviewCardSurface(modifier) {
         Text(stringResource(R.string.desktop_widget_quick_actions), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
-        // SpaceEvenly, not SpaceBetween: four discs at their old 46dp implicit footprint (22dp
-        // icon + 12dp padding each side) overflowed a compact card's own content width; 40dp
-        // discs plus even spacing is the fit that was tuned to the reference frames.
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            QuickActionButton(Icons.Outlined.Refresh, stringResource(R.string.desktop_quick_action_scan), onScan)
-            QuickActionButton(Icons.Outlined.Search, stringResource(R.string.desktop_quick_action_search), onFocusSearch)
-            QuickActionButton(Icons.Outlined.Inventory2, stringResource(R.string.desktop_quick_action_shelf), onOpenShelf)
-            QuickActionButton(Icons.Outlined.DeleteSweep, stringResource(R.string.desktop_quick_action_trash), onOpenTrash)
+        // Four equal weighted columns rather than SpaceEvenly: the disc stays 40dp (four discs
+        // at their old 46dp implicit footprint overflowed a compact card's own content width,
+        // and that is still true of four 48dp ones), but the TAP TARGET is now the whole column
+        // -- disc, gap and label -- edge to edge with its neighbours. SpaceEvenly spent a third
+        // of this row on gaps that looked tappable and were not; weight(1f) gives every pixel of
+        // the row to one of the four actions, and the target grows from a 40dp disc to a full
+        // quarter-of-the-card column about 60dp tall. See [QuickActionButton].
+        Row(Modifier.fillMaxWidth()) {
+            QuickActionButton(Icons.Outlined.Refresh, stringResource(R.string.desktop_quick_action_scan), onScan, Modifier.weight(1f))
+            QuickActionButton(Icons.Outlined.Search, stringResource(R.string.desktop_quick_action_search), onFocusSearch, Modifier.weight(1f))
+            QuickActionButton(Icons.Outlined.Inventory2, stringResource(R.string.desktop_quick_action_shelf), onOpenShelf, Modifier.weight(1f))
+            QuickActionButton(Icons.Outlined.DeleteSweep, stringResource(R.string.desktop_quick_action_trash), onOpenTrash, Modifier.weight(1f))
         }
     }
 }
 
 private val QUICK_ACTION_DISC_DP = 40.dp
 
+/**
+ * One quick action: a 40dp disc over its own name.
+ *
+ * The click lives on the COLUMN, not on the disc. A 40dp disc is a 40dp touch target, and the
+ * name printed under it -- which every user reads as part of the same control -- was dead. The
+ * column is ~60dp tall (disc, 4dp gap, label) and, given a `weight(1f)` by its caller, a full
+ * quarter of the card wide, so the target clears the floor on the axis it can and takes every
+ * pixel available on the axis it cannot: a compact desktop widget is not wide enough for four
+ * 48dp columns, and widening the disc instead would only push the card past the height its
+ * seeded neighbours are laid out against.
+ *
+ * The [Icon] keeps [label] as its own [contentDescription] and the click carries it again as an
+ * `onClickLabel`, so the action is named whether a reader merges the column or reads the glyph.
+ */
 @Composable
-private fun QuickActionButton(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun QuickActionButton(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        // No padding of its own: this card's height is measured against a seeded desktop layout
+        // (see WidgetRegistry's own table -- QUICK_ACTIONS has 4dp spare) and the column already
+        // stands ~60dp tall without spending any of it.
+        modifier = modifier.clickable(onClick = onClick, onClickLabel = label, role = Role.Button),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Surface(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            modifier = Modifier.size(QUICK_ACTION_DISC_DP).clickable(onClick = onClick),
+            modifier = Modifier.size(QUICK_ACTION_DISC_DP),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp))

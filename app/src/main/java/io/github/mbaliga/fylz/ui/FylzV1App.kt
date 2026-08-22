@@ -4664,7 +4664,9 @@ private fun ParentFolderRow(entry: FileEntry, current: Boolean, onClick: () -> U
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 44.dp)
+            // 48dp, not the 44 this row used to carry: it is a navigation target in a scrolling
+            // breadcrumb, and 44 was under the floor with nothing gained by it.
+            .heightIn(min = 48.dp)
             .clickable(onClick = onClick)
             .background(if (current) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
             .padding(horizontal = 12.dp, vertical = 4.dp),
@@ -5151,8 +5153,11 @@ private fun DetailsHeaderRow(spec: SortSpec, onChange: (SortSpec) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 36.dp)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            // 48dp with NO vertical padding, so each label below can fill the whole band: the
+            // old 36dp-minus-6dp-each-side left every one of these three sort controls about
+            // 24dp tall. The type is unchanged -- only the dead band around it is now live.
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Spacer(Modifier.size(24.dp))
@@ -5190,7 +5195,17 @@ private fun DetailsHeaderLabel(
     modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier.clickable(onClick = onClick),
+        modifier
+            // The incoming modifier carries this column's WIDTH (a weight or a fixed dp); the
+            // HEIGHT is claimed here, before the clickable, so the whole band is tappable rather
+            // than just the line of text in it -- a labelMedium line is about 20dp tall, and
+            // these three sort controls were exactly that.
+            //
+            // heightIn, deliberately not fillMaxHeight: the header row's own height is a
+            // minimum, not a fixed size, so a child asking to FILL it would be handed the whole
+            // remaining height of the screen and drag the row up to match.
+            .heightIn(min = 48.dp)
+            .clickable(onClick = onClick, onClickLabel = "Sort by $text", role = Role.Button),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
@@ -5620,7 +5635,9 @@ private fun LocationsRoom(
         Row(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = 40.dp)
+                // The room's own last row, and the only one that was still under the floor:
+                // 40dp of height with an 18dp glyph in it. The glyph stays 18dp.
+                .heightIn(min = 48.dp)
                 .clickable(onClick = onOpenSettings)
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,

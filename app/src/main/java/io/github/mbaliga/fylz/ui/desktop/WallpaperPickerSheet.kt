@@ -42,6 +42,10 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
@@ -218,22 +222,57 @@ private fun WallpaperOptionRow(
  * The 40dp ring-and-clip treatment every swatch shares: a 2dp primary selection ring around
  * content clipped to a circle. [onClick] is `null` for a swatch that only decorates an
  * already-clickable row ([NoneSwatch], [PondWaterSwatch] inside [WallpaperOptionRow]) and
- * non-null for a swatch that is its own tap target ([ColorSwatch] inside a swatch row) -- the
- * clickable is applied last, after both clips, exactly like the pre-Build-11.5 [ColorSwatch] did,
- * so the ripple stays bounded to the circle rather than spilling past its corners.
+ * non-null for a swatch that is its own tap target ([ColorSwatch] inside a swatch row), in which
+ * case the ring is centred inside a [SWATCH_TOUCH] cell that carries the click -- circle-clipped,
+ * so the ripple still stays round rather than spilling into square corners.
+ *
+ * [label] names the swatch for a screen reader. A swatch is a bare disc of colour: without it the
+ * only thing distinguishing "ink" from "moss" is the colour itself, which is exactly the
+ * colour-alone state `docs/DESIGN.md` forbids. Decorative rings (those with no [onClick]) take
+ * their name from the row they sit in and pass none.
  */
 @Composable
-private fun SwatchRing(selected: Boolean, onClick: (() -> Unit)? = null, content: @Composable () -> Unit) {
+private fun SwatchRing(
+    selected: Boolean,
+    onClick: (() -> Unit)? = null,
+    label: String? = null,
+    content: @Composable () -> Unit,
+) {
     val ringColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
-    Box(
-        Modifier
-            .size(SWATCH_SIZE)
-            .clip(CircleShape)
-            .border(2.dp, ringColor, CircleShape)
-            .padding(2.dp)
-            .clip(CircleShape)
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it },
-    ) { content() }
+    val ring = @Composable {
+        Box(
+            Modifier
+                .size(SWATCH_SIZE)
+                .clip(CircleShape)
+                .border(2.dp, ringColor, CircleShape)
+                .padding(2.dp)
+                .clip(CircleShape),
+        ) { content() }
+    }
+    if (onClick == null) {
+        // A decoration inside an already-clickable row: it must NOT be a target of its own, and
+        // padding it out to the floor would only put dead space between the row's own leading
+        // edge and its label.
+        ring()
+    } else {
+        // A swatch that IS its own target gets the floor around it, without growing the swatch:
+        // [SWATCH_SIZE] is the visual the reference frames draw and 40dp is under the 48dp
+        // minimum, so the ring keeps its size and the CELL around it clears the floor. The
+        // circular clip is what keeps the press ripple round rather than a square behind a
+        // round swatch -- the same reason the clickable used to sit after both clips.
+        val swatchSelected = selected
+        Box(
+            Modifier
+                .size(SWATCH_TOUCH)
+                .clip(CircleShape)
+                .clickable(onClick = onClick, onClickLabel = label, role = Role.Button)
+                .semantics {
+                    label?.let { contentDescription = it }
+                    this.selected = swatchSelected
+                },
+            contentAlignment = Alignment.Center,
+        ) { ring() }
+    }
 }
 
 @Composable
@@ -246,12 +285,16 @@ private fun NoneSwatch(selected: Boolean) {
 @Composable
 private fun SolidSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
     val dark = isSystemInDarkTheme()
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    // 2dp, not 12: the swatches now sit in 48dp cells (see [SwatchRing]), so most of the old
+    // gap has moved inside the cell. Six cells on a 2dp gap span 298dp -- narrower than the
+    // 300dp this row already occupied -- and the visible gap between two rings only closes from
+    // 12dp to 10dp.
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         SOLID_SLUGS.forEach { slug ->
             val colors = SOLID_PALETTE.getValue(slug)
             val color = if (dark) colors.second else colors.first
             val selected = current is WallpaperSpec.Solid && current.slug == slug
-            ColorSwatch(color = color, selected = selected, onClick = { onPick(slug) })
+            ColorSwatch(color = color, selected = selected, onClick = { onPick(slug) }, label = swatchLabel(slug))
         }
     }
 }
@@ -259,11 +302,18 @@ private fun SolidSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
 @Composable
 private fun GradientSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) {
     val dark = isSystemInDarkTheme()
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    // Same 48dp cells as the solid row above, and the same 2dp gap so the two rows still read
+    // as one grid rather than two differently-pitched ones.
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         GRADIENT_SLUGS.forEach { slug ->
             val (top, bottom) = gradientStops(slug, dark)
             val selected = current is WallpaperSpec.Gradient && current.slug == slug
-            ColorSwatch(brush = Brush.verticalGradient(listOf(top, bottom)), selected = selected, onClick = { onPick(slug) })
+            ColorSwatch(
+                brush = Brush.verticalGradient(listOf(top, bottom)),
+                selected = selected,
+                onClick = { onPick(slug) },
+                label = swatchLabel(slug),
+            )
         }
     }
 }
@@ -272,10 +322,11 @@ private fun GradientSwatchRow(current: WallpaperSpec, onPick: (String) -> Unit) 
 private fun ColorSwatch(
     selected: Boolean,
     onClick: () -> Unit,
+    label: String,
     color: Color? = null,
     brush: Brush? = null,
 ) {
-    SwatchRing(selected = selected, onClick = onClick) {
+    SwatchRing(selected = selected, onClick = onClick, label = label) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -344,7 +395,19 @@ private fun StaticPondPreview(modifier: Modifier = Modifier) {
     SettledPondCanvas(POND_PREVIEW_SEED, modifier)
 }
 
+/**
+ * A swatch's spoken name, straight off the slug the picker already stores -- "ink" reads as
+ * "Ink". Deliberately not a translated string table: the slugs themselves are the persisted,
+ * user-invisible ids in [WallpaperSpec], and inventing display names for them here would be a
+ * second list to keep in step with [SOLID_SLUGS]/[GRADIENT_SLUGS] for no gain a reader would
+ * notice. Naming the swatch at all is the point; naming it prettily is not.
+ */
+private fun swatchLabel(slug: String): String = slug.replaceFirstChar { it.uppercase() }
+
 private val SWATCH_SIZE = 40.dp
+
+/** The touch cell a self-clicking swatch sits in -- the floor, not the swatch's own size. */
+private val SWATCH_TOUCH = 48.dp
 private const val POND_SWATCH_SEED = 20260820L
 private const val POND_PREVIEW_SEED = 20260821L
 private const val POND_SWATCH_SETTLE_SECONDS = 1.5f

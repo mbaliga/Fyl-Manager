@@ -57,7 +57,14 @@ data class TactileToggleOption(
 )
 
 private val ToggleHeight = 48.dp
-private val SegmentMinWidth = 44.dp
+
+/**
+ * A segment is a real target in its own right, so its floor is the touch floor -- 48dp, matching
+ * [ToggleHeight], not the 44 this used to carry. It only ever binds on a segment whose content
+ * is narrower than the floor (a one- or two-character label); anything with an icon in it is
+ * already past 48dp on its own padding, so this costs those toggles nothing.
+ */
+private val SegmentMinWidth = 48.dp
 private val CapGap = 4.dp
 
 /**

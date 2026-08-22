@@ -37,6 +37,12 @@ import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.format.PreviewFamily
+import io.github.mbaliga.fylz.data.PresentationDeckReader
+import io.github.mbaliga.fylz.data.WorkbookReader
+import io.github.mbaliga.fylz.ui.components.preview.ArchiveContentPreview
+import io.github.mbaliga.fylz.ui.components.preview.ModelWireframePreview
+import io.github.mbaliga.fylz.ui.components.preview.PresentationPreview
+import io.github.mbaliga.fylz.ui.components.preview.SpreadsheetPreview
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
@@ -167,6 +173,16 @@ fun PreviewPane(
                         )
                     }
                 }
+                // Spreadsheets before the plain-text branch, because a .csv classifies as TEXT
+                // and would otherwise render as a wall of commas. The reader itself decides what
+                // it can open, so this route can never claim a format the parser does not handle:
+                // .xls, .xlsb and .numbers answer null and keep the bounded inspector.
+                WorkbookReader.spreadsheetKind(descriptor.extension) != null ->
+                    SpreadsheetPreview(entry, descriptor, Modifier.fillMaxSize())
+                // Presentations, slide by slide, from the text each slide actually carries. Same
+                // rule: the deck reader is asked, rather than a second list drifting alongside it.
+                PresentationDeckReader.deckKind(descriptor.extension) != null ->
+                    PresentationPreview(entry, descriptor, Modifier.fillMaxSize())
                 entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
                     if (textTruncated) TruncationNotice()
                     MarkdownPreview(textContent, Modifier.fillMaxSize())
@@ -186,12 +202,20 @@ fun PreviewPane(
                 descriptor.family == PreviewFamily.DESIGN -> DesignDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
                     ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
-                    ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in EXTENDED_ARCHIVE_EXTENSIONS || descriptor.extension in COMPRESSED_STREAM_EXTENSIONS ->
-                    ExtendedArchivePreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
-                    GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
+                // Every archive family Fylz can actually open goes to the same browsable tree:
+                // descend into a folder inside the archive, come back out, and open one entry in
+                // the ordinary renderers. Families with no bundled reader (RAR, zstd, ISO) are
+                // absent from these sets and keep falling through to the universal inspector.
+                descriptor.extension in ZIP_CONTAINER_EXTENSIONS ||
+                    descriptor.extension in EXTENDED_ARCHIVE_EXTENSIONS ||
+                    descriptor.extension in COMPRESSED_STREAM_EXTENSIONS ->
+                    ArchiveContentPreview(entry, descriptor, Modifier.fillMaxSize())
+                // Wireframes for meshes, glTF/GLB scenes and 2D CAD alike -- ModelWireframePreview
+                // adds the pan the old canvas had no gesture for, and "gltf" finally has the
+                // renderer the format registry has been advertising for it.
+                descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ||
+                    descriptor.rendererId == "gltf" ->
+                    ModelWireframePreview(entry, descriptor, Modifier.fillMaxSize())
                 else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())
             }
         }

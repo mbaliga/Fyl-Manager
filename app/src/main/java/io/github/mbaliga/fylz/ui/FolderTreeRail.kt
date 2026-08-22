@@ -31,6 +31,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,6 +74,22 @@ private val TreeSelectionAccentWidth = 6.dp
  * land under that ancestor's own marker/chevron.
  */
 private val TreeIndentUnit = 24.dp
+
+/**
+ * The expander cell's own width and height -- deliberately NOT [TreeIndentUnit].
+ *
+ * The chevron used to sit in a cell one indent unit square, which made the only control on the
+ * row a 24dp target: a quarter of the area a thumb needs, in a panel whose other rows are all
+ * 48dp tall. The indent is a MEASURE OF DEPTH, not a touch target, and conflating the two is
+ * what made it small. So the indent stays 24dp per level and the cell around the chevron grows
+ * to the floor, for every row alike -- expandable, root and leaf -- because the leaf's cell is
+ * what keeps a leaf's name aligned with its siblings' names.
+ *
+ * The spine columns drawn behind the row are offset by half of THIS, not half an indent unit,
+ * so each ancestor's guide still runs down through the centre of that ancestor's own chevron.
+ * The two have to be read from the same constant or the guides drift by 12dp per level.
+ */
+private val TreeToggleTarget = 48.dp
 
 /**
  * The nested folder navigator that sits under the locations room's quick links.
@@ -186,9 +203,13 @@ private fun TreeRailRow(
             // "draw levels 0 until depth" stops including that column on its own.
             .drawBehind {
                 val unitPx = TreeIndentUnit.toPx()
+                val togglePx = TreeToggleTarget.toPx()
                 val strokePx = TreeSpineWidth.toPx()
                 for (level in 0 until rail.depth) {
-                    val x = unitPx * level + unitPx / 2f
+                    // A row at `level` is indented by `unitPx * level` and then opens with a
+                    // TreeToggleTarget-wide cell, so its chevron's centre -- the point this
+                    // guide has to land on -- is half a CELL in, not half an indent unit.
+                    val x = unitPx * level + togglePx / 2f
                     drawLine(TreeSpine, Offset(x, 0f), Offset(x, size.height), strokePx)
                 }
                 if (isCurrent) {
@@ -202,13 +223,28 @@ private fun TreeRailRow(
             // The root carries a static marker instead of a chevron -- it is always the tree's
             // entry point, not one more expandable level among its own descendants.
             isRoot -> Box(
-                Modifier.size(TreeIndentUnit).clickable(onClick = onToggle),
+                Modifier
+                    .size(TreeToggleTarget)
+                    // The root's marker is a bare square with no glyph to hang a description on,
+                    // so the label rides the click itself -- and says which way the press goes,
+                    // the same way the chevron's own description below does.
+                    .clickable(
+                        onClick = onToggle,
+                        onClickLabel = if (rail.expanded) {
+                            "Collapse ${rail.location.name}"
+                        } else {
+                            "Expand ${rail.location.name}"
+                        },
+                        role = Role.Button,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(Modifier.size(10.dp).background(TreeOnGround))
             }
             expandable -> Box(
-                Modifier.size(TreeIndentUnit).clickable(onClick = onToggle),
+                Modifier
+                    .size(TreeToggleTarget)
+                    .clickable(onClick = onToggle, role = Role.Button),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -221,7 +257,7 @@ private fun TreeRailRow(
             // A leaf owns no line of its own any more -- the ancestor spines already carry the
             // structure past it, so this is nothing but a reserved gutter width to keep the name
             // column aligned with every sibling and cousin at the same depth.
-            else -> Box(Modifier.size(TreeIndentUnit))
+            else -> Box(Modifier.size(TreeToggleTarget))
         }
         Text(
             rail.location.name,

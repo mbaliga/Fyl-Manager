@@ -224,26 +224,23 @@ class ExtendedArchiveBrowserService(private val context: Context) {
         lastModifiedMillis = lastModifiedDate?.time,
     )
 
-    private fun validatedEntryName(raw: String?): String {
-        val value = raw?.replace('\\', '/')?.trimStart('/') ?: error("Archive entry has no name.")
-        require(value.isNotBlank()) { "Archive entry has an empty name." }
-        val segments = value.split('/')
-        require(segments.none { it.isBlank() || it == "." || it == ".." }) {
-            "Archive entry contains an unsafe path."
-        }
-        require(segments.size <= 128 && segments.all { it.length <= 255 }) {
-            "Archive entry path exceeds safety limits."
-        }
-        return value
-    }
+    /**
+     * Normalization and the zip-slip guard, both delegated to [ArchiveTree.safePath] so this
+     * listing and the single-entry extraction in [ArchiveEntryReader] agree on exactly which paths
+     * exist and how they are spelled -- a browser that lists "docs/a.txt" and an extractor that
+     * looks for "./docs/a.txt" would never find each other.
+     *
+     * This also fixes a listing-wide failure: the previous hand-rolled check split on '/' and
+     * rejected any blank segment, so a directory record -- which TAR, cpio and 7z all write with a
+     * trailing slash, as "docs/" -- produced a blank final segment and threw, taking the entire
+     * archive's listing down with it. A trailing separator is now what it has always meant, a
+     * directory, and the `isDirectory` flag carries that instead of the name.
+     */
+    private fun validatedEntryName(raw: String?): String =
+        ArchiveTree.safePath(raw) ?: error("Archive entry contains an unsafe path.")
 
-    private fun archiveFormat(extension: String): String = when (extension) {
-        "tar", "tgz", "tbz", "tbz2", "txz", "tar.gz", "tar.bz2", "tar.xz" -> ArchiveStreamFactory.TAR
-        "cpio" -> ArchiveStreamFactory.CPIO
-        "ar" -> ArchiveStreamFactory.AR
-        "arj" -> ArchiveStreamFactory.ARJ
-        else -> extension.ifBlank { ArchiveStreamFactory.TAR }
-    }
+    /** Shared with [ArchiveEntryReader] so listing and extraction open the same reader. */
+    private fun archiveFormat(extension: String): String = ArchiveFormats.streamFormat(extension)
 
     companion object {
         const val DEFAULT_MAX_ENTRIES = 20_000
@@ -255,6 +252,6 @@ class ExtendedArchiveBrowserService(private val context: Context) {
          *  tar.xz) alike. [CompressorStreamFactory.createCompressorInputStream] autodetects
          *  the specific codec from the stream's own magic bytes, so one layering rule covers all.
          *  No zstd spellings: the codec needs zstd-jni, which Fylz does not bundle. */
-        private val COMPRESSED_TAR_EXTENSIONS = setOf("tgz", "tbz", "tbz2", "txz", "tar.gz", "tar.bz2", "tar.xz")
+        private val COMPRESSED_TAR_EXTENSIONS = ArchiveFormats.COMPRESSED_TAR_EXTENSIONS
     }
 }
