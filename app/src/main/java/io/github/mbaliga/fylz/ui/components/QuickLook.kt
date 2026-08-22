@@ -62,6 +62,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
@@ -134,6 +139,12 @@ private const val QUICK_LOOK_MAX_ASPECT_HEIGHT_FRACTION = 0.85f
 
 /** Anchor, dock and close now fill the bottom-right notch, always, regardless of the rail's size. */
 private const val QUICK_LOOK_CLOSE_SLOTS = 3
+
+/** How far each floating pill sits in from the card's own corner, on every side. */
+private val PREVIEW_PILL_INSET = 10.dp
+
+/** How much one press of the resize accessibility action moves the card's corner. */
+private val PREVIEW_RESIZE_STEP = 32.dp
 
 /** How much of the viewport width an aspect-locked card may claim before it gives up height instead. */
 private const val QUICK_LOOK_MAX_ASPECT_WIDTH_FRACTION = 0.92f
@@ -256,14 +267,20 @@ fun QuickLook(
         ) {
             val viewportW = maxWidth
             val viewportH = maxHeight
-            val slots = quickLookSlots(rail.size + 1)
-            // The card can never be dragged narrower than its own floating chrome. Both pills sit
-            // diagonally opposite, so the floor has to cover the rail pill, the anchor/dock/close
-            // pill, AND one bare slot of card between them, or a narrow enough card would let the
-            // two pills' corners touch. It's derived from the rail, so pinning a fourth quick
-            // action widens the floor along with the pill rather than leaving a size that used to
-            // be legal and no longer is.
-            val minWidth = (QuickLookSlot * (slots + QUICK_LOOK_CLOSE_SLOTS + 1) / viewportW).coerceIn(0.4f, 1f)
+            // The card can never be dragged narrower than its own widest floating pill. The two
+            // pills sit diagonally opposite -- top-left and bottom-right -- so unlike the notches
+            // in NotchedCardShape they cut into nothing and need no bare run of card BETWEEN them;
+            // what each needs is to fit ACROSS. Summing both pills plus a slot of separation (the
+            // notch's margin rule, which this card has no notch to apply it to) pinned a card with
+            // four pinned actions to the full viewport width and made it unresizable outright.
+            // Still derived from the rail, so pinning a fourth quick action widens the floor along
+            // with the pill rather than leaving a size that used to be legal and no longer is.
+            val widestPill = maxOf(
+                QuickLookSlot * (rail.size + 1),
+                // The collapsed single pill in previewChromePlan: "more" joins anchor/dock/close.
+                QuickLookSlot * (QUICK_LOOK_CLOSE_SLOTS + 1),
+            ) + PREVIEW_PILL_INSET * 2
+            val minWidth = (widestPill / viewportW).coerceIn(0.4f, 1f)
             var w by remember { mutableStateOf(widthFraction) }
             var h by remember { mutableStateOf(heightFraction) }
 
@@ -272,6 +289,7 @@ fun QuickLook(
             } else {
                 resolveFullCardSize(w.coerceIn(minWidth, 1f), h, contentAspect, viewportW, viewportH)
             }
+            val chrome = previewChromePlan(cardSize.width, cardSize.height, rail)
 
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -288,7 +306,7 @@ fun QuickLook(
             ) {
                 QuickLookCard(
                     shown = shown,
-                    rail = rail,
+                    chrome = chrome,
                     moreOpen = moreOpen,
                     mode = mode,
                     width = cardSize.width,
@@ -345,7 +363,10 @@ fun QuickLook(
                     exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
                 ) {
                     QuickLookOverflow(
-                        actions = QuickAction.overflowFor(rail),
+                        // Against the rail the pill actually SHOWS, not the pinned list: a card
+                        // too narrow (or too short) for the whole rail drops cells from the pill,
+                        // and the actions it dropped have to reappear here or they are gone.
+                        actions = QuickAction.overflowFor(chrome.rail),
                         maxWidth = cardSize.width,
                         // Whatever the viewport leaves under the card, floored so a very tall
                         // card still shows a usably scrollable list rather than a sliver.
@@ -359,6 +380,64 @@ fun QuickLook(
             }
         }
     }
+}
+
+/**
+ * What the floating chrome shows at a given card size.
+ *
+ * [rail] is the pinned actions the rail pill can actually hold here — the rest fall through to the
+ * overflow via [QuickAction.overflowFor]. [singlePill] collapses the two diagonally-opposed pills
+ * into the one at the bottom-right corner, with "more" joining anchor/dock/close; [showAnchor] and
+ * [showDock] then drop even from that pill on a card too narrow to hold all four cells.
+ */
+internal data class PreviewChromePlan(
+    val rail: List<QuickAction>,
+    val singlePill: Boolean,
+    val showAnchor: Boolean,
+    val showDock: Boolean,
+) {
+    /** Cells the bottom-right pill ends up with — close, plus whatever else survived. */
+    val cornerCells: Int
+        get() = 1 + (if (singlePill) 1 else 0) + (if (showAnchor) 1 else 0) + (if (showDock) 1 else 0)
+}
+
+/** Whole 48dp chrome cells that fit across a card [width] across, inside the pill's own insets. */
+private fun previewChromeCells(width: Dp): Int =
+    ((width - PREVIEW_PILL_INSET * 2) / QuickLookSlot + 1e-3f).toInt().coerceAtLeast(0)
+
+/**
+ * Decides that plan, purely, from the card's own size.
+ *
+ * The card carves no notch (see [QuickLook]'s KDoc on why the chrome floats), but it asks
+ * [quickLookNotchesFit] anyway, because that predicate answers the question this needs answered:
+ * is there enough card here for chrome to sit at two opposite corners without the two meeting in
+ * the middle? Below its floor the answer is no for a bite and no for a pill alike — an
+ * aspect-locked panorama clamped to 378×76dp would stack a 48dp pill on a 48dp pill with the
+ * picture nowhere in between — so the chrome collapses to one pill rather than being positioned
+ * against room the card does not have. Sharing the predicate is also what stops the card and the
+ * shape from ever disagreeing about whether there is a cut to aim glyphs at.
+ *
+ * When chrome does not fit the answer is FEWER CELLS, never a wider pill: the same rule
+ * [quickLookRailSlotsFor] applies to the notch itself.
+ */
+internal fun previewChromePlan(width: Dp, height: Dp, rail: List<QuickAction>): PreviewChromePlan {
+    val cells = previewChromeCells(width)
+    if (quickLookNotchesFit(width, height)) {
+        // The pill floats over the picture instead of cutting into it, so the notch's
+        // share-of-the-top-edge cap does not apply here -- a pill may run the card's full width
+        // less the insets it sits in. One cell always belongs to "more": a rail that filled the
+        // pill exactly would strand the actions it pushed out with nothing left to reach them by.
+        // The corner pill's own three cells always fit at this size -- the notch floor is 4.44
+        // slots wide and the pill needs three plus its insets.
+        return PreviewChromePlan(rail.take((cells - 1).coerceAtLeast(0)), singlePill = false, showAnchor = true, showDock = true)
+    }
+    // One pill, and even it gets measured: an aspect-locked 1:5 portrait resolves to a card about
+    // 145dp across, which does not hold four cells. "More" and "Close" are the two that stay
+    // whatever happens -- More is the only way to reach any file action once the rail is gone, and
+    // Close is the only way out that does not depend on the scrim or the back gesture. Anchor and
+    // Dock are mode toggles, and the mode they toggle to is reachable again from a card at a size
+    // that can show them.
+    return PreviewChromePlan(emptyList(), singlePill = true, showAnchor = cells >= 4, showDock = cells >= 3)
 }
 
 /**
@@ -419,7 +498,7 @@ internal fun resolveDockedSize(aspect: Float?): DpSize {
 @Composable
 private fun QuickLookCard(
     shown: QuickLookSnapshot,
-    rail: List<QuickAction>,
+    chrome: PreviewChromePlan,
     moreOpen: Boolean,
     mode: PreviewCardMode,
     width: Dp,
@@ -460,6 +539,10 @@ private fun QuickLookCard(
         { chromeVisible = !chromeVisible }
     }
 
+    // The bottom-right pill's footprint, so the caption can ellipsize clear of it rather than
+    // running under whichever pill this size ended up with.
+    val captionEndInset = QuickLookSlot * chrome.cornerCells + PREVIEW_PILL_INSET * 2
+
     Box(Modifier.width(width).height(height)) {
         // The card IS the content: one transparent clip, not a surface-coloured panel with a
         // notch cut into it. Docked keeps its own opaque, elevated rounded rect -- it never had a
@@ -480,6 +563,7 @@ private fun QuickLookCard(
                 loading = shown.loading,
                 docked = docked,
                 chromeVisible = chromeVisible,
+                captionEndInset = captionEndInset,
                 onIntrinsicAspect = onIntrinsicAspect,
             )
         }
@@ -517,11 +601,15 @@ private fun QuickLookCard(
             ResizeEdgeTarget(
                 onResize = onResize,
                 onResizeEnd = onResizeEnd,
+                step = with(LocalDensity.current) { PREVIEW_RESIZE_STEP.toPx() },
                 modifier = Modifier.align(Alignment.BottomEnd),
             )
             PreviewChrome(
                 visible = chromeVisible,
-                rail = rail,
+                rail = chrome.rail,
+                singlePill = chrome.singlePill,
+                showAnchor = chrome.showAnchor,
+                showDock = chrome.showDock,
                 moreOpen = moreOpen,
                 mode = mode,
                 onToggleMore = onToggleMore,
@@ -538,11 +626,18 @@ private fun QuickLookCard(
  * The rail and the anchor/dock/close trio, floated as translucent pills over the content instead
  * of carved into it. Both fade as one unit, tracking [QuickLookCard]'s own idle timer, so the card
  * never shows one half of its chrome without the other.
+ *
+ * [singlePill] is [previewChromePlan]'s verdict that this card is too small to hold chrome at two
+ * opposite corners: the rail pill is dropped and its "more" cell joins the corner pill, so nothing
+ * becomes unreachable — [QuickLookOverflow] is showing every pinned action in that state.
  */
 @Composable
 private fun BoxScope.PreviewChrome(
     visible: Boolean,
     rail: List<QuickAction>,
+    singlePill: Boolean,
+    showAnchor: Boolean,
+    showDock: Boolean,
     moreOpen: Boolean,
     mode: PreviewCardMode,
     onToggleMore: () -> Unit,
@@ -551,21 +646,21 @@ private fun BoxScope.PreviewChrome(
     onAction: (QuickAction) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(tween(160)),
-        exit = fadeOut(tween(160)),
-        modifier = Modifier.align(Alignment.TopStart).padding(10.dp),
-    ) {
-        PreviewPill {
-            rail.forEach { action ->
-                PreviewChromeButton(action.icon, action.label, onClick = { onAction(action) })
+    val moreLabel = if (moreOpen) "Fewer actions" else "More actions"
+
+    if (!singlePill) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(160)),
+            modifier = Modifier.align(Alignment.TopStart).padding(PREVIEW_PILL_INSET),
+        ) {
+            PreviewPill {
+                rail.forEach { action ->
+                    PreviewChromeButton(action.icon, action.label, onClick = { onAction(action) })
+                }
+                PreviewChromeButton(Icons.Outlined.MoreHoriz, moreLabel, onClick = onToggleMore)
             }
-            PreviewChromeButton(
-                icon = Icons.Outlined.MoreHoriz,
-                label = if (moreOpen) "Fewer actions" else "More actions",
-                onClick = onToggleMore,
-            )
         }
     }
 
@@ -575,16 +670,21 @@ private fun BoxScope.PreviewChrome(
         visible = visible,
         enter = fadeIn(tween(160)),
         exit = fadeOut(tween(160)),
-        modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
+        modifier = Modifier.align(Alignment.BottomEnd).padding(PREVIEW_PILL_INSET),
     ) {
         PreviewPill {
-            PreviewChromeButton(
-                icon = Icons.Outlined.Anchor,
-                label = if (mode == PreviewCardMode.ANCHORED) "Release anchor" else "Anchor preview",
-                active = mode == PreviewCardMode.ANCHORED,
-                onClick = onToggleAnchor,
-            )
-            PreviewChromeButton(Icons.Outlined.PictureInPictureAlt, "Dock preview", onClick = onDock)
+            if (singlePill) {
+                PreviewChromeButton(Icons.Outlined.MoreHoriz, moreLabel, onClick = onToggleMore)
+            }
+            if (showAnchor) {
+                PreviewChromeButton(
+                    icon = Icons.Outlined.Anchor,
+                    label = if (mode == PreviewCardMode.ANCHORED) "Release anchor" else "Anchor preview",
+                    active = mode == PreviewCardMode.ANCHORED,
+                    onClick = onToggleAnchor,
+                )
+            }
+            if (showDock) PreviewChromeButton(Icons.Outlined.PictureInPictureAlt, "Dock preview", onClick = onDock)
             PreviewChromeButton(Icons.Outlined.Close, "Close preview", onClick = onDismiss)
         }
     }
@@ -637,15 +737,25 @@ private fun PreviewChromeButton(
 private var quickLookResizeHintSeen = false
 
 /**
- * The resize handle: an invisible 28dp drag zone inside the card's own bottom-right corner rather
- * than a glyph sitting on the picture. The corner is the conventional place to grab a rectangle by
- * its corner to resize it, so nothing has to be drawn there to make it findable on a second visit
- * -- [showHint] draws a small chevron the very first time instead, then never again.
+ * The resize handle: an invisible drag zone inside the card's own bottom-right corner rather than
+ * a glyph sitting on the picture. The corner is the conventional place to grab a rectangle by to
+ * resize it, so nothing has to be drawn there to make it findable on a second visit -- [showHint]
+ * draws a small chevron the very first time instead, then never again.
+ *
+ * Sized to the kit's 48dp touch floor even though nothing 48dp is drawn: it is an action, and it
+ * was the one control on this card under the floor. It still overlaps the close pill in the very
+ * corner by design (the pill floats [PREVIEW_PILL_INSET] in, this starts flush at the edge) and
+ * still loses that overlap to the pill, which the caller places after it.
+ *
+ * A drag is not operable by everyone, so the same two outcomes are custom accessibility actions on
+ * this node -- the [step] is fed through the caller's own onResize, so switch access and TalkBack
+ * move the corner by exactly the arithmetic a finger would.
  */
 @Composable
 private fun ResizeEdgeTarget(
     onResize: (Float, Float) -> Unit,
     onResizeEnd: () -> Unit,
+    step: Float,
     modifier: Modifier = Modifier,
 ) {
     var showHint by remember { mutableStateOf(!quickLookResizeHintSeen) }
@@ -656,9 +766,21 @@ private fun ResizeEdgeTarget(
             showHint = false
         }
     }
+    val resizeBy: (Float) -> Boolean = { delta ->
+        onResize(delta, delta)
+        onResizeEnd()
+        true
+    }
     Box(
         modifier
-            .size(28.dp)
+            .size(QuickLookSlot)
+            .semantics {
+                contentDescription = "Resize preview"
+                customActions = listOf(
+                    CustomAccessibilityAction("Make preview larger") { resizeBy(step) },
+                    CustomAccessibilityAction("Make preview smaller") { resizeBy(-step) },
+                )
+            }
             .pointerInput(Unit) {
                 detectDragGestures(
                     onDragEnd = onResizeEnd,
@@ -676,8 +798,10 @@ private fun ResizeEdgeTarget(
             exit = fadeOut(tween(400)),
         ) {
             Icon(
+                // Null, not a second description: the Box above already describes and owns this
+                // node, and the hint glyph is gone after one showing anyway.
                 Icons.Outlined.ChevronRight,
-                contentDescription = "Drag this corner to resize",
+                contentDescription = null,
                 tint = InkContent,
                 modifier = Modifier.size(16.dp).graphicsLayer { rotationZ = 45f },
             )
@@ -713,7 +837,12 @@ private fun QuickLookOverflow(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable { onAction(action) }
+                        // The floor, explicitly: this list is the non-pill way to reach an action,
+                        // including every action a narrow card dropped from the rail, so a row of
+                        // it has to be as hittable as a rail cell. 12dp + a 24dp line + 12dp only
+                        // lands on 48dp at font scale 1.0 and falls under it below that.
+                        .heightIn(min = QuickLookSlot)
+                        .clickable(role = Role.Button) { onAction(action) }
                         .padding(horizontal = 18.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -734,6 +863,7 @@ private fun QuickLookContent(
     loading: Boolean,
     docked: Boolean,
     chromeVisible: Boolean,
+    captionEndInset: Dp,
     onIntrinsicAspect: (Float) -> Unit,
 ) {
     val descriptor = remember(entry.name, entry.mimeType, entry.kind) {
@@ -807,25 +937,26 @@ private fun QuickLookContent(
                 exit = fadeOut(tween(160)),
                 modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
             ) {
-                QuickLookCaption(entry = entry)
+                QuickLookCaption(entry = entry, endInset = captionEndInset)
             }
         }
     }
 }
 
 @Composable
-private fun QuickLookCaption(entry: FileEntry, modifier: Modifier = Modifier) {
+private fun QuickLookCaption(entry: FileEntry, endInset: Dp, modifier: Modifier = Modifier) {
     // The name rides a gradient scrim along the foot rather than a divider-and-header band: it
     // has to be legible over an arbitrary image without stealing a strip of the content. Ink
     // tokens rather than scheme ones, same as the chrome pills -- the scrim has to read against
-    // whatever the photo underneath happens to be, not against whichever theme is active. The end
-    // inset roughly covers where the anchor/dock/close pill floats, so a long name ellipsizes
-    // there rather than running under it.
+    // whatever the photo underneath happens to be, not against whichever theme is active.
+    // [endInset] is the bottom-right pill's measured footprint, INCLUDING the inset it floats in
+    // and whichever cell count this card size ended up with, so a long name ellipsizes clear of
+    // the pill instead of the last few dp running underneath it.
     Column(
         modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color.Transparent, InkSurface.copy(alpha = 0.75f))))
-            .padding(start = 18.dp, top = 28.dp, bottom = 12.dp, end = QuickLookSlot * QUICK_LOOK_CLOSE_SLOTS),
+            .padding(start = 18.dp, top = 28.dp, bottom = 12.dp, end = endInset),
     ) {
         Text(
             displayName(entry.name, entry.isDirectory, LocalShowExtensions.current),
