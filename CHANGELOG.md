@@ -50,6 +50,7 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 ### Navigation and accessibility foundations
 
 - Hardware keyboard shortcuts now work: Ctrl/Meta+A select-all, Ctrl+C/X copy/move, F2 rename, Delete recycle, Ctrl+F search, F5 refresh, Ctrl+T/W tab open/close, Ctrl+Shift+N / Ctrl+N new folder/file, Esc clear selection. Selection shortcuts respect the same action gates as the on-screen controls.
+- Modifier-qualified clicks in the listing: Ctrl/Meta+click toggles selection, Shift+click selects the visible span from the last clicked entry, Alt+click opens the entry in another app. With no keyboard attached every click stays a plain open.
 
 - Consolidated operations, file history, backups, backup import and archive tools into a primary Recovery destination.
 - Removed independent global floating recovery controls.

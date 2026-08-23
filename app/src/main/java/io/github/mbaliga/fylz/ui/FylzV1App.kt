@@ -324,6 +324,13 @@ import androidx.compose.foundation.focusable
 import androidx.compose.ui.input.key.onKeyEvent
 import io.github.mbaliga.fylz.workspace.KeyboardCommand
 import io.github.mbaliga.fylz.workspace.KeyboardShortcutPolicy
+import io.github.mbaliga.fylz.workspace.HeldModifiers
+import io.github.mbaliga.fylz.workspace.ModifierClick
+import io.github.mbaliga.fylz.workspace.ModifierClickPolicy
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 
@@ -2167,6 +2174,55 @@ private fun FylzV1Workspace(
         }
     }
 
+    // ── Modifier-qualified clicks (WP-A4's click half) ────────────────────────────────
+
+    // Resynced from every hardware key event's meta flags at the shell root, so it can never
+    // hold a stale modifier. With no keyboard attached it stays None and every click is plain.
+    var heldModifiers by remember { mutableStateOf(HeldModifiers.None) }
+
+    // The last plainly-clicked or toggled entry: Shift+click ranges from here. Uri, not index,
+    // because sort and filter can reorder the listing between the two clicks.
+    var selectionAnchorUri by remember { mutableStateOf<Uri?>(null) }
+
+    /** Selects [entries] the same way toggleSelection does, keeping the details map in step. */
+    fun selectEntries(entries: List<FileEntry>) {
+        selectedUris = selectedUris + entries.map(FileEntry::uri)
+        selectedEntryDetails = selectedEntryDetails + entries.associateBy(FileEntry::uri)
+    }
+
+    /**
+     * The listing's open handler: a plain click opens, Ctrl/Meta+click toggles selection,
+     * Shift+click selects the visible span from the anchor, Alt+click opens externally —
+     * decided by [ModifierClickPolicy] against the list currently on screen (search results
+     * while a recursive search is showing them, the folder listing otherwise, the same rule
+     * selectAllVisible applies).
+     */
+    fun openWithModifiers(entry: FileEntry) {
+        val visible = if (searchActive) searchHits.map { it.entry } else visibleEntries
+        val decision = ModifierClickPolicy.decide(
+            modifiers = heldModifiers,
+            anchorIndex = selectionAnchorUri
+                ?.let { anchor -> visible.indexOfFirst { it.uri == anchor } }
+                ?.takeIf { it >= 0 },
+            clickedIndex = visible.indexOfFirst { it.uri == entry.uri },
+        )
+        when (decision) {
+            ModifierClick.Open -> {
+                selectionAnchorUri = entry.uri
+                openEntry(entry)
+            }
+            ModifierClick.ToggleSelection -> {
+                selectionAnchorUri = entry.uri
+                toggleSelection(entry)
+            }
+            is ModifierClick.SelectRange ->
+                // The anchor deliberately stays put: Shift+clicking further extends from the
+                // same origin, which is what every desktop file manager does.
+                selectEntries(visible.subList(decision.fromIndex, decision.toIndex + 1))
+            ModifierClick.OpenExternal -> openExternal(entry)
+        }
+    }
+
     /**
      * Everything the actions room can ask for.
      *
@@ -2406,6 +2462,14 @@ private fun FylzV1Workspace(
         modifier = Modifier
             .fillMaxSize()
             .onKeyEvent { event ->
+                // Every key event restates the full modifier set, so this resync can never
+                // strand a stale Ctrl the way tracking down/up transitions could.
+                heldModifiers = HeldModifiers(
+                    ctrl = event.isCtrlPressed,
+                    shift = event.isShiftPressed,
+                    alt = event.isAltPressed,
+                    meta = event.isMetaPressed,
+                )
                 val gesture = event.toShortcutGesture() ?: return@onKeyEvent false
                 val command = KeyboardShortcutPolicy.resolve(gesture) ?: return@onKeyEvent false
                 runKeyboardCommand(command)
@@ -2811,7 +2875,7 @@ private fun FylzV1Workspace(
                                 tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
                             }
                         },
-                        onOpen = ::openEntry,
+                        onOpen = ::openWithModifiers,
                         onOpenTabFolder = ::openFolderInActiveTab,
                         onOpenExternal = ::openExternal,
                         onToggleSelection = ::toggleSelection,
