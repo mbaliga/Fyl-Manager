@@ -17,6 +17,13 @@ data class FolderAppearance(
     val iconKey: String? = null,
     val colorSlug: String? = null,
     val stickers: List<String> = emptyList(),
+    /**
+     * WP-F2 (fidelity-gap-analysis R2): ONE large die-cut mark carrying the folder's identity,
+     * centred on the glass — the reference set's Figma-sticker-on-the-folder read. Distinct
+     * from [stickers], which stay the small corner flair: an identity mark is singular by
+     * definition, and the two coexist (hero centred, flair in the corner) without contest.
+     */
+    val heroSticker: String? = null,
 )
 
 /** How many stickers a single folder's glass carries -- past this the cascade in the pane just crowds the name panel. */

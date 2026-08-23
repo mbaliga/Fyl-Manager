@@ -10,6 +10,8 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 ### Workspace
 
+- Fylz-theme folders can now carry an identity mark: one large sticker centred on the glass, chosen per folder in Settings → Folder appearance, alongside the existing small corner stickers.
+
 - Added SAF-scoped multi-root browsing with tabs, breadcrumbs, search, list/grid/details views and adaptive preview layouts.
 - Added file/folder creation, rename, duplicate, copy, move, recycle, restore and explicit permanent deletion.
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.

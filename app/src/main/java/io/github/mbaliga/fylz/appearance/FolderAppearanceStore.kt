@@ -121,6 +121,7 @@ class FolderAppearanceStore(context: Context) {
             FolderAppearance(
                 iconKey = obj.optString("iconKey", "").ifBlank { null },
                 colorSlug = obj.optString("colorSlug", "").ifBlank { null },
+                heroSticker = obj.optString("heroSticker", "").ifBlank { null },
                 stickers = obj.optJSONArray("stickers")?.let { array ->
                     buildList { for (index in 0 until array.length()) add(array.getString(index)) }
                 }.orEmpty().take(MAX_FOLDER_STICKERS),
@@ -135,6 +136,7 @@ class FolderAppearanceStore(context: Context) {
         val obj = JSONObject().put("schemaVersion", SCHEMA_VERSION)
         appearance.iconKey?.let { obj.put("iconKey", it) }
         appearance.colorSlug?.let { obj.put("colorSlug", it) }
+        appearance.heroSticker?.let { obj.put("heroSticker", it) }
         if (appearance.stickers.isNotEmpty()) {
             val array = JSONArray()
             appearance.stickers.forEach { array.put(it) }

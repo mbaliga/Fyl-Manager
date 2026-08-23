@@ -1017,6 +1017,19 @@ private fun FolderAppearanceSection(themeStyle: ThemeStyle, onAppearanceChanged:
 
         if (themeStyle == ThemeStyle.FYLZ) {
             Spacer(Modifier.size(12.dp))
+            Text("Identity mark", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 2.dp))
+            Text(
+                "One large sticker, centred on the glass — the folder's own mark.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+            FolderHeroPicker(
+                selected = appearance.heroSticker,
+                onSelect = { hero -> persist(appearance.copy(heroSticker = hero)) },
+            )
+
+            Spacer(Modifier.size(12.dp))
             Text("Stickers", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
             FolderStickerPicker(
                 selected = appearance.stickers,
@@ -1111,6 +1124,31 @@ private fun FolderColorPicker(flagship: Boolean, selectedSlug: String?, onSelect
                     )
                     .clickable { onSelect(if (selected) null else slug) },
             )
+        }
+    }
+}
+
+/** Single-select sibling of [FolderStickerPicker]: tapping the current mark clears it. */
+@Composable
+private fun FolderHeroPicker(selected: String?, onSelect: (String?) -> Unit) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FolderStickers.ALL.forEach { key ->
+            val on = key == selected
+            Surface(
+                onClick = { onSelect(if (on) null else key) },
+                shape = CircleShape,
+                color = if (on) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.size(38.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    AsyncImage(
+                        model = "file:///android_asset/stickers/$key.svg",
+                        contentDescription = key,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+            }
         }
     }
 }

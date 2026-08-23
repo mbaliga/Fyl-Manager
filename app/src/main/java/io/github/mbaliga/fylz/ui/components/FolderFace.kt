@@ -335,6 +335,22 @@ private fun FrostedFolderFace(
                 Box(Modifier.fillMaxSize().background(washTone))
             }
             Box(Modifier.fillMaxSize().background(washTone.copy(alpha = 0.55f)))
+            // WP-F2: the identity mark. One large die-cut sticker centred on the body -- the
+            // reference set's brand-mark-on-the-folder read -- drawn above the wash so it sits
+            // ON the glass, below the name panel so a long name still wins the bottom edge.
+            // A touch of rotation keeps it a sticker someone pressed on, not a printed logo.
+            appearance?.heroSticker?.let { hero ->
+                AsyncImage(
+                    model = "file:///android_asset/stickers/$hero.svg",
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxSize(HERO_STICKER_FRACTION)
+                        .offset(y = HERO_STICKER_DROP)
+                        .graphicsLayer { rotationZ = HERO_STICKER_TILT },
+                )
+            }
             if (appearance != null && appearance.stickers.isNotEmpty()) {
                 FolderStickerLayer(appearance.stickers, Modifier.align(Alignment.TopEnd).padding(6.dp))
             }
@@ -402,6 +418,13 @@ private class FolderSilhouetteShape(
 private const val STICKERS_DRAWN = 3
 private val STICKER_SIZE = 22.dp
 private val STICKER_BORDER_WIDTH = 2.dp
+
+// WP-F2's identity mark: sized against the face, nudged below centre so it reads as sitting on
+// the BODY rather than straddling the tab, tilted a few degrees so it stays a pressed-on
+// sticker rather than a printed logo.
+private const val HERO_STICKER_FRACTION = 0.44f
+private val HERO_STICKER_DROP = 6.dp
+private const val HERO_STICKER_TILT = -6f
 
 /**
  * The chosen sticker set, drawn as a small overlapping row -- SVGs from `assets/stickers/`, never
