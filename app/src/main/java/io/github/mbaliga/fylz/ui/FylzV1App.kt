@@ -2536,7 +2536,13 @@ private fun FylzV1Workspace(
     var actionsBarWidth by remember { mutableStateOf(209.dp) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 900.dp
+        // WP-A1, first step: the wide cut sits on the canonical EXPANDED window-class boundary
+        // (840dp) rather than the old ad-hoc 900dp, so unfolded book-posture foldables and most
+        // landscape tablets get the two-pane layout they have room for. The real WP-A1 -- a
+        // medium tier for landscape phones, chrome that collapses in short windows -- is a
+        // layout restructure gated on device acceptance, not a constant change; see
+        // docs/product/adaptive-input-plan.md.
+        val wide = maxWidth >= 840.dp
         Scaffold(
             topBar = {
                 TopAppBar(
