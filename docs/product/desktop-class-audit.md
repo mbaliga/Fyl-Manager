@@ -48,6 +48,9 @@ Coil/platform), PDF with page tools, audio/video metadata + motion thumbnails, f
 (XLSX/ODS/CSV via `WorkbookReader`), presentations slide-by-slide
 (`PresentationDeckReader`), and 3D wireframes (glTF/OBJ/STL family).
 
+> **Update, same day:** wave 1 (items 1–6 below) landed — word-processing text, EML, EPUB,
+> RAW embedded preview, SQLite peek, ICS/VCF cards. Items 7–8 (RAR/zstd, ipynb) remain.
+
 Measured against Finder Quick Look, the missing credibility markers, in order of how often a
 real person hits them:
 

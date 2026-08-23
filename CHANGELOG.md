@@ -20,6 +20,8 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 ### Preview and editing
 
+- Preview wave 1: Word-processing documents (docx/odt/rtf) show their text; .eml mail shows headers, body and attachment names (named, never opened); EPUB books show their opening chapters; camera RAW files show the camera's embedded preview; SQLite databases get a read-only table peek from a temporary copy; .ics and .vcf render as event and contact cards. Every route reports its limits and falls back to the bounded inspector with a reason.
+
 - Added bounded text and source previews, Markdown and common agent-artifact support.
 - Added SVG, animated GIF/WebP, image, first-page PDF, media metadata, archive and unknown-file preview routes.
 - Added lightweight text editing with pre-write version capture.
