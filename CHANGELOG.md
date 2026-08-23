@@ -51,6 +51,8 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 - Hardware keyboard shortcuts now work: Ctrl/Meta+A select-all, Ctrl+C/X copy/move, F2 rename, Delete recycle, Ctrl+F search, F5 refresh, Ctrl+T/W tab open/close, Ctrl+Shift+N / Ctrl+N new folder/file, Esc clear selection. Selection shortcuts respect the same action gates as the on-screen controls.
 - Modifier-qualified clicks in the listing: Ctrl/Meta+click toggles selection, Shift+click selects the visible span from the last clicked entry, Alt+click opens the entry in another app. With no keyboard attached every click stays a plain open.
+- What a shake does is now a preference (Settings → Gestures): refresh this folder, go home, or nothing; "nothing" mounts no sensor listener at all.
+- Added an opt-in Deliberate actions mode: the Shred confirmation takes a slide instead of a tap, so a resting finger cannot fire it; assistive-tech activations confirm directly. Off by default.
 
 - Consolidated operations, file history, backups, backup import and archive tools into a primary Recovery destination.
 - Removed independent global floating recovery controls.

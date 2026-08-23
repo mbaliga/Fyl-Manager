@@ -145,6 +145,7 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.model.FolderTab
 import io.github.mbaliga.fylz.model.PreviewMode
+import io.github.mbaliga.fylz.model.ShakeAction
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
@@ -700,6 +701,9 @@ private fun FylzV1Workspace(
     // Read and written only here and in the settings sheet, same as quickActions/previewScale
     // above -- autoplay and thumbnail motion are a preview concern, not a pre-theme one.
     var autoAnimate by remember { mutableStateOf(preferencesStore.autoAnimate()) }
+    // Gesture and deliberation preferences, mirrored the same way autoAnimate is.
+    var shakeAction by remember { mutableStateOf(preferencesStore.shakeAction()) }
+    var deliberateActions by remember { mutableStateOf(preferencesStore.deliberateActions()) }
     // Local mirror of the store's own MRU list -- SharedPreferences has no change stream, so
     // every write that should be visible this composition also assigns here.
     var recentSearches by remember { mutableStateOf(preferencesStore.recentSearches()) }
@@ -2589,7 +2593,24 @@ private fun FylzV1Workspace(
     // is never contested. Refresh itself stays off the touch plane regardless — a deliberate shake
     // needs no affordance, no instructional copy, and competes with no scroll. The toolbar button
     // stays for anyone who would rather tap than shake.
-    ShakeToRefresh(onShake = { refresh() })
+    //
+    // What the shake MEANS is the user's preference (owner direction): the shared detector stays
+    // exactly as cell-shell ships it, only the dispatch varies. OFF mounts no detector at all —
+    // the sensor never registers, rather than registering and ignoring.
+    if (shakeAction != ShakeAction.OFF) {
+        ShakeToRefresh(onShake = {
+            when (shakeAction) {
+                ShakeAction.REFRESH -> refresh()
+                ShakeAction.GO_HOME -> {
+                    discardNewTab()
+                    activeTabId = null
+                    homeRefreshKey += 1
+                    shell.closeAll()
+                }
+                ShakeAction.OFF -> Unit
+            }
+        })
+    }
 
     // How much of the top bar's leading edge the ActionsBar is covering. Measured off the bar
     // itself where it is mounted below, not restated from its own width constant -- that constant
@@ -3285,6 +3306,7 @@ private fun FylzV1Workspace(
                 shredding = shredding,
                 onConfirm = { shredNow(targets) },
                 onDismiss = { if (!shredding) shredTargets = null },
+                deliberate = deliberateActions,
             )
         }
 
@@ -3695,6 +3717,16 @@ private fun FylzV1Workspace(
             },
             homeMode = homeMode,
             onHomeModeChange = onHomeModeChange,
+            shakeAction = shakeAction,
+            onShakeActionChange = {
+                shakeAction = it
+                preferencesStore.setShakeAction(it)
+            },
+            deliberateActions = deliberateActions,
+            onDeliberateActionsChange = {
+                deliberateActions = it
+                preferencesStore.setDeliberateActions(it)
+            },
             landingSubjectName = landingSubject?.name,
             onPickLandingSubject = onPickLandingSubject,
             landingSplash = landingSplash,

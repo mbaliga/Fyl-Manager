@@ -69,6 +69,7 @@ import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.DensityMode
+import io.github.mbaliga.fylz.model.ShakeAction
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.operations.RecycleBinRetentionPeriod
 import io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler
@@ -126,6 +127,10 @@ internal fun SettingsOverlay(
     onQuickActionsChange: (List<QuickAction>) -> Unit,
     homeMode: HomeMode = HomeMode.LOCATIONS,
     onHomeModeChange: (HomeMode) -> Unit = {},
+    shakeAction: ShakeAction = ShakeAction.REFRESH,
+    onShakeActionChange: (ShakeAction) -> Unit = {},
+    deliberateActions: Boolean = false,
+    onDeliberateActionsChange: (Boolean) -> Unit = {},
     landingSubjectName: String? = null,
     onPickLandingSubject: () -> Unit = {},
     landingSplash: Boolean = true,
@@ -241,6 +246,42 @@ internal fun SettingsOverlay(
                         )
                     }
                     TactileSwitch(checked = autoAnimate, onCheckedChange = onAutoAnimateChange)
+                }
+
+                Spacer(Modifier.size(20.dp))
+                RoomHeading("Gestures")
+                Text(
+                    "What a firm shake of the phone does.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ShakeAction.entries.forEach { action ->
+                        TactileOptionRow(
+                            text = action.readableLabel(),
+                            selected = action == shakeAction,
+                            onClick = { onShakeActionChange(action) },
+                        )
+                    }
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDeliberateActionsChange(!deliberateActions) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Deliberate actions", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Destructive confirmations take a slide, not a tap. A resting finger cannot fire what it merely touches.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TactileSwitch(checked = deliberateActions, onCheckedChange = onDeliberateActionsChange)
                 }
 
                 Spacer(Modifier.size(20.dp))
@@ -404,6 +445,12 @@ private fun HomeMode.readableLabel(): String = when (this) {
     HomeMode.LIST -> "List"
     HomeMode.BENTO -> "Bento"
     HomeMode.CANVAS -> "Canvas"
+}
+
+private fun ShakeAction.readableLabel(): String = when (this) {
+    ShakeAction.REFRESH -> "Refresh this folder"
+    ShakeAction.GO_HOME -> "Go home"
+    ShakeAction.OFF -> "Nothing"
 }
 
 private fun DensityMode.readableLabel(): String = when (this) {

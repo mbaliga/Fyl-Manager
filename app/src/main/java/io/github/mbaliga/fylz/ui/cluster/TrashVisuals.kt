@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.ui.tactile.SlideToConfirm
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import kotlin.math.sin
@@ -197,6 +198,9 @@ internal fun ShredConfirmOverlay(
     shredding: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    // Deliberate actions (docs/product/deliberate-ux.md): when on, Shred takes a slide, not a
+    // tap. Default off keeps every existing call site and test exactly as it was.
+    deliberate: Boolean = false,
 ) {
     Box(
         Modifier
@@ -229,17 +233,33 @@ internal fun ShredConfirmOverlay(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 8.dp),
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(top = 16.dp),
-                ) {
-                    TactileButton(text = "Keep", onClick = onDismiss, style = TactileButtonStyle.SECONDARY, enabled = !shredding)
-                    TactileButton(
-                        text = if (shredding) "Shredding…" else "Shred",
-                        onClick = onConfirm,
-                        style = TactileButtonStyle.DESTRUCTIVE,
+                if (deliberate) {
+                    SlideToConfirm(
+                        text = if (shredding) "Shredding…" else "Slide to shred",
+                        onConfirm = onConfirm,
                         enabled = !shredding,
+                        modifier = Modifier.padding(top = 16.dp),
                     )
+                    TactileButton(
+                        text = "Keep",
+                        onClick = onDismiss,
+                        style = TactileButtonStyle.SECONDARY,
+                        enabled = !shredding,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(top = 16.dp),
+                    ) {
+                        TactileButton(text = "Keep", onClick = onDismiss, style = TactileButtonStyle.SECONDARY, enabled = !shredding)
+                        TactileButton(
+                            text = if (shredding) "Shredding…" else "Shred",
+                            onClick = onConfirm,
+                            style = TactileButtonStyle.DESTRUCTIVE,
+                            enabled = !shredding,
+                        )
+                    }
                 }
             }
         }
