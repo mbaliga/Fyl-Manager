@@ -24,7 +24,8 @@ import io.github.mbaliga.fylz.core.model.ItemRef
  *   be recoverable, so undo of COPY produces a bin entry, not a gap.
  * - **RECYCLE** → restore the recycled originals (matched through the recycle bin's own
  *   records by original identity; the executor owns that lookup).
- * - **RESTORE, RENAME** → not yet undoable, each for a stated reason rather than a shrug.
+ * - **RESTORE, RENAME, CREATE_DIRECTORY, CREATE_FILE, ARCHIVE, EXTRACT** → not yet undoable,
+ *   each for a stated reason rather than a shrug.
  * - **PERMANENT_DELETE** → never undoable; the copy explains rather than apologises.
  *
  * Conflict-skipped items (`SKIPPED_CONFLICT`) changed nothing and are excluded from every
@@ -84,6 +85,14 @@ object UndoPolicy {
                 UndoPlan.NotUndoable("A restore is undone by recycling the file again from its folder.")
             FileOperationType.RENAME ->
                 UndoPlan.NotUndoable("Renames cannot be undone yet.")
+            FileOperationType.CREATE_DIRECTORY ->
+                UndoPlan.NotUndoable("Creating a folder cannot be undone yet.")
+            FileOperationType.CREATE_FILE ->
+                UndoPlan.NotUndoable("Creating a file cannot be undone yet.")
+            FileOperationType.ARCHIVE ->
+                UndoPlan.NotUndoable("Archiving cannot be undone yet.")
+            FileOperationType.EXTRACT ->
+                UndoPlan.NotUndoable("Extracting cannot be undone yet.")
             FileOperationType.PERMANENT_DELETE ->
                 UndoPlan.NotUndoable("Permanently deleted files cannot come back; that is what permanent means.")
         }
