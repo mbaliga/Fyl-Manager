@@ -49,18 +49,24 @@ class FileOperationService(
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         destinationPathSegments: List<String> = emptyList(),
+        // Where the sources live, in the destination-addressing convention (tree root + walk),
+        // journaled for Undo (schema v4). Null when the caller cannot say (mixed-origin trays).
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
     ): List<Uri> =
-        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, onProgress)
+        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, sourceParentTreeUri, sourceParentSegments, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         destinationPathSegments: List<String> = emptyList(),
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
     ): List<Uri> =
-        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, onProgress)
+        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, sourceParentTreeUri, sourceParentSegments, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -140,6 +146,8 @@ class FileOperationService(
         move: Boolean,
         conflictPolicy: ConflictPolicy,
         destinationPathSegments: List<String>,
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
@@ -178,6 +186,12 @@ class FileOperationService(
             },
             conflictPolicy = conflictPolicy,
             state = OperationState.PREFLIGHT,
+            // The Undo fields (v4): where the sources lived and which tree the transfer aimed
+            // at, both in the same root+walk convention this function itself resolves.
+            sourceParentRoot = sourceParentTreeUri?.toItemRef(),
+            sourceParentSegments = sourceParentSegments,
+            destinationRoot = destinationTreeUri.toItemRef(),
+            destinationSegments = destinationPathSegments,
         )
         journal.put(operation)
         var current = operation.copy(

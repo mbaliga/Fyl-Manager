@@ -156,7 +156,9 @@ import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.describe
+import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.SelectionActionPolicy
+import io.github.mbaliga.fylz.operations.UndoService
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.FylzSearch
@@ -688,6 +690,15 @@ private fun FylzV1Workspace(
         FileOperationService(context.applicationContext, onItemRelocated = onItemRelocated)
     }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
+    // The Undo verb: reads the journal the services above already write; see UndoPolicy.
+    val undoService = remember {
+        UndoService(
+            context = context.applicationContext,
+            journal = OperationJournal(context.applicationContext),
+            fileOperations = fileOperations,
+            recycleBin = recycleBin,
+        )
+    }
     val archiveService = remember { ArchiveService(context.applicationContext) }
     val fileTools = remember {
         FileTools(context.applicationContext, onItemRelocated = onItemRelocated)
@@ -1257,6 +1268,12 @@ private fun FylzV1Workspace(
     // platform one drive exactly the same code. Whichever route produced the destination, what
     // happens to the files afterwards must not depend on which picker the user came through.
     fun performDestination(action: PendingDestinationAction, destination: Uri) {
+        // Where the selection lives right now, journaled so Undo can send a move (or the
+        // recycled copies of a copy) home by the same root+walk addressing transfers use.
+        // Null when the selection came from a home surface with no open tab: those
+        // operations run fine and are honestly not undoable.
+        val undoHomeTree = activeTab?.treeUri
+        val undoHomeSegments = activeTab?.locations?.drop(1)?.map(FolderLocation::name).orEmpty()
         scope.launch {
             loading = true
             runCatching {
@@ -1265,11 +1282,15 @@ private fun FylzV1Workspace(
                         selectedEntries.map { it.uri },
                         destination,
                         ConflictPolicy.KEEP_BOTH,
+                        sourceParentTreeUri = undoHomeTree,
+                        sourceParentSegments = undoHomeSegments,
                     ) { progress -> operationMessage = "Copying ${progress.displayName}" }
                     PendingDestinationAction.MOVE -> fileOperations.move(
                         selectedEntries.map { it.uri },
                         destination,
                         ConflictPolicy.KEEP_BOTH,
+                        sourceParentTreeUri = undoHomeTree,
+                        sourceParentSegments = undoHomeSegments,
                     ) { progress -> operationMessage = "Moving ${progress.displayName}" }
                     PendingDestinationAction.EXTRACT -> archiveService.extractZip(
                         archiveUri = pendingArchiveUri ?: error("Choose an archive."),
@@ -2444,6 +2465,20 @@ private fun FylzV1Workspace(
         KeyboardCommand.CLOSE_TAB -> {
             val tab = activeTab
             if (tab != null) { closeTab(tab); true } else false
+        }
+        KeyboardCommand.UNDO -> {
+            scope.launch {
+                when (val outcome = undoService.undoLast()) {
+                    is UndoService.Outcome.Undone -> {
+                        toast("Undone: ${outcome.description}")
+                        refresh()
+                        trashRefreshKey += 1
+                    }
+                    is UndoService.Outcome.NothingToUndo -> toast(outcome.reason)
+                    is UndoService.Outcome.Failed -> toast(outcome.message)
+                }
+            }
+            true
         }
         // Focused-item commands (OPEN, PREVIEW, arrows) and the pane/undo families need focus
         // traversal or features that do not exist yet — WP-A3b and later. Explicitly unhandled

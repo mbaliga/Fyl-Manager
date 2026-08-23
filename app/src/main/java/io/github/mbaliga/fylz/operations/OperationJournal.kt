@@ -44,6 +44,17 @@ class OperationJournal(context: Context) {
         persist(next)
     }
 
+    /**
+     * Marks one record undone (v4) without touching anything else about it. Deliberately does
+     * NOT bump `updatedAtMillis`: the undo's own inverse operation is the record of when the
+     * undo happened; rewriting this record's time would shuffle history order for no reader.
+     */
+    @Synchronized
+    fun markUndone(id: String) {
+        val current = find(id) ?: return
+        put(current.copy(undone = true))
+    }
+
     @Synchronized
     fun remove(id: String) {
         persist(list().filterNot { it.id == id })
@@ -116,6 +127,13 @@ class OperationJournal(context: Context) {
                     .put("state", operation.state.name)
                     .put("createdAtMillis", operation.createdAtMillis)
                     .put("updatedAtMillis", operation.updatedAtMillis)
+                    // v4, the Undo fields. Empty segment lists and false are still written --
+                    // absent-vs-empty must not become a meaning.
+                    .put("sourceParentRoot", operation.sourceParentRoot?.toJson())
+                    .put("sourceParentSegments", JSONArray(operation.sourceParentSegments))
+                    .put("destinationRoot", operation.destinationRoot?.toJson())
+                    .put("destinationSegments", JSONArray(operation.destinationSegments))
+                    .put("undone", operation.undone)
                     .put("items", items),
             )
         }
@@ -137,6 +155,16 @@ class OperationJournal(context: Context) {
         is VersionStamp.Revision -> JSONObject()
             .put("kind", "revision")
             .put("token", token)
+    }
+
+    /** Reads a v4 display-name segment list; absent or malformed decodes to empty. */
+    private fun JSONObject.decodeSegments(key: String): List<String> {
+        val value = optJSONArray(key) ?: return emptyList()
+        return buildList {
+            for (index in 0 until value.length()) {
+                value.optString(index).takeIf(String::isNotEmpty)?.let(::add)
+            }
+        }
     }
 
     /**
@@ -216,6 +244,11 @@ class OperationJournal(context: Context) {
                             state = OperationState.valueOf(value.getString("state")),
                             createdAtMillis = value.getLong("createdAtMillis"),
                             updatedAtMillis = value.getLong("updatedAtMillis"),
+                            sourceParentRoot = value.decodeItemRef("sourceParentRoot"),
+                            sourceParentSegments = value.decodeSegments("sourceParentSegments"),
+                            destinationRoot = value.decodeItemRef("destinationRoot"),
+                            destinationSegments = value.decodeSegments("destinationSegments"),
+                            undone = value.optBoolean("undone", false),
                         ),
                     )
                 }

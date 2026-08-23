@@ -77,6 +77,21 @@ data class FileOperation(
     val state: OperationState = OperationState.QUEUED,
     val createdAtMillis: Long = System.currentTimeMillis(),
     val updatedAtMillis: Long = createdAtMillis,
+    /**
+     * Where the sources LIVED when a transfer launched (schema v4): the granted tree root plus
+     * the display-name walk from it — the exact addressing convention `transfer()` itself uses
+     * for destinations, chosen so an undo can re-walk it and fail loudly if a folder was
+     * renamed rather than silently landing files in the tree root. Null on records that
+     * predate v4 and on operations whose sources had no single home (a tray gathered across
+     * folders): [UndoPolicy] treats that as not-undoable, never as "guess".
+     */
+    val sourceParentRoot: ItemRef? = null,
+    val sourceParentSegments: List<String> = emptyList(),
+    /** The destination tree root a transfer was aimed at (v4); same nullability contract. */
+    val destinationRoot: ItemRef? = null,
+    val destinationSegments: List<String> = emptyList(),
+    /** True once this operation has been undone; an undone operation is never offered again. */
+    val undone: Boolean = false,
 ) {
     val totalBytes: Long? = items.mapNotNull { it.expectedBytes }.takeIf { it.size == items.size }?.sum()
     val completedBytes: Long = items.sumOf { it.completedBytes }

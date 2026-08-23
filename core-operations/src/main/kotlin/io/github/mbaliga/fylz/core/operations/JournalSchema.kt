@@ -40,5 +40,10 @@ object JournalSchema {
     // Reading stays shape-based per the contract above: records without the fields (every v1/v2
     // record) decode with null stamps, which the policy treats as insufficient evidence, i.e.
     // exactly the pre-v3 cleanup behavior.
-    const val CURRENT_VERSION = 3
+    //
+    // v4: FileOperation gains the Undo fields — sourceParentRoot/sourceParentSegments,
+    // destinationRoot/destinationSegments, and the undone flag — consumed by UndoPolicy.
+    // Same contract again: pre-v4 records decode with nulls/empties and simply are not
+    // undoable, which is the truth about them.
+    const val CURRENT_VERSION = 4
 }
