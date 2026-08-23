@@ -28,6 +28,12 @@ assessment and the plan; only the keyboard wiring below is implemented alongside
 
 ## The plan
 
+> **Progress note:** the dual-pane WORKFLOW landed ahead of the rendering — Ctrl+Shift+C/X
+> transfer the selection into the other open tab's folder, undo-aware and capability-gated.
+> The side-by-side rendering of two tabs remains WP-A1-gated as planned; `DualPaneModels.kt`'s
+> parallel navigation state is superseded by the tab model for this purpose and should be
+> retired when the split view is built.
+
 ### WP-A1 — three-tier width classes, honest landscape (foundation)
 
 Replace the 900dp cliff with the canonical `WindowSizeClass` tiers (compact <600dp, medium

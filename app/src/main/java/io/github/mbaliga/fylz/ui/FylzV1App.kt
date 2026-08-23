@@ -2249,6 +2249,59 @@ private fun FylzV1Workspace(
     }
 
     /**
+     * The dual-pane WORKFLOW over the existing tab model: with a second tab open, the selection
+     * transfers into that tab's current folder, no destination picker involved. Tabs already
+     * are independent navigation states, which is what a pane actually is — the side-by-side
+     * RENDERING of two of them stays gated on WP-A1's width tiers
+     * (docs/product/adaptive-input-plan.md), but nothing about the workflow needed to wait.
+     * With three or more tabs, the most recently used other tab wins, and the toast names the
+     * folder so a transfer into the wrong tab is visible immediately, not discovered later.
+     */
+    fun transferToOtherTab(move: Boolean): Boolean {
+        val from = activeTab ?: return false
+        if (selectedEntries.isEmpty()) return false
+        val other = tabs.lastOrNull { it.id != from.id } ?: run {
+            toast("Open a second tab to send files across")
+            return true
+        }
+        val destinationName = other.current.name
+        scope.launch {
+            loading = true
+            runCatching {
+                val segments = other.locations.drop(1).map(FolderLocation::name)
+                val sources = selectedEntries.map { it.uri }
+                if (move) {
+                    fileOperations.move(
+                        sourceUris = sources,
+                        destinationTreeUri = other.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                        sourceParentTreeUri = from.treeUri,
+                        sourceParentSegments = from.locations.drop(1).map(FolderLocation::name),
+                    ) { progress -> operationMessage = "Moving ${progress.displayName}" }
+                } else {
+                    fileOperations.copy(
+                        sourceUris = sources,
+                        destinationTreeUri = other.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                        sourceParentTreeUri = from.treeUri,
+                        sourceParentSegments = from.locations.drop(1).map(FolderLocation::name),
+                    ) { progress -> operationMessage = "Copying ${progress.displayName}" }
+                }
+            }.onSuccess {
+                toast((if (move) "Moved to " else "Copied to ") + "“$destinationName”")
+                selectedUris = emptySet()
+                selectedEntryDetails = emptyMap()
+                refresh()
+            }.onFailure { toast(it.message ?: "The transfer failed") }
+            operationMessage = null
+            loading = false
+        }
+        return true
+    }
+
+    /**
      * Everything the actions room can ask for.
      *
      * One function rather than fifteen lambdas threaded through a parameter list: the room's job
@@ -2466,6 +2519,10 @@ private fun FylzV1Workspace(
             val tab = activeTab
             if (tab != null) { closeTab(tab); true } else false
         }
+        KeyboardCommand.COPY_TO_OTHER_PANE ->
+            if (selectionActions.copy) transferToOtherTab(move = false) else false
+        KeyboardCommand.MOVE_TO_OTHER_PANE ->
+            if (selectionActions.move) transferToOtherTab(move = true) else false
         KeyboardCommand.UNDO -> {
             scope.launch {
                 when (val outcome = undoService.undoLast()) {
