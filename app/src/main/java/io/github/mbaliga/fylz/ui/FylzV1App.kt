@@ -319,6 +319,11 @@ import io.github.mbaliga.fylz.storage.LargeFileFact
 import io.github.mbaliga.fylz.storage.StorageUsageStore
 import io.github.mbaliga.fylz.storage.FileStorageProvider
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onKeyEvent
+import io.github.mbaliga.fylz.workspace.KeyboardCommand
+import io.github.mbaliga.fylz.workspace.KeyboardShortcutPolicy
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 
@@ -2347,12 +2352,66 @@ private fun FylzV1Workspace(
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
 
+    /**
+     * WP-A3: hardware keys reach the same handlers touch does — KeyboardShortcutPolicy resolves,
+     * this dispatches, and every selection command respects the same SelectionActionPolicy gates
+     * the actions room draws from, so a keyboard can never ask for what a tap could not.
+     * Returns whether the command was consumed; an unhandled command bubbles to the system.
+     */
+    fun runKeyboardCommand(command: KeyboardCommand): Boolean = when (command) {
+        KeyboardCommand.SELECT_ALL -> {
+            if (activeTab != null) { selectAllVisible(); true } else false
+        }
+        KeyboardCommand.CLEAR_SELECTION ->
+            if (selectedUris.isNotEmpty() || !shell.atHome) {
+                runAction(FylzAction.CLEAR_SELECTION); true
+            } else false
+        KeyboardCommand.COPY ->
+            if (selectionActions.copy) { runAction(FylzAction.COPY); true } else false
+        KeyboardCommand.CUT ->
+            if (selectionActions.move) { runAction(FylzAction.MOVE); true } else false
+        KeyboardCommand.RENAME ->
+            if (selectionActions.rename) { runAction(FylzAction.RENAME); true } else false
+        KeyboardCommand.RECYCLE ->
+            if (selectionActions.recycle) { runAction(FylzAction.RECYCLE); true } else false
+        KeyboardCommand.FIND, KeyboardCommand.FOCUS_LOCATION -> { focusSearch(); true }
+        KeyboardCommand.REFRESH -> { refresh(); true }
+        KeyboardCommand.NEW_FOLDER ->
+            if (activeTab != null) { runAction(FylzAction.NEW_FOLDER); true } else false
+        KeyboardCommand.NEW_FILE ->
+            if (activeTab != null) { runAction(FylzAction.NEW_FILE); true } else false
+        KeyboardCommand.NEW_TAB -> { addTab(); true }
+        KeyboardCommand.CLOSE_TAB -> {
+            val tab = activeTab
+            if (tab != null) { closeTab(tab); true } else false
+        }
+        // Focused-item commands (OPEN, PREVIEW, arrows) and the pane/undo families need focus
+        // traversal or features that do not exist yet — WP-A3b and later. Explicitly unhandled
+        // so the event bubbles rather than being swallowed with nothing to show for it.
+        else -> false
+    }
+
+    // The shell is the default focus owner so hardware keys dispatch into composition at all;
+    // a focused text field takes precedence naturally, and its unconsumed events still bubble
+    // through this ancestor. onKeyEvent (bubbling), NOT onPreviewKeyEvent: a field's own
+    // Ctrl+A must keep meaning "select the text", never "select the files behind the dialog".
+    val hardwareKeyFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { hardwareKeyFocus.requestFocus() } }
+
     SpatialShell(
         controller = shell,
         accentColor = MaterialTheme.colorScheme.primary,
         scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest,
         cardColor = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .onKeyEvent { event ->
+                val gesture = event.toShortcutGesture() ?: return@onKeyEvent false
+                val command = KeyboardShortcutPolicy.resolve(gesture) ?: return@onKeyEvent false
+                runKeyboardCommand(command)
+            }
+            .focusRequester(hardwareKeyFocus)
+            .focusable(),
         left = {
             RevealedRoom({ shell.hProgress }) {
                 LocationsRoom(
