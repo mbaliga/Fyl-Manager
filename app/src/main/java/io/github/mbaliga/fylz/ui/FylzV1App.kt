@@ -198,6 +198,7 @@ import io.github.mbaliga.fylz.ui.components.QuickLook
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
 import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
+import io.github.mbaliga.fylz.ui.activity.ActivityOverlay
 import io.github.mbaliga.fylz.ui.chrome.ActionsBar
 import io.github.mbaliga.fylz.ui.chrome.SelectionRow
 import io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight
@@ -2948,6 +2949,23 @@ private fun FylzV1Workspace(
                     },
             )
         }
+
+        // Present at the top, one card per in-flight file operation -- notification, then
+        // auto-minimized, then whichever one (at most) the user tapped back open. Started clear
+        // of ActionsBar's own top-left corner: while a selection is live this insets by that
+        // bar's own measured [actionsBarWidth] rather than a guessed constant, the same
+        // measure-don't-guess trick that bar's own comment names.
+        ActivityOverlay(
+            tracker = fileOperations.activityTracker,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(
+                    start = if (selectedUris.isNotEmpty()) actionsBarWidth + 8.dp else 16.dp,
+                    end = 16.dp,
+                    top = 4.dp,
+                ),
+        )
 
         // The Niagara-style edge scrubber. Its stops follow whatever the list is sorted by —
         // letters, months, size bands or extensions — because Fylz re-keys the same folder as
