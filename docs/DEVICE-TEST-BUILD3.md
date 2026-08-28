@@ -14,7 +14,7 @@ wrong — motion bugs rarely survive translation into prose.
 For **§10 only**, use the focused failure log in that section: do not write up successful
 gestures, and do not record a failure unless it meets that section's fix-before-Phase-2 filter.
 
-Reference for what "right" feels like: \`docs/fonebrew-navigation.md\`. The one-line version:
+Reference for what "right" feels like: `docs/fonebrew-navigation.md`. The one-line version:
 drags track the finger 1:1, release decides, settles are ~320 ms eased with **no spring**, and
 nothing fades in from nothing.
 
@@ -24,8 +24,8 @@ nothing fades in from nothing.
 
 - [ ] Install the debug (or stripped release) APK on the primary test device.
 - [ ] Have one folder with a mixed bag of files (images, PDFs, a ZIP, text), one folder with
-      50+ files, and one folder of date-named logs (\`2024-01-03.log\` style — for the scrubber's
-      \`#\` bucket).
+      50+ files, and one folder of date-named logs (`2024-01-03.log` style — for the scrubber's
+      `#` bucket).
 - [ ] Note device, Android version, and whether gesture navigation or 3-button is active:
       ____________________________________________
 
@@ -111,7 +111,7 @@ In the 50+ file folder:
 - [ ] 5.2 Sort by **date**: stops become month labels ("Mar 25"); undated files bucket as "—".
 - [ ] 5.3 Sort by **size**: stops become bands (dir/0/B/KB/MB/GB).
 - [ ] 5.4 Sort by **type**: stops become extensions; extensionless files bucket as "·".
-- [ ] 5.5 The date-named-log folder, sorted by name: **one** \`#\` stop, not a thousand.
+- [ ] 5.5 The date-named-log folder, sorted by name: **one** `#` stop, not a thousand.
 - [ ] 5.6 Grid view: scrubbing still works and lands on the right rows.
 - [ ] 5.7 Storage home (no folder): no scrubber. Make a selection: scrubber yields to the
       selection bar and disappears.
@@ -198,7 +198,7 @@ Do **not** record:
 Press-hold a selected row, then repeat once from a row near the top and once near the bottom.
 
 - [ ] Failure only: the cluster does not gather under the finger, contains the wrong count/files,
-      starts visibly away from the held row, or the \`+N\` badge is wrong.
+      starts visibly away from the held row, or the `+N` badge is wrong.
 - [ ] Failure only: cards never become a readable cluster, separate so far that the drop target
       becomes ambiguous, clip against the screen, teleport, oscillate, or trail the finger so far
       that release intent is no longer clear.
@@ -279,11 +279,11 @@ Suggested tags: **P0-SAFETY**, **P1-HIT**, **P1-STATE**, **P1-GESTURE**, **TUNE-
 
 For the developer, map the tag to the likely seam:
 
-- **TUNE-PHYSICS:** \`ui/cluster/ClusterPhysics.kt\` (spring stiffness/damping, fan, deform/bank).
-- **TUNE-GEOMETRY / P1-HIT:** \`staging/DropTargetPolicy.kt\` and \`ui/cluster/Bulges.kt\`
+- **TUNE-PHYSICS:** `ui/cluster/ClusterPhysics.kt` (spring stiffness/damping, fan, deform/bank).
+- **TUNE-GEOMETRY / P1-HIT:** `staging/DropTargetPolicy.kt` and `ui/cluster/Bulges.kt`
   (arc centres, reaction radius, hit radius, corner shape and size).
-- **TUNE-CURVE:** \`ui/cluster/ClusterDrag.kt\` (return, genie, clipboard/move snap and stagger).
-- **P1-STATE / P0-SAFETY:** \`ui/cluster/TrayBrowser.kt\`, the staging/recycle callbacks, and
+- **TUNE-CURVE:** `ui/cluster/ClusterDrag.kt` (return, genie, clipboard/move snap and stagger).
+- **P1-STATE / P0-SAFETY:** `ui/cluster/TrayBrowser.kt`, the staging/recycle callbacks, and
   the explicit Shred confirmation path.
 
 **Exit rule:** §10 is complete when the table contains only failures that meet the filter above.
@@ -293,6 +293,6 @@ An empty table is a valid result and means no interaction-tuning change is justi
 
 Anything from sections 0–9 that felt wrong, slow, or surprising — one line each:
 
-\`\`\`
+```
 …
-\`\`\`
+```
