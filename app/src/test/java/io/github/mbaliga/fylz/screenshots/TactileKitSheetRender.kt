@@ -261,8 +261,6 @@ class TactileKitSheetRender {
                     CommandPill(
                         query = "pass kind:pdf",
                         onQueryChange = {},
-                        canNavigateUp = true,
-                        onNavigateUp = {},
                         searchRecursive = true,
                         onSearchRecursiveChange = {},
                         searchBusy = true,
@@ -304,8 +302,6 @@ class TactileKitSheetRender {
                     CommandPill(
                         query = "",
                         onQueryChange = {},
-                        canNavigateUp = true,
-                        onNavigateUp = {},
                         searchRecursive = false,
                         onSearchRecursiveChange = {},
                         searchBusy = false,

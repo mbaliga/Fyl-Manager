@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Search
@@ -44,6 +43,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.selected
@@ -102,6 +102,12 @@ import io.github.mbaliga.fylz.ui.theme.ThemeStyle
  * revealed band is not bottom chrome; see [listingPaddingFor].
  */
 val CommandPillSearchHeight: Dp = 88.dp
+
+/** Tags the pill's own fixed-`height(56.dp)` body -- the exact node a parent Column can starve by
+ *  coercing that height down instead of overflowing (the Build 12 bug the search test suite
+ *  guards against). Public so that suite can probe this node's real measured height directly,
+ *  rather than through a child control that happens to sit inside it. */
+const val CommandPillFieldBodyTag: String = "command-pill-field-body"
 
 /** Width of the pill's own hand-drawn state slash-tick -- see [CommandPill]'s own note on why it
  *  reaches for [io.github.mbaliga.fylz.ui.tactile.drawTactileSlashTick] directly rather than the
@@ -169,8 +175,6 @@ private val PillSlashWidth: Dp = 20.dp
 fun CommandPill(
     query: String,
     onQueryChange: (String) -> Unit,
-    canNavigateUp: Boolean,
-    onNavigateUp: () -> Unit,
     searchRecursive: Boolean,
     onSearchRecursiveChange: (Boolean) -> Unit,
     searchBusy: Boolean,
@@ -373,6 +377,7 @@ fun CommandPill(
             Modifier
                 .fillMaxWidth()
                 .height(56.dp)
+                .testTag(CommandPillFieldBodyTag)
                 .then(
                     if (palette != null && stateColor != null) {
                         Modifier
@@ -389,13 +394,6 @@ fun CommandPill(
                 Modifier.fillMaxHeight().padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TactileIconKey(
-                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = stringResource(R.string.browser_parent_folder),
-                    onClick = onNavigateUp,
-                    enabled = canNavigateUp,
-                )
-
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                     if (palette != null && stateColor != null) {
                         Canvas(Modifier.width(PillSlashWidth).fillMaxHeight()) {
@@ -451,11 +449,11 @@ fun CommandPill(
                 // `selected`), and it is the kit's own 48dp key, not a shrunken glyph.
                 //
                 // Not in CLI. That theme's keys degrade to their own contentDescription as plain
-                // text (see TactileIconKey's CliIconKey), so this row already carries "Parent
-                // folder" and "Clear search" in full; a third label would leave the weighted
-                // field with nothing to measure at on a narrow screen -- the same starve the band
-                // fix was about. CLI gets the same toggle as its own row above the field instead,
-                // where a line of text costs it nothing.
+                // text (see TactileIconKey's CliIconKey), so this row already carries "Clear
+                // search" in full; a second label would leave the weighted field with nothing to
+                // measure at on a narrow screen -- the same starve the band fix was about. CLI
+                // gets the same toggle as its own row above the field instead, where a line of
+                // text costs it nothing.
                 if (!cli) {
                     TactileIconKey(
                         icon = Icons.Outlined.HelpOutline,

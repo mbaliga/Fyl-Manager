@@ -2471,6 +2471,21 @@ private fun FylzV1Workspace(
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
+        // Hoisted here, above both consumers: FileBrowser's own onNavigateUp argument (inside
+        // Scaffold's content below) and the bottom chrome's TabBand (a sibling of Scaffold in
+        // this same Box, mounted after it closes -- see "Bottom chrome" further down) both need
+        // the identical up-navigation behaviour and readiness check. A folder open in two places
+        // at once is exactly the kind of thing that drifts if each call site re-derives it by hand.
+        val canNavigateUp = activeTab?.locations?.let { it.size > 1 } ?: false
+        val navigateUp: () -> Unit = {
+            val tab = activeTab
+            if (tab != null) {
+                val index = tabs.indexOfFirst { it.id == tab.id }
+                if (index >= 0 && tab.locations.size > 1) {
+                    tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
+                }
+            }
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -2732,13 +2747,7 @@ private fun FylzV1Workspace(
                         pendingSearchFocus = pendingSearchFocus,
                         onSearchFocusConsumed = { pendingSearchFocus = false },
                         onQueryChange = { query = it },
-                        onNavigateUp = {
-                            val tab = activeTab ?: return@FileBrowser
-                            val index = tabs.indexOfFirst { it.id == tab.id }
-                            if (index >= 0 && tab.locations.size > 1) {
-                                tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
-                            }
-                        },
+                        onNavigateUp = navigateUp,
                         onOpen = ::openEntry,
                         onOpenTabFolder = ::openFolderInActiveTab,
                         onOpenExternal = ::openExternal,
@@ -2873,6 +2882,18 @@ private fun FylzV1Workspace(
                     },
                     onAddTab = ::addTab,
                     onTrashTap = { trashSheetOpen = true },
+                    // The band's own leading chip, ahead of the tab run: an up-chevron to the
+                    // enclosing folder normally, swapped for a red recycle button the moment a
+                    // selection goes live -- the same "back button disappears, replaced by the
+                    // recycle bin option" the owner asked for. canNavigateUp/navigateUp are
+                    // hoisted above (see [BoxWithConstraints]'s own comment); recycleSelection is
+                    // the very function FylzAction.RECYCLE already calls from the actions menu, so
+                    // this button and that menu item do the same thing by construction, not by
+                    // two implementations happening to agree.
+                    canNavigateUp = canNavigateUp,
+                    onNavigateUp = navigateUp,
+                    selectionActive = selectedUris.isNotEmpty(),
+                    onRecycleSelection = ::recycleSelection,
                     frosted = themeStyle == ThemeStyle.FYLZ,
                     // What makes the trash tab a real drop target rather than a picture of one:
                     // its own measured position, in the same root coordinate space entryGestures
@@ -3981,8 +4002,6 @@ private fun FileBrowser(
                 CommandPill(
                     query = query,
                     onQueryChange = onQueryChange,
-                    canNavigateUp = activeTab.locations.size > 1,
-                    onNavigateUp = onNavigateUp,
                     searchRecursive = searchRecursive,
                     onSearchRecursiveChange = onSearchRecursiveChange,
                     searchBusy = searchRecursive && searchProgress?.complete == false,
@@ -4033,8 +4052,6 @@ private fun FileBrowser(
                     CommandPill(
                         query = query,
                         onQueryChange = onQueryChange,
-                        canNavigateUp = activeTab.locations.size > 1,
-                        onNavigateUp = onNavigateUp,
                         searchRecursive = searchRecursive,
                         onSearchRecursiveChange = onSearchRecursiveChange,
                         searchBusy = searchRecursive && searchProgress?.complete == false,
