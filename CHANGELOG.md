@@ -4,14 +4,26 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 ## Unreleased — v1 alpha
 
+### Data safety
+
+- Removed `library/LocalFileIndex`, an unreferenced second on-device index that wrote to the same `files.json` path as the real one with a different schema — a latent data hazard for whichever store read second. The `index` package is now the only rule engine and on-device index. Two further dead smart-collection engines and their tests were removed with it.
+
 ### Workspace
+
+- Fylz-theme folders can now carry an identity mark: one large sticker centred on the glass, chosen per folder in Settings → Folder appearance, alongside the existing small corner stickers.
 
 - Added SAF-scoped multi-root browsing with tabs, breadcrumbs, search, list/grid/details views and adaptive preview layouts.
 - Added file/folder creation, rename, duplicate, copy, move, recycle, restore and explicit permanent deletion.
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
+- Finish move now compares version evidence captured when the source delete first failed: a provably modified source or destination blocks the delete and is reported (`MOVE_SOURCE_MODIFIED`, `MOVE_DESTINATION_UNVERIFIED`); providers that report no evidence keep the previous direct size cross-check.
+- Selection actions now consult the storage provider's declared capabilities (copy, move, recycle, rename, batch rename): an action a backend cannot perform is withheld instead of failing after the tap. Both shipping backends declare full support, so nothing visible changes until a more limited provider arrives.
+- Ctrl+Shift+C / Ctrl+Shift+X send the selection straight into the other open tab's current folder, no destination picker — the dual-pane workflow over the tabs that already exist. The toast names the destination folder.
+- Added Undo (Ctrl/Meta+Z): the last completed move is moved back to where its files lived, the last copy's copies are recycled (recycled, never deleted, so undo is itself recoverable), and the last recycle is restored. Operations the journal cannot support reversing say why; permanent deletion is never undoable and the message says so. Undo uses keep-both conflicts, so it can never overwrite something that appeared at the original location since.
 
 ### Preview and editing
+
+- Preview wave 1: Word-processing documents (docx/odt/rtf) show their text; .eml mail shows headers, body and attachment names (named, never opened); EPUB books show their opening chapters; camera RAW files show the camera's embedded preview; SQLite databases get a read-only table peek from a temporary copy; .ics and .vcf render as event and contact cards. Every route reports its limits and falls back to the bounded inspector with a reason.
 
 - Added bounded text and source previews, Markdown and common agent-artifact support.
 - Added SVG, animated GIF/WebP, image, first-page PDF, media metadata, archive and unknown-file preview routes.
@@ -42,6 +54,11 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added hostile metadata and randomized traversal fixtures.
 
 ### Navigation and accessibility foundations
+
+- Hardware keyboard shortcuts now work: Ctrl/Meta+A select-all, Ctrl+C/X copy/move, F2 rename, Delete recycle, Ctrl+F search, F5 refresh, Ctrl+T/W tab open/close, Ctrl+Shift+N / Ctrl+N new folder/file, Esc clear selection. Selection shortcuts respect the same action gates as the on-screen controls.
+- Modifier-qualified clicks in the listing: Ctrl/Meta+click toggles selection, Shift+click selects the visible span from the last clicked entry, Alt+click opens the entry in another app. With no keyboard attached every click stays a plain open.
+- What a shake does is now a preference (Settings → Gestures): refresh this folder, go home, or nothing; "nothing" mounts no sensor listener at all.
+- Added an opt-in Deliberate actions mode: the Shred confirmation takes a slide instead of a tap, so a resting finger cannot fire it; assistive-tech activations confirm directly. Off by default.
 
 - Consolidated operations, file history, backups, backup import and archive tools into a primary Recovery destination.
 - Removed independent global floating recovery controls.

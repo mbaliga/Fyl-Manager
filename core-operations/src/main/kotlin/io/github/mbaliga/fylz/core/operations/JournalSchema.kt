@@ -35,5 +35,15 @@ package io.github.mbaliga.fylz.core.operations
  *   to discard the record.
  */
 object JournalSchema {
-    const val CURRENT_VERSION = 2
+    // v3: OperationItem gains optional sourceStamp/destinationStamp objects, captured when a
+    // MOVE's source delete first fails and consumed by MoveCleanupPolicy on cleanup retry.
+    // Reading stays shape-based per the contract above: records without the fields (every v1/v2
+    // record) decode with null stamps, which the policy treats as insufficient evidence, i.e.
+    // exactly the pre-v3 cleanup behavior.
+    //
+    // v4: FileOperation gains the Undo fields — sourceParentRoot/sourceParentSegments,
+    // destinationRoot/destinationSegments, and the undone flag — consumed by UndoPolicy.
+    // Same contract again: pre-v4 records decode with nulls/empties and simply are not
+    // undoable, which is the truth about them.
+    const val CURRENT_VERSION = 4
 }

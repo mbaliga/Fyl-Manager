@@ -58,6 +58,13 @@ data class FileFormatDescriptor(
  */
 object FileFormatRegistry {
     private val markdown = setOf("md", "markdown", "mdown", "mkd", "mdx")
+
+    // Preview wave 1's specific-renderer sets. Subsets of the broader family sets below on
+    // purpose: classification order gives them their own renderer, and removing them from the
+    // family sets would change every OTHER consumer's answer about what the file is.
+    private val rawImages = setOf("dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf", "pef", "srw", "nrw", "raw", "x3f")
+    private val wordProcessing = setOf("docx", "docm", "dotx", "odt", "ott", "rtf")
+    private val sqliteDatabases = setOf("sqlite", "sqlite3", "db", "db3", "sdb")
     private val text = setOf(
         "txt", "text", "log", "csv", "tsv", "json", "jsonl", "ndjson", "xml", "yaml", "yml",
         "toml", "ini", "conf", "cfg", "properties", "gradle", "kts", "kt", "java", "py",
@@ -141,6 +148,22 @@ object FileFormatRegistry {
 
         return when {
             extension in markdown || kind == EntryKind.MARKDOWN -> descriptor(PreviewFamily.MARKDOWN, PreviewDepth.RENDERED, "Markdown", extension, "markdown")
+            // Preview wave 1 (docs/product/desktop-class-audit.md): specific renderers that
+            // must outrank the broader family buckets below them.
+            extension in rawImages -> descriptor(
+                PreviewFamily.IMAGE,
+                PreviewDepth.RENDERED,
+                "Camera RAW photo",
+                extension,
+                "raw-embedded",
+                "Shown from the camera's embedded preview; full RAW development is not built in.",
+            )
+            extension in wordProcessing -> descriptor(PreviewFamily.OFFICE, PreviewDepth.STRUCTURED, "Word-processing document", extension, "word-text")
+            extension == "epub" -> descriptor(PreviewFamily.EBOOK, PreviewDepth.STRUCTURED, "E-book", extension, "epub-text")
+            extension in sqliteDatabases -> descriptor(PreviewFamily.DATABASE, PreviewDepth.STRUCTURED, "SQLite database", extension, "sqlite-peek")
+            extension == "eml" -> descriptor(PreviewFamily.TEXT, PreviewDepth.STRUCTURED, "Email message", extension, "email")
+            extension == "ics" -> descriptor(PreviewFamily.TEXT, PreviewDepth.STRUCTURED, "Calendar file", extension, "calendar-card")
+            extension == "vcf" -> descriptor(PreviewFamily.TEXT, PreviewDepth.STRUCTURED, "Contact card file", extension, "contact-card")
             extension == "pdf" || mime == "application/pdf" || kind == EntryKind.PDF -> descriptor(PreviewFamily.PDF, PreviewDepth.RENDERED, "PDF document", extension, "pdf")
             extension in cad2d -> descriptor(
                 PreviewFamily.CAD_2D,

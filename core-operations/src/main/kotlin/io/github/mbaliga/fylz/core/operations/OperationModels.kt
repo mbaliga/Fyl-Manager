@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.core.operations
 
 import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.model.VersionStamp
 import java.util.UUID
 
 enum class FileOperationType {
@@ -57,6 +58,15 @@ data class OperationItem(
     val completedBytes: Long = 0,
     val state: OperationState = OperationState.QUEUED,
     val errorCode: String? = null,
+    /**
+     * Version evidence captured at the moment a MOVE's source delete first failed (schema v3):
+     * [sourceStamp] is the still-present source, [destinationStamp] the just-verified committed
+     * destination. Consumed by [MoveCleanupPolicy] when cleanup later retries the delete. Null
+     * on every pre-v3 record and on non-MOVE items — null decides nothing on its own; it routes
+     * the policy to [MoveCleanupPolicy.Decision.InsufficientEvidence].
+     */
+    val sourceStamp: VersionStamp? = null,
+    val destinationStamp: VersionStamp? = null,
 )
 
 data class FileOperation(
@@ -67,6 +77,21 @@ data class FileOperation(
     val state: OperationState = OperationState.QUEUED,
     val createdAtMillis: Long = System.currentTimeMillis(),
     val updatedAtMillis: Long = createdAtMillis,
+    /**
+     * Where the sources LIVED when a transfer launched (schema v4): the granted tree root plus
+     * the display-name walk from it — the exact addressing convention `transfer()` itself uses
+     * for destinations, chosen so an undo can re-walk it and fail loudly if a folder was
+     * renamed rather than silently landing files in the tree root. Null on records that
+     * predate v4 and on operations whose sources had no single home (a tray gathered across
+     * folders): [UndoPolicy] treats that as not-undoable, never as "guess".
+     */
+    val sourceParentRoot: ItemRef? = null,
+    val sourceParentSegments: List<String> = emptyList(),
+    /** The destination tree root a transfer was aimed at (v4); same nullability contract. */
+    val destinationRoot: ItemRef? = null,
+    val destinationSegments: List<String> = emptyList(),
+    /** True once this operation has been undone; an undone operation is never offered again. */
+    val undone: Boolean = false,
 ) {
     val totalBytes: Long? = items.mapNotNull { it.expectedBytes }.takeIf { it.size == items.size }?.sum()
     val completedBytes: Long = items.sumOf { it.completedBytes }

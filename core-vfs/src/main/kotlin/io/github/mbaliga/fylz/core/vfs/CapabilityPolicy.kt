@@ -34,11 +34,13 @@ data class CapabilityDecision(
 /**
  * WP-1.2's other half: the vocabulary is [ItemCapability]; this is what a command requires of
  * it. "Commands declare required capabilities; UI derives visibility/enabled state and can
- * explain what's missing" — the plan's own words, and its own next clause is the scope note
- * that matters here: *"(surfaces in Phase 2)."* This object is that declaration, tested and
- * ready, with no UI wired to it yet. Acceptance law #1 — "no action appears unless the
- * selected items and destination can support it" — is what this makes checkable; making it
- * checked is a later phase's work, not a claim this file makes about itself.
+ * explain what's missing" — the plan's own words, with the scope note *"(surfaces in Phase
+ * 2)."* Phase 2 has now surfaced it: `app/operations/SelectionActionPolicy` consults this
+ * object for every provider-gated selection action (copy, move, recycle, rename, batch
+ * rename), against the leading `StorageProvider`'s declared set. Acceptance law #1 — "no
+ * action appears unless the selected items and destination can support it" — is checked there
+ * for the selection side; destination-side consultation (a paste target that cannot
+ * CREATE_FILE, for instance) still awaits the destination-choosing surfaces.
  */
 object CapabilityPolicy {
 

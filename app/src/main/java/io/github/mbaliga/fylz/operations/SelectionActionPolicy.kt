@@ -1,6 +1,9 @@
 package io.github.mbaliga.fylz.operations
 
 import io.github.mbaliga.fylz.core.model.EntryKind
+import io.github.mbaliga.fylz.core.model.ItemCapability
+import io.github.mbaliga.fylz.core.vfs.CapabilityPolicy
+import io.github.mbaliga.fylz.core.vfs.UserAction
 
 /**
  * Which file actions a given selection actually supports.
@@ -50,21 +53,31 @@ data class SelectionActions(
  *   user sees a share sheet, picks a target, and nothing arrives. Better to not offer it.
  * - Everything else — copy, move, recycle, tag, archive — applies to any non-empty selection,
  *   folders included.
+ *
+ * Phase 2's consultation runs through here too: the shape rules above are intersected with what
+ * the active provider's [ItemCapability] set actually offers, per `core-vfs.CapabilityPolicy` —
+ * acceptance law #1's "no action appears unless the selected items and destination can support
+ * it", previously tested scaffolding with no caller. Only actions with a provider-capability
+ * meaning are gated (copy, move, recycle, rename, batch rename). Tag lives in the app's own
+ * LibraryStore, and archive, extract, PDF tools and share write into a destination the user has
+ * not chosen yet at evaluation time — their gate would be a guess about a location this policy
+ * has not seen, so they stay shape-gated only.
  */
 object SelectionActionPolicy {
 
     /** Nothing selected: every action off. */
     val None = SelectionActions(count = 0)
 
-    fun evaluate(kinds: List<EntryKind>): SelectionActions {
+    fun evaluate(kinds: List<EntryKind>, offered: Set<ItemCapability>): SelectionActions {
         if (kinds.isEmpty()) return None
+        fun can(action: UserAction) = CapabilityPolicy.canPerform(action, offered)
         return SelectionActions(
             count = kinds.size,
-            copy = true,
-            move = true,
-            recycle = true,
-            rename = kinds.size == 1,
-            batchRename = kinds.size >= 2,
+            copy = can(UserAction.COPY),
+            move = can(UserAction.MOVE),
+            recycle = can(UserAction.MOVE_TO_TRASH),
+            rename = kinds.size == 1 && can(UserAction.RENAME),
+            batchRename = kinds.size >= 2 && can(UserAction.RENAME),
             tag = true,
             archive = true,
             extract = kinds.singleOrNull() == EntryKind.ARCHIVE,

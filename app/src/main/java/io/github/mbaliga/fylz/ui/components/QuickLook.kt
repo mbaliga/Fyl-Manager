@@ -82,9 +82,15 @@ import io.github.mbaliga.fylz.data.WorkbookReader
 import io.github.mbaliga.fylz.data.FigJamPreviewData
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.components.preview.ArchiveContentPreview
+import io.github.mbaliga.fylz.ui.components.preview.DatabasePeekPreview
+import io.github.mbaliga.fylz.ui.components.preview.DocumentTextPreview
+import io.github.mbaliga.fylz.ui.components.preview.EmailPreview
+import io.github.mbaliga.fylz.ui.components.preview.EpubTextPreview
 import io.github.mbaliga.fylz.ui.components.preview.ModelWireframePreview
 import io.github.mbaliga.fylz.ui.components.preview.PresentationPreview
+import io.github.mbaliga.fylz.ui.components.preview.RawEmbeddedPreview
 import io.github.mbaliga.fylz.ui.components.preview.SpreadsheetPreview
+import io.github.mbaliga.fylz.ui.components.preview.StructuredCardPreview
 import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
@@ -891,6 +897,22 @@ private fun QuickLookContent(
             ) {
                 CircularProgressIndicator()
             }
+            // Preview wave 1 routes sit ABOVE the plain-text branches on purpose: .ics/.vcf
+            // classify as TEXT for every other consumer (icons, editors), and letting the
+            // kind==TEXT branch catch them here would print raw VCALENDAR syntax instead of the
+            // card the registry promised via rendererId.
+            descriptor.rendererId == "calendar-card" || descriptor.rendererId == "contact-card" ->
+                StructuredCardPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "email" ->
+                EmailPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "word-text" ->
+                DocumentTextPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "epub-text" ->
+                EpubTextPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "raw-embedded" ->
+                RawEmbeddedPreview(entry, descriptor, Modifier.fillMaxSize())
+            descriptor.rendererId == "sqlite-peek" ->
+                DatabasePeekPreview(entry, descriptor, Modifier.fillMaxSize())
             entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
                 if (textTruncated) QuickLookTruncationNotice()
                 MarkdownPreview(textContent, Modifier.fillMaxSize())

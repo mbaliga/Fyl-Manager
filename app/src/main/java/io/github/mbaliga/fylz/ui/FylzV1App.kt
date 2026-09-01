@@ -145,6 +145,7 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.model.FolderTab
 import io.github.mbaliga.fylz.model.PreviewMode
+import io.github.mbaliga.fylz.model.ShakeAction
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
@@ -155,7 +156,9 @@ import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.describe
+import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.SelectionActionPolicy
+import io.github.mbaliga.fylz.operations.UndoService
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.FylzSearch
@@ -320,6 +323,18 @@ import io.github.mbaliga.fylz.storage.LargeFileFact
 import io.github.mbaliga.fylz.storage.StorageUsageStore
 import io.github.mbaliga.fylz.storage.FileStorageProvider
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onKeyEvent
+import io.github.mbaliga.fylz.workspace.KeyboardCommand
+import io.github.mbaliga.fylz.workspace.KeyboardShortcutPolicy
+import io.github.mbaliga.fylz.workspace.HeldModifiers
+import io.github.mbaliga.fylz.workspace.ModifierClick
+import io.github.mbaliga.fylz.workspace.ModifierClickPolicy
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 
@@ -676,6 +691,15 @@ private fun FylzV1Workspace(
         FileOperationService(context.applicationContext, onItemRelocated = onItemRelocated)
     }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
+    // The Undo verb: reads the journal the services above already write; see UndoPolicy.
+    val undoService = remember {
+        UndoService(
+            context = context.applicationContext,
+            journal = OperationJournal(context.applicationContext),
+            fileOperations = fileOperations,
+            recycleBin = recycleBin,
+        )
+    }
     val archiveService = remember { ArchiveService(context.applicationContext) }
     val fileTools = remember {
         FileTools(context.applicationContext, onItemRelocated = onItemRelocated)
@@ -689,6 +713,9 @@ private fun FylzV1Workspace(
     // Read and written only here and in the settings sheet, same as quickActions/previewScale
     // above -- autoplay and thumbnail motion are a preview concern, not a pre-theme one.
     var autoAnimate by remember { mutableStateOf(preferencesStore.autoAnimate()) }
+    // Gesture and deliberation preferences, mirrored the same way autoAnimate is.
+    var shakeAction by remember { mutableStateOf(preferencesStore.shakeAction()) }
+    var deliberateActions by remember { mutableStateOf(preferencesStore.deliberateActions()) }
     // Local mirror of the store's own MRU list -- SharedPreferences has no change stream, so
     // every write that should be visible this composition also assigns here.
     var recentSearches by remember { mutableStateOf(preferencesStore.recentSearches()) }
@@ -902,9 +929,16 @@ private fun FylzV1Workspace(
 
     // What this selection may be asked to do. Derived once and handed to the actions room, so
     // "does Extract apply" is answered by one testable policy rather than by an expression
-    // written inline wherever a button happened to be drawn.
+    // written inline wherever a button happened to be drawn. Phase 2: the policy also consults
+    // the leading provider's capability set (CapabilityPolicy's first real caller). Both local
+    // backends declare identical sets today, so primary() is authoritative for any tab; a
+    // future backend that refuses an operation will see its actions withheld here, not fail
+    // downstream.
     val selectionActions = remember(selectedEntries) {
-        SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
+        SelectionActionPolicy.evaluate(
+            kinds = selectedEntries.map(FileEntry::kind),
+            offered = StorageAccess.primary(context).capabilities,
+        )
     }
 
     // Every known tag, cached once per write rather than re-scanned on every recomposition, per
@@ -1235,6 +1269,12 @@ private fun FylzV1Workspace(
     // platform one drive exactly the same code. Whichever route produced the destination, what
     // happens to the files afterwards must not depend on which picker the user came through.
     fun performDestination(action: PendingDestinationAction, destination: Uri) {
+        // Where the selection lives right now, journaled so Undo can send a move (or the
+        // recycled copies of a copy) home by the same root+walk addressing transfers use.
+        // Null when the selection came from a home surface with no open tab: those
+        // operations run fine and are honestly not undoable.
+        val undoHomeTree = activeTab?.treeUri
+        val undoHomeSegments = activeTab?.locations?.drop(1)?.map(FolderLocation::name).orEmpty()
         scope.launch {
             loading = true
             runCatching {
@@ -1243,11 +1283,15 @@ private fun FylzV1Workspace(
                         selectedEntries.map { it.uri },
                         destination,
                         ConflictPolicy.KEEP_BOTH,
+                        sourceParentTreeUri = undoHomeTree,
+                        sourceParentSegments = undoHomeSegments,
                     ) { progress -> operationMessage = "Copying ${progress.displayName}" }
                     PendingDestinationAction.MOVE -> fileOperations.move(
                         selectedEntries.map { it.uri },
                         destination,
                         ConflictPolicy.KEEP_BOTH,
+                        sourceParentTreeUri = undoHomeTree,
+                        sourceParentSegments = undoHomeSegments,
                     ) { progress -> operationMessage = "Moving ${progress.displayName}" }
                     PendingDestinationAction.EXTRACT -> archiveService.extractZip(
                         archiveUri = pendingArchiveUri ?: error("Choose an archive."),
@@ -2156,6 +2200,108 @@ private fun FylzV1Workspace(
         }
     }
 
+    // ── Modifier-qualified clicks (WP-A4's click half) ────────────────────────────────
+
+    // Resynced from every hardware key event's meta flags at the shell root, so it can never
+    // hold a stale modifier. With no keyboard attached it stays None and every click is plain.
+    var heldModifiers by remember { mutableStateOf(HeldModifiers.None) }
+
+    // The last plainly-clicked or toggled entry: Shift+click ranges from here. Uri, not index,
+    // because sort and filter can reorder the listing between the two clicks.
+    var selectionAnchorUri by remember { mutableStateOf<Uri?>(null) }
+
+    /** Selects [entries] the same way toggleSelection does, keeping the details map in step. */
+    fun selectEntries(entries: List<FileEntry>) {
+        selectedUris = selectedUris + entries.map(FileEntry::uri)
+        selectedEntryDetails = selectedEntryDetails + entries.associateBy(FileEntry::uri)
+    }
+
+    /**
+     * The listing's open handler: a plain click opens, Ctrl/Meta+click toggles selection,
+     * Shift+click selects the visible span from the anchor, Alt+click opens externally —
+     * decided by [ModifierClickPolicy] against the list currently on screen (search results
+     * while a recursive search is showing them, the folder listing otherwise, the same rule
+     * selectAllVisible applies).
+     */
+    fun openWithModifiers(entry: FileEntry) {
+        val visible = if (searchActive) searchHits.map { it.entry } else visibleEntries
+        val decision = ModifierClickPolicy.decide(
+            modifiers = heldModifiers,
+            anchorIndex = selectionAnchorUri
+                ?.let { anchor -> visible.indexOfFirst { it.uri == anchor } }
+                ?.takeIf { it >= 0 },
+            clickedIndex = visible.indexOfFirst { it.uri == entry.uri },
+        )
+        when (decision) {
+            ModifierClick.Open -> {
+                selectionAnchorUri = entry.uri
+                openEntry(entry)
+            }
+            ModifierClick.ToggleSelection -> {
+                selectionAnchorUri = entry.uri
+                toggleSelection(entry)
+            }
+            is ModifierClick.SelectRange ->
+                // The anchor deliberately stays put: Shift+clicking further extends from the
+                // same origin, which is what every desktop file manager does.
+                selectEntries(visible.subList(decision.fromIndex, decision.toIndex + 1))
+            ModifierClick.OpenExternal -> openExternal(entry)
+        }
+    }
+
+    /**
+     * The dual-pane WORKFLOW over the existing tab model: with a second tab open, the selection
+     * transfers into that tab's current folder, no destination picker involved. Tabs already
+     * are independent navigation states, which is what a pane actually is — the side-by-side
+     * RENDERING of two of them stays gated on WP-A1's width tiers
+     * (docs/product/adaptive-input-plan.md), but nothing about the workflow needed to wait.
+     * With three or more tabs, the most recently used other tab wins, and the toast names the
+     * folder so a transfer into the wrong tab is visible immediately, not discovered later.
+     */
+    fun transferToOtherTab(move: Boolean): Boolean {
+        val from = activeTab ?: return false
+        if (selectedEntries.isEmpty()) return false
+        val other = tabs.lastOrNull { it.id != from.id } ?: run {
+            toast("Open a second tab to send files across")
+            return true
+        }
+        val destinationName = other.current.name
+        scope.launch {
+            loading = true
+            runCatching {
+                val segments = other.locations.drop(1).map(FolderLocation::name)
+                val sources = selectedEntries.map { it.uri }
+                if (move) {
+                    fileOperations.move(
+                        sourceUris = sources,
+                        destinationTreeUri = other.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                        sourceParentTreeUri = from.treeUri,
+                        sourceParentSegments = from.locations.drop(1).map(FolderLocation::name),
+                    ) { progress -> operationMessage = "Moving ${progress.displayName}" }
+                } else {
+                    fileOperations.copy(
+                        sourceUris = sources,
+                        destinationTreeUri = other.treeUri,
+                        conflictPolicy = ConflictPolicy.KEEP_BOTH,
+                        destinationPathSegments = segments,
+                        sourceParentTreeUri = from.treeUri,
+                        sourceParentSegments = from.locations.drop(1).map(FolderLocation::name),
+                    ) { progress -> operationMessage = "Copying ${progress.displayName}" }
+                }
+            }.onSuccess {
+                toast((if (move) "Moved to " else "Copied to ") + "“$destinationName”")
+                selectedUris = emptySet()
+                selectedEntryDetails = emptyMap()
+                refresh()
+            }.onFailure { toast(it.message ?: "The transfer failed") }
+            operationMessage = null
+            loading = false
+        }
+        return true
+    }
+
     /**
      * Everything the actions room can ask for.
      *
@@ -2341,12 +2487,92 @@ private fun FylzV1Workspace(
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
 
+    /**
+     * WP-A3: hardware keys reach the same handlers touch does — KeyboardShortcutPolicy resolves,
+     * this dispatches, and every selection command respects the same SelectionActionPolicy gates
+     * the actions room draws from, so a keyboard can never ask for what a tap could not.
+     * Returns whether the command was consumed; an unhandled command bubbles to the system.
+     */
+    fun runKeyboardCommand(command: KeyboardCommand): Boolean = when (command) {
+        KeyboardCommand.SELECT_ALL -> {
+            if (activeTab != null) { selectAllVisible(); true } else false
+        }
+        KeyboardCommand.CLEAR_SELECTION ->
+            if (selectedUris.isNotEmpty() || !shell.atHome) {
+                runAction(FylzAction.CLEAR_SELECTION); true
+            } else false
+        KeyboardCommand.COPY ->
+            if (selectionActions.copy) { runAction(FylzAction.COPY); true } else false
+        KeyboardCommand.CUT ->
+            if (selectionActions.move) { runAction(FylzAction.MOVE); true } else false
+        KeyboardCommand.RENAME ->
+            if (selectionActions.rename) { runAction(FylzAction.RENAME); true } else false
+        KeyboardCommand.RECYCLE ->
+            if (selectionActions.recycle) { runAction(FylzAction.RECYCLE); true } else false
+        KeyboardCommand.FIND, KeyboardCommand.FOCUS_LOCATION -> { focusSearch(); true }
+        KeyboardCommand.REFRESH -> { refresh(); true }
+        KeyboardCommand.NEW_FOLDER ->
+            if (activeTab != null) { runAction(FylzAction.NEW_FOLDER); true } else false
+        KeyboardCommand.NEW_FILE ->
+            if (activeTab != null) { runAction(FylzAction.NEW_FILE); true } else false
+        KeyboardCommand.NEW_TAB -> { addTab(); true }
+        KeyboardCommand.CLOSE_TAB -> {
+            val tab = activeTab
+            if (tab != null) { closeTab(tab); true } else false
+        }
+        KeyboardCommand.COPY_TO_OTHER_PANE ->
+            if (selectionActions.copy) transferToOtherTab(move = false) else false
+        KeyboardCommand.MOVE_TO_OTHER_PANE ->
+            if (selectionActions.move) transferToOtherTab(move = true) else false
+        KeyboardCommand.UNDO -> {
+            scope.launch {
+                when (val outcome = undoService.undoLast()) {
+                    is UndoService.Outcome.Undone -> {
+                        toast("Undone: ${outcome.description}")
+                        refresh()
+                        trashRefreshKey += 1
+                    }
+                    is UndoService.Outcome.NothingToUndo -> toast(outcome.reason)
+                    is UndoService.Outcome.Failed -> toast(outcome.message)
+                }
+            }
+            true
+        }
+        // Focused-item commands (OPEN, PREVIEW, arrows) and the pane/undo families need focus
+        // traversal or features that do not exist yet — WP-A3b and later. Explicitly unhandled
+        // so the event bubbles rather than being swallowed with nothing to show for it.
+        else -> false
+    }
+
+    // The shell is the default focus owner so hardware keys dispatch into composition at all;
+    // a focused text field takes precedence naturally, and its unconsumed events still bubble
+    // through this ancestor. onKeyEvent (bubbling), NOT onPreviewKeyEvent: a field's own
+    // Ctrl+A must keep meaning "select the text", never "select the files behind the dialog".
+    val hardwareKeyFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { hardwareKeyFocus.requestFocus() } }
+
     SpatialShell(
         controller = shell,
         accentColor = MaterialTheme.colorScheme.primary,
         scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest,
         cardColor = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .onKeyEvent { event ->
+                // Every key event restates the full modifier set, so this resync can never
+                // strand a stale Ctrl the way tracking down/up transitions could.
+                heldModifiers = HeldModifiers(
+                    ctrl = event.isCtrlPressed,
+                    shift = event.isShiftPressed,
+                    alt = event.isAltPressed,
+                    meta = event.isMetaPressed,
+                )
+                val gesture = event.toShortcutGesture() ?: return@onKeyEvent false
+                val command = KeyboardShortcutPolicy.resolve(gesture) ?: return@onKeyEvent false
+                runKeyboardCommand(command)
+            }
+            .focusRequester(hardwareKeyFocus)
+            .focusable(),
         left = {
             RevealedRoom({ shell.hProgress }) {
                 LocationsRoom(
@@ -2460,7 +2686,24 @@ private fun FylzV1Workspace(
     // is never contested. Refresh itself stays off the touch plane regardless — a deliberate shake
     // needs no affordance, no instructional copy, and competes with no scroll. The toolbar button
     // stays for anyone who would rather tap than shake.
-    ShakeToRefresh(onShake = { refresh() })
+    //
+    // What the shake MEANS is the user's preference (owner direction): the shared detector stays
+    // exactly as cell-shell ships it, only the dispatch varies. OFF mounts no detector at all —
+    // the sensor never registers, rather than registering and ignoring.
+    if (shakeAction != ShakeAction.OFF) {
+        ShakeToRefresh(onShake = {
+            when (shakeAction) {
+                ShakeAction.REFRESH -> refresh()
+                ShakeAction.GO_HOME -> {
+                    discardNewTab()
+                    activeTabId = null
+                    homeRefreshKey += 1
+                    shell.closeAll()
+                }
+                ShakeAction.OFF -> Unit
+            }
+        })
+    }
 
     // How much of the top bar's leading edge the ActionsBar is covering. Measured off the bar
     // itself where it is mounted below, not restated from its own width constant -- that constant
@@ -2471,7 +2714,13 @@ private fun FylzV1Workspace(
     var actionsBarWidth by remember { mutableStateOf(209.dp) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 900.dp
+        // WP-A1, first step: the wide cut sits on the canonical EXPANDED window-class boundary
+        // (840dp) rather than the old ad-hoc 900dp, so unfolded book-posture foldables and most
+        // landscape tablets get the two-pane layout they have room for. The real WP-A1 -- a
+        // medium tier for landscape phones, chrome that collapses in short windows -- is a
+        // layout restructure gated on device acceptance, not a constant change; see
+        // docs/product/adaptive-input-plan.md.
+        val wide = maxWidth >= 840.dp
         // Hoisted here, above both consumers: FileBrowser's own onNavigateUp argument (inside
         // Scaffold's content below) and the bottom chrome's TabBand (a sibling of Scaffold in
         // this same Box, mounted after it closes -- see "Bottom chrome" further down) both need
@@ -2749,7 +2998,7 @@ private fun FylzV1Workspace(
                         onSearchFocusConsumed = { pendingSearchFocus = false },
                         onQueryChange = { query = it },
                         onNavigateUp = navigateUp,
-                        onOpen = ::openEntry,
+                        onOpen = ::openWithModifiers,
                         onOpenTabFolder = ::openFolderInActiveTab,
                         onOpenExternal = ::openExternal,
                         onToggleSelection = ::toggleSelection,
@@ -3188,6 +3437,7 @@ private fun FylzV1Workspace(
                 shredding = shredding,
                 onConfirm = { shredNow(targets) },
                 onDismiss = { if (!shredding) shredTargets = null },
+                deliberate = deliberateActions,
             )
         }
 
@@ -3598,6 +3848,16 @@ private fun FylzV1Workspace(
             },
             homeMode = homeMode,
             onHomeModeChange = onHomeModeChange,
+            shakeAction = shakeAction,
+            onShakeActionChange = {
+                shakeAction = it
+                preferencesStore.setShakeAction(it)
+            },
+            deliberateActions = deliberateActions,
+            onDeliberateActionsChange = {
+                deliberateActions = it
+                preferencesStore.setDeliberateActions(it)
+            },
             landingSubjectName = landingSubject?.name,
             onPickLandingSubject = onPickLandingSubject,
             landingSplash = landingSplash,

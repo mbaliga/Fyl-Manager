@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.operations
 import android.content.Context
 import android.net.Uri
 import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.model.VersionStamp
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.core.operations.FileOperationType
@@ -41,6 +42,17 @@ class OperationJournal(context: Context) {
             .sortedByDescending(FileOperation::updatedAtMillis)
             .take(MAX_RECORDS)
         persist(next)
+    }
+
+    /**
+     * Marks one record undone (v4) without touching anything else about it. Deliberately does
+     * NOT bump `updatedAtMillis`: the undo's own inverse operation is the record of when the
+     * undo happened; rewriting this record's time would shuffle history order for no reader.
+     */
+    @Synchronized
+    fun markUndone(id: String) {
+        val current = find(id) ?: return
+        put(current.copy(undone = true))
     }
 
     @Synchronized
@@ -101,7 +113,9 @@ class OperationJournal(context: Context) {
                         .put("expectedBytes", item.expectedBytes)
                         .put("completedBytes", item.completedBytes)
                         .put("state", item.state.name)
-                        .put("errorCode", item.errorCode),
+                        .put("errorCode", item.errorCode)
+                        .put("sourceStamp", item.sourceStamp?.toJson())
+                        .put("destinationStamp", item.destinationStamp?.toJson()),
                 )
             }
             root.put(
@@ -113,6 +127,13 @@ class OperationJournal(context: Context) {
                     .put("state", operation.state.name)
                     .put("createdAtMillis", operation.createdAtMillis)
                     .put("updatedAtMillis", operation.updatedAtMillis)
+                    // v4, the Undo fields. Empty segment lists and false are still written --
+                    // absent-vs-empty must not become a meaning.
+                    .put("sourceParentRoot", operation.sourceParentRoot?.toJson())
+                    .put("sourceParentSegments", JSONArray(operation.sourceParentSegments))
+                    .put("destinationRoot", operation.destinationRoot?.toJson())
+                    .put("destinationSegments", JSONArray(operation.destinationSegments))
+                    .put("undone", operation.undone)
                     .put("items", items),
             )
         }
@@ -125,6 +146,46 @@ class OperationJournal(context: Context) {
         .put("providerId", providerId)
         .put("locationId", locationId)
         .put("opaqueItemId", opaqueItemId)
+
+    private fun VersionStamp.toJson(): JSONObject = when (this) {
+        is VersionStamp.Composite -> JSONObject()
+            .put("kind", "composite")
+            .put("sizeBytes", sizeBytes)
+            .put("modifiedAtMillis", modifiedAtMillis)
+        is VersionStamp.Revision -> JSONObject()
+            .put("kind", "revision")
+            .put("token", token)
+    }
+
+    /** Reads a v4 display-name segment list; absent or malformed decodes to empty. */
+    private fun JSONObject.decodeSegments(key: String): List<String> {
+        val value = optJSONArray(key) ?: return emptyList()
+        return buildList {
+            for (index in 0 until value.length()) {
+                value.optString(index).takeIf(String::isNotEmpty)?.let(::add)
+            }
+        }
+    }
+
+    /**
+     * Reads an optional schema-v3 version stamp. Absent field, unrecognized kind, or a
+     * malformed object all decode to null — per [JournalSchema]'s contract, a field this build
+     * cannot recognize is inert, never a reason to refuse the record.
+     */
+    private fun JSONObject.decodeStamp(key: String): VersionStamp? {
+        val value = optJSONObject(key) ?: return null
+        return when (value.optString("kind")) {
+            "composite" -> VersionStamp.Composite(
+                sizeBytes = value.optLong("sizeBytes", Long.MIN_VALUE)
+                    .takeUnless { it == Long.MIN_VALUE },
+                modifiedAtMillis = value.optLong("modifiedAtMillis", Long.MIN_VALUE)
+                    .takeUnless { it == Long.MIN_VALUE },
+            )
+            "revision" -> value.optString("token").takeIf(String::isNotBlank)
+                ?.let { VersionStamp.Revision(it) }
+            else -> null
+        }
+    }
 
     /**
      * Reads a `source`/`destination` field by JSON shape rather than by the record's
@@ -168,6 +229,8 @@ class OperationJournal(context: Context) {
                                     completedBytes = item.optLong("completedBytes", 0L),
                                     state = OperationState.valueOf(item.getString("state")),
                                     errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
+                                    sourceStamp = item.decodeStamp("sourceStamp"),
+                                    destinationStamp = item.decodeStamp("destinationStamp"),
                                 ),
                             )
                         }
@@ -181,6 +244,11 @@ class OperationJournal(context: Context) {
                             state = OperationState.valueOf(value.getString("state")),
                             createdAtMillis = value.getLong("createdAtMillis"),
                             updatedAtMillis = value.getLong("updatedAtMillis"),
+                            sourceParentRoot = value.decodeItemRef("sourceParentRoot"),
+                            sourceParentSegments = value.decodeSegments("sourceParentSegments"),
+                            destinationRoot = value.decodeItemRef("destinationRoot"),
+                            destinationSegments = value.decodeSegments("destinationSegments"),
+                            undone = value.optBoolean("undone", false),
                         ),
                     )
                 }

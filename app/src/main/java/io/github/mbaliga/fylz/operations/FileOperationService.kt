@@ -6,9 +6,11 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.core.model.VersionStamp
 import io.github.mbaliga.fylz.core.operations.ConflictPolicy
 import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.MoveCleanupPolicy
 import io.github.mbaliga.fylz.core.operations.OperationItem
 import io.github.mbaliga.fylz.core.operations.OperationState
 import io.github.mbaliga.fylz.storage.toItemRef
@@ -53,18 +55,24 @@ class FileOperationService(
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         destinationPathSegments: List<String> = emptyList(),
+        // Where the sources live, in the destination-addressing convention (tree root + walk),
+        // journaled for Undo (schema v4). Null when the caller cannot say (mixed-origin trays).
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
     ): List<Uri> =
-        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, onProgress)
+        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, sourceParentTreeUri, sourceParentSegments, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         destinationPathSegments: List<String> = emptyList(),
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
     ): List<Uri> =
-        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, onProgress)
+        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, sourceParentTreeUri, sourceParentSegments, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -89,6 +97,26 @@ class FileOperationService(
             if (source?.exists() != true) {
                 changed = true
                 return@map item.copy(state = OperationState.SUCCEEDED, errorCode = null)
+            }
+            // WP-1.1's deferred decision, now made through MoveCleanupPolicy (see its KDoc):
+            // provable change on either endpoint since the copy was verified blocks the delete;
+            // absent evidence falls through to the direct size cross-check below, which is
+            // exactly the pre-v3 behavior and all that pre-v3 records (null stamps) can get.
+            when (
+                MoveCleanupPolicy.decide(
+                    journaledSource = item.sourceStamp,
+                    currentSource = source.versionStamp(),
+                    journaledDestination = item.destinationStamp,
+                    currentDestination = destination.versionStamp(),
+                )
+            ) {
+                MoveCleanupPolicy.Decision.DestinationChanged ->
+                    return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_UNVERIFIED)
+                MoveCleanupPolicy.Decision.SourceModified ->
+                    return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_SOURCE_MODIFIED)
+                MoveCleanupPolicy.Decision.Proceed,
+                MoveCleanupPolicy.Decision.InsufficientEvidence,
+                -> Unit
             }
             if (source.isFile && destination.isFile) {
                 val expected = source.length()
@@ -124,6 +152,8 @@ class FileOperationService(
         move: Boolean,
         conflictPolicy: ConflictPolicy,
         destinationPathSegments: List<String>,
+        sourceParentTreeUri: Uri? = null,
+        sourceParentSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
@@ -162,6 +192,12 @@ class FileOperationService(
             },
             conflictPolicy = conflictPolicy,
             state = OperationState.PREFLIGHT,
+            // The Undo fields (v4): where the sources lived and which tree the transfer aimed
+            // at, both in the same root+walk convention this function itself resolves.
+            sourceParentRoot = sourceParentTreeUri?.toItemRef(),
+            sourceParentSegments = sourceParentSegments,
+            destinationRoot = destinationTreeUri.toItemRef(),
+            destinationSegments = destinationPathSegments,
         )
         journal.put(operation)
         var current = operation.copy(
@@ -225,6 +261,12 @@ class FileOperationService(
                                 completedBytes = item.expectedBytes ?: item.completedBytes,
                                 state = OperationState.NEEDS_ATTENTION,
                                 errorCode = MOVE_SOURCE_DELETE_PENDING,
+                                // Schema v3: version evidence for the later cleanup retry.
+                                // Captured NOW, while both endpoints are freshly observed --
+                                // the source that refused deletion and the destination the
+                                // copy verification just accepted.
+                                sourceStamp = source.versionStamp(),
+                                destinationStamp = copied.versionStamp(),
                             )
                         }
                         journal.put(current)
@@ -471,9 +513,21 @@ class FileOperationService(
         }
     }
 
+    /**
+     * What this provider can restate about an item right now, in [VersionStamp] terms. Size is
+     * only meaningful for files; `DocumentFile.lastModified()` returns 0 when the provider
+     * declines to report, which buckets to null exactly as the browse layer already treats
+     * zero timestamps.
+     */
+    private fun DocumentFile.versionStamp(): VersionStamp.Composite = VersionStamp.Composite(
+        sizeBytes = length().takeIf { isFile && it >= 0L },
+        modifiedAtMillis = lastModified().takeIf { it > 0L },
+    )
+
     private companion object {
         const val MOVE_SOURCE_DELETE_PENDING = "MOVE_SOURCE_DELETE_PENDING"
         const val MOVE_DESTINATION_MISSING = "MOVE_DESTINATION_MISSING"
         const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
+        const val MOVE_SOURCE_MODIFIED = "MOVE_SOURCE_MODIFIED"
     }
 }

@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.settings
 import android.content.Context
 import android.net.Uri
 import io.github.mbaliga.fylz.model.DensityMode
+import io.github.mbaliga.fylz.model.ShakeAction
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.components.IconStyle
@@ -132,6 +133,31 @@ class AppPreferencesStore(context: Context) {
     @Synchronized
     fun setAutoAnimate(value: Boolean) {
         preferences.edit().putBoolean(AUTO_ANIMATE, value).commit()
+    }
+
+    /** What a shake does; the detector is shared, only this dispatch is a preference. */
+    @Synchronized
+    fun shakeAction(): ShakeAction {
+        val raw = preferences.getString(SHAKE_ACTION, null) ?: return ShakeAction.REFRESH
+        return runCatching { ShakeAction.valueOf(raw) }.getOrDefault(ShakeAction.REFRESH)
+    }
+
+    @Synchronized
+    fun setShakeAction(action: ShakeAction) {
+        preferences.edit().putString(SHAKE_ACTION, action.name).commit()
+    }
+
+    /**
+     * Deliberate actions: destructive confirmations require a slide instead of a tap, per the
+     * owner's mechanical-actuation-force rationale (docs/product/deliberate-ux.md). Off by
+     * default — deliberation is a choice, not a toll.
+     */
+    @Synchronized
+    fun deliberateActions(): Boolean = preferences.getBoolean(DELIBERATE_ACTIONS, false)
+
+    @Synchronized
+    fun setDeliberateActions(value: Boolean) {
+        preferences.edit().putBoolean(DELIBERATE_ACTIONS, value).commit()
     }
 
     /**
@@ -301,6 +327,8 @@ class AppPreferencesStore(context: Context) {
         const val SHOW_EXTENSIONS = "show_extensions"
         const val AUTO_ANIMATE = "auto_animate"
         const val RECENT_SEARCHES = "recent_searches"
+        const val SHAKE_ACTION = "shake_action"
+        const val DELIBERATE_ACTIONS = "deliberate_actions"
         const val QUICK_ACTIONS = "quick_actions"
         const val PREVIEW_WIDTH = "preview_width_fraction"
         const val PREVIEW_HEIGHT = "preview_height_fraction"

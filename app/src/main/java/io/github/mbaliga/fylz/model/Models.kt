@@ -68,6 +68,19 @@ enum class ThemeMode {
     DARK,
 }
 
+/**
+ * What a deliberate shake of the device does. REFRESH is the constellation default
+ * (cell-shell's `ShakeToRefresh` contract); the owner's direction is that the gesture's
+ * *meaning* be the user's to configure, so the detector stays shared and only the dispatch
+ * is a preference. OFF exists because a gesture some people trigger on a bumpy commute must
+ * be refusable outright, not merely retargeted.
+ */
+enum class ShakeAction {
+    REFRESH,
+    GO_HOME,
+    OFF,
+}
+
 enum class AccentPreset {
     MOSS,
     INK,
