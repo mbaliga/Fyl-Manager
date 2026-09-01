@@ -232,6 +232,33 @@ internal object ThumbnailCache {
 }
 
 /**
+ * A thumbnail for a bare [Uri], for callers that hold one and never see a [FileEntry] -- the
+ * Activity overlay's preview fan, whose data comes up from the operations layer as opaque URIs.
+ *
+ * Deliberately the PROVIDER path only ([loadProviderThumbnail]), not the full [EntryThumbnail]
+ * ladder: without an entry there is no `kind` to route a PDF render or a type icon by, and
+ * guessing one from the URI is exactly the document-ID parsing the app forbids everywhere else.
+ * Null means "nothing to show for this one" and the caller draws no tile rather than a
+ * placeholder -- a document with no thumbnail behind it must not borrow someone else's picture.
+ *
+ * Shares [ThumbnailCache] with every listing row, so an operation over files the user was just
+ * looking at re-reads nothing.
+ */
+@Composable
+fun rememberUriThumbnail(uri: Uri, pixels: Int = THUMBNAIL_PIXELS): ImageBitmap? {
+    val context = LocalContext.current
+    val key = remember(uri, pixels) { if (pixels == THUMBNAIL_PIXELS) uri.toString() else "$uri@$pixels" }
+    val cached = ThumbnailCache.get(key)
+    val loaded by produceState<ImageBitmap?>(initialValue = cached, key) {
+        if (cached != null) return@produceState
+        value = withContext(Dispatchers.IO) {
+            loadProviderThumbnail(context.contentResolver, uri, pixels)?.asImageBitmap()
+        }?.also { ThumbnailCache.put(key, it) }
+    }
+    return loaded
+}
+
+/**
  * The icon treatment in force for this subtree.
  *
  * A composition local rather than a parameter because [EntryThumbnail] is reached from the list

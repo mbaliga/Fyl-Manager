@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.operations
 
+import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,6 +25,14 @@ data class ActivityProgress(
     val itemIndex: Int,
     val itemCount: Int,
     val kind: ActivityKind,
+    /**
+     * Up to a handful of the items actually in flight, for the expanded card's own preview stack.
+     * Opaque [Uri]s and nothing more -- this layer neither knows nor cares whether any of them has
+     * a thumbnail behind it. The UI resolves that question with the same provider-thumbnail path
+     * every list row already uses, and draws only what really resolves, so an operation over
+     * documents shows no invented images.
+     */
+    val previewUris: List<Uri> = emptyList(),
 )
 
 /**
@@ -43,9 +52,19 @@ class ActivityTracker {
 
     /** No-op if [id] is already tracked -- a caller that races a duplicate start (there is none
      *  today, but nothing stops a future one) does not get two cards for one operation. */
-    fun start(id: String, label: String, itemCount: Int, kind: ActivityKind) {
+    fun start(
+        id: String,
+        label: String,
+        itemCount: Int,
+        kind: ActivityKind,
+        previewUris: List<Uri> = emptyList(),
+    ) {
         _activities.update { current ->
-            if (current.any { it.id == id }) current else current + ActivityProgress(id, label, 0, itemCount, kind)
+            if (current.any { it.id == id }) {
+                current
+            } else {
+                current + ActivityProgress(id, label, 0, itemCount, kind, previewUris)
+            }
         }
     }
 

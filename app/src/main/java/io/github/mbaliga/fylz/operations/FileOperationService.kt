@@ -175,6 +175,9 @@ class FileOperationService(
             label = if (move) "Moving" else "Copying",
             itemCount = sourceUris.size,
             kind = ActivityKind.TRANSFER,
+            // Bounded on purpose: the expanded card fans at most three, so handing it the whole
+            // batch (12,366 of them, in the owner's own example) would be a list nobody reads.
+            previewUris = sourceUris.take(ACTIVITY_PREVIEW_LIMIT),
         )
 
         try {
@@ -475,5 +478,8 @@ class FileOperationService(
         const val MOVE_SOURCE_DELETE_PENDING = "MOVE_SOURCE_DELETE_PENDING"
         const val MOVE_DESTINATION_MISSING = "MOVE_DESTINATION_MISSING"
         const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
+
+        /** How many of a batch's sources the Activity card is handed to fan as previews. */
+        const val ACTIVITY_PREVIEW_LIMIT = 3
     }
 }

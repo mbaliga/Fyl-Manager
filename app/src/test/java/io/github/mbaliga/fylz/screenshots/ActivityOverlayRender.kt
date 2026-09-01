@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.operations.ActivityKind
 import io.github.mbaliga.fylz.operations.ActivityProgress
 import io.github.mbaliga.fylz.ui.activity.ExpandedCard
-import io.github.mbaliga.fylz.ui.activity.MinimizedBar
+import io.github.mbaliga.fylz.ui.activity.MinimizedRow
 import io.github.mbaliga.fylz.ui.activity.NotificationCard
 import io.github.mbaliga.fylz.ui.activity.accentFor
 import io.github.mbaliga.fylz.ui.activity.iconFor
@@ -86,21 +86,17 @@ class ActivityOverlayRender {
         compose.setContent {
             Box(Modifier.fillMaxSize().background(Color(0xFF0A0A0C))) {
                 Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
-                    Caption("NOTIFICATION -- freshly started, full card")
-                    NotificationCard(moving, accentFor(moving.kind), iconFor(moving.kind), 4822f / 12366f)
+                    Caption("NOTIFICATION -- full-bleed band, grouped count")
+                    NotificationCard(moving, accentFor(moving.kind), iconFor(moving.kind))
 
-                    Caption("EXPANDED -- tapped open, progress bar")
+                    Caption("EXPANDED -- preview, count, progress")
                     ExpandedCard(moving, accentFor(moving.kind), iconFor(moving.kind), 4822f / 12366f)
 
-                    Caption("MINIMIZED -- single, auto-shrunk after 2.5s")
-                    MinimizedBar(accentFor(moving.kind), iconFor(moving.kind))
+                    Caption("MINIMIZED -- one activity, real progress fill")
+                    MinimizedRow(listOf(moving))
 
-                    Caption("MINIMIZED -- three simultaneous activities stacked (the owner's own reference)")
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        MinimizedBar(accentFor(writing.kind), iconFor(writing.kind))
-                        MinimizedBar(accentFor(moving.kind), iconFor(moving.kind))
-                        MinimizedBar(accentFor(archiving.kind), iconFor(archiving.kind))
-                    }
+                    Caption("MINIMIZED -- three at once share ONE row, segmented")
+                    MinimizedRow(listOf(writing, moving, archiving))
                 }
             }
         }
