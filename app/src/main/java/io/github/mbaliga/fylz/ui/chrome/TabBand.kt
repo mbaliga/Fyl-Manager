@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -36,6 +38,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -46,6 +49,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ui.cluster.TrashGlyph
 
 /**
@@ -134,6 +138,15 @@ private val TabShadowColor = Color.Black.copy(alpha = 0.25f)
  *   invalidates the chips rather than this whole band and its caller. The caller returns null
  *   for a drop that would do nothing (the folder already open, a folder into itself), which is
  *   what keeps an ineligible tab from lighting up.
+ * @param canNavigateUp whether the active tab has an enclosing folder to leave TO -- gates the
+ *   leading up-chevron the same way it gates the equivalent control everywhere else in the app.
+ * @param onNavigateUp called when the up-chevron is tapped; a no-op caller with [canNavigateUp]
+ *   left false draws no chevron at all rather than a disabled one with nothing to do.
+ * @param selectionActive true while one or more entries are selected -- swaps the leading chip
+ *   from the up-chevron to a red recycle button, since "go up" and "recycle the selection" never
+ *   both make sense at once and the band has only the one leading slot.
+ * @param onRecycleSelection called from that recycle button; the caller's job to move whatever is
+ *   selected to the recycle bin, exactly as the actions menu's own recycle entry already does.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -150,6 +163,10 @@ fun TabBand(
     trashModifier: Modifier = Modifier,
     onTabBounds: (String, Rect) -> Unit = { _, _ -> },
     armedTabId: () -> String? = { null },
+    canNavigateUp: Boolean = false,
+    onNavigateUp: () -> Unit = {},
+    selectionActive: Boolean = false,
+    onRecycleSelection: () -> Unit = {},
 ) {
     val family = chromeFontFamily()
     Box(modifier.fillMaxWidth().background(ChromeInk)) {
@@ -173,6 +190,17 @@ fun TabBand(
                 Modifier.weight(1f, fill = false).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(-TabOverlap),
             ) {
+                // The band's one leading slot: an up-chevron at rest, a red recycle button while
+                // a selection is live, nothing when neither applies. Its own trailing padding
+                // cancels the run's -TabOverlap spacing (meant for tab-over-tab stacking, not
+                // this much smaller circular chip) and replaces it with a plain small gap instead
+                // -- see [LeadingChipGap].
+                val leadingChipModifier = Modifier.padding(end = TabOverlap + LeadingChipGap).zIndex(1f)
+                if (selectionActive) {
+                    RecycleChip(onClick = onRecycleSelection, modifier = leadingChipModifier)
+                } else if (canNavigateUp) {
+                    UpChip(onClick = onNavigateUp, modifier = leadingChipModifier)
+                }
                 tabs.forEach { tab ->
                     val isActive = tab.id == activeTabId
                     FolderTabChip(
@@ -300,6 +328,54 @@ private fun AddTabButton(onAddTab: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(Icons.Outlined.Add, contentDescription = null, tint = ChromeOn)
+    }
+}
+
+/** Diameter of the band's one leading chip -- sized to the 48dp touch floor rather than
+ *  [TabStripHeight] (47dp, a hairline under it): the one control here not already pinned to the
+ *  strip's own body height by the Figma read, so nothing stops it clearing the floor outright. */
+private val LeadingChipDiameter: Dp = 48.dp
+
+/** The gap between the leading chip and the first tab -- see its call site for how this cancels
+ *  the tab run's own -TabOverlap spacing instead of compounding with it. */
+private val LeadingChipGap: Dp = 8.dp
+
+/**
+ * The default leading chip: a plain up-chevron to the folder the active tab's current location
+ * sits inside, matching the same "go up" every other up-navigation control in the app already
+ * offers -- [onClick] is the identical callback, not a second implementation of it.
+ */
+@Composable
+private fun UpChip(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(LeadingChipDiameter)
+            .clip(CircleShape)
+            .background(ChromeInactive)
+            .clickable(onClick = onClick, onClickLabel = stringResource(R.string.browser_parent_folder)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = null, tint = ChromeOn)
+    }
+}
+
+/**
+ * The leading chip while a selection is live: the same red [ChromeDanger] and the same
+ * [TrashGlyph] the pinned trash tab already draws, so this reads as "recycle" for the same reason
+ * that tab does, rather than inventing a second glyph for one action. Distinct from that tab's own
+ * tap-to-browse action -- this one recycles the SELECTION ([onClick]), not opens the bin.
+ */
+@Composable
+private fun RecycleChip(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(LeadingChipDiameter)
+            .clip(CircleShape)
+            .background(ChromeDanger)
+            .clickable(onClick = onClick, onClickLabel = "Move to Recycle Bin"),
+        contentAlignment = Alignment.Center,
+    ) {
+        TrashGlyph(proximity = 0f, tint = ChromeOn, modifier = Modifier.size(24.dp))
     }
 }
 

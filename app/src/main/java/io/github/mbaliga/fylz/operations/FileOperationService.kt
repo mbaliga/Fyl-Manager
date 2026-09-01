@@ -29,6 +29,12 @@ class FileOperationService(
     // Fired for a MOVE item at the point its source delete succeeds -- never for COPY, and
     // never for a conflict-skipped item. No store type leaks in here; callers translate.
     private val onItemRelocated: ((Uri, Uri) -> Unit)? = null,
+    // One tracker per service instance, not a shared singleton: FylzAppShell's own instance
+    // (crash-recovery replay) and FylzV1App's (every interactive move/copy) are deliberately
+    // separate FileOperationService instances already, and this follows that same seam rather
+    // than crossing it. The caller that wants its operations to show as on-screen Activities
+    // reads THIS property; nothing here assumes there is only ever one service alive.
+    val activityTracker: ActivityTracker = ActivityTracker(),
 ) {
     data class Progress(
         val itemIndex: Int,
@@ -200,6 +206,12 @@ class FileOperationService(
             updatedAtMillis = System.currentTimeMillis(),
         )
         journal.put(current)
+        activityTracker.start(
+            id = operation.id,
+            label = if (move) "Moving" else "Copying",
+            itemCount = sourceUris.size,
+            kind = ActivityKind.TRANSFER,
+        )
 
         try {
             val result = buildList {
@@ -236,6 +248,7 @@ class FileOperationService(
                             )
                         }
                         journal.put(current)
+                        activityTracker.update(operation.id, itemIndex = progress.itemIndex, itemCount = progress.itemCount)
                         onProgress(progress)
                     }
                     verifyCopy(source, staged)
@@ -313,6 +326,10 @@ class FileOperationService(
             )
             journal.put(current)
             throw failure
+        } finally {
+            // Every exit path -- success, cancellation, failure -- means this operation is no
+            // longer IN FLIGHT, which is the only thing an Activity card has an opinion about.
+            activityTracker.finish(operation.id)
         }
     }
 

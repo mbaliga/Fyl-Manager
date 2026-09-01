@@ -11,15 +11,14 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.dp
 import dev.aarso.search.ChipKind
 import dev.aarso.search.QueryChip
-import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.ui.components.CommandPill
+import io.github.mbaliga.fylz.ui.components.CommandPillFieldBodyTag
 import io.github.mbaliga.fylz.ui.components.CommandPillSearchHeight
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import org.junit.Assert.assertTrue
@@ -74,8 +73,6 @@ class PullDownSearchTest {
                             CommandPill(
                                 query = query,
                                 onQueryChange = { query = it },
-                                canNavigateUp = true,
-                                onNavigateUp = {},
                                 searchRecursive = true,
                                 onSearchRecursiveChange = {},
                                 // False deliberately: the busy spinner is the one indefinite
@@ -106,17 +103,15 @@ class PullDownSearchTest {
     /**
      * The field body got its own height rather than the Column's leftovers.
      *
-     * Probed through the pill's back key: it is a [io.github.mbaliga.fylz.ui.tactile.TactileIconKey]
-     * inside the field body, present in every state the pill has, so it stands or falls with the
-     * body's measurement -- 48dp when the body gets its 56dp, 0dp when the body is starved to
-     * nothing. The field itself is a [androidx.compose.foundation.text.BasicTextField] and carries
-     * no description of its own to find it by. 48dp is also the touch floor this key owes.
+     * Probed directly through [CommandPillFieldBodyTag]: the pill's own fixed-`height(56.dp)`
+     * body, present in every state the pill has, so it stands or falls with the body's own
+     * measurement -- 56dp when it gets its full height, less when a starving parent Column
+     * coerces that `height()` modifier down instead of overflowing. Reading the tagged node's own
+     * height is more direct than the earlier probe through a child control that happened to sit
+     * inside it (see git history) -- there is now no such control living in this file at all.
      */
     private fun assertFieldNotStarved() {
-        compose.onNodeWithContentDescription(
-            compose.activity.getString(R.string.browser_parent_folder),
-            useUnmergedTree = true,
-        ).assertHeightIsAtLeast(48.dp)
+        compose.onNodeWithTag(CommandPillFieldBodyTag, useUnmergedTree = true).assertHeightIsAtLeast(56.dp)
     }
 
     /**

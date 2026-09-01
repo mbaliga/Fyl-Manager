@@ -201,6 +201,7 @@ import io.github.mbaliga.fylz.ui.components.QuickLook
 import io.github.mbaliga.fylz.ui.components.displayName
 import io.github.mbaliga.fylz.ui.components.listingPaddingFor
 import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
+import io.github.mbaliga.fylz.ui.activity.ActivityOverlay
 import io.github.mbaliga.fylz.ui.chrome.ActionsBar
 import io.github.mbaliga.fylz.ui.chrome.SelectionRow
 import io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight
@@ -2720,6 +2721,21 @@ private fun FylzV1Workspace(
         // layout restructure gated on device acceptance, not a constant change; see
         // docs/product/adaptive-input-plan.md.
         val wide = maxWidth >= 840.dp
+        // Hoisted here, above both consumers: FileBrowser's own onNavigateUp argument (inside
+        // Scaffold's content below) and the bottom chrome's TabBand (a sibling of Scaffold in
+        // this same Box, mounted after it closes -- see "Bottom chrome" further down) both need
+        // the identical up-navigation behaviour and readiness check. A folder open in two places
+        // at once is exactly the kind of thing that drifts if each call site re-derives it by hand.
+        val canNavigateUp = activeTab?.locations?.let { it.size > 1 } ?: false
+        val navigateUp: () -> Unit = {
+            val tab = activeTab
+            if (tab != null) {
+                val index = tabs.indexOfFirst { it.id == tab.id }
+                if (index >= 0 && tab.locations.size > 1) {
+                    tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
+                }
+            }
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -2981,13 +2997,7 @@ private fun FylzV1Workspace(
                         pendingSearchFocus = pendingSearchFocus,
                         onSearchFocusConsumed = { pendingSearchFocus = false },
                         onQueryChange = { query = it },
-                        onNavigateUp = {
-                            val tab = activeTab ?: return@FileBrowser
-                            val index = tabs.indexOfFirst { it.id == tab.id }
-                            if (index >= 0 && tab.locations.size > 1) {
-                                tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
-                            }
-                        },
+                        onNavigateUp = navigateUp,
                         onOpen = ::openWithModifiers,
                         onOpenTabFolder = ::openFolderInActiveTab,
                         onOpenExternal = ::openExternal,
@@ -3122,6 +3132,18 @@ private fun FylzV1Workspace(
                     },
                     onAddTab = ::addTab,
                     onTrashTap = { trashSheetOpen = true },
+                    // The band's own leading chip, ahead of the tab run: an up-chevron to the
+                    // enclosing folder normally, swapped for a red recycle button the moment a
+                    // selection goes live -- the same "back button disappears, replaced by the
+                    // recycle bin option" the owner asked for. canNavigateUp/navigateUp are
+                    // hoisted above (see [BoxWithConstraints]'s own comment); recycleSelection is
+                    // the very function FylzAction.RECYCLE already calls from the actions menu, so
+                    // this button and that menu item do the same thing by construction, not by
+                    // two implementations happening to agree.
+                    canNavigateUp = canNavigateUp,
+                    onNavigateUp = navigateUp,
+                    selectionActive = selectedUris.isNotEmpty(),
+                    onRecycleSelection = ::recycleSelection,
                     frosted = themeStyle == ThemeStyle.FYLZ,
                     // What makes the trash tab a real drop target rather than a picture of one:
                     // its own measured position, in the same root coordinate space entryGestures
@@ -3176,6 +3198,23 @@ private fun FylzV1Workspace(
                     },
             )
         }
+
+        // Present at the top, one card per in-flight file operation -- notification, then
+        // auto-minimized, then whichever one (at most) the user tapped back open. Started clear
+        // of ActionsBar's own top-left corner: while a selection is live this insets by that
+        // bar's own measured [actionsBarWidth] rather than a guessed constant, the same
+        // measure-don't-guess trick that bar's own comment names.
+        ActivityOverlay(
+            tracker = fileOperations.activityTracker,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(
+                    start = if (selectedUris.isNotEmpty()) actionsBarWidth + 8.dp else 16.dp,
+                    end = 16.dp,
+                    top = 4.dp,
+                ),
+        )
 
         // The Niagara-style edge scrubber. Its stops follow whatever the list is sorted by —
         // letters, months, size bands or extensions — because Fylz re-keys the same folder as
@@ -4241,8 +4280,6 @@ private fun FileBrowser(
                 CommandPill(
                     query = query,
                     onQueryChange = onQueryChange,
-                    canNavigateUp = activeTab.locations.size > 1,
-                    onNavigateUp = onNavigateUp,
                     searchRecursive = searchRecursive,
                     onSearchRecursiveChange = onSearchRecursiveChange,
                     searchBusy = searchRecursive && searchProgress?.complete == false,
@@ -4293,8 +4330,6 @@ private fun FileBrowser(
                     CommandPill(
                         query = query,
                         onQueryChange = onQueryChange,
-                        canNavigateUp = activeTab.locations.size > 1,
-                        onNavigateUp = onNavigateUp,
                         searchRecursive = searchRecursive,
                         onSearchRecursiveChange = onSearchRecursiveChange,
                         searchBusy = searchRecursive && searchProgress?.complete == false,
