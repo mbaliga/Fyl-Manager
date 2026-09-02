@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -30,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
@@ -38,6 +40,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -171,6 +174,11 @@ internal fun ClusterDragLayer(
     var overlayOrigin by remember { mutableStateOf(Offset.Zero) }
     var overlaySize by remember { mutableStateOf(Size.Zero) }
 
+    // How far the grab has swelled from row-thumbnail size into carry size, and risen out from
+    // under the thumb. One Animatable for the whole stack: the cards gather onto the finger
+    // together, so they grow and rise together too.
+    val gather = remember { Animatable(0f) }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -301,6 +309,13 @@ internal fun ClusterDragLayer(
             }
         }
 
+        // ── The grab swell: row-sized in the hand, carry-sized a fifth of a second later ─
+        LaunchedEffect(controller.phase) {
+            if (controller.phase != ClusterPhase.DRAGGING) return@LaunchedEffect
+            gather.snapTo(0f)
+            gather.animateTo(1f, tween(GATHER_MILLIS, easing = SETTLE))
+        }
+
         // ── Terminal flights, each starting from wherever the physics left the cards ──
         LaunchedEffect(controller.phase) {
             when (controller.phase) {
@@ -384,17 +399,37 @@ internal fun ClusterDragLayer(
                 alpha = 1f
             }
 
+            // How much of the carry treatment -- the swell and the lift -- is in effect. It
+            // eases IN over the gather and back OUT over whatever flight ends the drag, so a
+            // returning card shrinks to the row it came from and a snapping card arrives at the
+            // point its flight actually aims at rather than 46dp above it.
+            val carry = if (dragging) gather.value else 1f - staggered(flight, index)
+            val grow = GRAB_SCALE + (1f - GRAB_SCALE) * carry
+
             ClusterCard(
                 item = item,
                 badge = if (index == 0 && extra > 0) "+$extra" else null,
+                elevation = CARD_ELEVATION * carry,
                 modifier = Modifier
                     .offset {
-                        val half = 36.dp.roundToPx()
-                        IntOffset(position.x.roundToInt() - half, position.y.roundToInt() - half)
+                        // THE LIFT MOVES THE DRAWING ONLY. Every drop decision -- the action arc
+                        // above, the trash bulge, the tab strip's own targets -- hit-tests
+                        // controller.dragPosition, the real finger point, and that is untouched.
+                        // Raising the hit point with the picture would drop the cargo on whatever
+                        // happened to sit a thumb's height above the thing you were pointing at.
+                        val half = CARD_SIZE.toPx() / 2f
+                        // Clamped against the top of the overlay: near the top edge there is
+                        // nothing above the finger to lift into, and a stack half off-screen is
+                        // worse than one under a thumb.
+                        val lift = min(THUMB_LIFT.toPx() * carry, (position.y - half).coerceAtLeast(0f))
+                        IntOffset(
+                            (position.x - half).roundToInt(),
+                            (position.y - half - lift).roundToInt(),
+                        )
                     }
                     .graphicsLayer {
-                        scaleX = cardScaleX
-                        scaleY = cardScaleY
+                        scaleX = cardScaleX * grow
+                        scaleY = cardScaleY * grow
                         this.alpha = alpha
                         rotationZ = bank + (index - visible.size / 2f) * 3.5f
                     }
@@ -405,13 +440,26 @@ internal fun ClusterDragLayer(
 }
 
 @Composable
-private fun ClusterCard(item: StagedItem, badge: String?, modifier: Modifier) {
-    Box(modifier.size(72.dp), contentAlignment = Alignment.Center) {
+private fun ClusterCard(item: StagedItem, badge: String?, elevation: Dp, modifier: Modifier) {
+    Box(modifier.size(CARD_SIZE), contentAlignment = Alignment.Center) {
         StackCard(
             entry = item.entry,
             fallbackName = item.displayName,
             kind = item.kind,
-            size = 72.dp,
+            size = CARD_SIZE,
+            // Depth and an edge, both only here: the deck riffle and the tray bulges use this
+            // same card lying FLAT on their own surface, and a card that is not in the air has
+            // no business casting.
+            //
+            // The edge is not decoration. StackCard's face is surfaceBright and a listing is
+            // surface -- one step apart in a light scheme -- so rendering the layer over a light
+            // page showed a stack of four drawing exactly the same picture as a stack of one,
+            // every card behind the leader hidden under its opaque white face. The shadow cannot
+            // carry that on its own: the cards overlap, so the only shadow anyone sees is the
+            // outermost card's.
+            modifier = Modifier
+                .shadow(elevation, CARD_SHAPE)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CARD_SHAPE),
         )
         Text(
             item.displayName,
@@ -442,9 +490,19 @@ private fun ClusterCard(item: StagedItem, badge: String?, modifier: Modifier) {
     }
 }
 
-/** The stacked fan under the finger: a tight trailing spread, top card centred. */
+/**
+ * The stacked fan: a tight trailing spread up and out, leader nearest the finger.
+ *
+ * It used to spread down-right, which put every card behind the leader straight back into the
+ * occlusion [THUMB_LIFT] exists to escape -- the lift would have raised the top card clear and
+ * left the count buried. Up-right keeps the whole stack countable at a glance.
+ *
+ * The step is deliberately a readable fraction of [CARD_SIZE] rather than the few dp it used to
+ * be. At the old 7x9dp the leader's own opaque face covered every card behind it: five files and
+ * one file drew the same picture.
+ */
 private fun fanOffset(index: Int, density: Density): Offset = with(density) {
-    Offset(x = (index * 7).dp.toPx(), y = (index * 9).dp.toPx())
+    Offset(x = index * FAN_STEP_X.toPx(), y = -index * FAN_STEP_Y.toPx())
 }
 
 /**
@@ -492,6 +550,56 @@ internal fun DropTarget.slotLabel() = when (this) {
     DropTarget.TRASH -> "Recycle"
     DropTarget.NONE -> ""
 }
+
+/**
+ * The dragged card, and how far above the contact point the stack is DRAWN.
+ *
+ * A thumb covers far more than the point it reports: a 72dp card centred on that point was, in
+ * practice, a card you could not see while you carried it. Two changes together fix that -- the
+ * card in flight is bigger than any thumbnail it can have lifted off (40dp in list, 56dp in
+ * grid), and the whole stack is drawn clear of the contact point instead of on top of it.
+ *
+ * [THUMB_LIFT] is a drawing offset and nothing more; see the offset modifier for why the hit
+ * point stays exactly where the finger is.
+ */
+internal val CARD_SIZE = 96.dp
+internal val THUMB_LIFT = 60.dp
+
+/**
+ * The shadow the stack casts once it is fully lifted, scaled by the lift itself.
+ *
+ * Not decoration. A dragged card is a near-white slab, and a listing is a near-white page: with
+ * no shadow the cargo is invisible over exactly the surface you drag it across, and a stack of
+ * four reads as one card because each card's opaque face hides the one behind it. Rendering the
+ * layer over a light page is what made that obvious -- the same stack over the dark corner bulge
+ * had always looked fine.
+ */
+private val CARD_ELEVATION = 13.dp
+
+/** Kept in step with [StackCard]'s own shape by hand -- the shadow and edge have to sit on it. */
+private val CARD_SHAPE = RoundedCornerShape(10.dp)
+
+/** One card's step in the resting fan. See [fanOffset] for why it is this big and not smaller. */
+internal val FAN_STEP_X = 11.dp
+internal val FAN_STEP_Y = 10.dp
+
+/**
+ * The disc a thumb actually covers, measured across. Not a rendering constant -- nothing draws it
+ * -- but the figure [CARD_SIZE] and [THUMB_LIFT] are answerable to, and the reason this file has
+ * a test at all. A fingertip contact patch on a phone runs roughly 10-14mm; at 160dp to the inch
+ * that is a bit over 48dp of digitiser, and the flesh around it covers half as much again.
+ */
+internal val ThumbOcclusionDp = 72.dp
+
+/**
+ * Card size at the instant of the grab, as a fraction of [CARD_SIZE] -- about 53dp, between the
+ * list and grid thumbnails it lifts off. Snapping straight to carry size pops; growing into it
+ * is the same object being picked up.
+ */
+private const val GRAB_SCALE = 0.55f
+
+/** How long the stack takes to swell and rise out from under the thumb. */
+private const val GATHER_MILLIS = 190
 
 /** Radius of the action arc struck from the top-left corner. */
 private val ARC_RADIUS = 112.dp
