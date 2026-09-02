@@ -60,14 +60,30 @@ import io.github.mbaliga.fylz.ui.cluster.TrashGlyph
  */
 data class TabBandItem(val id: String, val label: String)
 
-/** The visible height of one tab's own rectangle -- the folder-shape body, not the shadow spill
- *  above or below it, nor the plinth beneath. */
+/** The visible height of one tab's own rectangle at [ChromeScale.DEFAULT] -- the folder-shape
+ *  body, not the shadow spill above or below it, nor the plinth beneath. Read [tabStripHeight]
+ *  from a composable rather than this constant directly: the user's own chrome scale applies
+ *  there, and a caller that measures against the base while the band draws scaled would reserve
+ *  the wrong amount of room. */
 val TabStripHeight: Dp = 47.dp
 
-/** How much vertical room the tab band claims at the bottom of the browser, mirroring the job
- *  `CommandPillReservedHeight` did for the floating pill -- small clearance beyond the tab body
- *  itself so a listing's last row doesn't run directly under the upward shadow gradient. */
+/** How much vertical room the tab band claims at the bottom of the browser at
+ *  [ChromeScale.DEFAULT], mirroring the job `CommandPillReservedHeight` did for the floating pill
+ *  -- small clearance beyond the tab body itself so a listing's last row doesn't run directly
+ *  under the upward shadow gradient. See [tabBandHeight] for the scaled figure. */
 val TabBandHeight: Dp = TabStripHeight + 10.dp
+
+/** [TabStripHeight] at the user's chosen [ChromeScale]. */
+@Composable
+fun tabStripHeight(): Dp = TabStripHeight.scaledForChrome()
+
+/** [TabBandHeight] at the user's chosen [ChromeScale] -- what a listing must actually clear. */
+@Composable
+fun tabBandHeight(): Dp = TabBandHeight.scaledForChrome()
+
+/** The add-tab chip's width: the joint-smallest control in this chrome, and so the one
+ *  [ChromeScale.MAX] is calibrated against. */
+private val AddTabWidth: Dp = 44.dp
 
 /** How far the shadow gradient spills past a tab's edge -- the export's 4px offset plus 4px blur,
  *  approximated as one soft band since Compose gradients don't blur. */
@@ -169,12 +185,13 @@ fun TabBand(
     onRecycleSelection: () -> Unit = {},
 ) {
     val family = chromeFontFamily()
+    val stripHeight = tabStripHeight()
     Box(modifier.fillMaxWidth().background(ChromeInk)) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .height(TabStripHeight),
+                .height(stripHeight),
             // The tabs sub-Row below is capped at weight(1f, fill = false) so a wide tab strip
             // never pushes trash off-screen, but that cap does not make it CLAIM the full share
             // -- with few tabs open it measures to its own short content width, and without
@@ -204,6 +221,7 @@ fun TabBand(
                 tabs.forEach { tab ->
                     val isActive = tab.id == activeTabId
                     FolderTabChip(
+                        height = stripHeight,
                         label = tab.label,
                         front = isActive,
                         fill = if (isActive) {
@@ -227,9 +245,10 @@ fun TabBand(
                             .semantics { selected = isActive },
                     )
                 }
-                AddTabButton(onAddTab)
+                AddTabButton(stripHeight, onAddTab)
             }
             TrashTabChip(
+                height = stripHeight,
                 proximity = trashProximity,
                 onClick = onTrashTap,
                 modifier = trashModifier.offset(x = -TrashOverlap).zIndex(1f),
@@ -249,6 +268,7 @@ fun TabBand(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderTabChip(
+    height: Dp,
     label: String,
     front: Boolean,
     fill: Color,
@@ -262,7 +282,7 @@ private fun FolderTabChip(
 ) {
     Box(
         modifier
-            .height(TabStripHeight)
+            .height(height)
             .defaultMinSize(minWidth = 64.dp)
             .drawBehind { drawTabShadow(front) }
             .clip(FolderTabShape(mirrored = front))
@@ -295,13 +315,14 @@ private fun FolderTabChip(
 
 @Composable
 private fun TrashTabChip(
+    height: Dp,
     proximity: Float,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier
-            .height(TabStripHeight)
+            .height(height)
             .defaultMinSize(minWidth = 64.dp)
             .drawBehind { drawTabShadow(front = true) }
             .clip(FolderTabShape(mirrored = true))
@@ -318,11 +339,11 @@ private fun TrashTabChip(
 }
 
 @Composable
-private fun AddTabButton(onAddTab: () -> Unit) {
+private fun AddTabButton(height: Dp, onAddTab: () -> Unit) {
     Box(
         Modifier
-            .width(44.dp)
-            .height(TabStripHeight)
+            .width(AddTabWidth.scaledForChrome())
+            .height(height)
             .background(ChromeInactive)
             .clickable(onClick = onAddTab, onClickLabel = "Open a new tab"),
         contentAlignment = Alignment.Center,

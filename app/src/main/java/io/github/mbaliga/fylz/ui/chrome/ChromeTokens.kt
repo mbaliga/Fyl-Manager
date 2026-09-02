@@ -1,8 +1,11 @@
 package io.github.mbaliga.fylz.ui.chrome
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -22,6 +25,51 @@ val ChromeDanger: Color = Color(0xFFFF0000)
 
 /** The "SELECTED" label rides on-ink white at this alpha; the count beside it stays full strength. */
 const val ChromeSelectedLabelAlpha: Float = 0.5f
+
+/**
+ * The smallest dimension anywhere in this chrome at [ChromeScale.DEFAULT]: the add-tab button's
+ * width and the selection row's height, both 44dp. [ChromeScale.MAX] is defined as exactly the
+ * factor that lifts THIS to the touch floor, so every larger control clears it by construction
+ * rather than by a hand-checked table -- see `ChromeScaleTest`, which fails if a new control is
+ * ever added below this figure without the constant moving with it.
+ */
+private const val SMALLEST_CHROME_DP = 44f
+
+/** The floor a thumb-sized control owes, per DESIGN.md and Android's own guidance. */
+const val ChromeTouchFloorDp: Float = 48f
+
+/**
+ * How large the bottom chrome draws itself, under the user's control.
+ *
+ * The owner's ask, verbatim: *"Let the UI chrome scale have user control, where default is the
+ * current size and max bumps the values up to the touch targets."* So [DEFAULT] is the Figma read
+ * to the dp -- nothing moves for anyone who never opens the setting -- and [MAX] is not a taste
+ * knob but a derived figure: the exact factor at which the smallest control in this file's chrome
+ * reaches [ChromeTouchFloorDp].
+ *
+ * Two stops rather than a slider on purpose. The whole usable range here is 9%, because the
+ * default geometry already sits within a few dp of the floor; a continuous control over that span
+ * would offer a dozen indistinguishable settings and one real decision.
+ */
+enum class ChromeScale(val factor: Float) {
+    /** The export's own geometry, untouched. */
+    DEFAULT(1f),
+
+    /** Every chrome control clears the 48dp touch floor. */
+    MAX(ChromeTouchFloorDp / SMALLEST_CHROME_DP),
+}
+
+/**
+ * The scale in force for this subtree. A composition local rather than a parameter for the same
+ * reason [io.github.mbaliga.fylz.ui.components.LocalIconStyle] is one: the tab band, the selection
+ * row and the actions bar are each reached down a different call chain, and threading one display
+ * preference through all three to reach a leaf is exactly what locals are for.
+ */
+val LocalChromeScale: ProvidableCompositionLocal<ChromeScale> = compositionLocalOf { ChromeScale.DEFAULT }
+
+/** One base dimension at the scale in force. */
+@Composable
+internal fun Dp.scaledForChrome(): Dp = this * LocalChromeScale.current.factor
 
 /**
  * Hyle Grotesk Classic at the three weights the export actually uses, independent of

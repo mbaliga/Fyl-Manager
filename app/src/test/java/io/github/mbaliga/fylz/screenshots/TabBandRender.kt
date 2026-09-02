@@ -25,6 +25,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.CompositionLocalProvider
+import io.github.mbaliga.fylz.ui.chrome.ChromeScale
+import io.github.mbaliga.fylz.ui.chrome.LocalChromeScale
 import io.github.mbaliga.fylz.ui.chrome.TabBand
 import io.github.mbaliga.fylz.ui.chrome.TabBandItem
 import org.junit.Ignore
@@ -127,6 +130,22 @@ class TabBandRender {
                         canNavigateUp = false,
                         onNavigateUp = {},
                     )
+
+                    // Frame 4: the same band at the user's larger chrome scale, where every
+                    // control clears the 48dp touch floor.
+                    Caption("SCALE = MAX -- every control at/over the 48dp floor")
+                    CompositionLocalProvider(LocalChromeScale provides ChromeScale.MAX) {
+                        TabBand(
+                            tabs = twoTabs,
+                            activeTabId = "downloads",
+                            onTabSelected = {},
+                            onTabClosed = {},
+                            onAddTab = {},
+                            onTrashTap = {},
+                            canNavigateUp = true,
+                            onNavigateUp = {},
+                        )
+                    }
                 }
             }
         }

@@ -200,10 +200,12 @@ import io.github.mbaliga.fylz.ui.components.listingPaddingFor
 import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
 import io.github.mbaliga.fylz.ui.activity.ActivityOverlay
 import io.github.mbaliga.fylz.ui.chrome.ActionsBar
+import io.github.mbaliga.fylz.ui.chrome.ChromeScale
+import io.github.mbaliga.fylz.ui.chrome.LocalChromeScale
 import io.github.mbaliga.fylz.ui.chrome.SelectionRow
-import io.github.mbaliga.fylz.ui.chrome.SelectionRowHeight
+import io.github.mbaliga.fylz.ui.chrome.selectionRowHeight
 import io.github.mbaliga.fylz.ui.chrome.TabBand
-import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
+import io.github.mbaliga.fylz.ui.chrome.tabBandHeight
 import io.github.mbaliga.fylz.ui.chrome.TabBandItem
 import io.github.mbaliga.fylz.ui.search.PullDownSearchHost
 import io.github.mbaliga.fylz.ui.search.kindStartersFrom
@@ -421,6 +423,7 @@ fun FylzV1App(
     // has to land, same as themeMode above.
     var themeStyle by remember { mutableStateOf(preferencesStore.themeStyle()) }
     var iconStyle by remember { mutableStateOf(preferencesStore.iconStyle()) }
+    var chromeScale by remember { mutableStateOf(preferencesStore.chromeScale()) }
     // Same handle as showHidden, for the same reason: every leaf that draws a name needs this
     // before it draws anything, so it rides down as a CompositionLocal rather than a parameter
     // threaded through the row, the card, the preview header, the details room and the picker.
@@ -509,7 +512,10 @@ fun FylzV1App(
       // real user preferences, and this is the third thing a theme switch needs -- FolderFace and
       // StackCard read FolderMaterial straight off this local, no pref of their own to keep in
       // step with the icon style FylzPicker or Settings might still show open.
-      CompositionLocalProvider(LocalThemeStyle provides themeStyle) {
+      CompositionLocalProvider(
+          LocalThemeStyle provides themeStyle,
+          LocalChromeScale provides chromeScale,
+      ) {
       ProvideIconStyle(iconStyle) {
         // OR'd in rather than stored: CLI's always-visible extensions is what the style IS, not a
         // choice the user made, so it must never overwrite the stored showExtensions pref a later
@@ -537,6 +543,11 @@ fun FylzV1App(
                   preferencesStore.setIconStyle(style.iconStyle)
               },
               iconStyle = iconStyle,
+              chromeScale = chromeScale,
+              onChromeScaleChange = {
+                  chromeScale = it
+                  preferencesStore.setChromeScale(it)
+              },
               onIconStyleChange = {
                   iconStyle = it
                   preferencesStore.setIconStyle(it)
@@ -595,6 +606,8 @@ private fun FylzV1Workspace(
     themeStyle: ThemeStyle,
     onThemeStyleChange: (ThemeStyle) -> Unit,
     iconStyle: IconStyle,
+    chromeScale: ChromeScale,
+    onChromeScaleChange: (ChromeScale) -> Unit,
     onIconStyleChange: (IconStyle) -> Unit,
     showExtensions: Boolean,
     onShowExtensionsChange: (Boolean) -> Unit,
@@ -3032,7 +3045,7 @@ private fun FylzV1Workspace(
                     .align(Alignment.CenterEnd)
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    .padding(top = TOP_BAR_HEIGHT, bottom = TabBandHeight),
+                    .padding(top = TOP_BAR_HEIGHT, bottom = tabBandHeight()),
             )
         }
 
@@ -3591,6 +3604,8 @@ private fun FylzV1Workspace(
             },
             iconStyle = iconStyle,
             onIconStyleChange = onIconStyleChange,
+            chromeScale = chromeScale,
+            onChromeScaleChange = onChromeScaleChange,
             quickActions = quickActions,
             onQuickActionsChange = {
                 quickActions = it
@@ -3824,7 +3839,7 @@ private fun FileBrowser(
     // (now) DesktopScreen never reserved anything for chrome that, while no tab is open, never
     // actually draws -- harmless today, but a trap for whichever of the two grows a persistent
     // bottom affordance next. Hoisted here so both get the real answer instead of an assumed zero.
-    val bottomChromeReserve = TabBandHeight + if (selectionActive) SelectionRowHeight else 0.dp
+    val bottomChromeReserve = tabBandHeight() + if (selectionActive) selectionRowHeight() else 0.dp
 
     // Build 11.5 frames 2/4: STACKS grouped by date gets the date-sectioned document grid (hero,
     // dog-eared thumbnails, left rail) instead of the plain header+row listing every other group

@@ -85,7 +85,7 @@ import io.github.mbaliga.fylz.ui.components.preview.ArchiveContentPreview
 import io.github.mbaliga.fylz.ui.components.preview.ModelWireframePreview
 import io.github.mbaliga.fylz.ui.components.preview.PresentationPreview
 import io.github.mbaliga.fylz.ui.components.preview.SpreadsheetPreview
-import io.github.mbaliga.fylz.ui.chrome.TabBandHeight
+import io.github.mbaliga.fylz.ui.chrome.tabBandHeight
 import io.github.mbaliga.fylz.ui.cluster.InkContent
 import io.github.mbaliga.fylz.ui.cluster.InkSurface
 import io.github.mbaliga.fylz.util.formatBytes
@@ -305,7 +305,7 @@ fun QuickLook(
                     // also dodged is gone; its drop target now lives on the tab band itself.
                     Modifier
                         .align(Alignment.BottomStart)
-                        .padding(start = 12.dp, bottom = TabBandHeight + 8.dp)
+                        .padding(start = 12.dp, bottom = tabBandHeight() + 8.dp)
                 } else {
                     Modifier
                 },

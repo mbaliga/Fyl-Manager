@@ -30,8 +30,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** The row's own height -- the count pill and the close button both fill it exactly. */
+/** The row's own height at [ChromeScale.DEFAULT] -- the count pill and the close button both
+ *  fill it exactly. Joint-smallest control in this chrome, and so one of the two figures
+ *  [ChromeScale.MAX] is calibrated against; read [selectionRowHeight] from a composable. */
 val SelectionRowHeight: Dp = 44.dp
+
+/** [SelectionRowHeight] at the user's chosen [ChromeScale]. */
+@Composable
+fun selectionRowHeight(): Dp = SelectionRowHeight.scaledForChrome()
 
 /** The count pill never draws narrower than this even for a single-digit count, matching the
  *  export's "9999 SELECTED" reference width; a live count past four digits is free to push past
@@ -56,16 +62,17 @@ private val SelectionCloseWidth: Dp = 66.5.dp
 fun SelectionRow(count: Int, onClose: () -> Unit, modifier: Modifier = Modifier) {
     if (count <= 0) return
     val family = chromeFontFamily()
+    val rowHeight = selectionRowHeight()
     Row(
         modifier
             .fillMaxWidth()
-            .height(SelectionRowHeight)
+            .height(rowHeight)
             .padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CountPill(count = count, family = family)
-        CloseButton(onClick = onClose)
+        CloseButton(height = rowHeight, onClick = onClose)
     }
 }
 
@@ -74,7 +81,7 @@ private fun CountPill(count: Int, family: FontFamily, modifier: Modifier = Modif
     Row(
         modifier
             .fillMaxHeight()
-            .defaultMinSize(minWidth = SelectionPillMinWidth)
+            .defaultMinSize(minWidth = SelectionPillMinWidth.scaledForChrome())
             .clip(RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
             .background(ChromeInk)
             .padding(start = 13.dp, end = 12.dp),
@@ -104,10 +111,10 @@ private fun CountPill(count: Int, family: FontFamily, modifier: Modifier = Modif
 }
 
 @Composable
-private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun CloseButton(height: Dp, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .size(width = SelectionCloseWidth, height = SelectionRowHeight)
+            .size(width = SelectionCloseWidth.scaledForChrome(), height = height)
             .clip(RoundedCornerShape(topEnd = 16.dp, bottomEnd = 16.dp))
             .background(ChromeInk)
             .clickable(onClick = onClick)

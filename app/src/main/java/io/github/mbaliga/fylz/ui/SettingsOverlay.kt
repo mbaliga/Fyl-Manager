@@ -90,6 +90,7 @@ import io.github.mbaliga.fylz.ui.tactile.drawTactileSlashTick
 import io.github.mbaliga.fylz.ui.tactile.tactilePalette
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.chrome.ChromeScale
 import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import io.github.mbaliga.fylz.ui.theme.FolderMaterial
@@ -122,6 +123,8 @@ internal fun SettingsOverlay(
     onThemeStyleChange: (ThemeStyle) -> Unit = {},
     density: DensityMode = DensityMode.COMFORTABLE,
     onDensityChange: (DensityMode) -> Unit = {},
+    chromeScale: ChromeScale = ChromeScale.DEFAULT,
+    onChromeScaleChange: (ChromeScale) -> Unit = {},
     quickActions: List<QuickAction>,
     onQuickActionsChange: (List<QuickAction>) -> Unit,
     homeMode: HomeMode = HomeMode.LOCATIONS,
@@ -257,6 +260,28 @@ internal fun SettingsOverlay(
                             text = mode.readableLabel(),
                             selected = mode == homeMode,
                             onClick = { onHomeModeChange(mode) },
+                        )
+                    }
+                }
+                Text(
+                    "CONTROL SIZE",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+                )
+                Text(
+                    "Larger lifts every control in the bottom bar to the 48dp touch target. " +
+                        "Default keeps the drawn sizes exactly as designed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    ChromeScale.entries.forEach { scale ->
+                        TactileOptionRow(
+                            text = scale.readableLabel(),
+                            selected = scale == chromeScale,
+                            onClick = { onChromeScaleChange(scale) },
                         )
                     }
                 }
@@ -1091,4 +1116,10 @@ private fun FolderStickerPicker(selected: List<String>, onChange: (List<String>)
             }
         }
     }
+}
+
+/** The two chrome sizes as a person reads them, rather than as the enum spells them. */
+private fun ChromeScale.readableLabel(): String = when (this) {
+    ChromeScale.DEFAULT -> "Default"
+    ChromeScale.MAX -> "Larger (48dp targets)"
 }

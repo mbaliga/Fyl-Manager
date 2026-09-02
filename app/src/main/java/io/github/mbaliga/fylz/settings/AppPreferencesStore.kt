@@ -5,6 +5,7 @@ import android.net.Uri
 import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
+import io.github.mbaliga.fylz.ui.chrome.ChromeScale
 import io.github.mbaliga.fylz.ui.components.IconStyle
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.landing.HomeMode
@@ -80,6 +81,21 @@ class AppPreferencesStore(context: Context) {
     @Synchronized
     fun setIconStyle(style: IconStyle) {
         preferences.edit().putString(ICON_STYLE, style.name).commit()
+    }
+
+    /**
+     * How large the bottom chrome draws itself. [ChromeScale.DEFAULT] for anyone who never opens
+     * the setting, so the export's geometry is what ships unless a user asks otherwise.
+     */
+    @Synchronized
+    fun chromeScale(): ChromeScale {
+        val raw = preferences.getString(CHROME_SCALE, null) ?: return ChromeScale.DEFAULT
+        return runCatching { ChromeScale.valueOf(raw) }.getOrDefault(ChromeScale.DEFAULT)
+    }
+
+    @Synchronized
+    fun setChromeScale(scale: ChromeScale) {
+        preferences.edit().putString(CHROME_SCALE, scale.name).commit()
     }
 
     /** Which [ViewMode] the browser last rendered, restored on the next launch. */
@@ -296,6 +312,7 @@ class AppPreferencesStore(context: Context) {
         const val LEGACY_GLASS_STYLE = "GLASS"
         const val SHOW_HIDDEN = "show_hidden"
         const val ICON_STYLE = "icon_style"
+        const val CHROME_SCALE = "chrome_scale"
         const val VIEW_MODE = "view_mode"
         const val DENSITY = "density"
         const val SHOW_EXTENSIONS = "show_extensions"
