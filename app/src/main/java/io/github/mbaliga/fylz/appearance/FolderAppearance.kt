@@ -8,6 +8,10 @@ import androidx.compose.ui.graphics.Color
  * which is what lets a plain [io.github.mbaliga.fylz.ui.components.FolderFace] read a lookup that
  * missed the same way it reads one that hit but customised nothing.
  *
+ * [finishSlug] names a [FolderFinish] the same way -- what the folder is made of, as opposed to
+ * what colour it is. Null means "whatever the theme's own material draws", so a folder that has
+ * only ever been given a colour is untouched by the finish axis existing.
+ *
  * [colorSlug] names a [FolderPalette] entry rather than carrying a raw ARGB value: a slug is
  * resolved against whichever colour scheme is in force when it is drawn, so a folder painted
  * under a dark wallpaper still reads correctly if the user switches to light (or the wallpaper
@@ -17,6 +21,7 @@ data class FolderAppearance(
     val iconKey: String? = null,
     val colorSlug: String? = null,
     val stickers: List<String> = emptyList(),
+    val finishSlug: String? = null,
 )
 
 /** How many stickers a single folder's glass carries -- past this the cascade in the pane just crowds the name panel. */

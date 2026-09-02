@@ -124,6 +124,7 @@ class FolderAppearanceStore(context: Context) {
                 stickers = obj.optJSONArray("stickers")?.let { array ->
                     buildList { for (index in 0 until array.length()) add(array.getString(index)) }
                 }.orEmpty().take(MAX_FOLDER_STICKERS),
+                finishSlug = obj.optString("finishSlug", "").ifBlank { null },
             )
         }.getOrNull()
     }
@@ -135,6 +136,7 @@ class FolderAppearanceStore(context: Context) {
         val obj = JSONObject().put("schemaVersion", SCHEMA_VERSION)
         appearance.iconKey?.let { obj.put("iconKey", it) }
         appearance.colorSlug?.let { obj.put("colorSlug", it) }
+        appearance.finishSlug?.let { obj.put("finishSlug", it) }
         if (appearance.stickers.isNotEmpty()) {
             val array = JSONArray()
             appearance.stickers.forEach { array.put(it) }
@@ -153,7 +155,7 @@ class FolderAppearanceStore(context: Context) {
         const val APPEARANCE_PREFIX = "appearance:"
         const val BACKUP_SUFFIX = ":backup"
         const val FOLDER_ORDER_KEY = "folder_order"
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
         const val MAX_FOLDERS = 256
         const val MAX_URI_LENGTH = 8_192
     }

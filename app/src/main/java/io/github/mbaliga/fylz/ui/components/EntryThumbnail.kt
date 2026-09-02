@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import io.github.mbaliga.fylz.appearance.FolderFinish
 import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
@@ -113,6 +114,11 @@ fun EntryThumbnail(
         }?.also { ThumbnailCache.put(cacheKey, it) }
     }
 
+    // Resolved once for the whole `when` below: a folder's own record decides both which branch
+    // runs (a chosen material outranks the icon) and what that branch paints.
+    val folderAppearance = if (entry.isDirectory) LocalFolderAppearance.current(entry.uri) else null
+    val folderFinish = FolderFinish.fromSlug(folderAppearance?.finishSlug)
+
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         when {
             bitmap != null -> Image(
@@ -129,11 +135,26 @@ fun EntryThumbnail(
                 modifier = Modifier.size(size).clip(MaterialTheme.shapes.small),
             )
 
+            // A folder given a material draws AS that material here, not just on the grid card's
+            // big face. This is the branch that decides what a folder looks like in a list row, a
+            // details row, a picker and a breadcrumb -- everywhere but the two places FolderFace
+            // reaches -- so a finish that stopped at FolderFace would be a setting the user could
+            // choose and then not see anywhere they actually browse.
+            folderFinish != null -> FolderPlane(
+                finish = folderFinish,
+                tone = folderTone(folderAppearance, MaterialTheme.colorScheme.primaryContainer),
+                shape = remember { FolderSilhouetteShape() },
+                dark = isDarkSurface(),
+                // The same inset the drawn icons carry, so a finished folder sits on the row's
+                // baseline exactly where the SVG it replaces did.
+                modifier = Modifier.size(size * ICON_SCALE),
+            )
+
             else -> {
                 val style = LocalIconStyle.current
                 // Only a directory can carry an icon override -- FolderAppearance is per-folder,
                 // not per-file, so a plain file never looks this up.
-                val overrideKey = if (entry.isDirectory) LocalFolderAppearance.current(entry.uri)?.iconKey else null
+                val overrideKey = folderAppearance?.iconKey
                 val asset = remember(entry.name, entry.mimeType, entry.kind, style, overrideKey) {
                     val path = if (overrideKey != null) {
                         FileTypeIcons.assetPath(overrideKey, style)

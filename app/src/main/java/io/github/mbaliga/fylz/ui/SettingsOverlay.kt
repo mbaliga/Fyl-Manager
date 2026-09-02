@@ -57,11 +57,13 @@ import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Remove
 import io.github.mbaliga.fylz.ui.components.NotchedCardShape
 import io.github.mbaliga.fylz.ui.components.quickLookSlots
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mbaliga.fylz.appearance.FolderAppearance
 import io.github.mbaliga.fylz.appearance.FolderAppearanceStore
+import io.github.mbaliga.fylz.appearance.FolderFinish
 import io.github.mbaliga.fylz.appearance.FolderPalette
 import io.github.mbaliga.fylz.appearance.FolderStickers
 import io.github.mbaliga.fylz.appearance.MAX_FOLDER_STICKERS
@@ -75,6 +77,8 @@ import io.github.mbaliga.fylz.operations.RecycleBinRetentionScheduler
 import io.github.mbaliga.fylz.operations.RecycleBinRetentionStore
 import io.github.mbaliga.fylz.ui.components.FileTypeIcons
 import io.github.mbaliga.fylz.ui.components.IconStyle
+import io.github.mbaliga.fylz.ui.components.FolderPlane
+import io.github.mbaliga.fylz.ui.components.FolderSilhouetteShape
 import io.github.mbaliga.fylz.ui.components.QuickAction
 import io.github.mbaliga.fylz.ui.landing.HomeMode
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
@@ -993,6 +997,17 @@ private fun FolderAppearanceSection(themeStyle: ThemeStyle, onAppearanceChanged:
             onSelect = { slug -> persist(appearance.copy(colorSlug = slug)) },
         )
 
+        Spacer(Modifier.size(12.dp))
+        Text("Material", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
+        FolderFinishPicker(
+            // Drawn in whatever colour the folder is already wearing, so the swatch row answers
+            // "what would MY folder look like in this" rather than "what does gloss look like in
+            // some other blue".
+            colorSlug = appearance.colorSlug,
+            selectedSlug = appearance.finishSlug,
+            onSelect = { slug -> persist(appearance.copy(finishSlug = slug)) },
+        )
+
         if (themeStyle == ThemeStyle.FYLZ) {
             Spacer(Modifier.size(12.dp))
             Text("Stickers", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
@@ -1089,6 +1104,55 @@ private fun FolderColorPicker(flagship: Boolean, selectedSlug: String?, onSelect
                     )
                     .clickable { onSelect(if (selected) null else slug) },
             )
+        }
+    }
+}
+
+/**
+ * Every [FolderFinish], drawn as the real thing on the real silhouette rather than as a named
+ * chip. A material picker that shows the word "Leather" beside the word "Carbon fibre" is asking
+ * the user to imagine the answer; the swatch IS a folder in that material, at a size close to the
+ * one a list row draws, so what is picked is what appears.
+ *
+ * Tapping the selected finish again clears it, the same way the colour swatches do.
+ */
+@Composable
+private fun FolderFinishPicker(colorSlug: String?, selectedSlug: String?, onSelect: (String?) -> Unit) {
+    val dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val tone = colorSlug?.let { FolderPalette.colorFor(it, dark) } ?: MaterialTheme.colorScheme.primaryContainer
+    val silhouette = remember { FolderSilhouetteShape() }
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        FolderFinish.entries.forEach { finish ->
+            val selected = finish.slug == selectedSlug
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .width(64.dp)
+                    .clickable { onSelect(if (selected) null else finish.slug) },
+            ) {
+                Box(
+                    Modifier
+                        .size(52.dp)
+                        .then(
+                            if (selected) {
+                                Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, MaterialTheme.shapes.small)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .padding(3.dp),
+                ) {
+                    FolderPlane(finish, tone, silhouette, dark, Modifier.fillMaxSize())
+                }
+                Text(
+                    finish.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
     }
 }

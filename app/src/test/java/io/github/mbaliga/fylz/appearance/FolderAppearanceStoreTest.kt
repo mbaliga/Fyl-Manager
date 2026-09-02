@@ -39,6 +39,30 @@ class FolderAppearanceStoreTest {
         assertEquals(appearance, store().get(folder("photos")))
     }
 
+    /**
+     * The finish axis arrived after the store did, on a schema bump. Both directions matter: a
+     * record written with a finish has to come back with it, and a record written before finishes
+     * existed -- no `finishSlug` key at all -- has to come back as "no finish" rather than as a
+     * decode failure that loses the folder's colour and stickers with it.
+     */
+    @Test
+    fun `a chosen finish survives the round trip`() {
+        val appearance = FolderAppearance(colorSlug = "amber", finishSlug = FolderFinish.LEATHER.slug)
+        store().set(folder("ledgers"), appearance)
+
+        assertEquals(appearance, store().get(folder("ledgers")))
+    }
+
+    @Test
+    fun `a record predating finishes still decodes, with no finish`() {
+        val legacy = FolderAppearance(iconKey = "pdf", colorSlug = "teal", stickers = listOf("pin"))
+        store().set(folder("legacy"), legacy)
+
+        val read = store().get(folder("legacy"))
+        assertEquals(legacy, read)
+        assertNull(read?.finishSlug)
+    }
+
     @Test
     fun `setting the same folder again replaces rather than merges`() {
         val store = store()

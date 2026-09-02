@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.appearance.FolderAppearance
+import io.github.mbaliga.fylz.appearance.FolderFinish
 import io.github.mbaliga.fylz.appearance.FolderPalette
 import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
@@ -96,11 +97,60 @@ internal fun FolderFace(
     showLabel: Boolean = true,
 ) {
     val shownName = displayName(entry.name, entry.isDirectory, LocalShowExtensions.current)
-    when (LocalThemeStyle.current.folderMaterial) {
+    val material = LocalThemeStyle.current.folderMaterial
+    // A chosen finish outranks the theme's own material, in every theme that draws a folder face
+    // at all. The user asked for THIS folder to be made of leather; a theme deciding folders are
+    // panes of glass is a default, and a default is what an explicit choice is for. TEXT is the
+    // one exception -- it draws no face anywhere, so there is nothing for a material to fill.
+    val finish = FolderFinish.fromSlug(LocalFolderAppearance.current(entry.uri)?.finishSlug)
+    if (finish != null && material != FolderMaterial.TEXT) {
+        FinishedFolderFace(entry, shownName, peek, finish, modifier, showLabel)
+        return
+    }
+    when (material) {
         FolderMaterial.SOLID -> SolidFolderFace(entry, shownName, peek, modifier, showLabel)
         FolderMaterial.FROSTED -> FrostedFolderFace(entry, shownName, peek, modifier, showLabel)
         FolderMaterial.ICONIC -> QuietFolderFace(entry, shownName, peek.itemCount, modifier, showLabel)
         FolderMaterial.TEXT -> Box(modifier)
+    }
+}
+
+/**
+ * The finished register: one [FolderFinish] painted across the folder's whole silhouette.
+ *
+ * One plane, not a body plane and a tab plane. Painting the two separately would run each recipe's
+ * gradient from 0 to 1 twice -- a full light-to-dark ramp inside the tab's 18% of the height and
+ * another inside the body -- and the folder would read as two objects that happen to touch. The
+ * union has no seam, so one pass across it is also the only way a brushed grain or a wood figure
+ * runs continuously from the tab into the body the way it would on a real one.
+ *
+ * Stickers still draw, so choosing a material does not cost a Fylz-theme user the stickers they
+ * had already put on the folder.
+ */
+@Composable
+private fun FinishedFolderFace(
+    entry: FileEntry,
+    name: String,
+    peek: FolderPeek,
+    finish: FolderFinish,
+    modifier: Modifier,
+    showLabel: Boolean,
+) {
+    val appearance = LocalFolderAppearance.current(entry.uri)
+    val dark = isDarkSurface()
+    val tone = folderTone(appearance, MaterialTheme.colorScheme.primaryContainer)
+    val silhouette = remember { FolderSilhouetteShape() }
+    Box(modifier.fillMaxSize()) {
+        FolderPlane(finish, tone, silhouette, dark, Modifier.fillMaxSize())
+        if (appearance != null && appearance.stickers.isNotEmpty()) {
+            FolderStickerLayer(
+                stickers = appearance.stickers,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp),
+            )
+        }
+        if (showLabel) {
+            FolderNamePanel(name, peek.itemCount, Modifier.align(Alignment.BottomStart))
+        }
     }
 }
 
@@ -118,11 +168,11 @@ val LocalFolderAppearance: ProvidableCompositionLocal<(Uri) -> FolderAppearance?
 
 /** True once the active [MaterialTheme] colour scheme reads as a dark one -- how [FolderPalette] picks its tone. */
 @Composable
-private fun isDarkSurface(): Boolean = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+internal fun isDarkSurface(): Boolean = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
 /** [FolderAppearance.colorSlug] resolved against the live scheme, or [fallback] absent an override or an unrecognised slug. */
 @Composable
-private fun folderTone(appearance: FolderAppearance?, fallback: Color): Color {
+internal fun folderTone(appearance: FolderAppearance?, fallback: Color): Color {
     val dark = isDarkSurface()
     return appearance?.colorSlug?.let { FolderPalette.colorFor(it, dark) } ?: fallback
 }
@@ -211,20 +261,26 @@ private fun SolidFolderFace(entry: FileEntry, name: String, peek: FolderPeek, mo
                 .fillMaxHeight(FOLDER_TAB_HEIGHT_FRACTION),
         ) {}
         if (showLabel) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        itemCountLabel(peek.itemCount),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            FolderNamePanel(name, peek.itemCount, Modifier.align(Alignment.BottomStart))
+        }
+    }
+}
+
+/** The name-and-count plate a folder face wears along its bottom edge, shared by every register that shows one. */
+@Composable
+private fun FolderNamePanel(name: String, itemCount: Int, modifier: Modifier) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.85f),
+        shape = MaterialTheme.shapes.small,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            Text(
+                itemCountLabel(itemCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -367,7 +423,7 @@ private fun FrostedFolderFace(
  * ([FOLDER_TAB_HEIGHT_FRACTION] 0.18 vs. the body's own top at `1 - FOLDER_BODY_HEIGHT_FRACTION`
  * = 0.15), so the union has no seam to paper over.
  */
-private class FolderSilhouetteShape(
+internal class FolderSilhouetteShape(
     private val tabWidthFraction: Float = FOLDER_TAB_WIDTH_FRACTION,
     private val tabHeightFraction: Float = FOLDER_TAB_HEIGHT_FRACTION,
     private val bodyHeightFraction: Float = FOLDER_BODY_HEIGHT_FRACTION,
