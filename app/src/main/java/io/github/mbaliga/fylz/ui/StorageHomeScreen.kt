@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -337,6 +338,7 @@ private fun iconFor(kind: StorageRootKind) = when (kind) {
     StorageRootKind.PROVIDER_ROOT -> Icons.Outlined.Cloud
     StorageRootKind.PICKER_SHORTCUT -> Icons.Outlined.FolderOpen
     StorageRootKind.REMOTE -> Icons.Outlined.Cloud
+    StorageRootKind.USB_DEVICE -> Icons.Outlined.Usb
 }
 
 // formatBytes (util/ByteFormat.kt) is the one place this app turns bytes into a string -- this

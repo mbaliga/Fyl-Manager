@@ -202,9 +202,13 @@ class SafStorageProvider : StorageProvider {
             }.getOrNull() ?: authority
             StorageRoot(
                 id = "saf:authority:$authority",
-                title = label,
-                subtitle = "Browse via the system picker",
-                kind = StorageRootKind.PROVIDER_ROOT,
+                title = if (authority == MTP_AUTHORITY) "USB devices" else label,
+                subtitle = if (authority == MTP_AUTHORITY) {
+                    "Cameras, phones and e-readers connected over USB"
+                } else {
+                    "Browse via the system picker"
+                },
+                kind = if (authority == MTP_AUTHORITY) StorageRootKind.USB_DEVICE else StorageRootKind.PROVIDER_ROOT,
                 initialUri = runCatching {
                     DocumentsContract.buildRootsUri(authority)
                 }.getOrNull(),
@@ -233,9 +237,17 @@ class SafStorageProvider : StorageProvider {
     /**
      * Policy for what "Other providers" is for: authorities that add no reach beyond what the
      * home surface already offers directly. Fylz's own provider is already surfaced as the app
-     * itself, not a document source to browse into; MTP host and shell never expose anything a
-     * user meaningfully browses; Downloads is a picker-only echo of the folder the File backend
-     * already lists directly once full access is live.
+     * itself, not a document source to browse into; the shell provider is a development/debug
+     * surface with nothing a user browses; Downloads is a picker-only echo of the folder the
+     * File backend already lists directly once full access is live.
+     *
+     * MTP (`com.android.mtp.documents`) used to be grouped in here too, on the same "nothing
+     * browsable" assumption as the shell provider -- wrong for MTP specifically. It is the real
+     * `DocumentsProvider` backing "USB file transfer": once a camera, phone or e-reader (a
+     * Kindle, say) is plugged in over USB in that mode, this authority's roots page is a
+     * connected device with a real, writable file tree, the same route Android's own Files app
+     * uses. It is no longer treated as noise, and gets a labelled row like any other provider
+     * instead of being silently dropped. See [providerRoots] for the USB_DEVICE special-casing.
      */
     private fun isNoiseAuthority(authority: String, packageName: String, fileBackendLive: Boolean): Boolean =
         authority == EXTERNAL_STORAGE_AUTHORITY ||
@@ -283,9 +295,11 @@ class SafStorageProvider : StorageProvider {
 
         private const val DOWNLOADS_AUTHORITY = "com.android.providers.downloads.documents"
 
-        /** Never a useful "Other providers" row: neither exposes anything a user can browse. */
+        /** The platform's MTP `DocumentsProvider` -- USB cameras, phones and e-readers. */
+        const val MTP_AUTHORITY: String = "com.android.mtp.documents"
+
+        /** Never a useful "Other providers" row: exposes nothing a user can browse. */
         private val NOISY_PROVIDER_AUTHORITIES = setOf(
-            "com.android.mtp.documents",
             "com.android.shell.documents",
         )
 

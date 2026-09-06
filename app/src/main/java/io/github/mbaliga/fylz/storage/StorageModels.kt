@@ -21,6 +21,9 @@ enum class StorageRootKind {
 
     /** A configured network location (WebDAV/SFTP/SMB/S3). */
     REMOTE,
+
+    /** A camera, phone, or e-reader reachable through the platform's MTP document provider. */
+    USB_DEVICE,
 }
 
 /**
