@@ -30,6 +30,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
+import io.github.mbaliga.fylz.data.CreatableArchiveFormat
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.ui.picker.FylzPicker
 import io.github.mbaliga.fylz.ui.picker.PickerMode
@@ -38,6 +39,7 @@ import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileField
 import io.github.mbaliga.fylz.ui.tactile.TactileFieldState
+import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -92,6 +94,7 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
     var selectedArchive by remember { mutableStateOf<Uri?>(null) }
     var inspection by remember { mutableStateOf<ArchiveInspection?>(null) }
     var pendingCreatePassword by remember { mutableStateOf<CharArray?>(null) }
+    var pendingCreateFormat by remember { mutableStateOf(CreatableArchiveFormat.ZIP) }
     var pendingExtractPassword by remember { mutableStateOf<CharArray?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -111,13 +114,19 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
     fun runCreate(destination: Uri) {
         val password = pendingCreatePassword
         pendingCreatePassword = null
+        val format = pendingCreateFormat
         if (selectedSources.isEmpty()) {
             password?.fill(NUL)
             return
         }
         scope.launch {
             busy = true
-            runCatching { service.createZip(selectedSources, destination, password) }
+            runCatching {
+                when (format) {
+                    CreatableArchiveFormat.ZIP -> service.createZip(selectedSources, destination, password)
+                    CreatableArchiveFormat.SEVEN_Z -> service.createSevenZip(selectedSources, destination, password)
+                }
+            }
                 .onSuccess {
                     Toast.makeText(context, "Archive created.", Toast.LENGTH_LONG).show()
                     selectedSources = emptyList()
@@ -184,8 +193,16 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
         }
     }
 
-    val createDestination = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip"),
+    val createZipDestination = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(CreatableArchiveFormat.ZIP.mimeType),
+    ) { destination ->
+        if (destination == null) discardPassword(ArchivePasswordPurpose.CREATE) else runCreate(destination)
+    }
+
+    // CreateDocument's mime type is fixed at registration, not at launch -- one contract cannot
+    // serve both formats, so each format gets its own launcher.
+    val createSevenZipDestination = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(CreatableArchiveFormat.SEVEN_Z.mimeType),
     ) { destination ->
         if (destination == null) discardPassword(ArchivePasswordPurpose.CREATE) else runCreate(destination)
     }
@@ -253,7 +270,10 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
                 when (request) {
                     ArchivePick.Sources -> sourcePicker.launch(arrayOf("*/*"))
                     ArchivePick.Archive -> archivePicker.launch(ZIP_MIME_TYPES)
-                    is ArchivePick.CreateOutput -> createDestination.launch(request.name)
+                    is ArchivePick.CreateOutput -> when (pendingCreateFormat) {
+                        CreatableArchiveFormat.ZIP -> createZipDestination.launch(request.name)
+                        CreatableArchiveFormat.SEVEN_Z -> createSevenZipDestination.launch(request.name)
+                    }
                     ArchivePick.ExtractInto -> extractDestination.launch(null)
                 }
             },
@@ -270,7 +290,9 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
                         (outcome as? PickerOutcome.Files)?.uris?.firstOrNull()?.let(::runInspect)
                     is ArchivePick.CreateOutput -> (outcome as? PickerOutcome.Save)?.let { save ->
                         scope.launch {
-                            runCatching { repository.createFile(save.folderUri, save.name, "application/zip") }
+                            runCatching {
+                                repository.createFile(save.folderUri, save.name, pendingCreateFormat.mimeType)
+                            }
                                 .onSuccess { runCreate(it) }
                                 .onFailure { failure ->
                                     discardPassword(ArchivePasswordPurpose.CREATE)
@@ -297,14 +319,15 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        "Create standard or AES-256 password-protected ZIP files, or inspect and safely extract an existing ZIP.",
+                        "Create standard or AES-256 password-protected ZIP or 7z archives, or " +
+                            "inspect and safely extract an existing ZIP.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     // TactileButton carries a single text label, no icon slot -- the leading
                     // Archive/Unarchive glyphs these two buttons used to show are dropped here,
                     // same as every other icon+label Button/OutlinedButton this conversion touches.
                     TactileButton(
-                        text = "Create ZIP",
+                        text = "Create archive",
                         onClick = {
                             onDismiss()
                             pick = ArchivePick.Sources
@@ -335,13 +358,14 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
                 passwordPurpose = null
                 if (purpose == ArchivePasswordPurpose.CREATE) selectedSources = emptyList()
             },
-            onConfirm = { password ->
+            onConfirm = { format, password ->
                 passwordPurpose = null
                 when (purpose) {
                     ArchivePasswordPurpose.CREATE -> {
                         pendingCreatePassword = password
+                        pendingCreateFormat = format
                         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                        pick = ArchivePick.CreateOutput("Fylz-$stamp.zip")
+                        pick = ArchivePick.CreateOutput("Fylz-$stamp.${format.extension}")
                     }
                     ArchivePasswordPurpose.EXTRACT -> {
                         pendingExtractPassword = password
@@ -376,9 +400,10 @@ fun ArchiveToolsHost(open: Boolean, showHidden: Boolean, onDismiss: () -> Unit) 
 private fun ArchivePasswordDialog(
     purpose: ArchivePasswordPurpose,
     onDismiss: () -> Unit,
-    onConfirm: (CharArray?) -> Unit,
+    onConfirm: (CreatableArchiveFormat, CharArray?) -> Unit,
 ) {
     var encrypted by remember { mutableStateOf(purpose == ArchivePasswordPurpose.EXTRACT) }
+    var format by remember { mutableStateOf(CreatableArchiveFormat.ZIP) }
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
     val creating = purpose == ArchivePasswordPurpose.CREATE
@@ -397,11 +422,19 @@ private fun ArchivePasswordDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (creating) {
+                    Text("Format", style = MaterialTheme.typography.labelLarge)
+                    CreatableArchiveFormat.entries.forEach { candidate ->
+                        TactileOptionRow(
+                            text = candidate.label,
+                            selected = format == candidate,
+                            onClick = { format = candidate },
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.weight(1f)) {
                             Text("Encrypt with AES-256")
                             Text(
-                                "Leave disabled to create a standard ZIP.",
+                                "Leave disabled to create a standard archive.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -457,7 +490,7 @@ private fun ArchivePasswordDialog(
                     val result = if (encrypted) password.toCharArray() else null
                     password = ""
                     confirmation = ""
-                    onConfirm(result)
+                    onConfirm(format, result)
                 },
                 enabled = valid,
             )

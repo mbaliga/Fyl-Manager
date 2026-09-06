@@ -27,6 +27,9 @@ import net.lingala.zip4j.model.enums.AesKeyStrength
 import net.lingala.zip4j.model.enums.CompressionLevel
 import net.lingala.zip4j.model.enums.CompressionMethod
 import net.lingala.zip4j.model.enums.EncryptionMethod
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+import org.apache.commons.compress.archivers.sevenz.SevenZMethod
+import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
@@ -34,6 +37,17 @@ import java.io.OutputStream
 import java.nio.file.Files
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
+
+/**
+ * Every format [ArchiveService] can WRITE -- a narrower, and independent, list from
+ * [ArchiveFormats.Family]'s read-side dispatch. [extension]/[mimeType] are what the create UI
+ * needs to name the output and launch the right system picker; [label] is what it shows a user
+ * choosing between them.
+ */
+enum class CreatableArchiveFormat(val extension: String, val mimeType: String, val label: String) {
+    ZIP("zip", "application/zip", "ZIP"),
+    SEVEN_Z("7z", "application/x-7z-compressed", "7z"),
+}
 
 data class ArchiveInspection(
     val encrypted: Boolean,
@@ -59,6 +73,122 @@ class ArchiveService(
         sourceUris: List<Uri>,
         destinationUri: Uri,
         password: CharArray? = null,
+    ) = createArchive(sourceUris, destinationUri, password) { workspace, staged, archivePassword ->
+        val encrypted = !archivePassword.isNullOrEmpty()
+        val archive = File(workspace, "fylz.zip")
+        val zipFile = if (encrypted) ZipFile(archive, archivePassword) else ZipFile(archive)
+        staged.fileEntries.forEach { (file, zipPath) ->
+            coroutineContext.ensureActive()
+            zipFile.addFile(
+                file,
+                ZipParameters().apply {
+                    fileNameInZip = zipPath
+                    compressionMethod = CompressionMethod.DEFLATE
+                    compressionLevel = CompressionLevel.NORMAL
+                    if (encrypted) {
+                        isEncryptFiles = true
+                        encryptionMethod = EncryptionMethod.AES
+                        aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
+                    }
+                },
+            )
+            require(archive.length() <= extractionLimits.maxArchiveBytes) {
+                "The generated archive exceeds the output safety limit."
+            }
+        }
+        staged.directoryEntries.forEach { zipPath ->
+            coroutineContext.ensureActive()
+            // zip4j's documented convention for a directory-only entry: no addDirectory
+            // API exists, but an empty stream whose name ends in '/' writes no data and
+            // is read back with FileHeader.isDirectory set.
+            zipFile.addStream(
+                ByteArrayInputStream(ByteArray(0)),
+                ZipParameters().apply {
+                    fileNameInZip = "$zipPath/"
+                    compressionMethod = CompressionMethod.STORE
+                    if (encrypted) {
+                        isEncryptFiles = true
+                        encryptionMethod = EncryptionMethod.AES
+                        aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
+                    }
+                },
+            )
+            require(archive.length() <= extractionLimits.maxArchiveBytes) {
+                "The generated archive exceeds the output safety limit."
+            }
+        }
+        archive
+    }
+
+    /**
+     * The second archive format, added beside ZIP rather than instead of it -- LZMA2 through
+     * [SevenZOutputFile], the same commons-compress dependency [ExtendedArchiveBrowserService]
+     * already reads 7z with, so nothing new was added to the classpath to get here.
+     *
+     * A directory-only entry has no [SevenZArchiveEntry.setHasStream] call, unlike ZIP's own
+     * empty-stream convention above: commons-compress' own writer infers "no content" from
+     * [SevenZArchiveEntry.setDirectory] and a [closeArchiveEntry] with no intervening [write] --
+     * setting `hasStream` explicitly on a directory produced entries `SevenZFile` refused to
+     * reopen in this library version, caught by round-tripping through Fylz's own reader in
+     * [ArchiveServiceSevenZipTest] rather than trusted from the source alone.
+     */
+    suspend fun createSevenZip(
+        sourceUris: List<Uri>,
+        destinationUri: Uri,
+        password: CharArray? = null,
+    ) = createArchive(sourceUris, destinationUri, password) { workspace, staged, archivePassword ->
+        val archive = File(workspace, "fylz.7z")
+        val output = if (archivePassword.isNullOrEmpty()) {
+            SevenZOutputFile(archive)
+        } else {
+            SevenZOutputFile(archive, archivePassword)
+        }
+        output.use { sevenZ ->
+            sevenZ.setContentCompression(SevenZMethod.LZMA2)
+            staged.fileEntries.forEach { (file, path) ->
+                coroutineContext.ensureActive()
+                val entry = sevenZ.createArchiveEntry(file, path)
+                sevenZ.putArchiveEntry(entry)
+                file.inputStream().use { sevenZ.write(it) }
+                sevenZ.closeArchiveEntry()
+                require(archive.length() <= extractionLimits.maxArchiveBytes) {
+                    "The generated archive exceeds the output safety limit."
+                }
+            }
+            staged.directoryEntries.forEach { path ->
+                coroutineContext.ensureActive()
+                sevenZ.putArchiveEntry(
+                    SevenZArchiveEntry().apply {
+                        name = path
+                        isDirectory = true
+                    },
+                )
+                sevenZ.closeArchiveEntry()
+            }
+        }
+        require(archive.length() <= extractionLimits.maxArchiveBytes) {
+            "The generated archive exceeds the output safety limit."
+        }
+        archive
+    }
+
+    /** What every source-walk needs to become a written archive, independent of the format. */
+    private data class StagedSources(
+        val fileEntries: List<Pair<File, String>>,
+        val directoryEntries: List<String>,
+    )
+
+    /**
+     * The create-side shape every format shares: preflight/running/succeeded journalling, staging
+     * [sourceUris] into a flat local copy paired with the archive path each should land at, then
+     * handing that off to [writeArchive] -- the one step that actually differs between ZIP and 7z
+     * -- before copying the finished file to [destinationUri].
+     */
+    private suspend fun createArchive(
+        sourceUris: List<Uri>,
+        destinationUri: Uri,
+        password: CharArray?,
+        writeArchive: suspend (workspace: File, staged: StagedSources, password: CharArray?) -> File,
     ) = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one file." }
         require(password == null || password.size in MIN_PASSWORD_LENGTH..MAX_PASSWORD_LENGTH) {
@@ -82,117 +212,8 @@ class ArchiveService(
             operation = operation.running()
             journal.put(operation)
 
-            // Physical staging names are synthetic and carry no meaning -- the zip path for
-            // each entry is tracked alongside its staged file instead, so a folder's contents
-            // never need to be mirrored into nested local directories.
-            val staged = File(workspace, "input").apply { mkdirs() }
-            val usedNames = mutableSetOf<String>()
-            var stagedTotal = 0L
-            var stagedFileCount = 0
-            val fileEntries = mutableListOf<Pair<File, String>>()
-            val directoryEntries = mutableListOf<String>()
-
-            fun stageFile(sourceUri: Uri, displayName: String, zipPath: String) {
-                val target = File(staged, "f${stagedFileCount++}")
-                val copied = context.contentResolver.openInputStream(sourceUri)?.use { input ->
-                    target.outputStream().use { output ->
-                        copyBounded(input, output, extractionLimits.maxFileBytes)
-                    }
-                } ?: error("Unable to read $displayName")
-                if (Long.MAX_VALUE - stagedTotal < copied) error("Archive input size overflowed.")
-                stagedTotal += copied
-                require(stagedTotal <= extractionLimits.maxTotalUncompressedBytes) {
-                    "Selected files exceed the total archive input limit."
-                }
-                fileEntries += target to zipPath
-            }
-
-            // A folder with no children produces its own entry so it survives round-trip; a
-            // folder with children never does -- extraction's parentFile.mkdirs() recreates it
-            // implicitly from whatever lives inside, empty or not. depth counts the top-level
-            // source folder as 1, so MAX_FOLDER_DEPTH bounds a cycle a misbehaving provider
-            // could otherwise turn into unbounded recursion.
-            suspend fun stageDirectory(directoryUri: Uri, zipPath: String, depth: Int) {
-                require(depth <= MAX_FOLDER_DEPTH) { "Folder nesting is too deep to archive." }
-                val children = listChildDocuments(directoryUri)
-                if (children.isEmpty()) {
-                    directoryEntries += zipPath
-                    return
-                }
-                children.forEach { child ->
-                    coroutineContext.ensureActive()
-                    val childZipPath = "$zipPath/${sanitizeName(child.name)}"
-                    if (child.isDirectory) {
-                        stageDirectory(child.uri, childZipPath, depth + 1)
-                    } else {
-                        stageFile(child.uri, child.name, childZipPath)
-                    }
-                }
-            }
-
-            sourceUris.forEach { uri ->
-                coroutineContext.ensureActive()
-                // Bundle-args query, not DocumentFile: every uri here already carries tree
-                // context, minted by buildDocumentUriUsingTree wherever the app resolves
-                // entries, but DocumentFile's own accessors (isFile/isDirectory/name/listFiles)
-                // all route through the deprecated 4-String query overload internally, which a
-                // real DocumentsProvider hard-refuses once queried in-process (the same seam
-                // DocumentRepository.probe's comment documents). queryDocumentSummary and
-                // listChildDocuments below use the same working overload probe() does instead.
-                val summary = queryDocumentSummary(uri) ?: error("Unable to open a selected source.")
-                // Flat top-level namespace: sources keep their own name unless two sources
-                // collide, folders included, matching the disambiguation files already got.
-                val topName = uniqueName(sanitizeName(summary.name), usedNames)
-                if (summary.isDirectory) {
-                    stageDirectory(uri, topName, depth = 1)
-                } else {
-                    stageFile(uri, summary.name, topName)
-                }
-            }
-
-            val encrypted = !password.isNullOrEmpty()
-            val archive = File(workspace, "fylz.zip")
-            val zipFile = if (encrypted) ZipFile(archive, password) else ZipFile(archive)
-            fileEntries.forEach { (file, zipPath) ->
-                coroutineContext.ensureActive()
-                zipFile.addFile(
-                    file,
-                    ZipParameters().apply {
-                        fileNameInZip = zipPath
-                        compressionMethod = CompressionMethod.DEFLATE
-                        compressionLevel = CompressionLevel.NORMAL
-                        if (encrypted) {
-                            isEncryptFiles = true
-                            encryptionMethod = EncryptionMethod.AES
-                            aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
-                        }
-                    },
-                )
-                require(archive.length() <= extractionLimits.maxArchiveBytes) {
-                    "The generated archive exceeds the output safety limit."
-                }
-            }
-            directoryEntries.forEach { zipPath ->
-                coroutineContext.ensureActive()
-                // zip4j's documented convention for a directory-only entry: no addDirectory
-                // API exists, but an empty stream whose name ends in '/' writes no data and
-                // is read back with FileHeader.isDirectory set.
-                zipFile.addStream(
-                    ByteArrayInputStream(ByteArray(0)),
-                    ZipParameters().apply {
-                        fileNameInZip = "$zipPath/"
-                        compressionMethod = CompressionMethod.STORE
-                        if (encrypted) {
-                            isEncryptFiles = true
-                            encryptionMethod = EncryptionMethod.AES
-                            aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
-                        }
-                    },
-                )
-                require(archive.length() <= extractionLimits.maxArchiveBytes) {
-                    "The generated archive exceeds the output safety limit."
-                }
-            }
+            val staged = stageSources(sourceUris, workspace)
+            val archive = writeArchive(workspace, staged, password)
 
             context.contentResolver.openOutputStream(destinationUri, "w")?.use { output ->
                 archive.inputStream().use { input -> copyBounded(input, output, extractionLimits.maxArchiveBytes) }
@@ -209,6 +230,81 @@ class ArchiveService(
             password?.fill('\u0000')
             workspace.deleteRecursively()
         }
+    }
+
+    /**
+     * Walks [sourceUris] into a flat local staging copy, format-agnostic: only the archive PATH
+     * each source should land at is tracked here, never how it gets written. Physical staging
+     * names are synthetic and carry no meaning -- a folder's contents never need to be mirrored
+     * into nested local directories.
+     */
+    private suspend fun stageSources(sourceUris: List<Uri>, workspace: File): StagedSources {
+        val staged = File(workspace, "input").apply { mkdirs() }
+        val usedNames = mutableSetOf<String>()
+        var stagedTotal = 0L
+        var stagedFileCount = 0
+        val fileEntries = mutableListOf<Pair<File, String>>()
+        val directoryEntries = mutableListOf<String>()
+
+        fun stageFile(sourceUri: Uri, displayName: String, archivePath: String) {
+            val target = File(staged, "f${stagedFileCount++}")
+            val copied = context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                target.outputStream().use { output ->
+                    copyBounded(input, output, extractionLimits.maxFileBytes)
+                }
+            } ?: error("Unable to read $displayName")
+            if (Long.MAX_VALUE - stagedTotal < copied) error("Archive input size overflowed.")
+            stagedTotal += copied
+            require(stagedTotal <= extractionLimits.maxTotalUncompressedBytes) {
+                "Selected files exceed the total archive input limit."
+            }
+            fileEntries += target to archivePath
+        }
+
+        // A folder with no children produces its own entry so it survives round-trip; a
+        // folder with children never does -- extraction's parentFile.mkdirs() recreates it
+        // implicitly from whatever lives inside, empty or not. depth counts the top-level
+        // source folder as 1, so MAX_FOLDER_DEPTH bounds a cycle a misbehaving provider
+        // could otherwise turn into unbounded recursion.
+        suspend fun stageDirectory(directoryUri: Uri, archivePath: String, depth: Int) {
+            require(depth <= MAX_FOLDER_DEPTH) { "Folder nesting is too deep to archive." }
+            val children = listChildDocuments(directoryUri)
+            if (children.isEmpty()) {
+                directoryEntries += archivePath
+                return
+            }
+            children.forEach { child ->
+                coroutineContext.ensureActive()
+                val childPath = "$archivePath/${sanitizeName(child.name)}"
+                if (child.isDirectory) {
+                    stageDirectory(child.uri, childPath, depth + 1)
+                } else {
+                    stageFile(child.uri, child.name, childPath)
+                }
+            }
+        }
+
+        sourceUris.forEach { uri ->
+            coroutineContext.ensureActive()
+            // Bundle-args query, not DocumentFile: every uri here already carries tree
+            // context, minted by buildDocumentUriUsingTree wherever the app resolves
+            // entries, but DocumentFile's own accessors (isFile/isDirectory/name/listFiles)
+            // all route through the deprecated 4-String query overload internally, which a
+            // real DocumentsProvider hard-refuses once queried in-process (the same seam
+            // DocumentRepository.probe's comment documents). queryDocumentSummary and
+            // listChildDocuments below use the same working overload probe() does instead.
+            val summary = queryDocumentSummary(uri) ?: error("Unable to open a selected source.")
+            // Flat top-level namespace: sources keep their own name unless two sources
+            // collide, folders included, matching the disambiguation files already got.
+            val topName = uniqueName(sanitizeName(summary.name), usedNames)
+            if (summary.isDirectory) {
+                stageDirectory(uri, topName, depth = 1)
+            } else {
+                stageFile(uri, summary.name, topName)
+            }
+        }
+
+        return StagedSources(fileEntries, directoryEntries)
     }
 
     suspend fun inspectZip(
