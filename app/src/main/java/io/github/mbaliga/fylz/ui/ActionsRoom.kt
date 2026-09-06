@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Inventory2
@@ -53,6 +54,7 @@ internal enum class FylzAction {
     ARCHIVE,
     EXTRACT,
     PDF_TOOLS,
+    ANNOTATE,
     SHARE,
     ADD_TO_SHELF,
     PIN_TO_DESKTOP,
@@ -169,6 +171,13 @@ internal fun ActionsRoom(
                     item {
                         ActionCard(Icons.Outlined.PictureAsPdf, "PDF tools", "Merge, split, or convert") {
                             onAction(FylzAction.PDF_TOOLS)
+                        }
+                    }
+                }
+                if (selection.annotate) {
+                    item {
+                        ActionCard(Icons.Outlined.Draw, "Annotate", "Draw on the photo") {
+                            onAction(FylzAction.ANNOTATE)
                         }
                     }
                 }

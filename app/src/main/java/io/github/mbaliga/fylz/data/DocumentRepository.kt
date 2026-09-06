@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.data
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
@@ -211,6 +212,20 @@ class DocumentRepository(
             ?: error("The selected provider did not return a writable stream.")
         output.bufferedWriter(Charsets.UTF_8).use { it.write(value) }
     }
+
+    /** Same overwrite contract as [writeText] -- history capture, "wt" with a "w" fallback -- for
+     *  a bitmap instead of text, so [io.github.mbaliga.fylz.ui.AnnotateOverlay] saving a marked-up
+     *  photo over its original participates in the same undo/history system a text edit does. */
+    suspend fun writeBitmap(uri: Uri, bitmap: Bitmap, format: Bitmap.CompressFormat, quality: Int) =
+        withContext(Dispatchers.IO) {
+            history.capture(uri, FileHistoryReason.BEFORE_WRITE)
+            val output = runCatching { resolver.openOutputStream(uri, "wt") }.getOrNull()
+                ?: resolver.openOutputStream(uri, "w")
+                ?: error("The selected provider did not return a writable stream.")
+            output.use { stream ->
+                check(bitmap.compress(format, quality, stream)) { "Unable to encode the image." }
+            }
+        }
 
     suspend fun resolveDisplayName(uri: Uri): String? = withContext(Dispatchers.IO) {
         resolver.query(

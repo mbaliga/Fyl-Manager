@@ -824,6 +824,7 @@ private fun FylzV1Workspace(
     // browsing instead of landing back on the connection list it was already showing.
     var remoteDialogFocusId by remember { mutableStateOf<String?>(null) }
     var pdfDialog by remember { mutableStateOf(false) }
+    var annotateDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
@@ -2210,6 +2211,14 @@ private fun FylzV1Workspace(
                 pickerRequest = InAppPickerRequest.Destination(PendingDestinationAction.EXTRACT)
             }
             FylzAction.PDF_TOOLS -> pdfDialog = true
+            FylzAction.ANNOTATE -> {
+                val target = selectedEntries.singleOrNull()
+                if (target != null && target.mimeType in ANNOTATABLE_MIME_TYPES) {
+                    annotateDialog = true
+                } else {
+                    toast("Annotation supports JPEG, PNG and WebP images only.")
+                }
+            }
             FylzAction.SHARE -> shareSelection()
             FylzAction.ADD_TO_SHELF -> {
                 addToShelf(selectedEntries)
@@ -3559,6 +3568,22 @@ private fun FylzV1Workspace(
             },
             onError = ::toast,
         )
+    }
+
+    if (annotateDialog) {
+        selectedEntries.singleOrNull()?.let { entry ->
+            AnnotateOverlay(
+                entry = entry,
+                repository = repository,
+                onDismiss = { annotateDialog = false },
+                onSaved = {
+                    annotateDialog = false
+                    selectedUris = emptySet()
+                    selectedEntryDetails = emptyMap()
+                    refresh()
+                },
+            )
+        }
     }
 
     if (remoteDialog) {
