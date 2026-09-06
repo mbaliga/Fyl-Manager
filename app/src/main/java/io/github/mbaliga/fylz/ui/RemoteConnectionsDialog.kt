@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,6 +76,10 @@ fun RemoteConnectionsDialog(
     store: RemoteConnectionStore,
     onDismiss: () -> Unit,
     onError: (String) -> Unit,
+    // Set when this dialog is opened FROM a specific saved connection -- the storage home
+    // screen's own "Remote locations" group -- so that tap lands straight in the connection's
+    // contents rather than back at the bare list it was already showing.
+    initialConnectionId: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val browser = remember { RemoteBrowser() }
@@ -108,6 +113,14 @@ fun RemoteConnectionsDialog(
                 .onFailure { onError(it.message ?: "Unable to reach ${connection.displayName}") }
             busy = false
         }
+    }
+
+    // Runs once per distinct focus request rather than on every recomposition -- there is no
+    // "already browsing, don't jump again" state to check because a fresh dialog instance (this
+    // composable) exists only while remoteDialog is true, so this fires exactly once per open.
+    LaunchedEffect(initialConnectionId) {
+        val target = initialConnectionId?.let { id -> connections.firstOrNull { it.id == id } }
+        if (target != null) browse(target, "")
     }
 
     Dialog(onDismissRequest = onDismiss) {

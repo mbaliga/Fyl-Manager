@@ -169,7 +169,9 @@ import dev.aarso.search.EvalContext
 import dev.aarso.search.QueryChip
 import dev.aarso.search.toQueryText
 import io.github.mbaliga.fylz.storage.StorageAccess
+import io.github.mbaliga.fylz.storage.RemoteStorageProvider
 import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.storage.StorageRootKind
 import io.github.mbaliga.fylz.storage.toItemRef
 import io.github.mbaliga.fylz.storage.toUri
 import io.github.mbaliga.fylz.ui.components.CliListing
@@ -817,6 +819,10 @@ private fun FylzV1Workspace(
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
+    // Set only when the dialog is opened from a specific saved connection's own row on the
+    // storage home screen -- see openStorageRoot -- so that entry point can skip straight to
+    // browsing instead of landing back on the connection list it was already showing.
+    var remoteDialogFocusId by remember { mutableStateOf<String?>(null) }
     var pdfDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
@@ -1206,6 +1212,11 @@ private fun FylzV1Workspace(
      * no picker, no grant round-trip, the tab just opens.
      */
     fun openStorageRoot(root: StorageRoot) {
+        if (root.kind == StorageRootKind.REMOTE) {
+            remoteDialogFocusId = RemoteStorageProvider.connectionIdOf(root.id)
+            remoteDialog = true
+            return
+        }
         val treeUri = root.treeUri ?: return
         val documentUri = root.documentUri ?: return
         openTabAt(treeUri, FolderLocation(documentUri, root.title))
@@ -3553,8 +3564,9 @@ private fun FylzV1Workspace(
     if (remoteDialog) {
         RemoteConnectionsDialog(
             store = remoteStore,
-            onDismiss = { remoteDialog = false },
+            onDismiss = { remoteDialog = false; remoteDialogFocusId = null },
             onError = ::toast,
+            initialConnectionId = remoteDialogFocusId,
         )
     }
 

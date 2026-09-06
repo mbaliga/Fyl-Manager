@@ -9,6 +9,8 @@ import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.ArchiveEntry
 import org.apache.commons.compress.archivers.ArchiveInputStream
 import org.apache.commons.compress.archivers.ArchiveStreamFactory
+import net.lingala.zip4j.exception.ZipException as Zip4jException
+import net.lingala.zip4j.ZipFile as Zip4jZipFile
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import org.apache.commons.compress.compressors.CompressorStreamFactory
 import java.io.BufferedInputStream
@@ -86,6 +88,7 @@ class ArchiveEntryReader(private val context: Context) {
         fileName: String,
         member: ArchiveMember,
         maxBytes: Long = MAX_MEMBER_BYTES,
+        password: CharArray? = null,
     ): File = withContext(Dispatchers.IO) {
         require(!member.directory) { "Folders inside an archive have no contents of their own to preview." }
         require(maxBytes > 0L) { "Invalid extraction limit." }
@@ -106,7 +109,7 @@ class ArchiveEntryReader(private val context: Context) {
         val staging = File(directory, ".${UUID.randomUUID()}$PARTIAL_SUFFIX")
         try {
             when (family) {
-                ArchiveFormats.Family.ZIP -> extractFromZip(archiveUri, path, staging, maxBytes)
+                ArchiveFormats.Family.ZIP -> extractFromZip(archiveUri, path, staging, maxBytes, password)
                 ArchiveFormats.Family.SEVEN_Z -> extractFromSevenZip(archiveUri, path, staging, maxBytes)
                 ArchiveFormats.Family.STREAM -> extractFromStream(archiveUri, fileName, path, staging, maxBytes)
                 ArchiveFormats.Family.SINGLE -> extractSingleStream(archiveUri, staging, maxBytes)
@@ -186,31 +189,80 @@ class ArchiveEntryReader(private val context: Context) {
         )
     }
 
-    private suspend fun extractFromZip(archiveUri: Uri, path: String, target: File, maxBytes: Long) {
-        openStream(archiveUri).use { raw ->
-            ZipInputStream(BufferedInputStream(raw)).use { zip ->
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val entry = zip.nextEntry ?: break
-                    if (!entry.isDirectory && ArchiveTree.safePath(entry.name) == path) {
-                        // The JDK's ZIP reader handles STORED and DEFLATE. A member written with
-                        // any other method (or an encrypted one) fails here rather than silently
-                        // producing garbage, and says which of the two it was.
-                        try {
+    private suspend fun extractFromZip(archiveUri: Uri, path: String, target: File, maxBytes: Long, password: CharArray?) {
+        // A password routes through zip4j instead, which is the only reader here that
+        // understands the AES extra field ArchiveService itself writes on create. zip4j needs
+        // random access to the file, so this path stages the whole archive locally first --
+        // extractFromSevenZip already pays exactly this cost for the same reason.
+        if (password != null) {
+            extractFromEncryptedZip(archiveUri, path, target, maxBytes, password)
+            return
+        }
+        // The JDK's ZIP reader handles STORED and DEFLATE, and understands neither the
+        // encrypted local-header shape zip4j writes nor its AES extra field -- an archive
+        // encrypted with no password supplied fails the moment iteration reaches an encrypted
+        // header, not only once a matching entry's bytes are actually decompressed. Both failure
+        // points are wrapped by the same try, so either one produces the same honest message
+        // instead of an uncaught java.util.zip.ZipException reaching the caller.
+        try {
+            openStream(archiveUri).use { raw ->
+                ZipInputStream(BufferedInputStream(raw)).use { zip ->
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val entry = zip.nextEntry ?: break
+                        if (!entry.isDirectory && ArchiveTree.safePath(entry.name) == path) {
                             target.outputStream().use { output -> copyBounded(zip, output, maxBytes) }
-                        } catch (failure: ZipException) {
-                            error(
-                                "This entry is encrypted or uses a compression method Fylz cannot " +
-                                    "decode (${failure.message ?: "unsupported ZIP entry"}).",
-                            )
+                            return
                         }
-                        return
+                        zip.closeEntry()
                     }
-                    zip.closeEntry()
                 }
             }
+        } catch (failure: ZipException) {
+            error(
+                "This entry is encrypted or uses a compression method Fylz cannot decode " +
+                    "(${failure.message ?: "unsupported ZIP entry"}).",
+            )
         }
         error("That entry is no longer present in this archive.")
+    }
+
+    /**
+     * The one member a password unlocks, via zip4j -- the same library and the same AES support
+     * [ArchiveService] writes with on create, so an archive Fylz encrypted is guaranteed openable
+     * here too.
+     *
+     * zip4j does not validate a password up front; a wrong one surfaces only once the entry is
+     * actually read, as a [Zip4jException] this wraps into one honest message rather than passing
+     * along whichever of "bad password" or "corrupt archive" zip4j's own text happened to say.
+     */
+    private suspend fun extractFromEncryptedZip(
+        archiveUri: Uri,
+        path: String,
+        target: File,
+        maxBytes: Long,
+        password: CharArray,
+    ) {
+        val workspace = File(context.cacheDir, "$WORKSPACE_DIRECTORY/${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val local = File(workspace, "input.zip")
+            openStream(archiveUri).use { input ->
+                local.outputStream().use { output -> copyBounded(input, output, MAX_STAGED_ARCHIVE_BYTES) }
+            }
+            val zipFile = Zip4jZipFile(local, password)
+            val header = zipFile.fileHeaders.firstOrNull { header ->
+                !header.isDirectory && ArchiveTree.safePath(header.fileName) == path
+            } ?: error("That entry is no longer present in this archive.")
+            try {
+                zipFile.getInputStream(header).use { input ->
+                    target.outputStream().use { output -> copyBounded(input, output, maxBytes) }
+                }
+            } catch (failure: Zip4jException) {
+                error("Incorrect password, or this archive is corrupt.")
+            }
+        } finally {
+            workspace.deleteRecursively()
+        }
     }
 
     private suspend fun extractFromSevenZip(archiveUri: Uri, path: String, target: File, maxBytes: Long) {

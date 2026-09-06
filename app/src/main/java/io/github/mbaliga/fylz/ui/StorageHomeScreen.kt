@@ -166,7 +166,17 @@ fun StorageHomeScreen(
                 items(group.roots, key = { "${group.title}:${it.id}" }) { root ->
                     StorageRootRow(
                         root = root,
-                        onClick = { if (root.opensDirectly) onOpenRoot(root) else onPickFolder(root) },
+                        // A remote root has neither treeUri nor documentUri -- browsing one runs
+                        // through RemoteBrowser's own protocol clients, not SAF -- so opensDirectly
+                        // is always false for it and would otherwise misroute the tap into the
+                        // system folder picker.
+                        onClick = {
+                            if (root.kind == StorageRootKind.REMOTE || root.opensDirectly) {
+                                onOpenRoot(root)
+                            } else {
+                                onPickFolder(root)
+                            }
+                        },
                     )
                 }
             }
@@ -235,7 +245,7 @@ private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
             append("Read-only")
         }
     }
-    val actionLabel = if (root.opensDirectly) {
+    val actionLabel = if (root.kind == StorageRootKind.REMOTE || root.opensDirectly) {
         stringResource(R.string.storage_home_open_action, root.title)
     } else {
         stringResource(R.string.storage_home_grant_action, root.title)

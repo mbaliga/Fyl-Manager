@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -33,6 +34,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -42,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
@@ -62,6 +66,9 @@ import io.github.mbaliga.fylz.ui.components.PdfPagerPreview
 import io.github.mbaliga.fylz.ui.components.RichImagePreview
 import io.github.mbaliga.fylz.ui.components.UniversalInspectorPreview
 import io.github.mbaliga.fylz.ui.components.ZipDocumentPreview
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
 import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.util.FileType
 import io.github.mbaliga.fylz.util.formatBytes
@@ -123,6 +130,20 @@ private fun ArchiveBrowser(
         listing.members.firstOrNull { it.path == openPath && !it.directory }
     }
 
+    // One password unlocks the whole archive for as long as this browser stays open -- zip
+    // encryption is archive-wide in every case Fylz itself creates, so asking again per member
+    // would only be friction. Held here rather than in ArchiveMemberScreen so it survives
+    // stepping between members, and wiped whenever the archive identity changes or this browser
+    // leaves composition, the same discipline ArchiveToolsOverlay's own password state keeps.
+    var password by remember(archive.uri) { mutableStateOf<CharArray?>(null) }
+    var passwordPrompt by remember(archive.uri) { mutableStateOf(false) }
+    // The member a password prompt is unlocking for -- set the moment a locked row is tapped,
+    // opened only once a password actually arrives, so a cancelled prompt never half-opens a row.
+    var pendingPath by remember(archive.uri) { mutableStateOf<String?>(null) }
+    DisposableEffect(archive.uri) {
+        onDispose { password?.fill('\u0000') }
+    }
+
     // Back walks the archive the way it walks a folder: out of an open member first, then up one
     // level, and only once at the archive's own root does back fall through to whatever owns this
     // preview (the quick-look card's dismiss, the pane's host).
@@ -131,12 +152,24 @@ private fun ArchiveBrowser(
     }
 
     if (open != null) {
-        ArchiveMemberScreen(archive, open, depth, onBack = { openPath = null }, modifier = modifier)
+        ArchiveMemberScreen(
+            archive = archive,
+            member = open,
+            depth = depth,
+            password = password,
+            onBack = { openPath = null },
+            // A password that fails to open its member is worse than useless -- kept, it makes
+            // every other member in the archive fail the exact same way with no way to correct
+            // it short of leaving the whole preview. Clearing it here means the very next tap
+            // re-prompts instead.
+            onExtractionFailed = { password?.fill('\u0000'); password = null },
+            modifier = modifier,
+        )
         return
     }
 
     Column(modifier.fillMaxSize()) {
-        ArchiveSummary(listing)
+        ArchiveSummary(listing, unlocked = password != null)
         ArchiveBreadcrumbs(
             directory = directory,
             onNavigate = { directory = it },
@@ -158,21 +191,77 @@ private fun ArchiveBrowser(
                 ArchiveRow(
                     member = member,
                     childCount = if (listing.truncated) null else counts[member.path],
-                    // A password-protected ZIP lists its names in the clear but Fylz has no
-                    // password prompt and no decryptor wired in, so tapping a file could only
-                    // fail. The rows stay visible and stop being tappable, and the header says
-                    // why -- rather than offering a preview that cannot happen.
-                    enabled = member.directory || !listing.encrypted,
-                    onOpen = { if (member.directory) directory = member.path else openPath = member.path },
+                    enabled = true,
+                    onOpen = {
+                        when {
+                            member.directory -> directory = member.path
+                            listing.encrypted && password == null -> {
+                                pendingPath = member.path
+                                passwordPrompt = true
+                            }
+                            else -> openPath = member.path
+                        }
+                    },
                 )
             }
             item { ArchiveFooter(listing) }
         }
     }
+
+    if (passwordPrompt) {
+        ArchiveUnlockDialog(
+            onDismiss = {
+                passwordPrompt = false
+                pendingPath = null
+            },
+            onConfirm = { entered ->
+                passwordPrompt = false
+                password = entered
+                openPath = pendingPath
+                pendingPath = null
+            },
+        )
+    }
+}
+
+/** A bare password prompt for opening an already-encrypted archive -- no toggle, no confirmation
+ *  field; those belong to [io.github.mbaliga.fylz.ui.ArchiveToolsOverlay]'s CREATE flow, which
+ *  is choosing whether to encrypt rather than unlocking something that already is. */
+@Composable
+private fun ArchiveUnlockDialog(onDismiss: () -> Unit, onConfirm: (CharArray) -> Unit) {
+    var password by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+        title = { Text("Archive password") },
+        text = {
+            TactileField(
+                value = password,
+                onValueChange = { password = it.take(256) },
+                label = "Password",
+                visualTransformation = PasswordVisualTransformation(),
+                mandatory = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TactileButton(
+                text = "Unlock",
+                onClick = {
+                    val entered = password.toCharArray()
+                    password = ""
+                    onConfirm(entered)
+                },
+                enabled = password.isNotEmpty(),
+            )
+        },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
+    )
 }
 
 @Composable
-private fun ArchiveSummary(listing: ArchiveEntryReader.Listing) {
+private fun ArchiveSummary(listing: ArchiveEntryReader.Listing, unlocked: Boolean) {
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -204,7 +293,11 @@ private fun ArchiveSummary(listing: ArchiveEntryReader.Listing) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text(
-                    "Password protected — names are readable, contents are not.",
+                    if (unlocked) {
+                        "Password protected — unlocked for this preview."
+                    } else {
+                        "Password protected — tap a file to unlock."
+                    },
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
@@ -366,16 +459,27 @@ private fun ArchiveMemberScreen(
     archive: FileEntry,
     member: ArchiveMember,
     depth: Int,
+    password: CharArray?,
     onBack: () -> Unit,
+    onExtractionFailed: () -> Unit,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
-    val extracted by produceState<Result<File>?>(null, archive.uri, member.path) {
+    val extracted by produceState<Result<File>?>(null, archive.uri, member.path, password) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                ArchiveEntryReader(context.applicationContext).extract(archive.uri, archive.name, member)
+                ArchiveEntryReader(context.applicationContext)
+                    .extract(archive.uri, archive.name, member, password = password)
             }
         }
+    }
+    // A password that turned out to be wrong (or an archive that turned out not to need one at
+    // all) is a parent-level fact, not something this one member's own failure screen can act on
+    // -- signalled up rather than retried here, so every OTHER member in the same archive gets a
+    // fresh prompt instead of silently inheriting the same bad key.
+    LaunchedEffect(extracted) {
+        val result = extracted
+        if (password != null && result != null && result.isFailure) onExtractionFailed()
     }
     Column(modifier.fillMaxSize()) {
         Row(

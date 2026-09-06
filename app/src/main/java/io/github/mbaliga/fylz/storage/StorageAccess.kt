@@ -36,7 +36,11 @@ object StorageAccess {
      * cloud providers on one screen. When it is not, it is SAF alone.
      */
     fun available(context: Context): List<StorageProvider> =
-        if (fileProvider.isReady(context)) listOf(fileProvider, safProvider) else listOf(safProvider)
+        if (fileProvider.isReady(context)) {
+            listOf(fileProvider, safProvider, remoteProvider)
+        } else {
+            listOf(safProvider, remoteProvider)
+        }
 
     /** True when the broad-access backend is usable. */
     fun hasFullAccess(context: Context): Boolean = fileProvider.isReady(context)
@@ -50,4 +54,7 @@ object StorageAccess {
 
     /** The SAF backend. Always usable; needs no system grant. */
     val safProvider: StorageProvider by lazy { SafStorageProvider() }
+
+    /** Saved remote connections, surfaced for visibility only. Always usable; needs no system grant. */
+    val remoteProvider: StorageProvider by lazy { RemoteStorageProvider() }
 }
