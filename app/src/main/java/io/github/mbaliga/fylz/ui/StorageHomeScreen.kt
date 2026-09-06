@@ -166,17 +166,7 @@ fun StorageHomeScreen(
                 items(group.roots, key = { "${group.title}:${it.id}" }) { root ->
                     StorageRootRow(
                         root = root,
-                        // A remote root has neither treeUri nor documentUri -- browsing one runs
-                        // through RemoteBrowser's own protocol clients, not SAF -- so opensDirectly
-                        // is always false for it and would otherwise misroute the tap into the
-                        // system folder picker.
-                        onClick = {
-                            if (root.kind == StorageRootKind.REMOTE || root.opensDirectly) {
-                                onOpenRoot(root)
-                            } else {
-                                onPickFolder(root)
-                            }
-                        },
+                        onClick = { if (root.readyToOpen) onOpenRoot(root) else onPickFolder(root) },
                     )
                 }
             }
@@ -228,7 +218,7 @@ fun StorageHomeScreen(
 }
 
 @Composable
-private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
+internal fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
     val subtitle = buildString {
         root.subtitle?.let(::append)
         if (root.availableBytes != null && root.totalBytes != null && root.totalBytes > 0) {
@@ -245,7 +235,7 @@ private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
             append("Read-only")
         }
     }
-    val actionLabel = if (root.kind == StorageRootKind.REMOTE || root.opensDirectly) {
+    val actionLabel = if (root.readyToOpen) {
         stringResource(R.string.storage_home_open_action, root.title)
     } else {
         stringResource(R.string.storage_home_grant_action, root.title)
@@ -282,9 +272,11 @@ private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
                     )
                 }
             }
-            if (!root.opensDirectly) {
+            if (!root.readyToOpen) {
                 // Colour alone must not carry state (DESIGN.md); the lock icon plus the semantic
-                // label above both say "this one still needs a grant".
+                // label above both say "this one still needs a grant". A REMOTE root never earns
+                // this badge -- its one grant already happened when the connection was saved --
+                // see StorageRoot.readyToOpen.
                 Icon(
                     Icons.Outlined.Lock,
                     contentDescription = null,

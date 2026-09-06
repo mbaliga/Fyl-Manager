@@ -261,7 +261,7 @@ private fun ArchiveUnlockDialog(onDismiss: () -> Unit, onConfirm: (CharArray) ->
 }
 
 @Composable
-private fun ArchiveSummary(listing: ArchiveEntryReader.Listing, unlocked: Boolean) {
+internal fun ArchiveSummary(listing: ArchiveEntryReader.Listing, unlocked: Boolean) {
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),

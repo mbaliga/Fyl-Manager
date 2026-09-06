@@ -46,6 +46,22 @@ data class StorageRoot(
     val opensDirectly: Boolean get() = treeUri != null && documentUri != null
 
     /**
+     * True when nothing about opening this entry is gated on a grant or a picker round-trip --
+     * either it [opensDirectly], or (a REMOTE root) its one "grant" already happened when the
+     * connection was saved, so there is nothing left to ask for.
+     *
+     * [opensDirectly] alone cannot express the REMOTE case: a remote root carries neither a
+     * [treeUri] nor a [documentUri] -- browsing one runs through
+     * [io.github.mbaliga.fylz.network.RemoteBrowser]'s own protocol clients, never SAF -- so
+     * [opensDirectly] reads false for it even though tapping it never needs a permission. Reading
+     * [opensDirectly] directly anywhere a "does this still need a grant" question is actually
+     * being asked (the lock badge, the action label read out to accessibility, the tap dispatch
+     * that decides between opening and picking) would answer that question wrong for every saved
+     * connection.
+     */
+    val readyToOpen: Boolean get() = opensDirectly || kind == StorageRootKind.REMOTE
+
+    /**
      * True when this root lives on the device's primary shared volume — the region
      * `MANAGE_EXTERNAL_STORAGE` covers.
      *
