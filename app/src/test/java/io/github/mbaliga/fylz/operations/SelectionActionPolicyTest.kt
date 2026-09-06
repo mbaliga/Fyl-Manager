@@ -58,6 +58,13 @@ class SelectionActionPolicyTest {
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF)).annotate)
     }
 
+    @Test
+    fun `convert image needs exactly one image`() {
+        assertTrue(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE)).convertImage)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE, EntryKind.IMAGE)).convertImage)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF)).convertImage)
+    }
+
     /**
      * A folder URI handed to `ACTION_SEND` produces a share sheet that delivers nothing, which is
      * worse than an action that is not offered.

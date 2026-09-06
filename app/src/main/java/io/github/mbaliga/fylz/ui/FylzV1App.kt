@@ -135,6 +135,7 @@ import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.canvas.CanvasLayoutStore
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import io.github.mbaliga.fylz.library.FavoriteLocation
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.library.SavedSearch
@@ -825,6 +826,7 @@ private fun FylzV1Workspace(
     var remoteDialogFocusId by remember { mutableStateOf<String?>(null) }
     var pdfDialog by remember { mutableStateOf(false) }
     var annotateDialog by remember { mutableStateOf(false) }
+    var convertImageDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
@@ -2213,10 +2215,18 @@ private fun FylzV1Workspace(
             FylzAction.PDF_TOOLS -> pdfDialog = true
             FylzAction.ANNOTATE -> {
                 val target = selectedEntries.singleOrNull()
-                if (target != null && target.mimeType in ANNOTATABLE_MIME_TYPES) {
+                if (target != null && target.mimeType in ImageExportFormat.SUPPORTED_MIME_TYPES) {
                     annotateDialog = true
                 } else {
                     toast("Annotation supports JPEG, PNG and WebP images only.")
+                }
+            }
+            FylzAction.CONVERT_IMAGE -> {
+                val target = selectedEntries.singleOrNull()
+                if (target != null && target.mimeType in ImageExportFormat.SUPPORTED_MIME_TYPES) {
+                    convertImageDialog = true
+                } else {
+                    toast("Format conversion supports JPEG, PNG and WebP images only.")
                 }
             }
             FylzAction.SHARE -> shareSelection()
@@ -3578,6 +3588,22 @@ private fun FylzV1Workspace(
                 onDismiss = { annotateDialog = false },
                 onSaved = {
                     annotateDialog = false
+                    selectedUris = emptySet()
+                    selectedEntryDetails = emptyMap()
+                    refresh()
+                },
+            )
+        }
+    }
+
+    if (convertImageDialog) {
+        selectedEntries.singleOrNull()?.let { entry ->
+            ConvertImageFormatOverlay(
+                entry = entry,
+                repository = repository,
+                onDismiss = { convertImageDialog = false },
+                onSaved = {
+                    convertImageDialog = false
                     selectedUris = emptySet()
                     selectedEntryDetails = emptyMap()
                     refresh()

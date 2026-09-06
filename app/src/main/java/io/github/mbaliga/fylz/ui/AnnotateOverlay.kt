@@ -65,6 +65,7 @@ import coil3.SingletonImageLoader
 import io.github.mbaliga.fylz.data.AnnotationStroke
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.data.ImageAnnotationRenderer
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
 import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
@@ -72,14 +73,6 @@ import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-/**
- * Raster formats [ImageAnnotationRenderer] can actually round-trip -- what `Bitmap.compress` can
- * encode. [io.github.mbaliga.fylz.operations.SelectionActionPolicy] gates "Annotate" on
- * `EntryKind.IMAGE` alone (a coarse, format-blind check shared with every other policy rule); this
- * is the finer check that decides whether the dialog actually opens for the one entry selected.
- */
-val ANNOTATABLE_MIME_TYPES: Set<String> = setOf("image/jpeg", "image/png", "image/webp")
 
 internal val SWATCHES = listOf(Color.Red, Color(0xFFFFC107), Color(0xFF2196F3), Color.Black, Color.White)
 internal val STROKE_WIDTHS = listOf(6f to "Thin", 16f to "Thick")
@@ -89,9 +82,9 @@ internal val STROKE_WIDTHS = listOf(6f to "Thin", 16f to "Thick")
  * sidecar, so the result opens anywhere. One canvas, one undo stack; multi-layer or shape/text
  * tools are a later step, not this one.
  *
- * @param entry the single selected image; the caller (`SelectionActionPolicy.annotate` plus the
- *   [ANNOTATABLE_MIME_TYPES] check) has already established there is exactly one and it is a
- *   format this can save back.
+ * @param entry the single selected image; the caller (`SelectionActionPolicy.annotate` plus an
+ *   [ImageExportFormat.SUPPORTED_MIME_TYPES] check) has already established there is exactly one
+ *   and it is a format this can save back.
  */
 @Composable
 fun AnnotateOverlay(entry: FileEntry, repository: DocumentRepository, onDismiss: () -> Unit, onSaved: () -> Unit) {
@@ -120,11 +113,11 @@ fun AnnotateOverlay(entry: FileEntry, repository: DocumentRepository, onDismiss:
         val source = bitmap ?: return
         scope.launch {
             busy = true
-            val (format, quality) = compressFormatFor(entry.mimeType)
+            val format = ImageExportFormat.fromMimeType(entry.mimeType) ?: ImageExportFormat.JPEG
             val burned = withContext(Dispatchers.Default) {
                 ImageAnnotationRenderer.burnIn(source, strokes.toList(), canvasSize)
             }
-            runCatching { repository.writeBitmap(destinationUri, burned, format, quality) }
+            runCatching { repository.writeBitmap(destinationUri, burned, format.compressFormat, format.quality) }
                 .onSuccess {
                     if (invalidateCache) {
                         val loader = SingletonImageLoader.get(context)
@@ -304,8 +297,3 @@ internal fun ColorSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
     )
 }
 
-private fun compressFormatFor(mimeType: String): Pair<Bitmap.CompressFormat, Int> = when (mimeType) {
-    "image/png" -> Bitmap.CompressFormat.PNG to 100
-    "image/webp" -> Bitmap.CompressFormat.WEBP_LOSSLESS to 100
-    else -> Bitmap.CompressFormat.JPEG to 92
-}

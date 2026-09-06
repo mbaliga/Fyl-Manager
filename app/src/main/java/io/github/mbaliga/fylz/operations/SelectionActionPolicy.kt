@@ -20,6 +20,7 @@ data class SelectionActions(
     val extract: Boolean = false,
     val pdfTools: Boolean = false,
     val annotate: Boolean = false,
+    val convertImage: Boolean = false,
     val share: Boolean = false,
 ) {
     /** True when anything at all is selected. */
@@ -50,6 +51,9 @@ data class SelectionActions(
  *   one canvas. A raster kind is necessary but not sufficient -- the drawing screen itself further
  *   narrows to the specific image formats it can actually re-encode (JPEG/PNG/WebP), which this
  *   coarse, [EntryKind]-only policy has no way to express.
+ * - **Convert image** takes exactly one image, same shape as annotate and for the same reason --
+ *   the format picker is asking about one file's own bytes, and the same JPEG/PNG/WebP-only
+ *   round-trip narrowing happens where the dialog would open, not here.
  * - **Share** refuses a selection containing a folder. `ACTION_SEND` carries document URIs, and
  *   a directory URI handed to a receiving app is either ignored or an error over there — the
  *   user sees a share sheet, picks a target, and nothing arrives. Better to not offer it.
@@ -75,6 +79,7 @@ object SelectionActionPolicy {
             extract = kinds.singleOrNull() == EntryKind.ARCHIVE,
             pdfTools = kinds.all { it == EntryKind.PDF },
             annotate = kinds.singleOrNull() == EntryKind.IMAGE,
+            convertImage = kinds.singleOrNull() == EntryKind.IMAGE,
             share = kinds.none { it == EntryKind.DIRECTORY },
         )
     }

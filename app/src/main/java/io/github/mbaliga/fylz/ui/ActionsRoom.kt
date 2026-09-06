@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.SaveAs
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material3.Icon
@@ -55,6 +56,7 @@ internal enum class FylzAction {
     EXTRACT,
     PDF_TOOLS,
     ANNOTATE,
+    CONVERT_IMAGE,
     SHARE,
     ADD_TO_SHELF,
     PIN_TO_DESKTOP,
@@ -178,6 +180,13 @@ internal fun ActionsRoom(
                     item {
                         ActionCard(Icons.Outlined.Draw, "Annotate", "Draw on the photo") {
                             onAction(FylzAction.ANNOTATE)
+                        }
+                    }
+                }
+                if (selection.convertImage) {
+                    item {
+                        ActionCard(Icons.Outlined.SaveAs, "Convert format", "Save as JPEG, PNG or WebP") {
+                            onAction(FylzAction.CONVERT_IMAGE)
                         }
                     }
                 }
