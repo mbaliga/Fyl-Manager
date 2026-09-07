@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Draw
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.HighlightAlt
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.PushPin
@@ -58,6 +59,7 @@ internal enum class FylzAction {
     ANNOTATE,
     CONVERT_IMAGE,
     IMAGES_TO_PDF,
+    SELECT_IMAGE,
     SHARE,
     ADD_TO_SHELF,
     PIN_TO_DESKTOP,
@@ -195,6 +197,13 @@ internal fun ActionsRoom(
                     item {
                         ActionCard(Icons.Outlined.PictureAsPdf, "Combine into a PDF", "One page per image") {
                             onAction(FylzAction.IMAGES_TO_PDF)
+                        }
+                    }
+                }
+                if (selection.selectImage) {
+                    item {
+                        ActionCard(Icons.Outlined.HighlightAlt, "Select", "Lasso a region to crop or cut out") {
+                            onAction(FylzAction.SELECT_IMAGE)
                         }
                     }
                 }

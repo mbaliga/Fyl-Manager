@@ -22,6 +22,7 @@ data class SelectionActions(
     val annotate: Boolean = false,
     val convertImage: Boolean = false,
     val imagesToPdf: Boolean = false,
+    val selectImage: Boolean = false,
     val share: Boolean = false,
 ) {
     /** True when anything at all is selected. */
@@ -58,6 +59,8 @@ data class SelectionActions(
  * - **Images to PDF** needs every selected entry to be an image, same shape as PDF tools -- but
  *   unlike annotate/convert it takes ANY number of them (one page per image), since combining
  *   several photos into one PDF is the entire point.
+ * - **Select image** (lasso/wand/magnetic-lasso, crop/cutout/copy) takes exactly one image, same
+ *   shape and same reason as annotate and convert image.
  * - **Share** refuses a selection containing a folder. `ACTION_SEND` carries document URIs, and
  *   a directory URI handed to a receiving app is either ignored or an error over there — the
  *   user sees a share sheet, picks a target, and nothing arrives. Better to not offer it.
@@ -85,6 +88,7 @@ object SelectionActionPolicy {
             annotate = kinds.singleOrNull() == EntryKind.IMAGE,
             convertImage = kinds.singleOrNull() == EntryKind.IMAGE,
             imagesToPdf = kinds.all { it == EntryKind.IMAGE },
+            selectImage = kinds.singleOrNull() == EntryKind.IMAGE,
             share = kinds.none { it == EntryKind.DIRECTORY },
         )
     }

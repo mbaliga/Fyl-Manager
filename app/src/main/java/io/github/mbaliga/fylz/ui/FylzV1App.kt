@@ -827,6 +827,7 @@ private fun FylzV1Workspace(
     var pdfDialog by remember { mutableStateOf(false) }
     var annotateDialog by remember { mutableStateOf(false) }
     var convertImageDialog by remember { mutableStateOf(false) }
+    var selectImageDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
@@ -2239,6 +2240,14 @@ private fun FylzV1Workspace(
                 pendingImagesToPdf = selectedEntries.map { it.uri }
                 pickerRequest = InAppPickerRequest.PdfOutput("Fylz-images-${System.currentTimeMillis()}.pdf")
             }
+            FylzAction.SELECT_IMAGE -> {
+                val target = selectedEntries.singleOrNull()
+                if (target != null && target.mimeType in ImageExportFormat.SUPPORTED_MIME_TYPES) {
+                    selectImageDialog = true
+                } else {
+                    toast("Selection supports JPEG, PNG and WebP images only.")
+                }
+            }
             FylzAction.SHARE -> shareSelection()
             FylzAction.ADD_TO_SHELF -> {
                 addToShelf(selectedEntries)
@@ -3616,6 +3625,22 @@ private fun FylzV1Workspace(
                 onDismiss = { convertImageDialog = false },
                 onSaved = {
                     convertImageDialog = false
+                    selectedUris = emptySet()
+                    selectedEntryDetails = emptyMap()
+                    refresh()
+                },
+            )
+        }
+    }
+
+    if (selectImageDialog) {
+        selectedEntries.singleOrNull()?.let { entry ->
+            SelectImageOverlay(
+                entry = entry,
+                repository = repository,
+                onDismiss = { selectImageDialog = false },
+                onSaved = {
+                    selectImageDialog = false
                     selectedUris = emptySet()
                     selectedEntryDetails = emptyMap()
                     refresh()
