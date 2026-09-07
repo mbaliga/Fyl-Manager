@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.pdf
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -103,6 +104,51 @@ class PdfToolService(private val context: Context) {
             throw cancelled
         } finally {
             recognizer?.close()
+            document.close()
+            temp.delete()
+        }
+    }
+
+    /**
+     * One page per image, in the given order. Unlike [exportPages] (re-rendering an existing
+     * PDF's own pages), there is no source page to inspect for size -- each page is sized to its
+     * own image's decoded pixel dimensions, so a mix of a phone photo and a scanned document does
+     * not force one to the other's aspect ratio.
+     */
+    suspend fun imagesToPdf(
+        imageUris: List<Uri>,
+        outputUri: Uri,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): PdfToolExportResult = withContext(Dispatchers.IO) {
+        require(imageUris.isNotEmpty()) { "At least one image is required." }
+        require(imageUris.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
+        val temp = File(context.cacheDir, "pdf-tools-${UUID.randomUUID()}.pdf")
+        val document = PdfDocument()
+        try {
+            imageUris.forEachIndexed { index, uri ->
+                coroutineContext.ensureActive()
+                val bitmap = context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+                    ?: error("Unable to decode one of the selected images.")
+                try {
+                    val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, index + 1).create()
+                    val page = document.startPage(pageInfo)
+                    try {
+                        page.canvas.drawColor(Color.WHITE)
+                        page.canvas.drawBitmap(bitmap, 0f, 0f, null)
+                    } finally {
+                        document.finishPage(page)
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+                onProgress(index + 1, imageUris.size)
+            }
+            FileOutputStream(temp).use { output -> document.writeTo(output); output.fd.sync() }
+            val output = context.contentResolver.openOutputStream(outputUri, "w")
+                ?: error("The selected provider did not return a writable stream.")
+            output.use { target -> temp.inputStream().use { source -> source.copyTo(target); target.flush() } }
+            PdfToolExportResult(imageUris.size, temp.length())
+        } finally {
             document.close()
             temp.delete()
         }

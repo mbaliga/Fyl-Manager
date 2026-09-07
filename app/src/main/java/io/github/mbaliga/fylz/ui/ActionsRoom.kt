@@ -57,6 +57,7 @@ internal enum class FylzAction {
     PDF_TOOLS,
     ANNOTATE,
     CONVERT_IMAGE,
+    IMAGES_TO_PDF,
     SHARE,
     ADD_TO_SHELF,
     PIN_TO_DESKTOP,
@@ -187,6 +188,13 @@ internal fun ActionsRoom(
                     item {
                         ActionCard(Icons.Outlined.SaveAs, "Convert format", "Save as JPEG, PNG or WebP") {
                             onAction(FylzAction.CONVERT_IMAGE)
+                        }
+                    }
+                }
+                if (selection.imagesToPdf) {
+                    item {
+                        ActionCard(Icons.Outlined.PictureAsPdf, "Combine into a PDF", "One page per image") {
+                            onAction(FylzAction.IMAGES_TO_PDF)
                         }
                     }
                 }

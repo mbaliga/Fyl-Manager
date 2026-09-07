@@ -830,6 +830,7 @@ private fun FylzV1Workspace(
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
+    var pendingImagesToPdf by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
     var sortSpec by remember { mutableStateOf(SortSpec.Default) }
     var searchRecursive by remember { mutableStateOf(false) }
@@ -1328,20 +1329,23 @@ private fun FylzV1Workspace(
         if (destination != null) performArchive(archiveSources, destination)
     }
 
-    // Destination for PDF page extraction / merge. Kept separate from archiveCreator so the two
-    // flows cannot ever write into each other's target.
-    fun performPdf(destination: Uri, pages: List<PdfPageRef>, merge: Boolean, ocr: Boolean) {
+    // Destination for PDF page extraction / merge / images-to-PDF. Kept separate from
+    // archiveCreator so the two flows cannot ever write into each other's target.
+    fun performPdf(destination: Uri, pages: List<PdfPageRef>, merge: Boolean, ocr: Boolean, imageUris: List<Uri> = emptyList()) {
         scope.launch {
             loading = true
             runCatching {
-                if (merge) {
-                    pdfTools.merge(
+                when {
+                    imageUris.isNotEmpty() -> pdfTools.imagesToPdf(
+                        imageUris = imageUris,
+                        outputUri = destination,
+                    ) { done, total -> operationMessage = "Adding image $done of $total" }
+                    merge -> pdfTools.merge(
                         sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
                         outputUri = destination,
                         searchableOcr = ocr,
                     ) { done, total -> operationMessage = "Merging page $done of $total" }
-                } else {
-                    pdfTools.exportPages(
+                    else -> pdfTools.exportPages(
                         pages = pages,
                         outputUri = destination,
                         searchableOcr = ocr,
@@ -1364,10 +1368,12 @@ private fun FylzV1Workspace(
         val pages = pendingPdfPages
         val merge = pendingPdfMerge
         val ocr = pendingPdfOcr
+        val imageUris = pendingImagesToPdf
         pendingPdfPages = emptyList()
         pendingPdfMerge = false
+        pendingImagesToPdf = emptyList()
         if (destination == null) return@rememberLauncherForActivityResult
-        performPdf(destination, pages, merge, ocr)
+        performPdf(destination, pages, merge, ocr, imageUris)
     }
 
     val scannerOptions = remember {
@@ -2228,6 +2234,10 @@ private fun FylzV1Workspace(
                 } else {
                     toast("Format conversion supports JPEG, PNG and WebP images only.")
                 }
+            }
+            FylzAction.IMAGES_TO_PDF -> {
+                pendingImagesToPdf = selectedEntries.map { it.uri }
+                pickerRequest = InAppPickerRequest.PdfOutput("Fylz-images-${System.currentTimeMillis()}.pdf")
             }
             FylzAction.SHARE -> shareSelection()
             FylzAction.ADD_TO_SHELF -> {
@@ -3544,11 +3554,13 @@ private fun FylzV1Workspace(
                         val pages = pendingPdfPages
                         val merge = pendingPdfMerge
                         val ocr = pendingPdfOcr
+                        val imageUris = pendingImagesToPdf
                         pendingPdfPages = emptyList()
                         pendingPdfMerge = false
+                        pendingImagesToPdf = emptyList()
                         scope.launch {
                             runCatching { repository.createFile(save.folderUri, save.name, "application/pdf") }
-                                .onSuccess { performPdf(it, pages, merge, ocr) }
+                                .onSuccess { performPdf(it, pages, merge, ocr, imageUris) }
                                 .onFailure { toast(it.message ?: "Unable to create that file") }
                         }
                     }

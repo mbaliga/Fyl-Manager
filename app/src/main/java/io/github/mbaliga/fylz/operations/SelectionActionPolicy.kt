@@ -21,6 +21,7 @@ data class SelectionActions(
     val pdfTools: Boolean = false,
     val annotate: Boolean = false,
     val convertImage: Boolean = false,
+    val imagesToPdf: Boolean = false,
     val share: Boolean = false,
 ) {
     /** True when anything at all is selected. */
@@ -54,6 +55,9 @@ data class SelectionActions(
  * - **Convert image** takes exactly one image, same shape as annotate and for the same reason --
  *   the format picker is asking about one file's own bytes, and the same JPEG/PNG/WebP-only
  *   round-trip narrowing happens where the dialog would open, not here.
+ * - **Images to PDF** needs every selected entry to be an image, same shape as PDF tools -- but
+ *   unlike annotate/convert it takes ANY number of them (one page per image), since combining
+ *   several photos into one PDF is the entire point.
  * - **Share** refuses a selection containing a folder. `ACTION_SEND` carries document URIs, and
  *   a directory URI handed to a receiving app is either ignored or an error over there — the
  *   user sees a share sheet, picks a target, and nothing arrives. Better to not offer it.
@@ -80,6 +84,7 @@ object SelectionActionPolicy {
             pdfTools = kinds.all { it == EntryKind.PDF },
             annotate = kinds.singleOrNull() == EntryKind.IMAGE,
             convertImage = kinds.singleOrNull() == EntryKind.IMAGE,
+            imagesToPdf = kinds.all { it == EntryKind.IMAGE },
             share = kinds.none { it == EntryKind.DIRECTORY },
         )
     }

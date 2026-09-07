@@ -65,6 +65,14 @@ class SelectionActionPolicyTest {
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF)).convertImage)
     }
 
+    @Test
+    fun `images to pdf needs every entry to be an image, but any count`() {
+        assertTrue(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE)).imagesToPdf)
+        assertTrue(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE, EntryKind.IMAGE, EntryKind.IMAGE)).imagesToPdf)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE, EntryKind.PDF)).imagesToPdf)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF)).imagesToPdf)
+    }
+
     /**
      * A folder URI handed to `ACTION_SEND` produces a share sheet that delivers nothing, which is
      * worse than an action that is not offered.
