@@ -1,0 +1,552 @@
+package io.github.mbaliga.fylz.ui.desktop
+
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Wallpaper
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import io.github.mbaliga.fylz.R
+import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.desktop.DesktopItem
+import io.github.mbaliga.fylz.desktop.DesktopPolicy
+import io.github.mbaliga.fylz.desktop.DesktopStore
+import io.github.mbaliga.fylz.desktop.DesktopWidgetType
+import io.github.mbaliga.fylz.history.RecentOpen
+import io.github.mbaliga.fylz.history.RecentOpensStore
+import io.github.mbaliga.fylz.library.FavoriteLocation
+import io.github.mbaliga.fylz.library.LibraryStore
+import io.github.mbaliga.fylz.operations.RecycleBinRetentionStore
+import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.operations.RecycleRecord
+import io.github.mbaliga.fylz.operations.describe
+import io.github.mbaliga.fylz.staging.ShelfItem
+import io.github.mbaliga.fylz.staging.ShelfStore
+import io.github.mbaliga.fylz.storage.FileStorageProvider
+import io.github.mbaliga.fylz.storage.FullAccessPermission
+import io.github.mbaliga.fylz.storage.StorageAccess
+import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.storage.StorageScanScheduler
+import io.github.mbaliga.fylz.storage.StorageUsageSnapshot
+import io.github.mbaliga.fylz.storage.StorageUsageStore
+import io.github.mbaliga.fylz.ui.overview.OVERVIEW_LIST_CARD_VISIBLE_ROWS
+import io.github.mbaliga.fylz.ui.overview.OverviewCard
+import io.github.mbaliga.fylz.ui.overview.tallyBytes
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.theme.FylzGeometry
+import io.github.mbaliga.fylz.ui.theme.ShadowLevel
+import io.github.mbaliga.fylz.ui.theme.hairline
+import io.github.mbaliga.fylz.ui.theme.softShadow
+import io.github.mbaliga.fylz.wallpaper.WallpaperSpec
+import io.github.mbaliga.fylz.widgets.WidgetRefresher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Everything [DesktopScreen] can be asked to do -- gathered here so the workspace's job is "know
+ * how", not "thread fifteen lambdas through a parameter list", the same split
+ * [io.github.mbaliga.fylz.ui.ActionsRoom]'s own `runAction` makes. The exact shape named in the
+ * shared API contract (`onOpenFolderShortcut` through `onPickDuplicatesFolder`) is preserved
+ * verbatim; [onGrantFullAccess] is the one addition -- see this file's own KDoc for why.
+ */
+data class DesktopCallbacks(
+    val onOpenFolderShortcut: (treeUri: Uri, folderUri: Uri) -> Unit,
+    val onOpenFileShortcut: (Uri) -> Unit,
+    val onOpenTrash: () -> Unit,
+    val onOpenShelf: () -> Unit,
+    val onFocusSearch: () -> Unit,
+    val onScan: () -> Unit,
+    val onOpenTag: (String) -> Unit,
+    val onOpenFavorite: (FavoriteLocation) -> Unit,
+    val onOpenWallpaperPicker: () -> Unit,
+    val onOpenLargeFiles: () -> Unit,
+    val onPickFolderShortcut: () -> Unit,
+    val onPickQuickAccessFolder: (widgetId: String) -> Unit,
+    val onPickDuplicatesFolder: () -> Unit,
+    // Additive, beyond the shared contract shape: the Storage and Quick Access widget content
+    // (io.github.mbaliga.fylz.ui.desktop.WidgetRenderers, Workstream C's) already calls
+    // `callbacks.onGrantFullAccess` for their permission CTA -- the same callback
+    // io.github.mbaliga.fylz.ui.overview.OverviewScreen's own contract already carries. Left out
+    // of the contract's bare list but required by code Workstream C already shipped, so it is
+    // added here rather than left unresolved. Defaults to a no-op so a caller that predates this
+    // note still compiles.
+    val onGrantFullAccess: () -> Unit = {},
+)
+
+/**
+ * The freeform desktop landing surface: [io.github.mbaliga.fylz.desktop.DesktopItem]s (folder and
+ * file shortcuts, widgets) scattered over [wallpaperSpec], dragged one at a time, with an edit
+ * mode for adding and removing.
+ *
+ * **Workstream-boundary note.** This file was specified by the shared API contract as
+ * Workstream C's deliverable (`io.github.mbaliga.fylz.ui.desktop` is C's package). C's own report
+ * for this build came back empty -- no `DesktopScreen` or `DesktopCallbacks` was ever produced,
+ * only the supporting pieces this composable leans on: [DesktopTile] (the per-item gesture/visual
+ * host), [WidgetRegistry] (the widget gallery's metadata), [DesktopWidgetContent]/[DesktopWidgetData]
+ * (widget dispatch, already reusing [io.github.mbaliga.fylz.ui.overview]'s card composables). Since
+ * every other workstream's integration and the shared contract both depend on this composable
+ * existing, Workstream W (integration) wrote it -- a deviation from W's own file-ownership list
+ * (`ui/desktop/` was never W's), made only because nothing else would compile or run otherwise.
+ * Called out loudly in the integration summary; a future pass by whoever owns C's package should
+ * feel free to replace this with something more considered.
+ *
+ * Widget data ([DesktopWidgetData]) is gathered here the same way
+ * [io.github.mbaliga.fylz.ui.overview.OverviewScreen] gathers its own cards -- `produceState` off
+ * `Dispatchers.IO`, keyed on [refreshKey] -- so none of the plain card composables it dispatches to
+ * ever touch a repository, a store, or IO directly.
+ *
+ * @param snapEnabled whether a drag settles onto the grid ([DesktopPolicy.snap]) or the freeform
+ *   safe band ([DesktopPolicy.clamp]) -- Settings' "Snap icons to grid" toggle.
+ * @param showLabels whether shortcut tiles show a name beneath their thumbnail -- Settings' "Icon
+ *   labels" toggle.
+ */
+@Composable
+fun DesktopScreen(
+    store: DesktopStore,
+    wallpaperSpec: WallpaperSpec,
+    repository: DocumentRepository,
+    refreshKey: Int,
+    bottomReserve: Dp,
+    callbacks: DesktopCallbacks,
+    modifier: Modifier = Modifier,
+    snapEnabled: Boolean = true,
+    showLabels: Boolean = true,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var items by remember { mutableStateOf(store.items()) }
+    fun reload() { items = store.items() }
+    LaunchedEffect(refreshKey) { reload() }
+
+    var editing by remember { mutableStateOf(false) }
+    var arrangingId by remember { mutableStateOf<String?>(null) }
+    var showAddSheet by remember { mutableStateOf(false) }
+    // The desktop's own edit mode gets its own back rung, the same shape
+    // io.github.mbaliga.fylz.ui.FylzV1App's own three root-level BackHandlers already use
+    // (individually enabled, each governing one level) -- a first press while editing exits edit
+    // mode rather than falling through to that composable's own "press again to exit" handler.
+    BackHandler(enabled = editing) {
+        editing = false
+        showAddSheet = false
+    }
+
+    // The grant round trip happens outside this app (Settings); re-checked on ON_RESUME, the same
+    // pattern OverviewScreen/StorageHomeScreen both use.
+    var hasFullAccess by remember { mutableStateOf(FullAccessPermission.isGranted()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) hasFullAccess = FullAccessPermission.isGranted()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val primaryRoot by produceState<StorageRoot?>(null, refreshKey, hasFullAccess) {
+        value = if (!hasFullAccess) {
+            null
+        } else {
+            withContext(Dispatchers.IO) {
+                StorageAccess.fileProvider.rootGroups(context)
+                    .firstOrNull { it.title == FileStorageProvider.GROUP_DEVICE }
+                    ?.roots?.firstOrNull()
+            }
+        }
+    }
+
+    var scanTick by remember { mutableStateOf(0) }
+    var scanning by remember { mutableStateOf(false) }
+    val usageSnapshot by produceState<StorageUsageSnapshot?>(null, refreshKey, scanTick, hasFullAccess) {
+        value = if (!hasFullAccess) null else withContext(Dispatchers.IO) { StorageUsageStore(context).snapshot() }
+    }
+    val onRefreshStorage: () -> Unit = {
+        if (!scanning && hasFullAccess) {
+            scanning = true
+            StorageScanScheduler(context).scan()
+        }
+    }
+    LaunchedEffect(scanning) {
+        if (!scanning) return@LaunchedEffect
+        val before = usageSnapshot?.scannedAtMillis
+        repeat(DESKTOP_SCAN_POLL_ATTEMPTS) {
+            delay(DESKTOP_SCAN_POLL_INTERVAL_MILLIS)
+            val latest = withContext(Dispatchers.IO) { StorageUsageStore(context).snapshot() }
+            if (latest != null && latest.scannedAtMillis != before) {
+                scanTick += 1
+                scanning = false
+                // The Storage system widget shows the same last-scan figures this card does --
+                // push it a fresh render the moment a tap-initiated scan actually finishes,
+                // fire-and-forget, same as every other post-mutation refresh in this build.
+                WidgetRefresher.refreshAll(context)
+                return@LaunchedEffect
+            }
+        }
+        scanning = false
+    }
+
+    val recycleRecords by produceState(emptyList<RecycleRecord>(), refreshKey) {
+        value = withContext(Dispatchers.IO) { RecycleBinService(context).records() }
+    }
+    val favorites by produceState(emptyList<FavoriteLocation>(), refreshKey) {
+        value = withContext(Dispatchers.IO) { LibraryStore(context).favorites() }
+    }
+    val topTags by produceState(emptyList<Pair<String, Int>>(), refreshKey) {
+        value = withContext(Dispatchers.IO) {
+            LibraryStore(context).allTags().entries.sortedByDescending { it.value }.take(DESKTOP_TOP_TAGS).map { it.key to it.value }
+        }
+    }
+    val shelfItemsState by produceState(emptyList<ShelfItem>(), refreshKey) {
+        value = withContext(Dispatchers.IO) { ShelfStore(context).items() }
+    }
+    val recents by produceState(emptyList<RecentOpen>(), refreshKey) {
+        value = withContext(Dispatchers.IO) { RecentOpensStore(context).items() }
+    }
+    val retentionDescription = remember(refreshKey) { RecycleBinRetentionStore(context).period().describe() }
+
+    val widgetData = remember(
+        hasFullAccess, primaryRoot, usageSnapshot, scanning,
+        recycleRecords, retentionDescription, favorites, topTags,
+        shelfItemsState, recents,
+    ) {
+        val usedBytes = primaryRoot?.availableBytes?.let { available ->
+            primaryRoot?.totalBytes?.let { total -> (total - available).coerceAtLeast(0L) }
+        }
+        val tally = tallyBytes(recycleRecords.map(RecycleRecord::sizeBytes))
+        DesktopWidgetData(
+            nowMillis = System.currentTimeMillis(),
+            storage = OverviewCard.Storage(
+                hasFullAccess = hasFullAccess,
+                usedBytes = usedBytes,
+                totalBytes = primaryRoot?.totalBytes,
+                usage = usageSnapshot,
+                scanning = scanning,
+            ),
+            onRefreshStorage = onRefreshStorage,
+            recycleBin = OverviewCard.DeletedFiles(
+                totalCount = recycleRecords.size,
+                recoverableBytes = tally.totalBytes,
+                notReportedCount = tally.unmeasuredCount,
+                retentionDescription = retentionDescription,
+            ),
+            tags = OverviewCard.Tags(topTags),
+            pinned = OverviewCard.Pinned(favorites),
+            shelfCount = shelfItemsState.size,
+            shelfPreviewNames = shelfItemsState.take(DESKTOP_SHELF_PREVIEW).map { it.displayName },
+            recents = recents,
+        )
+    }
+
+    // No BoxWithConstraints has run yet at this point in the composable body, so there is no LIVE
+    // viewport to measure -- screenWidthDp is a reasonable stand-in for a freshly-added widget's
+    // very first placement, and (like io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed's
+    // own REFERENCE_VIEWPORT_WIDTH_DP) is re-validated against the device's own real width the
+    // instant the card renders and the user's first drag runs it back through snapWidget.
+    val configuration = LocalConfiguration.current
+    fun addWidget(type: DesktopWidgetType, config: Map<String, String> = emptyMap()) {
+        val registration = WidgetRegistry.of(type)
+        // nextFreePlacement finds clear water; snapWidget then pulls the card onto the widget
+        // column grid so a fresh card never pokes off-screen the way a raw cell center can.
+        val placement = DesktopPolicy.snapWidget(
+            DesktopPolicy.nextFreePlacement(items.map(DesktopItem::placement)),
+            registration.defaultSize,
+            configuration.screenWidthDp.toFloat(),
+            DesktopPolicy.WORLD_MIN_HEIGHT_DP.toFloat(),
+        )
+        store.upsert(
+            DesktopItem.Widget(
+                type = type,
+                size = registration.defaultSize,
+                config = config,
+                placement = placement,
+            ),
+        )
+        reload()
+    }
+
+    // How much vertical room the floating cap column at the bottom-right actually occupies.
+    // Measured off that Column where it is mounted below, not restated from TactileButton's own
+    // cap height (private to the kit) -- the same "measure the chrome, don't copy its constant"
+    // shape io.github.mbaliga.fylz.ui.FylzV1App already uses for the ActionsBar's width. Measuring
+    // is also what keeps the editing case honest for free: the extra "Done" cap and its 8dp gap
+    // grow the Column, and the reserve grows with it. Starts at zero and is correct from the first
+    // layout pass; the band it reserves is at the very bottom of a world nobody can have scrolled
+    // to yet on frame one.
+    var capColumnHeight by remember { mutableStateOf(0.dp) }
+    val capDensity = LocalDensity.current
+
+    Box(modifier.fillMaxSize()) {
+        WallpaperLayer(wallpaperSpec, Modifier.fillMaxSize(), bottomInset = bottomReserve)
+
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val viewportWidthDp = maxWidth
+            val viewportWidthPx = constraints.maxWidth.toFloat()
+            // Placements' y is a fraction of the WORLD, not the raw viewport: card heights are
+            // fixed dp, so viewport-fraction rows would collide on short phones and gap on tall
+            // ones. The world is floored at WORLD_MIN_HEIGHT_DP -- itself derived from
+            // defaultSeed's own content bottom plus a fixed bottom margin (see that constant's own
+            // KDoc).
+            val worldHeightDp = maxOf(maxHeight, DesktopPolicy.WORLD_MIN_HEIGHT_DP.dp)
+            val worldHeightPx = with(LocalDensity.current) { worldHeightDp.toPx() }
+            val maxZ = items.maxOfOrNull { it.placement.z } ?: 0
+
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                // Two bands sit below the world's own content and neither belongs to any card.
+                // bottomReserve is the bottom chrome's. capColumnHeight + CAP_COLUMN_MARGIN is the
+                // floating "+ Add to desktop" cap's: that cap is anchored to the VIEWPORT, not to
+                // the world -- it has to stay reachable at every scroll offset -- so it never
+                // scrolls out of anybody's way and it reserves nothing simply by being placed.
+                // Without this band the world's last row can never be scrolled clear of it, and
+                // the bottom-right corner it occupies is exactly where ShelfCard pins its own
+                // "Open shelf" cap (Spacer(weight)/align(End) in OverviewCards) -- the two land on
+                // the same pixels at full scroll, which is what the owner photographed. Reserving
+                // the band here, rather than padding one card, is the fix that holds for whatever
+                // the user drags down there next.
+                Box(Modifier.fillMaxWidth().height(worldHeightDp + bottomReserve + capColumnHeight + CAP_COLUMN_MARGIN)) {
+            items.forEach { item ->
+                DesktopTile(
+                    item = item,
+                    editing = editing,
+                    arranging = arrangingId == item.id,
+                    snapEnabled = snapEnabled,
+                    showLabels = showLabels,
+                    viewportWidthDp = viewportWidthDp,
+                    viewportWidthPx = viewportWidthPx,
+                    viewportHeightPx = worldHeightPx,
+                    worldHeightDp = worldHeightDp,
+                    repository = repository,
+                    refreshKey = refreshKey,
+                    widgetData = widgetData,
+                    callbacks = callbacks,
+                    onEnterArrange = {
+                        // arrangingId flips first, synchronously, so the lift (scale/elevation in
+                        // DesktopTile) shows the instant the long-press is recognised -- the
+                        // z-raise itself is a SharedPreferences commit() (blocking disk I/O) and
+                        // must never sit between the haptic and that visual feedback, nor block
+                        // the drag's own pointer-tracking loop from starting.
+                        arrangingId = item.id
+                        val itemId = item.id
+                        val raised = DesktopPolicy.raise(item.placement, maxZ)
+                        scope.launch(Dispatchers.IO) {
+                            store.place(itemId, raised)
+                            withContext(Dispatchers.Main) { reload() }
+                        }
+                    },
+                    onExitArrange = { if (arrangingId == item.id) arrangingId = null },
+                    onCommit = { placement ->
+                        store.place(item.id, placement)
+                        reload()
+                    },
+                    onRemove = {
+                        store.remove(item.id)
+                        reload()
+                        if (arrangingId == item.id) arrangingId = null
+                    },
+                )
+            }
+                }
+            }
+        }
+
+        if (items.isEmpty() && !editing) {
+            EmptyDesktopHint(modifier = Modifier.align(Alignment.Center))
+        }
+
+        Column(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = bottomReserve + CAP_COLUMN_MARGIN, end = CAP_COLUMN_MARGIN)
+                // What the world above reserves a band for -- see that Box's own note. Reported
+                // rather than assumed, so the reserve stays right whatever this column grows to
+                // hold.
+                .onSizeChanged { size -> capColumnHeight = with(capDensity) { size.height.toDp() } },
+            horizontalAlignment = Alignment.End,
+        ) {
+            if (editing) {
+                TactileButton(
+                    text = stringResource(R.string.desktop_edit_done),
+                    onClick = { editing = false; showAddSheet = false },
+                    style = TactileButtonStyle.SECONDARY,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
+            // "+ " prefixed onto the existing string, not a reword of it -- TactileButton's
+            // contract (kit contract, io.github.mbaliga.fylz.ui.tactile) is text-only with no
+            // leading-icon slot, so the spec's "leading-plus feel" for this PRIMARY cap is given
+            // by decorating the label rather than by an Icon composable the old
+            // ExtendedFloatingActionButton had a dedicated slot for and TactileButton does not.
+            TactileButton(
+                text = "+ " + stringResource(R.string.desktop_edit_add),
+                onClick = { editing = true; showAddSheet = true },
+                style = TactileButtonStyle.PRIMARY,
+            )
+        }
+    }
+
+    if (showAddSheet) {
+        DesktopAddSheet(
+            atCapacity = items.size >= DesktopPolicy.MAX_ITEMS,
+            onAddWidget = { type -> addWidget(type); showAddSheet = false },
+            onAddFolder = { showAddSheet = false; callbacks.onPickFolderShortcut() },
+            onOpenWallpaper = { showAddSheet = false; callbacks.onOpenWallpaperPicker() },
+            onDismiss = { showAddSheet = false },
+        )
+    }
+}
+
+@Composable
+private fun DesktopAddSheet(
+    atCapacity: Boolean,
+    onAddWidget: (DesktopWidgetType) -> Unit,
+    onAddFolder: () -> Unit,
+    onOpenWallpaper: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(enabled = !atCapacity, onClick = onAddFolder),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.CreateNewFolder, contentDescription = null)
+                Text(stringResource(R.string.desktop_add_folder), Modifier.padding(start = 16.dp))
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClick = onOpenWallpaper),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Wallpaper, contentDescription = null)
+                Text(stringResource(R.string.desktop_add_wallpaper), Modifier.padding(start = 16.dp))
+            }
+            if (atCapacity) {
+                Text(
+                    stringResource(R.string.integration_desktop_full),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            } else {
+                Text(
+                    stringResource(R.string.desktop_add_widget),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+                )
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    items(WidgetRegistry.entries) { registration ->
+                        TactileButton(
+                            text = stringResource(registration.displayNameRes),
+                            onClick = { onAddWidget(registration.type) },
+                            style = TactileButtonStyle.SECONDARY,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The desktop's own empty state: wallpaper and a FAB alone left first-run users with no clue what
+ * to do next -- this is a small, hairline-bordered hint card, centred over the wallpaper, gone the
+ * instant the first item lands (and while [editing] is already open, so it never fights the add
+ * sheet for attention).
+ */
+@Composable
+private fun EmptyDesktopHint(modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(FylzGeometry.RadiusXl)
+    Surface(
+        modifier = modifier.padding(horizontal = 32.dp).softShadow(ShadowLevel.SM, shape),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, hairline()),
+    ) {
+        Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                stringResource(R.string.desktop_empty_title),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                stringResource(R.string.desktop_empty_body),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+    }
+}
+
+private const val DESKTOP_SCAN_POLL_ATTEMPTS = 40
+private const val DESKTOP_SCAN_POLL_INTERVAL_MILLIS = 500L
+
+/** Exactly what the Tags card draws -- it takes its own first `OVERVIEW_LIST_CARD_VISIBLE_ROWS * 2`
+ *  chips and drops the rest. Was a flat 12, so four tags were ranked here and thrown away there. */
+private const val DESKTOP_TOP_TAGS = OVERVIEW_LIST_CARD_VISIBLE_ROWS * 2
+private const val DESKTOP_SHELF_PREVIEW = 3
+
+/** The floating cap column's own margin off the bottom-right corner, and the same figure the world
+ *  above adds to its reserve for that column -- one constant so the two can never disagree. */
+private val CAP_COLUMN_MARGIN = 16.dp

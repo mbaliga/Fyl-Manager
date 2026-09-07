@@ -27,7 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.preview.FileFormatDescriptor
+import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
 import io.github.mbaliga.fylz.preview.ZipDocumentInspection
 import io.github.mbaliga.fylz.preview.ZipDocumentInspector
 

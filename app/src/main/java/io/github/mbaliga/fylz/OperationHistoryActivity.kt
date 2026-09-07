@@ -15,15 +15,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,9 +37,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
-import io.github.mbaliga.fylz.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperation
 import io.github.mbaliga.fylz.operations.OperationJournal
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import java.text.DateFormat
 import java.util.Date
@@ -78,20 +82,30 @@ private fun OperationHistoryScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Activity") },
+                // TopAppBar's navigationIcon/actions slots are sized for a ~48dp icon square; a
+                // TactileButton keycap's 20dp horizontal padding plus a multi-word label ate into
+                // the title's width budget in this fixed-height bar. TactileIconKey is the kit's
+                // icon-square control, so both slots move there -- onClick/enabled unchanged,
+                // and each contentDescription carries the words the removed label carried so
+                // screen readers lose nothing.
                 navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
+                    TactileIconKey(
+                        icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "Back",
+                        onClick = onBack,
+                    )
                 },
                 actions = {
-                    TextButton(
+                    TactileIconKey(
+                        icon = Icons.Outlined.DeleteSweep,
+                        contentDescription = "Clear finished",
                         onClick = { confirmClear = true },
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
                                 it.state == OperationState.CANCELLED
                         },
-                    ) {
-                        Text("Clear finished")
-                    }
+                    )
                 },
             )
         },
@@ -147,16 +161,18 @@ private fun OperationHistoryScreen(
                 )
             },
             confirmButton = {
-                Button(
+                TactileButton(
+                    text = "Clear",
                     onClick = {
                         journal.clearFinished()
                         confirmClear = false
                         refresh()
                     },
-                ) { Text("Clear") }
+                    style = TactileButtonStyle.PRIMARY,
+                )
             },
             dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+                TactileButton(text = "Cancel", onClick = { confirmClear = false }, style = TactileButtonStyle.SECONDARY)
             },
         )
     }

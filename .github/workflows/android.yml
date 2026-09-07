@@ -2,13 +2,17 @@ name: Android CI
 
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches:
       - main
       - 'agent/**'
 
 permissions:
-  contents: read
+  # Write, because the debug APK is published as a release asset: an Actions artifact needs a
+  # GitHub account to download and always arrives zipped, which is no way to hand someone a
+  # build to install on a phone.
+  contents: write
 
 concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +59,36 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish the debug APK to the rolling build release
+        # A plain .apk on a release page: no login, no unzip, one stable URL that always points
+        # at the newest build. Fork pull requests get a read-only token, so they skip this.
+        if: >-
+          github.event.pull_request.head.repo.fork != true &&
+          hashFiles('app/build/outputs/apk/debug/app-debug.apk') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_REF: ${{ github.head_ref || github.ref_name }}
+          TAG: latest-build
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/debug/app-debug.apk fylz-debug.apk
+          short="${BUILD_SHA:0:7}"
+          title="Latest Fylz build ($short)"
+          notes="Debug build of \`$BUILD_REF\` at [\`$short\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$BUILD_SHA).
+
+          Download **fylz-debug.apk** below and tap it — no GitHub account needed, and it is a
+          plain APK rather than a zip. This tag always carries the most recent build.
+
+          Built by [run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$title" --notes "$notes" --prerelease
+          else
+            gh release create "$TAG" --title "$title" --notes "$notes" --prerelease --target "$BUILD_SHA"
+          fi
+          gh release upload "$TAG" fylz-debug.apk --clobber
+          echo "Published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/fylz-debug.apk"
 
       - name: Upload lint report on failure
         if: failure() && hashFiles('app/build/reports/lint-results-debug.html') != ''

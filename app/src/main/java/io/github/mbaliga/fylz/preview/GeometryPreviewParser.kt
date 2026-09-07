@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.preview
 
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
+
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
@@ -210,6 +212,23 @@ object GeometryPreviewParser {
         return geometry(vertices, edges, acceptedFaces, vertices.size < vertexCount || acceptedFaces < faceCount, "OFF mesh")
     }
 
+    /**
+     * ASCII DXF only -- a binary (encoded-headers) DXF is refused by [boundedLines]'s UTF-8 decode
+     * long before it would reach here.
+     *
+     * Nine entity types, not four: LINE/LWPOLYLINE/CIRCLE/ARC were this function's whole coverage
+     * until a render of real drawings turned up floor plans and site surveys that are almost
+     * entirely POLYLINE/VERTEX (the pre-LWPOLYLINE encoding AutoCAD itself still writes for some
+     * entity kinds) and POINT survey markers -- both silently dropped, with no signal to the user
+     * that anything had been. 3DFACE/SOLID/TRACE closes the same gap for the planar quads/triangles
+     * 2D mechanical drawings use for hatched or filled regions.
+     *
+     * TEXT/MTEXT/INSERT/SPLINE/ELLIPSE/HATCH/DIMENSION/LEADER are still not drawn -- a block
+     * reference, a curve fit or a dimension string is real modelling work, not a gap in this
+     * parser's group-code bookkeeping -- but they now count toward the entity total the same as
+     * every other unhandled `when` branch already does, rather than pretending the entities were
+     * never in the file.
+     */
     private fun parseDxf(bytes: ByteArray): GeometryPreview {
         val raw = boundedLines(bytes).toList()
         require(raw.size >= 2) { "DXF file is empty." }
@@ -221,10 +240,26 @@ object GeometryPreviewParser {
         var entities = 0
         var index = 0
         var truncated = false
+        // POLYLINE's own points arrive as a run of separate VERTEX entities terminated by SEQEND
+        // -- unlike every other entity here, it cannot be read from one attribute block, so it is
+        // accumulated across iterations and flushed once complete.
+        var pendingPolyline: MutableList<Vec3>? = null
+        var pendingClosed = false
+
+        fun flushPolyline() {
+            val points = pendingPolyline ?: return
+            addPolyline(vertices, edges, points, pendingClosed)
+            pendingPolyline = null
+            pendingClosed = false
+        }
+
         while (index < pairs.size && vertices.size < MAX_VERTICES && edges.size < MAX_EDGES) {
             val (code, value) = pairs[index]
             if (code != 0) { index += 1; continue }
             val type = value.uppercase(Locale.ROOT)
+            // A VERTEX or SEQEND belongs to whichever POLYLINE is already open; anything else
+            // starting here means that one (if any) is finished.
+            if (type != "VERTEX" && type != "SEQEND") flushPolyline()
             val attributes = mutableMapOf<Int, MutableList<String>>()
             index += 1
             while (index < pairs.size && pairs[index].first != 0) {
@@ -245,6 +280,22 @@ object GeometryPreviewParser {
                     addPolyline(vertices, edges, points, (attributes[70]?.firstOrNull()?.toIntOrNull() ?: 0) and 1 == 1)
                     entities += 1
                 }
+                "POLYLINE" -> {
+                    pendingPolyline = mutableListOf()
+                    pendingClosed = (attributes[70]?.firstOrNull()?.toIntOrNull() ?: 0) and 1 == 1
+                }
+                "VERTEX" -> {
+                    val vertex = point(attributes, 10, 20, 30)
+                    val open = pendingPolyline
+                    // A VERTEX with no open POLYLINE (a malformed file, or one truncated by
+                    // MAX_INPUT_BYTES mid-entity) is silently unreachable rather than a crash --
+                    // it will count toward "ignored" the moment the eventual SEQEND is reached.
+                    if (vertex != null && open != null && open.size < MAX_VERTICES) open.add(vertex)
+                }
+                "SEQEND" -> {
+                    if ((pendingPolyline?.size ?: 0) >= 2) entities += 1
+                    flushPolyline()
+                }
                 "CIRCLE" -> {
                     val center = point(attributes, 10, 20, 30)
                     val radius = attributes[40]?.firstOrNull()?.toFloatOrNull()
@@ -259,8 +310,29 @@ object GeometryPreviewParser {
                     if (center != null && radius != null && start != null && end != null && radius > 0f) addArc(vertices, edges, center, radius, start, end)
                     entities += 1
                 }
+                "POINT" -> {
+                    val at = point(attributes, 10, 20, 30)
+                    if (at != null) {
+                        // Drawn as a small cross -- a POINT has no radius or extent of its own to
+                        // render, and zero-length edges are invisible.
+                        val size = 0.5f
+                        addSegment(vertices, edges, Vec3(at.x - size, at.y, at.z), Vec3(at.x + size, at.y, at.z))
+                        addSegment(vertices, edges, Vec3(at.x, at.y - size, at.z), Vec3(at.x, at.y + size, at.z))
+                    }
+                    entities += 1
+                }
+                "3DFACE", "SOLID", "TRACE" -> {
+                    // Four point slots at (10,20,30)/(11,21,31)/(12,22,32)/(13,23,33); a triangle
+                    // repeats its last vertex to fill the fourth, which `distinct()` collapses
+                    // back down before it is drawn as a closed loop.
+                    val points = (10..13).mapNotNull { xCode -> point(attributes, xCode, xCode + 10, xCode + 20) }.distinct()
+                    if (points.size >= 2) addPolyline(vertices, edges, points, closed = true)
+                    entities += 1
+                }
+                "TEXT", "MTEXT", "INSERT", "SPLINE", "ELLIPSE", "HATCH", "DIMENSION", "LEADER" -> entities += 1
             }
         }
+        flushPolyline()
         if (index < pairs.size) truncated = true
         return geometry(vertices, edges, entities, truncated, "ASCII DXF")
     }

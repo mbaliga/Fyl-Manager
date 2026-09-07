@@ -3,12 +3,17 @@ package io.github.mbaliga.fylz.data
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.history.FileHistoryReason
 import io.github.mbaliga.fylz.history.FileHistoryStore
+import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.staging.ShelfStore
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -16,9 +21,25 @@ import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
 import kotlin.coroutines.coroutineContext
 
-class DocumentRepository(context: Context) {
+class DocumentRepository(
+    context: Context,
+    private val shelf: ShelfStore? = null,
+    // Fired once rename() actually mints a new document uri -- the exact same hook
+    // FileOperationService/FileTools take for a move, so the caller supplies one lambda that
+    // updates every identity-keyed store (favorites, tags, history, canvas placement, the
+    // landing subject, the Shelf) and a rename can no longer notify a narrower set of them than
+    // a move does. Left null, rename() falls back to this repository's own three-store handles
+    // below -- the pre-existing behavior for callers that never wire the fuller fan-out.
+    onItemRelocated: ((Uri, Uri) -> Unit)? = null,
+) {
     private val resolver: ContentResolver = context.contentResolver
     private val history = FileHistoryStore(context.applicationContext)
+    private val library = LibraryStore(context.applicationContext)
+    private val relocated: (Uri, Uri) -> Unit = onItemRelocated ?: { old, new ->
+        history.migrateSource(old, new)
+        library.migrateUri(old, new)
+        shelf?.migrateRef(old, new)
+    }
 
     data class TextContent(
         val value: String,
@@ -114,8 +135,12 @@ class DocumentRepository(context: Context) {
 
     suspend fun rename(uri: Uri, newName: String): Uri = withContext(Dispatchers.IO) {
         require(newName.isNotBlank()) { "A new name is required." }
-        DocumentsContract.renameDocument(resolver, uri, newName.trim())
+        val renamed = DocumentsContract.renameDocument(resolver, uri, newName.trim())
             ?: error("The provider could not rename the item.")
+        // Some providers keep the document ID (and therefore the URI) stable across a rename;
+        // only a genuinely new URI needs its identity-keyed metadata carried over.
+        if (renamed != uri) relocated(uri, renamed)
+        renamed
     }
 
     suspend fun copyStream(sourceUri: Uri, destinationUri: Uri): Long = withContext(Dispatchers.IO) {
@@ -188,6 +213,20 @@ class DocumentRepository(context: Context) {
         output.bufferedWriter(Charsets.UTF_8).use { it.write(value) }
     }
 
+    /** Same overwrite contract as [writeText] -- history capture, "wt" with a "w" fallback -- for
+     *  a bitmap instead of text, so [io.github.mbaliga.fylz.ui.AnnotateOverlay] saving a marked-up
+     *  photo over its original participates in the same undo/history system a text edit does. */
+    suspend fun writeBitmap(uri: Uri, bitmap: Bitmap, format: Bitmap.CompressFormat, quality: Int) =
+        withContext(Dispatchers.IO) {
+            history.capture(uri, FileHistoryReason.BEFORE_WRITE)
+            val output = runCatching { resolver.openOutputStream(uri, "wt") }.getOrNull()
+                ?: resolver.openOutputStream(uri, "w")
+                ?: error("The selected provider did not return a writable stream.")
+            output.use { stream ->
+                check(bitmap.compress(format, quality, stream)) { "Unable to encode the image." }
+            }
+        }
+
     suspend fun resolveDisplayName(uri: Uri): String? = withContext(Dispatchers.IO) {
         resolver.query(
             uri,
@@ -198,6 +237,52 @@ class DocumentRepository(context: Context) {
         )?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
+    }
+
+    /**
+     * Single-document metadata fetch, for probing one URI (a Shelf member, say) without a
+     * parent listing. Null on any failure -- an unreadable, deleted, or permission-revoked
+     * document is indistinguishable to a caller from "nothing to show," never an exception.
+     */
+    suspend fun probe(uri: Uri): FileEntry? = withContext(Dispatchers.IO) {
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_FLAGS,
+        )
+        // The Bundle-args overload, not the deprecated 4-String one: DocumentsProvider hard-
+        // refuses the legacy query shape once queried in-process rather than marshalled through
+        // the framework's own Binder round-trip that upgrades it (FileHistoryStore.kt:330-333).
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        runCatching {
+            resolver.query(uri, projection, queryArgs, signal)?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                if (nameIndex < 0 || mimeIndex < 0) return@use null
+                val name = cursor.getString(nameIndex) ?: "Untitled"
+                val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
+                val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+                FileEntry(
+                    uri = uri,
+                    name = name,
+                    mimeType = mimeType,
+                    // Directories that report a junk size are normalized the same way
+                    // listChildren does -- see the COLUMN_SIZE comment there.
+                    sizeBytes = cursor.longOrNull(
+                        cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE),
+                    ).takeUnless { isDirectory },
+                    lastModifiedMillis = cursor.longOrNull(
+                        cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                    ),
+                    flags = cursor.intOrZero(cursor.getColumnIndex(DocumentsContract.Document.COLUMN_FLAGS)),
+                    kind = FileType.classify(name, mimeType),
+                )
+            }
+        }.getOrNull()
     }
 
     private fun android.database.Cursor.longOrNull(index: Int): Long? =

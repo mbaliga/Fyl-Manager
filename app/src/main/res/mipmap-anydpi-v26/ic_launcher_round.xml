@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Fylz launcher icon: an isometric file box with tabbed folders standing in it.
+
+    The artwork is a raster rather than a vector because its palette and linework carry the
+    identity; it is scaled to 64dp on the 108dp adaptive canvas, which is the largest size that
+    still clears a *circular* mask uncropped. Anything larger looked better under the squircle
+    most launchers use and lost the box's bottom corners under the round one.
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.storage
 
 import android.net.Uri
+import io.github.mbaliga.fylz.core.model.ItemCapability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -77,11 +78,21 @@ class StorageModelsTest {
 
     @Test
     fun `the SAF provider never claims picker-free browsing`() {
-        // The one capability that must differ between the two backends: SAF cannot enumerate
-        // storage without a user grant, which is precisely why the File backend exists.
-        assertFalse(StorageCapability.BROWSE_WITHOUT_PICKER in SafStorageProvider().capabilities)
-        assertTrue(StorageCapability.BROWSE_WITHOUT_PICKER in FileStorageProvider().capabilities)
-        assertTrue(StorageCapability.WHOLE_VOLUME in FileStorageProvider().capabilities)
+        // The one distinction that must differ between the two backends: SAF cannot enumerate
+        // storage without a user grant, which is precisely why the File backend exists. It now
+        // lives as a plain boolean rather than an ItemCapability -- see StorageProvider's KDoc.
+        assertFalse(SafStorageProvider().browseWithoutPicker)
+        assertFalse(SafStorageProvider().wholeVolume)
+        assertTrue(FileStorageProvider().browseWithoutPicker)
+        assertTrue(FileStorageProvider().wholeVolume)
+    }
+
+    @Test
+    fun `no provider ever claims the secure-erase capability`() {
+        // Fylz's "Shred" action promises only what software can honestly guarantee -- never
+        // forensic, unrecoverable erasure. This is the executable form of that promise.
+        assertFalse(ItemCapability.SECURE_ERASE_CLAIM in SafStorageProvider().capabilities)
+        assertFalse(ItemCapability.SECURE_ERASE_CLAIM in FileStorageProvider().capabilities)
     }
 
     @Test

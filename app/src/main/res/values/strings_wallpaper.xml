@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream B (wallpaper) owned strings. Deliberately NOT fylz_wallpaper_label or
+    fylz_wallpaper_description: those two are workstream D's, defined in strings_widgets.xml;
+    this file only ever references @string/fylz_wallpaper_description, never defines it.
+-->
+<resources>
+    <string name="wallpaper_picker_title">Wallpaper</string>
+
+    <string name="wallpaper_option_none">None</string>
+
+    <string name="wallpaper_section_solid">Solid colour</string>
+    <string name="wallpaper_section_gradient">Gradient</string>
+    <string name="wallpaper_section_image">Image</string>
+    <string name="wallpaper_choose_image">Choose image…</string>
+    <string name="wallpaper_image_blur_label">Blur</string>
+    <string name="wallpaper_image_dim_label">Dim</string>
+
+    <string name="wallpaper_section_pond">Pond water</string>
+    <string name="wallpaper_option_pond">Pond water</string>
+    <string name="wallpaper_set_as_phone_wallpaper">Set as phone wallpaper</string>
+    <string name="wallpaper_get_animalcules">Get Animalcules</string>
+    <string name="wallpaper_pond_attribution">Pond water · Animalcules</string>
+</resources>

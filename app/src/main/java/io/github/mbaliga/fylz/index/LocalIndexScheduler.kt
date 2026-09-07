@@ -10,7 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import io.github.mbaliga.fylz.library.LibraryStore
-import io.github.mbaliga.fylz.preview.FileFormatRegistry
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext

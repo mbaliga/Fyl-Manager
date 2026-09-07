@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shared card background for all three Fylz app widgets. system_app_widget_background_radius
+     is the platform's own widget corner radius (API 31+), so a Fylz widget always matches
+     whatever radius the current launcher/theme uses instead of guessing a fixed dp value. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/widget_surface" />
+    <corners android:radius="@android:dimen/system_app_widget_background_radius" />
+</shape>

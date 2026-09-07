@@ -104,9 +104,9 @@ motion constants, as Foto Xplorr. See
 [Foto Xplorr's `fonebrew-navigation.md`](https://github.com/mbaliga/Foto-Xplorr/blob/main/docs/fonebrew-navigation.md)
 for the pattern itself.
 
-### Three rooms
+### Four rooms
 
-The file browser is *home*. Three surfaces are parked off its edges:
+The file browser is *home*. Four surfaces are parked off its edges:
 
 - **LEFT — locations.** Every open location as a word wheel, plus the storage home surface and
   "Add a location…". This replaced a numbered chip row that made "which folder am I in" a
@@ -114,13 +114,28 @@ The file browser is *home*. Three surfaces are parked off its edges:
 - **RIGHT — tools and settings.** Recycle Bin, remotes, WebDAV, Tools, the index manager, theme.
   None of these act on the folder you are looking at, which is exactly why they are not in the
   folder's overflow menu.
-- **BOTTOM — recovery.** Operation history, file versions, backups and archive tools.
+- **TOP — details.** What you are looking at, described: a tree of where it lives, then kind,
+  size, timestamp, MIME type, path and tags. Read-only apart from the tree rows, which move you
+  to a folder already on screen.
+- **BOTTOM — actions.** Everything that changes a file: the selection's actions, the folder's own
+  (new folder, new text file, scan to PDF, find duplicates, the AI proposal), and recovery last.
 
-**TOP is reserved.** Nothing claims the pull-down space.
+The vertical pair is meant to be read together: **up is what you are looking at, down is what to
+do about it.** The horizontal pair is *where else you could be* and *what the app itself can do*.
 
 Dragging an edge lifts the browser, shrinks it slightly and parts it to reveal the room; the
 browser stays alive behind, and dragging it back is the way out. Rooms push no back-stack entry;
 Back closes them.
+
+The room arrives scaled from 0.97 and reaches full size exactly as the drag completes — the room
+half of the pattern's reveal note, so both halves of the motion finish together instead of a
+full-size panel sliding under a shrinking card. Scale only, never a fade: material that flows is
+material that was already there. It is implemented in `FylzV1App` rather than in `cell-shell`
+only because Fylz consumes that module; it belongs beside the card's motion, and the melt's edge
+distortion is still unbuilt on both sides.
+
+The top room does not change the pull-down rule that made it possible: the gesture belongs to it
+and to nothing else, so pull-to-refresh stays banned and refresh stays a shake.
 
 ### The edge scrubber
 
@@ -145,11 +160,46 @@ either way, so there is no direction branch to get wrong.
 Same rule as everywhere in the constellation: the pull-down space is reserved, so refresh moved
 off the touch plane. The toolbar button stays for anyone who would rather tap.
 
-### Selection and the action bar
+### The cluster drag and the corner bulges
 
-Selecting entries replaces the bottom bar with a contextual action bar: copy, move, recycle,
-rename, tag, archive, extract, PDF tools, share. Actions appear only when they apply — "Extract"
-needs exactly one archive selected, "PDF tools" needs an all-PDF selection.
+Press-hold on any **selected** row gathers the whole selection into a card cluster under the
+finger; the moment it lifts, the screen's corners grow organic bulges — material swelling out
+of the corner, not panels floating over it. **Actions top-left** (clipboard, move tray, new
+folder, compress), **trash alone bottom-right**: opposite corners, so a sloppy drop can miss
+within a family but never cross from constructive to destructive.
+
+Targets react as the cluster approaches — continuously, driven by one proximity scalar from
+`DropTargetPolicy`, so approach and retreat play the same motion both ways. The trash can
+tilts, lifts and opens its lid; releasing on it pours the cluster in with a genie squeeze.
+The clipboard snaps the files aboard, visibly.
+
+A tray with content keeps a small resting bulge on its corner (count + glyph). Tapping it
+expands the tray: an endlessly looped scroll of the staged files (`LoopedCarousel` owns the
+wrap-around), **pull a card down** to take it back out (with an equivalent accessibility
+action — a gesture is never the only path), and "Paste here" / "Move here" commits into the
+folder on screen through the ordinary journaled operations. A paste into a nested folder
+resolves the destination by walking display names from the granted root — provider-neutral —
+and such operations refuse journal replay rather than risk replaying into the tree root
+(`OperationRetryPolicy.plan`, gated on `ItemIdentity.isRoot`).
+
+The trash bulge is the session's can: what went in during this visit, each item offering
+**Put back** or **Shred**. Shredding is permanent deletion through the existing
+`RecycleBinPolicy` gate, staged behind a confirm with the shredder animation — and its copy is
+deliberately honest: flash translation and wear levelling mean no app can promise forensic
+erasure, so Fylz says "as gone as software can honestly make it" and never "securely erased".
+
+### Selection, and where its actions live
+
+Selecting entries puts a one-line summary across the bottom of the list — how many, "Clear", and
+"Actions" — and the actions themselves are rows in the bottom room. The eleven-button horizontal
+scroller this replaces covered the listing it acted on and needed a sideways swipe to read, so
+its right-hand half was effectively hidden.
+
+`SelectionActionPolicy` decides what applies, and actions appear only when they do: "Rename"
+needs exactly one entry, "Batch rename" at least two, "Extract" exactly one archive, "PDF tools"
+an all-PDF selection, and "Share" no folders — `ACTION_SEND` cannot deliver a directory, so
+offering it produced a share sheet that silently sent nothing. Inapplicable actions are absent
+rather than greyed out; the room is a list read top to bottom, and a shorter one is a faster one.
 
 ### Adaptive layout
 
@@ -179,8 +229,9 @@ Storage home surface          ← the entry point when no location is open
 Rooms
 ├── LEFT    Locations wheel
 ├── RIGHT   Tools & settings
-├── BOTTOM  Recovery → operations, history, backups, archive tools
-└── TOP     (reserved)
+├── TOP     Details → location tree, kind, size, modified, type, path, tags
+└── BOTTOM  Actions → selection, this folder, recovery (operations, history,
+                      backups, archive tools)
 ```
 
 Two organising rules:
@@ -188,11 +239,15 @@ Two organising rules:
 1. **A location is a workspace, not a route.** Multiple locations stay open at once, each with its
    own folder stack. Switching between them in the left room is lateral movement, not navigation
    into or out of anything.
-2. **Capability, not backend, decides what the UI offers.** `StorageCapability` (`CREATE`,
-   `RENAME`, `DELETE`, `RECYCLE_BIN`, `RECURSIVE_SEARCH`, `CONTENT_SEARCH`,
-   `BROWSE_WITHOUT_PICKER`, `WHOLE_VOLUME`) tells the UI what to show. Downstream services are all
-   written against `content://` document URIs, so no service needs to know which backend served a
-   file.
+2. **Capability, not backend, decides what the UI offers.** Each `StorageProvider` declares a
+   `Set<ItemCapability>` (`core-model`'s grouped vocabulary — `CREATE_FILE`, `CREATE_DIRECTORY`,
+   `RENAME`, `TRASH`, `RESTORE_TRASH`, `DELETE_PERMANENT`, `LIST`, `CONTENT_SEARCH` today) plus two
+   plain booleans, `browseWithoutPicker` and `wholeVolume`, for what describes the provider's
+   launch surface rather than an item's operations. Downstream services are all written against
+   `content://` document URIs, so no service needs to know which backend served a file. Nothing
+   consults the capability set yet — declaring it per provider is Phase 1's job; a command
+   declaring what it requires and the UI deriving visibility from that (`core-vfs`'s
+   `CapabilityPolicy`) is Phase 2's.
 
 ---
 
@@ -200,16 +255,34 @@ Two organising rules:
 
 ### Module map
 
+Four pure-JVM Gradle modules — no `android.*`/`androidx.*` import, ever — sit below `app`,
+extracted in Phase 1 (WP-1.3):
+
+| Module | Responsibility |
+|---|---|
+| `core-model` | `ItemRef`/`ItemSnapshot`/`VersionStamp` opaque item identity, `ItemCapability`, `ItemIdentity`, `EntryKind` |
+| `core-vfs` | `CapabilityPolicy` — what a user action requires, in `ItemCapability` terms (built, not yet consulted) |
+| `core-operations` | The operation-journal model (`FileOperation`/`OperationItem`), retry and recovery policy, `JournalSchema` |
+| `core-format` | `FileFormatRegistry`, preview family/depth, the provisional `PreviewLevel` scaffolding |
+
+`core-model` depends on nothing else in the set; the other three depend only on `core-model`,
+never on each other. `app` depends on all four. The operation journal's actual JSON codec stays
+in `app` (`operations/OperationJournal.kt`) rather than `core-operations`, because `org.json.*`
+is part of the Android platform at runtime, not a dependency a pure-JVM module should bundle a
+second copy of.
+
+`app`'s own package map:
+
 | Package | Responsibility |
 |---|---|
-| `storage/` | The two backends, capability model, permission handling, the exported `DocumentsProvider` |
+| `storage/` | The two backends, the `Uri`↔`ItemRef` adapter (`ItemRefs.kt`), permission handling, the exported `DocumentsProvider` |
 | `data/` | `DocumentRepository` (the read/write surface), archives, scan-to-PDF |
-| `operations/` | File operations, the journal, retry policy, recycle bin, duplicate cleanup |
+| `operations/` | File operations, the journal, recycle bin, duplicate cleanup — the durable-record model itself lives in `core-operations` |
 | `browse/` | `SortSpec` and pure sorting; `EntryStops` for the scrubber |
 | `search/` | Recursive search engine and query model |
 | `index/`, `library/` | Local index, smart collections, organisation engine, metadata transfer |
 | `network/` | WebDAV, SFTP, SMB, S3 providers |
-| `preview/` | Format registry, DXF/mesh/geometry parsers, container inspectors |
+| `preview/` | DXF/mesh/geometry parsers, container inspectors — the format registry itself lives in `core-format` |
 | `pdf/` | Page tools, merging, OCR/searchable PDF |
 | `backup/`, `history/` | Scheduled backup and manifests; per-file version history |
 | `ai/` | BYOK client, transmission policy, key vault, local model management |
@@ -249,15 +322,29 @@ A recurring pattern worth noticing: decisions that could be scattered through se
 extracted into named, pure policy objects — `ArchiveExtractionPolicy`, `ArchiveSpacePolicy`,
 `RecycleBinPolicy`, `DuplicateCleanupPolicy`, `OperationRetryPolicy`, `BackupManifestPolicy`,
 `AiTransmissionPolicy`, `SmartCollectionPolicy`, `DesktopWorkspacePolicy`,
-`KeyboardShortcutPolicy`. Each is testable without a device, and each names a decision that would
-otherwise be an unexamined `if` inside a service.
+`KeyboardShortcutPolicy`, `SelectionActionPolicy`, `ItemIdentity`, `CapabilityPolicy`. Each is
+testable without a device, and each names a decision that would otherwise be an unexamined `if`
+inside a service. `ItemIdentity.isRoot` in particular replaced a raw `Uri` path-segment
+inspection inside `OperationRetryPolicy` with a real correctness fix: two differently-spelled
+URIs naming the same tree root now compare equal, where the old string-based check saw them as
+different destinations and wrongly refused a valid batch retry.
+
+The rooms follow the same rule for what they *say*, not only what they do: `EntryDetails` and
+`locationTree` are framework-free, so the details room's wording and shape are unit-testable —
+which matters most for the one surface whose entire job is to be accurate.
 
 ### Testing
 
 The pure layers carry the tests: sorting (`sortEntries`), scrubber stops (`EntryStops`), the
+details room's facts and tree (`EntryDetails`, `LocationTree`), the selection rules
+(`SelectionActionPolicy`), the
 shared-volume suppression (`StorageRoot.isOnSharedVolume`, which is quietly bad in *both*
 directions if wrong — too eager and a cloud provider vanishes, too shy and the padlock rows come
 back), the policies, the archive and backup manifest logic, and the search query model.
+
+The four `core-*` modules run as plain JVM `test` tasks (`:core-model:test`, `:core-vfs:test`,
+`:core-operations:test`, `:core-format:test`) — no Robolectric, no device, no `Context` — which
+is the actual point of extracting them, not just a smaller diff.
 
 CI runs two workflows: `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug`, and a
 release-readiness job that additionally runs `:app:lintRelease :app:assembleRelease` and captures
@@ -281,8 +368,11 @@ could not be built without Gradle already on `PATH`, and nothing pinned which ve
 - **Kotlin 2.1.20 diverges from the constellation's 2.1.0.** The AGP/Gradle lockstep is codified;
   the Kotlin half is not, and Fylz is the repo that diverges. It consumes 2.1.0-built metadata
   from the shared modules fine today (forward-compatible), but this is the gap to close.
-- **The top room is reserved but not built.**
+- **The details room describes one subject at a time.** With several entries selected it drops to
+  a count, a total and a breakdown by kind; there is no per-entry list.
+- **The location tree is windowed at eight children.** A folder with more says how many it left
+  out. It is a map of where you are, not a second file listing.
 - **The scrubber appears only when there is a listing to map** — not on the storage home surface,
-  and not while a selection has taken over the bottom bar.
+  and not while a selection is live.
 - **`MANAGE_EXTERNAL_STORAGE` is a sensitive permission.** The app is fully usable without it,
   running entirely on SAF; granting it removes picker round-trips for local storage only.

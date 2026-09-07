@@ -46,12 +46,38 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Consolidated operations, file history, backups, backup import and archive tools into a primary Recovery destination.
 - Removed independent global floating recovery controls.
 - Added explicit labels and content descriptions for recovery actions.
+- Added a **details** room on the previously reserved top edge: a tree of where the selected file or folder lives, plus kind, size, modified time, MIME type, path and tags. Sizes and timestamps a provider declines to report are stated as not reported rather than shown as `0 B` or 1970.
+- Turned the bottom room into **actions**: the selection's actions, the folder's own (new folder, new text file, scan to PDF, find duplicates, AI organize proposal), and storage & recovery as its last section.
+- Replaced the eleven-button horizontally scrolling selection bar with a one-line summary that opens the actions room, and retired the file browser's overflow menu.
+- Actions now appear only when they apply, decided by a testable `SelectionActionPolicy`: rename needs one entry, batch rename two or more, extract exactly one archive, PDF tools an all-PDF selection.
+- Stopped offering Share for selections containing a folder; `ACTION_SEND` cannot deliver a directory, so the share sheet appeared and nothing arrived.
+- Corrected entry-kind wording throughout the browser — "Folder" and "PDF" rather than "Directory" and "Pdf".
+- Rooms now arrive scaled from 0.97 and reach full size as the drag completes, instead of sliding in at full size under the lifting file browser.
+- Made the top bar's folder title a 48dp target that opens the details room, for anyone who would rather tap than drag.
+- Added the cluster drag: press-hold a selected row to gather the selection under the finger, with organic corner bulges as drop targets — clipboard/move/new-folder/compress top-left, trash bottom-right. The trash tilts, lifts and opens its lid as files approach; dropping pours them in with a genie squeeze; the clipboard snaps them visibly aboard.
+- Added persistent tray bulges while staged content exists: tap to browse in an endlessly looped strip, pull a card down (or use its accessibility action) to unstage, "Paste here"/"Move here" commits into the folder on screen via the journaled operations — nested folders resolved by walking display names, never by parsing provider IDs.
+- Added the session trash bulge with Put back and **Shred**. Shredding permanently deletes through the existing recycle-bin gate with honest copy: no secure-erase claims, ever — flash storage makes them a lie.
+- Subfolder-destination operations refuse journal replay rather than risk replaying into the tree root (`OperationRetryPolicy.isReplayableDestination`).
 
 ### Release engineering
 
 - Added debug CI and release-readiness workflows.
+- Made Android CI manually triggerable (`workflow_dispatch`).
+- Lockstepped Kotlin with the constellation (2.1.20 → 2.1.0, matching both submodules), with a guard test that fails the build on AGP/Kotlin/Compose-plugin drift across the composite.
+- Added a theme-ownership guard test: `MaterialTheme(...)` outside `FylzTheme` fails the build — the bare-MaterialTheme bug shipped three times and is now structurally impossible.
+- Added crash-injection tests simulating process death at every journaled operation transition; recovery now marks QUEUED items of an interrupted operation as interrupted instead of leaving them looking "still waiting" forever.
+- Added a behavioral contract test suite that both storage backends must pass, with capability-gated skips — the gate every future provider must clear.
 - Added release lint, R8 release assembly and dependency graph artifacts.
 - Added third-party notices, signing/upgrade procedure and real-device/provider acceptance matrix.
+
+### Internal architecture (Phase 1)
+
+- Extracted four pure-JVM Gradle modules — `core-model`, `core-vfs`, `core-operations`, `core-format` — carrying opaque item identity, the capability vocabulary, the operation-journal model and policies, and the format registry, so their tests run off-device.
+- Replaced ad hoc `Uri`-based identity in the operation journal with `ItemRef`, an opaque provider/location/item triple; added the one adapter (`ItemRefs.kt`) allowed to know what a SAF `Uri`'s segments mean.
+- Fixed a latent retry bug where two differently-spelled URIs naming the same destination tree root compared unequal and wrongly blocked a valid batch retry.
+- Versioned the operation journal's on-disk format (`schemaVersion`), with shape-based decoding so old, unversioned records keep loading after the upgrade.
+- Expanded the eight-value storage capability enum into `core-model`'s grouped `ItemCapability` vocabulary; both storage backends now declare their capabilities against it. Not yet consulted by any command — that wiring is Phase 2.
+- Wired previously-dormant identity-preserving migration into rename: file history and library favorites/tags now follow a renamed item instead of orphaning under its old URI.
 
 ### Known pre-release requirements
 

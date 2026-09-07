@@ -21,7 +21,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.preview.FileFormatDescriptor
+import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

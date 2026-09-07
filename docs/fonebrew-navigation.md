@@ -28,13 +28,30 @@ navigation act and it happens **on the content**, not through chrome.
 - Pulling down from the top of any room reveals a space ABOVE it — the top room. The reveal
   is a **fluid melt** (the bar/notch area stretches and flows open around the pull, like the
   video's island morphing around focus), never a rectangular slide or a fade.
-- **Because the pull-down owns that space, no other gesture may claim pull-down.** This is
-  why pull-to-refresh / pull-to-backup are banned everywhere in the constellation.
-- The top room is NOT yet required in any app (owner, 2026-08-05). What is required now is
-  keeping its gesture unclaimed and its copy off the screen — no "PULL TO …" static text.
+- **The top room owns pull-down starting in a fixed band at the very top of a room — in this
+  repo, `SpatialShell`'s `EDGE_DP` (56dp), claimed on `PointerEventPass.Initial` before any
+  content beneath it ever sees the pointer.** Nothing may out-race that claim, and nothing here
+  changes that: a pull starting inside those 56dp still opens the top room, always, in every app.
+- **Below that band is a different question, and Fylz (Build 10) answers it differently than the
+  first cut of this rule did.** The original wording banned pull-to-refresh *and everything else
+  pull-down* everywhere below the band too, on the theory that the gesture belonged to the top
+  room full stop. Fylz now reveals search that way: pulling down on a listing that is already at
+  its own absolute top, starting below the shell's 56dp claim, reveals a search field above the
+  listing (`ui/search/PullDownSearch.kt`) rather than doing nothing. That is a narrowing of the
+  old rule, not its repeal — pull-to-refresh and pull-to-backup stay banned, refresh stays a
+  shake (below), and the top room's own 56dp claim is never contested, only the space past it.
+  An app adopting this pattern that has nothing to put below the band leaves it unclaimed, same
+  as an app with nothing for the top room itself leaves that slot null.
+- The top room is NOT required in any app (owner, 2026-08-05). What is required is keeping its
+  gesture unclaimed and its copy off the screen — no "PULL TO …" static text. An app that has
+  something worth putting up there may build it; Fylz did (details), Foto Xplorr's is
+  notifications and alerts. An app with nothing to put there leaves the slot null, and the
+  shell then refuses top drags outright rather than opening a void.
 
 **Refresh is a shake**, not a pull (`ShakeToRefresh` in this repo, `hyle/ShakeToRefresh.kt`).
-A deliberate physical gesture that needs no affordance copy and competes with no scroll.
+A deliberate physical gesture that needs no affordance copy and competes with no scroll — this
+holds regardless of the top-room carve-out above, since revealing search is not refreshing
+anything and claims none of the space refresh was ever moved off of.
 
 ## What fonebrew navigation is NOT
 
@@ -43,20 +60,30 @@ These are the things the first test builds got wrong. Do not reintroduce them:
 - **No hamburger menu** as the primary way into navigation. The rail is reachable by edge
   swipe and lives *over the content*; a small header affordance may open it but must not be
   a `Menu` icon opening a drawer-style list.
-- **No bottom `NavigationBar` / tab bar.** (Fylz shipped "Files / Recovery" tabs — wrong.)
+- **No bottom `NavigationBar` / tab bar picking between app sections.** (Fylz shipped
+  "Files / Recovery" tabs — wrong; Recovery is a room now.) This is about a *second*,
+  app-level nav surface competing with the rail — it is not a ban on tabs as a word. Build 9
+  gave the browser folder tabs (multiple open folders, opened and closed by what the session
+  is doing) living in a strip inside the command pill; Build 10 restyled and relocated that
+  strip to its own bottom band (`ui/chrome/TabBand.kt`, overlapping folder-shaped tabs on a
+  black plinth, per the owner's exact Figma spec) without changing what it IS — it still
+  floats over the content of the one room that has folders open, and it is still reachable the
+  same way through the rail's own word-wheel when no folder is open. That is content-scoped
+  navigation for a place you're already in, the same category as the up-arrow beside it — not
+  a rival to the rail for "which section of the app am I in."
 - **No full-screen Material settings dialogs.** Settings slide in as a panel over the room
   (Foto Xplorr's `SlideInPanel` from the right is the shape); a centered `AlertDialog`-style
   "Gallery settings" card is wrong.
 - **No static instructional copy in gesture spaces** ("PULL TO CREATE BACKUP"). If a gesture
   needs a permanent caption, the gesture is wrong.
 
-## Where each app stands (2026-08-05)
+## Where each app stands (2026-08-05; Fylz row 2026-08-09)
 
 | App | Has | Needs |
 |---|---|---|
 | fonebrew (IDE-core) | rooms implementation (`ui/rooms/`) | is the reference |
 | Foto Xplorr | nine destinations + `SlideInPanel` rail exists, but presented behind a hamburger; settings are a Material dialog | word-wheel rail presentation + motion; settings → slide-in panel; hamburger retired |
-| Fylz | neither — hamburger-less but bottom tabs, chip tabs, Material tools screen (light) | full pattern adoption; one theme |
+| Fylz | full pattern: word-wheel rail, edge scrubber, shake-to-refresh, one theme, and all four rooms (locations, tools, details, actions) | — |
 | csapp / assay | standard Material consoles | pattern adoption once the two testable apps validate it |
 
 ## Motion notes for the implementer

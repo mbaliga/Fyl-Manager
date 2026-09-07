@@ -4,10 +4,56 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.TreeMap
+import java.util.TreeSet
 import java.util.UUID
 
 data class FavoriteLocation(val uri: Uri, val name: String)
 data class SavedSearch(val id: String, val name: String, val query: String)
+
+/**
+ * Every tag across [perItemTags], folded case-insensitively the same way [LibraryStore.tags]
+ * folds one item's own set. What a *multi-item* tag dialog should seed its editable field with --
+ * every tag any selected item carries -- rather than only the first selected item's own tags,
+ * which is today's bug (`FylzV1App.kt`'s `TagDialog` call site seeds from
+ * `selectedEntries.firstOrNull()`).
+ */
+fun unionOfTags(perItemTags: Collection<Set<String>>): Set<String> =
+    caseInsensitiveTagSet().apply { perItemTags.forEach(::addAll) }
+
+/**
+ * What one item's own tags become after a multi-item edit of [unionOfTags]'s seeded field:
+ * [existing] plus whatever the user added to that union ([after] minus [before]), minus whatever
+ * they removed from it ([before] minus [after]). A tag [existing] already carried, that the
+ * union-edit never touched -- present in both [before] and [after], or in neither -- survives
+ * untouched.
+ *
+ * This is the fix for the other half of today's bug: `TagDialog`'s `onConfirm` calls
+ * `library.setTags(it.uri, tags)` for every selected entry with the *same* freshly-typed list,
+ * silently overwriting every entry but the first with tags it never had and erasing whichever of
+ * its own tags weren't also the first entry's. The correct edit is per-item and additive/
+ * subtractive against each item's *own* existing tags, computed here as:
+ * ```
+ * val before = unionOfTags(selectedEntries.map { library.tags(it.uri) })  // seeds the dialog
+ * // ...user edits the field, producing `after`...
+ * selectedEntries.forEach { entry ->
+ *     library.setTags(entry.uri, applyTagDelta(library.tags(entry.uri), before, after))
+ * }
+ * ```
+ * All three sets are compared case-insensitively, matching [LibraryStore.tags]'s own ordering, so
+ * retyping a tag in a different case is a genuine remove-and-add rather than silently either "no
+ * change" or two unrelated tags.
+ */
+fun applyTagDelta(existing: Set<String>, before: Set<String>, after: Set<String>): Set<String> {
+    val beforeSet = caseInsensitiveTagSet(before)
+    val afterSet = caseInsensitiveTagSet(after)
+    val added = caseInsensitiveTagSet(afterSet).apply { removeAll(beforeSet) }
+    val removed = caseInsensitiveTagSet(beforeSet).apply { removeAll(afterSet) }
+    return caseInsensitiveTagSet(existing).apply { addAll(added); removeAll(removed) }
+}
+
+private fun caseInsensitiveTagSet(source: Collection<String> = emptyList()): TreeSet<String> =
+    TreeSet<String>(String.CASE_INSENSITIVE_ORDER).apply { addAll(source) }
 
 enum class SmartRuleField {
     NAME,
@@ -69,6 +115,122 @@ class LibraryStore(context: Context) {
     @Synchronized
     fun setTags(uri: Uri, tags: Collection<String>) {
         preferences.edit().putStringSet(TAG_PREFIX + uri.toString(), normalizeTags(tags)).commit()
+    }
+
+    /**
+     * Every tag in use across the whole library, with how many items carry it -- the same
+     * `preferences.all` prefix scan [exportJson] already runs, generalised into something a
+     * browsing UI can read instead of only an export sink.
+     *
+     * Folded case-insensitively, same as [tags]'s own ordering and how `FylzSearch`'s `TagFacet`
+     * matches a `tag:` query: two items tagged "Work" and "work" are one tag two items carry, not
+     * two the user has to notice are the same thing and reconcile by hand. [TreeMap]'s
+     * comparator-equal keys keep whichever spelling was inserted first rather than being replaced
+     * by the next one seen, so sorting keys before scanning (same as [exportJson]) makes the
+     * display spelling deterministic run to run.
+     *
+     * `preferences.all` copies the entire SharedPreferences map on every call -- cheap enough for
+     * the settings export this scan was lifted from, not cheap enough to call from inside
+     * composition on every recomposition. Callers must cache the result themselves (`remember`
+     * against whatever version counter they bump on write, the `tagsVersion` idiom) rather than
+     * call this fresh every time a composable using it recomposes.
+     */
+    @Synchronized
+    fun allTags(): Map<String, Int> {
+        val counts = TreeMap<String, Int>(String.CASE_INSENSITIVE_ORDER)
+        preferences.all.keys.asSequence()
+            .filter { it.startsWith(TAG_PREFIX) }
+            .sorted()
+            .forEach { key ->
+                preferences.getStringSet(key, emptySet()).orEmpty().forEach { tag ->
+                    val trimmed = tag.trim()
+                    if (trimmed.isNotEmpty()) counts[trimmed] = (counts[trimmed] ?: 0) + 1
+                }
+            }
+        return counts
+    }
+
+    /**
+     * Every item carrying [tag], case-insensitively -- exactly how `TagFacet` matches a `tag:`
+     * query, so a tag browser's own filter and the search box's `tag:<name>` never disagree about
+     * which items qualify. Same whole-map scan, and the same caching obligation, as [allTags].
+     */
+    @Synchronized
+    fun itemsWithTag(tag: String): List<Uri> {
+        val needle = tag.trim()
+        if (needle.isEmpty()) return emptyList()
+        return preferences.all.keys.asSequence()
+            .filter { it.startsWith(TAG_PREFIX) }
+            .filter { key ->
+                preferences.getStringSet(key, emptySet()).orEmpty().any { it.equals(needle, ignoreCase = true) }
+            }
+            .map { Uri.parse(it.removePrefix(TAG_PREFIX)) }
+            .sortedBy { it.toString() }
+            .toList()
+    }
+
+    /**
+     * Drops the `tags:` record for each of [removed] -- for a caller that just deleted those
+     * items and knows, with certainty, that their tags no longer describe anything real. Nothing
+     * in the app calls this yet; deleting an item today leaves its tags behind forever, and this
+     * is the hook a deletion path wires up to stop that.
+     *
+     * Deliberately not [CanvasLayoutStore][io.github.mbaliga.fylz.canvas.CanvasLayoutStore]'s
+     * `prune(scope, present)` shape, even though the two stores otherwise share an author: that
+     * one is safe to express as "keep only what's `present`" because its records are already
+     * scoped to one location's own children. Tags have no such scope -- one URI's `tags:` key can
+     * be the only trace of a file the user browsed to once, months ago, from anywhere on the
+     * device -- so a caller can only ever safely name what it just, itself, deleted; there is no
+     * "present" superset it could assemble instead without silently erasing tags on everything it
+     * didn't happen to be looking at.
+     *
+     * @return how many records were actually present and dropped, for a caller that wants to
+     *   report it.
+     */
+    @Synchronized
+    fun pruneOrphanedTags(removed: Collection<Uri>): Int {
+        if (removed.isEmpty()) return 0
+        val editor = preferences.edit()
+        var pruned = 0
+        removed.forEach { uri ->
+            val key = TAG_PREFIX + uri.toString()
+            if (preferences.contains(key)) {
+                editor.remove(key)
+                pruned += 1
+            }
+        }
+        if (pruned > 0) check(editor.commit()) { "Unable to prune orphaned tags." }
+        return pruned
+    }
+
+    /** Preserves favorites and tags after a provider returns a new URI for rename or move. */
+    @Synchronized
+    fun migrateUri(oldUri: Uri, newUri: Uri): Boolean {
+        if (oldUri == newUri) return false
+        var changed = false
+
+        val current = favorites()
+        val favoriteIndex = current.indexOfFirst { it.uri == oldUri }
+        if (favoriteIndex >= 0) {
+            val migrated = current.toMutableList()
+            migrated[favoriteIndex] = migrated[favoriteIndex].copy(uri = newUri)
+            preferences.edit().putString(FAVORITES, encodeFavorites(migrated).toString()).commit()
+            changed = true
+        }
+
+        val oldTagsKey = TAG_PREFIX + oldUri.toString()
+        val oldTags = preferences.getStringSet(oldTagsKey, null)
+        if (oldTags != null) {
+            val newTagsKey = TAG_PREFIX + newUri.toString()
+            val merged = oldTags + preferences.getStringSet(newTagsKey, emptySet()).orEmpty()
+            preferences.edit()
+                .remove(oldTagsKey)
+                .putStringSet(newTagsKey, merged)
+                .commit()
+            changed = true
+        }
+
+        return changed
     }
 
     @Synchronized

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream K (the tactile control kit - io.github.mbaliga.fylz.ui.tactile) owned strings.
+    Everything else the kit surfaces to a screen reader is caller-supplied (TactileToggleOption
+    .contentDescription, TactileField's label/placeholder/error message, TactileButton/IconKey's
+    own text) and resourced at THOSE call sites instead. The CLI theme's own bracket notation
+    ("[x]", "[ ]", "[ label ]", "> ") is the fixed ASCII vocabulary the Build 11.5 spec itself
+    specifies for that theme - punctuation, not prose - so it stays a literal in the Kotlin
+    source the same way the chrome band's fixed glyphs do (see ChromeTokens.kt's own note).
+-->
+<resources>
+    <string name="tactile_switch_on">On</string>
+    <string name="tactile_switch_off">Off</string>
+    <!-- %1$d is the current value as a 0-100 percent; kept as its own resource (rather than a
+         Kotlin string template) so a locale that formats percentages differently isn't stuck with
+         one fixed "%d%%" shape. -->
+    <string name="tactile_slider_value_percent">%1$d%%</string>
+</resources>

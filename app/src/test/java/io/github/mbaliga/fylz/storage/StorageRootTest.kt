@@ -59,4 +59,32 @@ class StorageRootTest {
         // suppressed on a guess.
         assertFalse(root(null).isOnSharedVolume)
     }
+
+    /**
+     * `readyToOpen` exists because `opensDirectly` alone answers "does this need a grant" wrong
+     * for a REMOTE root -- caught by actually rendering StorageRootRow, which put a "still needs
+     * a grant" lock badge on a saved connection that needs no grant at all.
+     */
+    @Test
+    fun `a remote root is ready to open despite carrying no SAF uris`() {
+        val remote = StorageRoot(id = "remote:nas-1", title = "Office NAS", kind = StorageRootKind.REMOTE)
+
+        assertFalse(remote.opensDirectly)
+        assertTrue(remote.readyToOpen)
+    }
+
+    @Test
+    fun `a non-remote root without SAF uris still needs a grant`() {
+        val shortcut = StorageRoot(id = "shortcut", title = "Add a location", kind = StorageRootKind.PICKER_SHORTCUT)
+
+        assertFalse(shortcut.opensDirectly)
+        assertFalse(shortcut.readyToOpen)
+    }
+
+    @Test
+    fun `a directly-openable root is ready to open`() {
+        val uri = Uri.parse("content://com.android.externalstorage.documents/tree/primary%3APictures")
+
+        assertTrue(root(uri).readyToOpen)
+    }
 }

@@ -42,19 +42,21 @@ fun entryStops(
     return stops
 }
 
-/** The label a single entry contributes under [field]. */
+/**
+ * The label a single entry contributes under [field].
+ *
+ * Built entirely from the bucket functions below ([initialOf], [monthBand], [sizeBand],
+ * [extensionBand]) rather than inlining the logic here, because `GroupedListing`'s Stacks
+ * grouper keys off the same buckets. One definition each means the strip and a Stacks header can
+ * never disagree about where a bucket starts.
+ */
 private fun keyFor(field: SortField, zoneId: ZoneId, locale: Locale): (FileEntry) -> String {
     val month = DateTimeFormatter.ofPattern("MMM yy", locale).withZone(zoneId)
     return when (field) {
         SortField.NAME -> { entry -> initialOf(entry.name, locale) }
-        SortField.MODIFIED -> { entry ->
-            entry.lastModifiedMillis
-                ?.takeIf { it > 0L }
-                ?.let { month.format(Instant.ofEpochMilli(it)) }
-                ?: UNDATED
-        }
+        SortField.MODIFIED -> { entry -> monthBand(entry.lastModifiedMillis, month) }
         SortField.SIZE -> { entry -> sizeBand(entry.sizeBytes) }
-        SortField.TYPE -> { entry -> entry.extension.uppercase(locale).ifEmpty { NO_EXTENSION } }
+        SortField.TYPE -> { entry -> extensionBand(entry, locale) }
     }
 }
 
@@ -69,6 +71,20 @@ internal fun initialOf(name: String, locale: Locale = Locale.getDefault()): Stri
     val first = name.firstOrNull { !it.isWhitespace() } ?: return NON_ALPHA
     return if (first.isLetter()) first.uppercase(locale) else NON_ALPHA
 }
+
+/**
+ * The month [lastModifiedMillis] falls in per [formatter], or [UNDATED] when there is no
+ * timestamp to trust.
+ *
+ * [formatter] is built once by the caller rather than inside this function: it runs once per
+ * entry in a folder that may hold thousands, and re-parsing the `"MMM yy"` pattern that often
+ * would be wasted work every caller can avoid by building it once up front.
+ */
+internal fun monthBand(lastModifiedMillis: Long?, formatter: DateTimeFormatter): String =
+    lastModifiedMillis
+        ?.takeIf { it > 0L }
+        ?.let { formatter.format(Instant.ofEpochMilli(it)) }
+        ?: UNDATED
 
 /**
  * Which order-of-magnitude band a size falls in.
@@ -88,6 +104,10 @@ internal fun sizeBand(sizeBytes: Long?): String = when {
     sizeBytes < 1_024L * 1_024 * 1_024 -> "MB"
     else -> "GB"
 }
+
+/** The extension bucket [entry] falls under, or [NO_EXTENSION] for a name that has none. */
+internal fun extensionBand(entry: FileEntry, locale: Locale): String =
+    entry.extension.uppercase(locale).ifEmpty { NO_EXTENSION }
 
 private const val NON_ALPHA = "#"
 private const val UNDATED = "—"

@@ -273,6 +273,18 @@ class LocalIndexScanner(private val context: Context) {
     private data class Node(val file: DocumentFile, val parentUri: String?, val depth: Int)
 }
 
+/**
+ * Not wired to any UI -- [io.github.mbaliga.fylz.index.LocalIndexScheduler] is the scheduler
+ * `IndexManagerActivity`/`PostV1ToolsActivity` actually construct, and its
+ * [io.github.mbaliga.fylz.index.LocalIndexStore] is the index `FylzSearch` reads. This class,
+ * [LocalIndexWorker] and [LocalIndexStore] above are an earlier, unreferenced parallel
+ * implementation kept only because nothing calls `rebuild()`/`cancel()` here to notice it's
+ * unused; [WORK_NAME] used to collide with the wired scheduler's identical literal, so a call to
+ * either scheduler's `enqueueUniqueWork` would silently replace or cancel the other's job under
+ * WorkManager's own unique-work identity. Renamed here rather than removed -- the smaller, purely
+ * additive fix for now, and it means a future rewire to this implementation is not a de-collision
+ * problem too.
+ */
 class LocalIndexScheduler(private val context: Context) {
     fun rebuild() {
         val request = OneTimeWorkRequestBuilder<LocalIndexWorker>()
@@ -289,7 +301,7 @@ class LocalIndexScheduler(private val context: Context) {
 
     fun cancel() = WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
 
-    companion object { const val WORK_NAME = "fylz-local-index-rebuild" }
+    companion object { const val WORK_NAME = "fylz-local-index-rebuild-unwired" }
 }
 
 class LocalIndexWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {

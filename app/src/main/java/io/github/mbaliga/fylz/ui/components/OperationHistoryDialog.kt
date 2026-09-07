@@ -15,22 +15,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,10 +32,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import io.github.mbaliga.fylz.operations.FileOperation
-import io.github.mbaliga.fylz.operations.FileOperationType
-import io.github.mbaliga.fylz.operations.OperationRetryPolicy
-import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationRetryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
 import java.text.DateFormat
 import java.util.Date
 
@@ -77,9 +74,11 @@ fun OperationHistoryDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close operation history")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close operation history",
+                        onClick = onDismiss,
+                    )
                 }
 
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
@@ -119,20 +118,21 @@ fun OperationHistoryDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    TextButton(
+                    // Kept its own DeleteSweep icon out of TactileButton's cap: the kit's own
+                    // contract carries a text label only (no leading-icon slot) -- see this
+                    // package's own KDoc contract. Icon dropped, action + enabled logic unchanged.
+                    TactileButton(
+                        text = "Clear finished",
                         onClick = onClearFinished,
+                        style = TactileButtonStyle.SECONDARY,
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
                                 it.state == OperationState.CANCELLED
                         },
-                    ) {
-                        Icon(Icons.Outlined.DeleteSweep, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Clear finished")
-                    }
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Button(onClick = onDismiss) { Text("Done") }
+                    TactileButton(text = "Done", onClick = onDismiss, style = TactileButtonStyle.PRIMARY)
                 }
             }
         }
@@ -209,17 +209,20 @@ private fun OperationHistoryCard(
                     )
                 }
                 if (OperationRetryPolicy.canRetry(operation)) {
-                    OutlinedButton(onClick = onRetry) {
-                        Icon(Icons.Outlined.Replay, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text(OperationRetryPolicy.actionLabel(operation))
-                    }
+                    // Same icon-drop note as "Clear finished" above.
+                    TactileButton(
+                        text = OperationRetryPolicy.actionLabel(operation),
+                        onClick = onRetry,
+                        style = TactileButtonStyle.SECONDARY,
+                    )
                 }
             }
             if (operation.state in dismissibleStates) {
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Outlined.Close, contentDescription = "Dismiss operation record")
-                }
+                TactileIconKey(
+                    icon = Icons.Outlined.Close,
+                    contentDescription = "Dismiss operation record",
+                    onClick = onDismiss,
+                )
             }
         }
     }

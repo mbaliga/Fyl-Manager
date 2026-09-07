@@ -10,20 +10,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -46,12 +46,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.util.formatBytes
 
 /**
  * The launch surface that replaces the bare `Text("Open a folder to begin")` empty state.
@@ -64,6 +68,15 @@ import io.github.mbaliga.fylz.storage.StorageRootKind
  *
  * Rows are 56dp tall with 8dp vertical padding around a 40dp icon, clearing DESIGN.md's 48dp
  * minimum touch target, and every icon-only affordance carries a semantic label.
+ *
+ * Deliberately the one home surface with no selection: [StorageRootRow] renders a
+ * [io.github.mbaliga.fylz.storage.StorageRoot] -- internal storage, a removable volume, a
+ * standard folder shortcut, a remote -- never a [io.github.mbaliga.fylz.model.FileEntry]. A root
+ * is a place you navigate into, not a member of a cut/copy/delete selection, so there is nothing
+ * here for a long-press to add to one. [io.github.mbaliga.fylz.ui.canvas.SubjectList],
+ * [io.github.mbaliga.fylz.ui.canvas.BentoMosaic] and [io.github.mbaliga.fylz.ui.canvas.SubjectCanvas]
+ * carry the selection this build restores; this screen is upstream of all three and stays out of
+ * it on purpose.
  */
 @Composable
 fun StorageHomeScreen(
@@ -72,6 +85,11 @@ fun StorageHomeScreen(
     onOpenRemotes: () -> Unit,
     modifier: Modifier = Modifier,
     refreshKey: Int = 0,
+    // The floating chrome (tab band, live-selection row) the outer workspace stacks at its own
+    // Box level -- see FylzV1App.kt's bottomChromeReserve. Zero on this surface in practice (no
+    // tab is open while it shows), threaded through anyway so a future caller that does have
+    // chrome to clear does not need this signature to change again.
+    bottomReserve: Dp = 0.dp,
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
@@ -94,15 +112,19 @@ fun StorageHomeScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val groups by produceState(
-        initialValue = emptyList<StorageRootGroup>(),
+    // Null means "haven't heard back yet"; an empty list is a real, resolved answer -- collapsing
+    // the two into one boolean is what used to spin the loading indicator forever on a location
+    // that genuinely has nothing to show.
+    val groups by produceState<List<StorageRootGroup>?>(
+        initialValue = null,
         key1 = refreshKey,
         key2 = ready,
     ) {
         value = StorageAccess.available(context).flatMap { it.rootGroups(context) }
     }
 
-    val loading = groups.isEmpty() && ready
+    val loading = groups == null && ready
+    val resolvedGroups = groups.orEmpty()
 
     Column(modifier.fillMaxSize()) {
         if (!ready) {
@@ -129,8 +151,11 @@ fun StorageHomeScreen(
             return@Column
         }
 
-        LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-            groups.forEach { group ->
+        // contentPadding is fixed breathing room below the last row; it does not know about the
+        // gesture nav bar's device-dependent inset, which is why the footer below also carries
+        // navigationBarsPadding() -- without it the caption clips under the gesture bar.
+        LazyColumn(contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp + bottomReserve)) {
+            resolvedGroups.forEach { group ->
                 item(key = "header:${group.title}") {
                     Text(
                         group.title.uppercase(),
@@ -142,26 +167,46 @@ fun StorageHomeScreen(
                 items(group.roots, key = { "${group.title}:${it.id}" }) { root ->
                     StorageRootRow(
                         root = root,
-                        onClick = { if (root.opensDirectly) onOpenRoot(root) else onPickFolder(root) },
+                        onClick = { if (root.readyToOpen) onOpenRoot(root) else onPickFolder(root) },
+                    )
+                }
+            }
+
+            if (resolvedGroups.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        stringResource(R.string.storage_home_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 24.dp),
                     )
                 }
             }
 
             item(key = "footer-actions") {
                 Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+                    Modifier.fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
+                        .navigationBarsPadding(),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Button(onClick = { onPickFolder(null) }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Icon(Icons.Outlined.Add, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.storage_home_add_folder))
+                    // The gate card's "Use picker" button is this exact action -- showing both
+                    // is the same affordance twice on one screen. Icon dropped: TactileButton
+                    // carries a text label only, no leading-icon slot.
+                    if (ready) {
+                        TactileButton(
+                            text = stringResource(R.string.storage_home_add_folder),
+                            onClick = { onPickFolder(null) },
+                            style = TactileButtonStyle.SECONDARY,
+                            fillWidth = true,
+                        )
                     }
-                    Button(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Icon(Icons.Outlined.Cloud, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.storage_home_remotes))
-                    }
+                    TactileButton(
+                        text = stringResource(R.string.storage_home_remotes),
+                        onClick = onOpenRemotes,
+                        style = TactileButtonStyle.SECONDARY,
+                        fillWidth = true,
+                    )
                     Text(
                         stringResource(R.string.storage_home_access_note, StorageAccess.accessLabel(context)),
                         style = MaterialTheme.typography.labelSmall,
@@ -174,7 +219,7 @@ fun StorageHomeScreen(
 }
 
 @Composable
-private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
+internal fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
     val subtitle = buildString {
         root.subtitle?.let(::append)
         if (root.availableBytes != null && root.totalBytes != null && root.totalBytes > 0) {
@@ -191,7 +236,7 @@ private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
             append("Read-only")
         }
     }
-    val actionLabel = if (root.opensDirectly) {
+    val actionLabel = if (root.readyToOpen) {
         stringResource(R.string.storage_home_open_action, root.title)
     } else {
         stringResource(R.string.storage_home_grant_action, root.title)
@@ -228,9 +273,11 @@ private fun StorageRootRow(root: StorageRoot, onClick: () -> Unit) {
                     )
                 }
             }
-            if (!root.opensDirectly) {
+            if (!root.readyToOpen) {
                 // Colour alone must not carry state (DESIGN.md); the lock icon plus the semantic
-                // label above both say "this one still needs a grant".
+                // label above both say "this one still needs a grant". A REMOTE root never earns
+                // this badge -- its one grant already happened when the connection was saved --
+                // see StorageRoot.readyToOpen.
                 Icon(
                     Icons.Outlined.Lock,
                     contentDescription = null,
@@ -268,14 +315,17 @@ private fun PermissionGateCard(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onGrant, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Text(stringResource(R.string.storage_permission_grant))
-                }
-                Button(onClick = onUsePicker, modifier = Modifier.heightIn(min = 48.dp)) {
-                    Icon(Icons.Outlined.FolderOpen, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.storage_permission_use_picker))
-                }
+                TactileButton(
+                    text = stringResource(R.string.storage_permission_grant),
+                    onClick = onGrant,
+                    style = TactileButtonStyle.PRIMARY,
+                )
+                // Icon dropped -- same leading-icon-slot note as the footer buttons above.
+                TactileButton(
+                    text = stringResource(R.string.storage_permission_use_picker),
+                    onClick = onUsePicker,
+                    style = TactileButtonStyle.SECONDARY,
+                )
             }
         }
     }
@@ -288,22 +338,14 @@ private fun iconFor(kind: StorageRootKind) = when (kind) {
     StorageRootKind.PROVIDER_ROOT -> Icons.Outlined.Cloud
     StorageRootKind.PICKER_SHORTCUT -> Icons.Outlined.FolderOpen
     StorageRootKind.REMOTE -> Icons.Outlined.Cloud
+    StorageRootKind.USB_DEVICE -> Icons.Outlined.Usb
 }
 
+// formatBytes (util/ByteFormat.kt) is the one place this app turns bytes into a string -- this
+// screen used to carry its own copy that did the same binary math but mislabelled the result in
+// decimal units (KB/MB/GB instead of KiB/MiB/GiB), which RemoteConnectionsDialog also depended on.
 private fun stringResourceFormatFree(availableBytes: Long, totalBytes: Long): String =
-    "${formatStorageBytes(availableBytes)} free of ${formatStorageBytes(totalBytes)}"
-
-internal fun formatStorageBytes(bytes: Long): String {
-    if (bytes < 1_024) return "$bytes B"
-    val units = arrayOf("KB", "MB", "GB", "TB")
-    var value = bytes.toDouble()
-    var unit = -1
-    do {
-        value /= 1_024.0
-        unit += 1
-    } while (value >= 1_024 && unit < units.lastIndex)
-    return "%.1f %s".format(value, units[unit])
-}
+    "${formatBytes(availableBytes)} free of ${formatBytes(totalBytes)}"
 
 /**
  * Starts a system settings activity from a composable's context. Wrapped so the call site stays

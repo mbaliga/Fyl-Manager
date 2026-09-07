@@ -44,7 +44,13 @@ class FileHistoryStore(private val context: Context) {
     suspend fun capture(uri: Uri, reason: FileHistoryReason): FileHistoryCaptureResult =
         withContext(Dispatchers.IO) {
             val settings = settings()
-            if (!settings.enabled) return@withContext FileHistoryCaptureResult(FileHistoryCaptureStatus.DISABLED)
+            // The BEFORE_RESTORE snapshot is a safety net for restore() itself, not a feature the
+            // toggle governs: skipping it while the toggle is off would make restore() unable to
+            // preserve a rollback target, so every restore would fail with
+            // CURRENT_VERSION_NOT_PRESERVED regardless of history being off by design.
+            if (!settings.enabled && reason != FileHistoryReason.BEFORE_RESTORE) {
+                return@withContext FileHistoryCaptureResult(FileHistoryCaptureStatus.DISABLED)
+            }
             val metadata = queryMetadata(uri)
                 ?: return@withContext FileHistoryCaptureResult(FileHistoryCaptureStatus.UNREADABLE)
             if (metadata.sizeBytes < 0L || metadata.sizeBytes > settings.maxFileBytes) {
@@ -321,7 +327,11 @@ class FileHistoryStore(private val context: Context) {
 
     private fun queryMetadata(uri: Uri): Metadata? {
         val projection = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
-        return context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+        // The Bundle-args overload, not the deprecated 4-String one: DocumentsProvider (every SAF
+        // backend a captured uri can point at) hard-refuses the legacy query shape with
+        // "Pre-Android-O query format not supported" once a provider is queried in-process rather
+        // than marshalled through the framework's own Binder round-trip that upgrades it.
+        return context.contentResolver.query(uri, projection, null, null)?.use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)

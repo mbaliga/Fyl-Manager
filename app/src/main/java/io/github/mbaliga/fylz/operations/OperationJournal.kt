@@ -2,6 +2,15 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.JournalSchema
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationRecoveryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -86,8 +95,8 @@ class OperationJournal(context: Context) {
                 items.put(
                     JSONObject()
                         .put("id", item.id)
-                        .put("source", item.source.toString())
-                        .put("destination", item.destination?.toString())
+                        .put("source", item.source.toJson())
+                        .put("destination", item.destination?.toJson())
                         .put("displayName", item.displayName)
                         .put("expectedBytes", item.expectedBytes)
                         .put("completedBytes", item.completedBytes)
@@ -97,6 +106,7 @@ class OperationJournal(context: Context) {
             }
             root.put(
                 JSONObject()
+                    .put("schemaVersion", JournalSchema.CURRENT_VERSION)
                     .put("id", operation.id)
                     .put("type", operation.type.name)
                     .put("conflictPolicy", operation.conflictPolicy.name)
@@ -110,6 +120,29 @@ class OperationJournal(context: Context) {
             "Unable to persist the operation journal."
         }
     }
+
+    private fun ItemRef.toJson(): JSONObject = JSONObject()
+        .put("providerId", providerId)
+        .put("locationId", locationId)
+        .put("opaqueItemId", opaqueItemId)
+
+    /**
+     * Reads a `source`/`destination` field by JSON shape rather than by the record's
+     * `schemaVersion`, per the migration contract in [JournalSchema]'s KDoc: an object is the
+     * current [ItemRef] encoding, a string is a pre-WP-1.1 `Uri`, decoded through
+     * `app/storage/ItemRefs.kt`'s adapter into an equivalent ref.
+     */
+    private fun JSONObject.decodeItemRef(key: String): ItemRef? =
+        when (val value = opt(key)) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> ItemRef(
+                providerId = value.getString("providerId"),
+                locationId = value.getString("locationId"),
+                opaqueItemId = value.getString("opaqueItemId"),
+            )
+            is String -> value.takeIf(String::isNotBlank)?.let { Uri.parse(it).toItemRef() }
+            else -> null
+        }
 
     private fun decode(raw: String?): List<FileOperation> {
         if (raw.isNullOrBlank()) return emptyList()
@@ -125,10 +158,10 @@ class OperationJournal(context: Context) {
                             add(
                                 OperationItem(
                                     id = item.getString("id"),
-                                    source = Uri.parse(item.getString("source")),
-                                    destination = item.optString("destination")
-                                        .takeIf(String::isNotBlank)
-                                        ?.let(Uri::parse),
+                                    source = requireNotNull(item.decodeItemRef("source")) {
+                                        "Operation journal item is missing its source reference."
+                                    },
+                                    destination = item.decodeItemRef("destination"),
                                     displayName = item.getString("displayName"),
                                     expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE)
                                         .takeUnless { it == Long.MIN_VALUE },

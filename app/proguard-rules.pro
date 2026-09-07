@@ -39,3 +39,17 @@
 # constructor and would otherwise be free to strip or rename it.
 # ---------------------------------------------------------------------------
 -keep class io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider { *; }
+
+# ---------------------------------------------------------------------------
+# commons-compress declares OPTIONAL codec backends it only touches when a
+# matching stream is actually opened: Zstandard delegates to zstd-jni
+# (com.github.luben) and Brotli to org.brotli.dec. Fylz bundles neither, and
+# the preview pipeline deliberately does not advertise .zst/.br support
+# (ExtendedArchiveBrowserService routes them to the universal inspector), so
+# these classes are unreachable at runtime. Wiring the archive browser into
+# the preview dispatchers made R8 trace the factory's references for the
+# first time -- suppress the missing-class errors rather than bundling two
+# native codecs no shipping code path can reach.
+# ---------------------------------------------------------------------------
+-dontwarn com.github.luben.zstd.ZstdInputStream
+-dontwarn org.brotli.dec.BrotliInputStream

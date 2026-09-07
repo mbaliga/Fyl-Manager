@@ -1,9 +1,16 @@
 package io.github.mbaliga.fylz.util
 
-import android.provider.DocumentsContract
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 
 object FileType {
+    // The value SAF's own DocumentsContract.Document.MIME_TYPE_DIR constant holds -- confirmed
+    // against every other call site in this app that compares/assigns it (DocumentRepository,
+    // FylzFilesDocumentsProvider) as the same literal string. A plain constant here (WP-1.3)
+    // rather than the import keeps this file free of the one android.* dependency it had, with
+    // zero behavior change: the value being classified against never changes, only how it's
+    // spelled in source.
+    private const val DIRECTORY_MIME = "vnd.android.document/directory"
+
     private val markdownExtensions = setOf("md", "markdown", "mdown", "mkd", "mdx")
     private val textExtensions = setOf(
         "txt", "text", "log", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml",
@@ -16,7 +23,7 @@ object FileType {
     private val archiveExtensions = setOf("zip", "7z", "rar", "tar", "gz", "bz2", "xz", "tgz")
 
     fun classify(name: String, mimeType: String): EntryKind {
-        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) return EntryKind.DIRECTORY
+        if (mimeType == DIRECTORY_MIME) return EntryKind.DIRECTORY
 
         val extension = name.substringAfterLast('.', missingDelimiterValue = "").lowercase()
         return when {

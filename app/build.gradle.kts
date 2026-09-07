@@ -48,6 +48,19 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // The storage contract suite creates non-ASCII filenames through java.io.File and
+            // lists them back. The JVM decodes directory entries with the HOST's locale, so a
+            // C/POSIX-locale machine reads UTF-8 names back as '?' and fails those tests for
+            // reasons no provider can see. Android itself is always UTF-8; pin the forked test
+            // JVM to match the platform under test instead of the machine it happens to run on.
+            it.environment("LANG", "C.UTF-8")
+            it.environment("LC_ALL", "C.UTF-8")
+        }
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/AL2.0",
@@ -65,18 +78,26 @@ android {
 
 // AGP 8.9 supports Kotlin 2.1. Several fast-moving libraries publish against newer Kotlin
 // runtimes. Keep the runtime metadata aligned with the compiler until the project migrates to
-// AGP 9.1+ as one deliberate toolchain change.
+// AGP 9.1+ as one deliberate toolchain change. The version here follows the constellation
+// lockstep (2.1.0, matching both submodules' catalogs — see root build.gradle.kts).
 configurations.configureEach {
     resolutionStrategy.force(
-        "org.jetbrains.kotlin:kotlin-stdlib:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.20",
+        "org.jetbrains.kotlin:kotlin-stdlib:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0",
     )
 }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
     val media3Version = "1.10.1"
+
+    // The portable core (WP-1.3): pure Kotlin/JVM, zero Android dependency. See their KDoc and
+    // settings.gradle.kts for the module map and dependency order.
+    implementation(project(":core-model"))
+    implementation(project(":core-format"))
+    implementation(project(":core-vfs"))
+    implementation(project(":core-operations"))
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -117,6 +138,9 @@ dependencies {
     // Shared rather than local so Fylz and Foto Xplorr move identically — which is the whole
     // of the owner's "followed everywhere".
     implementation("dev.aarso:cell-shell:0.1.0")
+    // The natural-language search engine (io.github.mbaliga.fylz.search.FylzSearch), same
+    // includeBuild substitution as the rest of the constellation.
+    implementation("dev.aarso:search-core:0.2.0")
 
     testImplementation("junit:junit:4.13.2")
     // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*
@@ -132,6 +156,10 @@ dependencies {
     // class of test; only PdfPagePlanPolicyTest opts in via @RunWith(RobolectricTestRunner::class)
     // -- every other test class keeps running as a fast plain-JVM test.
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
