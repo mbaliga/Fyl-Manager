@@ -57,8 +57,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil3.SingletonImageLoader
 import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.data.EdgeCostMap
 import io.github.mbaliga.fylz.data.ImageExportFormat
 import io.github.mbaliga.fylz.data.ImageSelectionRenderer
+import io.github.mbaliga.fylz.data.MagneticPath
+import io.github.mbaliga.fylz.data.PixelPoint
 import io.github.mbaliga.fylz.data.SelectionMask
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
@@ -72,6 +75,7 @@ import kotlinx.coroutines.withContext
 internal enum class SelectionTool(val label: String) {
     LASSO("Lasso"),
     WAND("Magic wand"),
+    MAGNETIC_LASSO("Magnetic lasso"),
 }
 
 /** Magic wand tolerance presets -- a per-channel Chebyshev distance, see [SelectionMask.floodFill]. */
@@ -80,9 +84,14 @@ private val WAND_TOLERANCES = listOf(12 to "Strict", 32 to "Normal", 64 to "Loos
 private const val PREVIEW_TINT_ALPHA = 0x66
 
 /**
- * Select a region of a single image with a lasso or the magic wand, then crop, copy, or cut it
- * out -- the first two of three planned selection tools (magnetic lasso is a separate, later
- * slice) sharing one [SelectionMask] representation and [ImageSelectionRenderer]'s output actions.
+ * Select a region of a single image with a lasso, the magic wand, or the magnetic lasso, then
+ * crop, copy, or cut it out -- all three input tools converge on one [SelectionMask]
+ * representation and share [ImageSelectionRenderer]'s output actions. The magnetic lasso itself
+ * is tap-to-place-anchors rather than continuous drag: each tap snaps a segment from the previous
+ * anchor to the new one via [MagneticPath.snap] over an [EdgeCostMap] built from the image, and a
+ * double-tap closes the loop -- simpler to get right than live per-frame snapping during a drag,
+ * and its correctness is fully covered by [io.github.mbaliga.fylz.data.MagneticPathTest] in a way
+ * that drag "feel" alone would not be.
  *
  * @param entry the single selected image; the caller (`SelectionActionPolicy.selectImage` plus an
  *   [ImageExportFormat.SUPPORTED_MIME_TYPES] check) has already established there is exactly one
@@ -101,9 +110,14 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
     var tolerance by remember { mutableIntStateOf(WAND_TOLERANCES[1].first) }
     var activePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
     var currentMask by remember { mutableStateOf<SelectionMask?>(null) }
+    var costMap by remember(entry.uri) { mutableStateOf<EdgeCostMap?>(null) }
+    var magneticPoints by remember { mutableStateOf<List<PixelPoint>>(emptyList()) }
+    var magneticScreenPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
 
     fun clearSelection() {
         activePoints = emptyList()
+        magneticPoints = emptyList()
+        magneticScreenPoints = emptyList()
         currentMask = null
     }
 
@@ -116,10 +130,23 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
         if (decoded == null) loadFailed = true else bitmap = decoded
     }
 
+    LaunchedEffect(bitmap, tool) {
+        val bmp = bitmap
+        if (bmp != null && tool == SelectionTool.MAGNETIC_LASSO && costMap == null) {
+            costMap = withContext(Dispatchers.Default) { EdgeCostMap.from(bmp) }
+        }
+    }
+
     fun screenToBitmap(point: Offset, bmp: Bitmap): Offset {
         val scaleX = bmp.width / canvasSize.width
         val scaleY = bmp.height / canvasSize.height
         return Offset(point.x * scaleX, point.y * scaleY)
+    }
+
+    fun bitmapToScreen(point: PixelPoint, bmp: Bitmap): Offset {
+        val scaleX = bmp.width / canvasSize.width
+        val scaleY = bmp.height / canvasSize.height
+        return Offset(point.x / scaleX, point.y / scaleY)
     }
 
     fun finishLasso() {
@@ -145,6 +172,38 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
         val seedX = x.toInt().coerceIn(0, bmp.width - 1)
         val seedY = y.toInt().coerceIn(0, bmp.height - 1)
         currentMask = SelectionMask.floodFill(bmp, seedX, seedY, tolerance)
+    }
+
+    fun placeMagneticAnchor(point: Offset) {
+        val bmp = bitmap ?: return
+        val map = costMap ?: return
+        if (canvasSize.width <= 0f || canvasSize.height <= 0f) return
+        val (x, y) = screenToBitmap(point, bmp)
+        val tapped = PixelPoint(x.toInt().coerceIn(0, bmp.width - 1), y.toInt().coerceIn(0, bmp.height - 1))
+        val last = magneticPoints.lastOrNull()
+        val segment = if (last == null) listOf(tapped) else MagneticPath.snap(map, last, tapped).drop(1)
+        magneticPoints = magneticPoints + segment
+        magneticScreenPoints = magneticScreenPoints + segment.map { bitmapToScreen(it, bmp) }
+    }
+
+    fun finishMagneticLasso() {
+        val bmp = bitmap
+        if (bmp == null || magneticPoints.size < 3) {
+            magneticPoints = emptyList()
+            magneticScreenPoints = emptyList()
+            return
+        }
+        val closing = costMap?.let { map -> MagneticPath.snap(map, magneticPoints.last(), magneticPoints.first()).drop(1) }
+            ?: emptyList()
+        val closed = magneticPoints + closing
+        val path = android.graphics.Path()
+        closed.forEachIndexed { index, point ->
+            if (index == 0) path.moveTo(point.x.toFloat(), point.y.toFloat()) else path.lineTo(point.x.toFloat(), point.y.toFloat())
+        }
+        path.close()
+        currentMask = SelectionMask.fromPath(path, bmp.width, bmp.height)
+        magneticPoints = emptyList()
+        magneticScreenPoints = emptyList()
     }
 
     fun writeResult(destinationUri: Uri, result: Bitmap, format: ImageExportFormat, invalidateCache: Boolean) {
@@ -220,7 +279,7 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
                     Text("Select", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                     IconButton(
                         onClick = { clearSelection() },
-                        enabled = (currentMask != null || activePoints.isNotEmpty()) && !busy,
+                        enabled = (currentMask != null || activePoints.isNotEmpty() || magneticPoints.isNotEmpty()) && !busy,
                     ) {
                         Icon(Icons.Outlined.DeleteSweep, contentDescription = "Clear selection")
                     }
@@ -238,12 +297,15 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
                             bitmap = bitmap!!,
                             tool = tool,
                             activePoints = activePoints,
+                            magneticScreenPoints = magneticScreenPoints,
                             currentMask = currentMask,
                             onCanvasSizeChanged = { canvasSize = it },
                             onLassoStart = { currentMask = null; activePoints = listOf(it) },
                             onLassoContinue = { activePoints = activePoints + it },
                             onLassoEnd = { finishLasso() },
                             onWandTap = { pickWandSeed(it) },
+                            onMagneticTap = { currentMask = null; placeMagneticAnchor(it) },
+                            onMagneticFinish = { finishMagneticLasso() },
                         )
                     }
                 }
@@ -267,10 +329,14 @@ fun SelectImageOverlay(entry: FileEntry, repository: DocumentRepository, onDismi
                         }
                     }
                     Text(
-                        if (tool == SelectionTool.LASSO) {
-                            "Drag to draw a lasso, then choose what to do with it."
-                        } else {
-                            "Tap a spot to select pixels of a similar color."
+                        when (tool) {
+                            SelectionTool.LASSO -> "Drag to draw a lasso, then choose what to do with it."
+                            SelectionTool.WAND -> "Tap a spot to select pixels of a similar color."
+                            SelectionTool.MAGNETIC_LASSO -> if (costMap == null) {
+                                "Preparing edge detection…"
+                            } else {
+                                "Tap to place anchor points along an edge; double-tap to close the selection."
+                            }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -315,12 +381,15 @@ private fun SelectionSurface(
     bitmap: Bitmap,
     tool: SelectionTool,
     activePoints: List<Offset>,
+    magneticScreenPoints: List<Offset>,
     currentMask: SelectionMask?,
     onCanvasSizeChanged: (Size) -> Unit,
     onLassoStart: (Offset) -> Unit,
     onLassoContinue: (Offset) -> Unit,
     onLassoEnd: () -> Unit,
     onWandTap: (Offset) -> Unit,
+    onMagneticTap: (Offset) -> Unit,
+    onMagneticFinish: () -> Unit,
 ) {
     val image = remember(bitmap) { bitmap.asImageBitmap() }
     val bitmapAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
@@ -342,15 +411,18 @@ private fun SelectionSurface(
                 .size(fittedWidth, fittedHeight)
                 .onSizeChanged { onCanvasSizeChanged(Size(it.width.toFloat(), it.height.toFloat())) }
                 .pointerInput(tool) {
-                    if (tool == SelectionTool.LASSO) {
-                        detectDragGestures(
+                    when (tool) {
+                        SelectionTool.LASSO -> detectDragGestures(
                             onDragStart = { offset -> onLassoStart(offset) },
                             onDrag = { change, _ -> change.consume(); onLassoContinue(change.position) },
                             onDragEnd = onLassoEnd,
                             onDragCancel = onLassoEnd,
                         )
-                    } else {
-                        detectTapGestures(onTap = onWandTap)
+                        SelectionTool.WAND -> detectTapGestures(onTap = onWandTap)
+                        SelectionTool.MAGNETIC_LASSO -> detectTapGestures(
+                            onTap = onMagneticTap,
+                            onDoubleTap = { onMagneticFinish() },
+                        )
                     }
                 },
         ) {
@@ -377,6 +449,19 @@ private fun SelectionSurface(
                     drawPath(
                         path,
                         color = Color(0xFF7C4DFF),
+                        style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    )
+                }
+            }
+            if (tool == SelectionTool.MAGNETIC_LASSO && magneticScreenPoints.size >= 2) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val path = Path()
+                    magneticScreenPoints.forEachIndexed { index, point ->
+                        if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                    }
+                    drawPath(
+                        path,
+                        color = Color(0xFF00B8D4),
                         style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round),
                     )
                 }
