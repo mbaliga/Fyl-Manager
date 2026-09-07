@@ -72,4 +72,16 @@ class ImageSelectionRendererTest {
 
         assertNull(ImageSelectionRenderer.cutoutWithTransparency(source, mask))
     }
+
+    @Test
+    fun `the preview overlay tints only the selected pixels and leaves the rest transparent`() {
+        val mask = SelectionMask.fromPath(Path().apply { addRect(2f, 2f, 8f, 8f, Path.Direction.CW) }, 10, 10)
+
+        val overlay = ImageSelectionRenderer.maskPreviewOverlay(mask, AndroidColor.MAGENTA)
+
+        assertEquals(10, overlay.width)
+        assertEquals(10, overlay.height)
+        assertEquals(AndroidColor.MAGENTA, overlay.getPixel(5, 5))
+        assertEquals(AndroidColor.TRANSPARENT, overlay.getPixel(0, 0))
+    }
 }

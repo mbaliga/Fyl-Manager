@@ -46,4 +46,23 @@ object ImageSelectionRenderer {
         result.setPixels(pixels, 0, width, 0, 0, width, height)
         return result
     }
+
+    /**
+     * A [mask]-sized (not cropped) tint layer -- transparent everywhere, [tintColor] wherever the
+     * mask selects -- meant to be drawn on top of the source image so the user can see what a
+     * completed selection actually covers before choosing an action. Not an output action itself,
+     * so unlike [cropToBoundingBox]/[cutoutWithTransparency] this never returns null: an empty
+     * mask is simply an all-transparent overlay, which is a valid (if unhelpful) thing to show.
+     */
+    fun maskPreviewOverlay(mask: SelectionMask, tintColor: Int): Bitmap {
+        val pixels = IntArray(mask.width * mask.height)
+        for (y in 0 until mask.height) {
+            for (x in 0 until mask.width) {
+                if (mask.contains(x, y)) pixels[y * mask.width + x] = tintColor
+            }
+        }
+        val overlay = Bitmap.createBitmap(mask.width, mask.height, Bitmap.Config.ARGB_8888)
+        overlay.setPixels(pixels, 0, mask.width, 0, 0, mask.width, mask.height)
+        return overlay
+    }
 }
