@@ -1,0 +1,41 @@
+A file manager built like a workspace rather than a browser. Multiple folder tabs,
+a preview pane, and an operation journal that survives the app being killed
+mid-copy.
+
+It opens straight into your storage. No picker to get through first, no setup, no
+account.
+
+THE WORKSPACE
+• Multiple folder tabs, breadcrumbs, filtering and refresh.
+• List, grid and details views, each adapting to the window you are in.
+• Docked or floating preview panes.
+• Layouts for phone, landscape, tablets, foldables and desktop-style Android.
+• System, light and dark themes, accent presets and optional dynamic colour.
+
+FILES, AND GETTING THEM BACK
+• Create, rename, duplicate, copy and move.
+• A recycle bin that never expires on its own. Nothing is deleted on a timer.
+  Permanent deletion is always something you chose.
+• A durable operation journal with progress, cancellation, and recovery after
+  process death. If a copy is interrupted, you can see exactly where it stopped.
+• Conflict policies for skip, keep both, and guarded replace.
+• When a move copies successfully but the storage provider refuses to remove the
+  original, a dedicated cleanup finishes the job without copying anything again.
+
+PREVIEW
+• Text, source code and Markdown.
+• The formats that come with agent work: JSON, YAML, TOML, prompts, instructions,
+  logs, diffs and patches.
+• Images, including SVG, GIF and animated WebP.
+
+CLOUD AND REMOTE STORAGE
+Connect cloud, USB and third-party providers through Android's own storage access
+framework, with the permission grants persisted so you are not re-asked constantly.
+
+QUIET BY DESIGN
+• No ads, no accounts, no analytics, no tracking.
+• Nothing about your files is uploaded, indexed remotely or scanned.
+• Optional AI-assisted organisation is bring-your-own-key, proposal-only, and never
+  moves a file without your explicit approval.
+
+Fylz is open source and local-first.
