@@ -826,6 +826,7 @@ private fun FylzV1Workspace(
     var remoteDialogFocusId by remember { mutableStateOf<String?>(null) }
     var pdfDialog by remember { mutableStateOf(false) }
     var annotateDialog by remember { mutableStateOf(false) }
+    var annotatePdfDialog by remember { mutableStateOf(false) }
     var convertImageDialog by remember { mutableStateOf(false) }
     var selectImageDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
@@ -2259,6 +2260,7 @@ private fun FylzV1Workspace(
                     toast("Annotation supports JPEG, PNG and WebP images only.")
                 }
             }
+            FylzAction.ANNOTATE_PDF -> annotatePdfDialog = true
             FylzAction.CONVERT_IMAGE -> {
                 val target = selectedEntries.singleOrNull()
                 if (target != null && target.mimeType in ImageExportFormat.SUPPORTED_MIME_TYPES) {
@@ -3660,6 +3662,22 @@ private fun FylzV1Workspace(
                 onDismiss = { annotateDialog = false },
                 onSaved = {
                     annotateDialog = false
+                    selectedUris = emptySet()
+                    selectedEntryDetails = emptyMap()
+                    refresh()
+                },
+            )
+        }
+    }
+
+    if (annotatePdfDialog) {
+        selectedEntries.singleOrNull()?.let { entry ->
+            PdfAnnotateOverlay(
+                entry = entry,
+                service = pdfTools,
+                onDismiss = { annotatePdfDialog = false },
+                onSaved = {
+                    annotatePdfDialog = false
                     selectedUris = emptySet()
                     selectedEntryDetails = emptyMap()
                     refresh()

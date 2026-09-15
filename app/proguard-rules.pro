@@ -55,9 +55,13 @@
 -dontwarn org.brotli.dec.BrotliInputStream
 
 # ---------------------------------------------------------------------------
-# pdfbox-android's JPXFilter optionally decodes JPEG2000-encoded images via
-# com.gemalto.jp2.JP2Decoder, a separate library Fylz does not bundle. PdfTextExtractor
-# never decodes any image in a PDF at all (text extraction only), so this path is
+# pdfbox-android's JPXFilter optionally decodes/encodes JPEG2000 images via
+# com.gemalto.jp2.JP2Decoder/JP2Encoder, a separate library Fylz does not bundle.
+# JP2Encoder only became reachable to R8 once PdfAnnotationService started calling
+# PDDocument.save() -- the write path PdfTextExtractor's read-only use never touched.
+# Neither PdfTextExtractor nor PdfAnnotationService ever decodes or encodes an image in
+# a PDF (text extraction and vector ink only), so both filter directions are
 # unreachable at runtime regardless.
 # ---------------------------------------------------------------------------
 -dontwarn com.gemalto.jp2.JP2Decoder
+-dontwarn com.gemalto.jp2.JP2Encoder

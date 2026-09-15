@@ -67,6 +67,14 @@ internal fun pdfImageFileName(baseName: String, index: Int, total: Int, extensio
 }
 
 class PdfToolService(private val context: Context) {
+    /** A page rendered for on-screen display, e.g. so [io.github.mbaliga.fylz.ui.PdfAnnotateOverlay]
+     * can show what it is about to draw ink onto. Unlike every other caller of the private
+     * [renderPage] below, the returned bitmap outlives this call -- it is not auto-recycled, since
+     * a Composable needs to keep it alive on screen; the caller owns disposing of it. */
+    suspend fun renderPagePreview(uri: Uri, pageIndex: Int): Bitmap = withContext(Dispatchers.IO) {
+        renderPage(uri, pageIndex, rotationDegrees = 0).bitmap
+    }
+
     suspend fun inspect(uri: Uri): PdfInspection = withContext(Dispatchers.IO) {
         openRenderer(uri) { renderer ->
             require(renderer.pageCount <= MAX_PAGES) { "PDF exceeds the $MAX_PAGES-page safety limit." }

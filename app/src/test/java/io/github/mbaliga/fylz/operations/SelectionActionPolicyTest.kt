@@ -59,6 +59,14 @@ class SelectionActionPolicyTest {
     }
 
     @Test
+    fun `annotate pdf needs exactly one pdf`() {
+        assertTrue(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF)).annotatePdf)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF, EntryKind.PDF)).annotatePdf)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF, EntryKind.IMAGE)).annotatePdf)
+        assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE)).annotatePdf)
+    }
+
+    @Test
     fun `convert image needs exactly one image`() {
         assertTrue(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE)).convertImage)
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE, EntryKind.IMAGE)).convertImage)

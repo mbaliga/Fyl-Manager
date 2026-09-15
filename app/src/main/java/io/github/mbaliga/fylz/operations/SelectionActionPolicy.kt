@@ -20,6 +20,7 @@ data class SelectionActions(
     val extract: Boolean = false,
     val pdfTools: Boolean = false,
     val annotate: Boolean = false,
+    val annotatePdf: Boolean = false,
     val convertImage: Boolean = false,
     val imagesToPdf: Boolean = false,
     val selectImage: Boolean = false,
@@ -53,6 +54,11 @@ data class SelectionActions(
  *   one canvas. A raster kind is necessary but not sufficient -- the drawing screen itself further
  *   narrows to the specific image formats it can actually re-encode (JPEG/PNG/WebP), which this
  *   coarse, [EntryKind]-only policy has no way to express.
+ * - **Annotate PDF** is the same one-canvas shape, kept as its own flag rather than folded into
+ *   annotate: a PDF's ink gets burned into that one page's own content stream via PDFBox, not
+ *   rasterized like the image path, and always writes to a new file rather than overwriting the
+ *   source -- different enough underneath that one boolean covering two dispatch targets would
+ *   hide which is which at every call site.
  * - **Convert image** takes exactly one image, same shape as annotate and for the same reason --
  *   the format picker is asking about one file's own bytes, and the same JPEG/PNG/WebP-only
  *   round-trip narrowing happens where the dialog would open, not here.
@@ -86,6 +92,7 @@ object SelectionActionPolicy {
             extract = kinds.singleOrNull() == EntryKind.ARCHIVE,
             pdfTools = kinds.all { it == EntryKind.PDF },
             annotate = kinds.singleOrNull() == EntryKind.IMAGE,
+            annotatePdf = kinds.singleOrNull() == EntryKind.PDF,
             convertImage = kinds.singleOrNull() == EntryKind.IMAGE,
             imagesToPdf = kinds.all { it == EntryKind.IMAGE },
             selectImage = kinds.singleOrNull() == EntryKind.IMAGE,
