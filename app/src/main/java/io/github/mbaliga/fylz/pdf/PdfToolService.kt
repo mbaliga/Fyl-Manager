@@ -10,7 +10,9 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.provider.DocumentsContract
 import com.google.android.gms.tasks.Tasks
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -50,6 +52,19 @@ data class PdfToolExportResult(
     val rasterized: Boolean = true,
     val searchableTextAdded: Boolean = false,
 )
+
+data class PdfImagesExportResult(val pageCount: Int)
+
+/**
+ * The output filename for one page of [PdfToolService.exportPagesAsImages] -- zero-padded to
+ * [total]'s own digit width (floor of 2) so a 5-page and a 500-page document both sort correctly
+ * in a plain file listing, e.g. "invoice-01.png" .. "invoice-10.png" rather than "invoice-1.png"
+ * sorting after "invoice-10.png".
+ */
+internal fun pdfImageFileName(baseName: String, index: Int, total: Int, extension: String): String {
+    val digits = total.toString().length.coerceAtLeast(2)
+    return "$baseName-${(index + 1).toString().padStart(digits, '0')}.$extension"
+}
 
 class PdfToolService(private val context: Context) {
     suspend fun inspect(uri: Uri): PdfInspection = withContext(Dispatchers.IO) {
@@ -107,6 +122,37 @@ class PdfToolService(private val context: Context) {
             document.close()
             temp.delete()
         }
+    }
+
+    /**
+     * The inverse of [imagesToPdf]: one image file per page, written directly into
+     * [destinationFolderUri] rather than repackaged into a new PDF. Names are zero-padded to the
+     * page count's own digit width (floor of 2) so a 5-page and a 500-page document both sort
+     * correctly in a plain file listing.
+     */
+    suspend fun exportPagesAsImages(
+        pages: List<PdfPageRef>,
+        format: ImageExportFormat,
+        destinationFolderUri: Uri,
+        baseName: String,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): PdfImagesExportResult = withContext(Dispatchers.IO) {
+        require(pages.isNotEmpty()) { "At least one page is required." }
+        require(pages.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
+        pages.forEachIndexed { index, reference ->
+            coroutineContext.ensureActive()
+            val rendered = renderPage(reference.sourceUri, reference.pageIndex, reference.rotationDegrees)
+            rendered.useBitmap { bitmap ->
+                val name = pdfImageFileName(baseName, index, pages.size, format.extension)
+                val fileUri = DocumentsContract.createDocument(context.contentResolver, destinationFolderUri, format.mimeType, name)
+                    ?: error("The provider could not create $name.")
+                val output = context.contentResolver.openOutputStream(fileUri, "w")
+                    ?: error("Unable to open a stream for $name.")
+                output.use { stream -> bitmap.compress(format.compressFormat, format.quality, stream) }
+            }
+            onProgress(index + 1, pages.size)
+        }
+        PdfImagesExportResult(pages.size)
     }
 
     /**

@@ -832,6 +832,9 @@ private fun FylzV1Workspace(
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
     var pendingImagesToPdf by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pendingPdfImagePages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
+    var pendingPdfImageFormat by remember { mutableStateOf(ImageExportFormat.PNG) }
+    var pendingPdfImageBaseName by remember { mutableStateOf("page") }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
     var sortSpec by remember { mutableStateOf(SortSpec.Default) }
     var searchRecursive by remember { mutableStateOf(false) }
@@ -1375,6 +1378,34 @@ private fun FylzV1Workspace(
         pendingImagesToPdf = emptyList()
         if (destination == null) return@rememberLauncherForActivityResult
         performPdf(destination, pages, merge, ocr, imageUris)
+    }
+
+    fun performPdfImagesExport(folderUri: Uri, pages: List<PdfPageRef>, format: ImageExportFormat, baseName: String) {
+        scope.launch {
+            loading = true
+            runCatching {
+                pdfTools.exportPagesAsImages(pages, format, folderUri, baseName) { done, total ->
+                    operationMessage = "Writing image $done of $total"
+                }
+            }.onSuccess {
+                toast("${it.pageCount} image${if (it.pageCount == 1) "" else "s"} written")
+                refresh()
+            }.onFailure { toast(it.message ?: "The PDF-to-images export failed") }
+            operationMessage = null
+            loading = false
+        }
+    }
+
+    // Kept separate from destinationPicker so this flow's folder pick cannot be mistaken for a
+    // move/copy/extract destination and vice versa.
+    val pdfImagesOutputCreator = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
+        val pages = pendingPdfImagePages
+        val format = pendingPdfImageFormat
+        val baseName = pendingPdfImageBaseName
+        pendingPdfImagePages = emptyList()
+        if (destination == null) return@rememberLauncherForActivityResult
+        repository.persistTreePermission(destination)
+        performPdfImagesExport(destination, pages, format, baseName)
     }
 
     val scannerOptions = remember {
@@ -3524,7 +3555,10 @@ private fun FylzV1Workspace(
     pickerRequest?.let { request ->
         val current = activeTab?.let { it.treeUri to it.current }
         FylzPicker(
-            mode = if (request is InAppPickerRequest.Destination) PickerMode.FOLDER else PickerMode.SAVE,
+            mode = when (request) {
+                is InAppPickerRequest.Destination, InAppPickerRequest.PdfImagesOutput -> PickerMode.FOLDER
+                is InAppPickerRequest.ArchiveOutput, is InAppPickerRequest.PdfOutput -> PickerMode.SAVE
+            },
             title = request.title,
             confirmLabel = request.confirmLabel,
             repository = repository,
@@ -3544,6 +3578,7 @@ private fun FylzV1Workspace(
                         archiveCreator.launch(request.suggestedName)
                     }
                     is InAppPickerRequest.PdfOutput -> pdfOutputCreator.launch(request.suggestedName)
+                    InAppPickerRequest.PdfImagesOutput -> pdfImagesOutputCreator.launch(null)
                 }
             },
             onResult = { outcome ->
@@ -3573,6 +3608,13 @@ private fun FylzV1Workspace(
                                 .onFailure { toast(it.message ?: "Unable to create that file") }
                         }
                     }
+                    InAppPickerRequest.PdfImagesOutput -> (outcome as? PickerOutcome.Folder)?.let { folder ->
+                        val pages = pendingPdfImagePages
+                        val format = pendingPdfImageFormat
+                        val baseName = pendingPdfImageBaseName
+                        pendingPdfImagePages = emptyList()
+                        performPdfImagesExport(folder.folderUri, pages, format, baseName)
+                    }
                 }
             },
         )
@@ -3596,6 +3638,15 @@ private fun FylzV1Workspace(
                 pendingPdfOcr = ocr
                 pendingPdfMerge = true
                 pickerRequest = InAppPickerRequest.PdfOutput("Fylz-merged-${System.currentTimeMillis()}.pdf")
+            },
+            onExportImages = { pages, format ->
+                pdfDialog = false
+                pendingPdfImagePages = pages
+                pendingPdfImageFormat = format
+                pendingPdfImageBaseName = selectedEntries.singleOrNull()
+                    ?.name?.substringBeforeLast('.', missingDelimiterValue = "page")
+                    ?.ifBlank { "page" } ?: "page"
+                pickerRequest = InAppPickerRequest.PdfImagesOutput
             },
             onError = ::toast,
         )
@@ -5861,6 +5912,13 @@ private sealed interface InAppPickerRequest {
     data class PdfOutput(override val suggestedName: String) : Named {
         override val title: String get() = "Save PDF"
         override val confirmLabel: String get() = "Save"
+    }
+
+    /** A destination folder for [io.github.mbaliga.fylz.pdf.PdfToolService.exportPagesAsImages] --
+     * one image file per page, so a single filename (like [PdfOutput]) makes no sense here. */
+    data object PdfImagesOutput : InAppPickerRequest {
+        override val title: String get() = "Export images into"
+        override val confirmLabel: String get() = "Export here"
     }
 }
 

@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
@@ -43,6 +44,8 @@ import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
  * - **Extract pages** — a `1-3,7,9-12` style range, with optional per-page rotation, written to a
  *   destination the caller supplies through `CreateDocument`.
  * - **Merge** — every selected PDF, in selection order, into one document.
+ * - **Export as images** — the chosen page range rendered to a PNG or JPEG per page, written
+ *   directly into a picked destination folder rather than repackaged into a new PDF.
  * - **Searchable (OCR)** — runs on-device ML Kit text recognition and draws an invisible text layer.
  *   Off by default: it is much slower and it is a processing decision the user should make.
  *
@@ -55,6 +58,7 @@ fun PdfToolsDialog(
     onDismiss: () -> Unit,
     onExport: (pages: List<PdfPageRef>, searchableOcr: Boolean) -> Unit,
     onMerge: (searchableOcr: Boolean) -> Unit,
+    onExportImages: (pages: List<PdfPageRef>, format: ImageExportFormat) -> Unit,
     onError: (String) -> Unit,
 ) {
     var pageCount by remember { mutableStateOf<Int?>(null) }
@@ -62,6 +66,7 @@ fun PdfToolsDialog(
     var range by remember { mutableStateOf("") }
     var rotation by remember { mutableStateOf(0) }
     var searchableOcr by remember { mutableStateOf(false) }
+    var imageFormat by remember { mutableStateOf(ImageExportFormat.PNG) }
 
     val single = sources.singleOrNull()
 
@@ -156,6 +161,33 @@ fun PdfToolsDialog(
                         )
                     }
                 }
+
+                if (single != null) {
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Export as images", style = MaterialTheme.typography.labelLarge)
+                        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IMAGE_EXPORT_FORMATS.forEach { format ->
+                                TactileOptionRow(
+                                    text = format.label,
+                                    selected = imageFormat == format,
+                                    onClick = { imageFormat = format },
+                                )
+                            }
+                        }
+                        TactileButton(
+                            text = if (parsedPages.isEmpty()) {
+                                "Export as images"
+                            } else {
+                                "Export ${parsedPages.size} page${if (parsedPages.size == 1) "" else "s"} as images"
+                            },
+                            onClick = { onExportImages(parsedPages.map { PdfPageRef(single, it, rotation) }, imageFormat) },
+                            style = TactileButtonStyle.SECONDARY,
+                            enabled = parsedPages.isNotEmpty(),
+                            fillWidth = true,
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
@@ -181,6 +213,9 @@ fun PdfToolsDialog(
 }
 
 private val ROTATION_DEGREES = listOf(0, 90, 180, 270)
+
+/** WebP is deliberately excluded -- the task this dialog covers is scoped to PNG/JPEG only. */
+private val IMAGE_EXPORT_FORMATS = listOf(ImageExportFormat.PNG, ImageExportFormat.JPEG)
 
 /**
  * Parses a `1-3,7,9-12` page range into zero-based indices.
