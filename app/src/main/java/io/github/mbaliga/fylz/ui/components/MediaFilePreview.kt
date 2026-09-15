@@ -1,28 +1,45 @@
 package io.github.mbaliga.fylz.ui.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import io.github.mbaliga.fylz.audio.PlaybackEqualizer
+import io.github.mbaliga.fylz.data.EqualizerScale
+import io.github.mbaliga.fylz.data.MediaTrackKind
+import io.github.mbaliga.fylz.data.MediaTrackOption
+import io.github.mbaliga.fylz.data.MediaTrackOptions
 import io.github.mbaliga.fylz.model.FileEntry
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.media3.common.util.UnstableApi
@@ -45,6 +62,12 @@ fun MediaFilePreview(
     val context = LocalContext.current
     var error by remember(entry.uri) { mutableStateOf<String?>(null) }
     var ready by remember(entry.uri) { mutableStateOf(false) }
+    var tracks by remember(entry.uri) { mutableStateOf(Tracks.EMPTY) }
+    var speed by remember(entry.uri) { mutableFloatStateOf(1f) }
+    var equalizer by remember(entry.uri) { mutableStateOf<PlaybackEqualizer?>(null) }
+    var equalizerEnabled by remember(entry.uri) { mutableStateOf(false) }
+    var bandLevels by remember(entry.uri) { mutableStateOf<List<Int>>(emptyList()) }
+    var settingsOpen by remember { mutableStateOf(false) }
     // Audio has no video track, so onVideoSizeChanged below never fires for it -- without this the
     // card falls back to its free-aspect box, which is whatever shape the user last left it at
     // rather than a deliberate one. Reported once per file rather than left for the player to
@@ -78,10 +101,35 @@ fun MediaFilePreview(
                 val height = if (rotated) videoSize.width else videoSize.height
                 onVideoSize?.invoke(width.toFloat() * videoSize.pixelWidthHeightRatio / height.toFloat())
             }
+
+            override fun onTracksChanged(newTracks: Tracks) {
+                tracks = newTracks
+            }
+
+            override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) {
+                speed = playbackParameters.speed
+            }
+
+            // The audio session id can change more than once across the player's life (format
+            // switches between playlist items, stop()+re-prepare) -- the equalizer must be rebuilt
+            // every time this fires, never attached once at player-construction time. See
+            // PlaybackEqualizer.attach's own KDoc for why session id 0 is refused outright.
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                equalizer?.release()
+                val attached = PlaybackEqualizer.attach(audioSessionId)
+                equalizer = attached
+                if (attached == null) {
+                    bandLevels = emptyList()
+                } else {
+                    attached.setEnabled(equalizerEnabled)
+                    bandLevels = List(attached.bandCount) { band -> attached.bandLevel(band) }
+                }
+            }
         }
         player.addListener(listener)
         onDispose {
             player.removeListener(listener)
+            equalizer?.release()
             player.release()
         }
     }
@@ -91,6 +139,44 @@ fun MediaFilePreview(
     LaunchedEffect(player, autoPlay) {
         player.volume = if (autoPlay) 0f else 1f
         player.playWhenReady = autoPlay
+    }
+
+    val subtitleOptions = remember(tracks) { MediaTrackOptions.listFor(tracks, MediaTrackKind.SUBTITLE) }
+    val audioTrackOptions = remember(tracks) { MediaTrackOptions.listFor(tracks, MediaTrackKind.AUDIO) }
+    val subtitlesEnabled = remember(tracks) { MediaTrackOptions.hasSelection(tracks, MediaTrackKind.SUBTITLE) }
+    val bandLabels = remember(equalizer) {
+        equalizer?.let { eq -> List(eq.bandCount) { band -> "${eq.centerFrequencyHz(band)} Hz" } } ?: emptyList()
+    }
+    val bandFractions = remember(equalizer, bandLevels) {
+        equalizer?.let { eq -> val range = eq.bandLevelRange(); bandLevels.map { level -> EqualizerScale.fractionForLevel(range, level) } }
+            ?: emptyList()
+    }
+
+    fun selectTrack(kind: MediaTrackKind, option: MediaTrackOption) {
+        val override = MediaTrackOptions.overrideFor(tracks, option)
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(kind.trackType, false)
+            .setOverrideForType(override)
+            .build()
+    }
+
+    fun turnSubtitlesOff() {
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(MediaTrackKind.SUBTITLE.trackType)
+            .setTrackTypeDisabled(MediaTrackKind.SUBTITLE.trackType, true)
+            .build()
+    }
+
+    fun changeEqualizerEnabled(enabled: Boolean) {
+        equalizerEnabled = enabled
+        equalizer?.setEnabled(enabled)
+    }
+
+    fun changeBandFraction(band: Int, fraction: Float) {
+        val eq = equalizer ?: return
+        val level = EqualizerScale.levelForFraction(eq.bandLevelRange(), fraction)
+        eq.setBandLevel(band, level)
+        bandLevels = bandLevels.toMutableList().also { it[band] = level }
     }
 
     val failure = error
@@ -132,5 +218,38 @@ fun MediaFilePreview(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        // Docked mode has no room for a scrubber, per the same useController gate PlayerView's
+        // own controller already uses -- this settings affordance shouldn't outlive that room.
+        if (useController && ready) {
+            IconButton(
+                onClick = { settingsOpen = true },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.35f), CircleShape),
+            ) {
+                Icon(Icons.Outlined.Tune, contentDescription = "Playback settings", tint = Color.White)
+            }
+        }
+    }
+
+    if (settingsOpen) {
+        PlaybackSettingsSheet(
+            subtitleOptions = subtitleOptions,
+            subtitlesEnabled = subtitlesEnabled,
+            onSelectSubtitle = { option -> selectTrack(MediaTrackKind.SUBTITLE, option) },
+            onSubtitlesOff = ::turnSubtitlesOff,
+            audioTrackOptions = audioTrackOptions,
+            onSelectAudioTrack = { option -> selectTrack(MediaTrackKind.AUDIO, option) },
+            speed = speed,
+            onSpeedChange = { newSpeed -> player.setPlaybackSpeed(newSpeed) },
+            equalizerAvailable = equalizer != null,
+            equalizerEnabled = equalizerEnabled,
+            onEqualizerEnabledChange = ::changeEqualizerEnabled,
+            bandLabels = bandLabels,
+            bandFractions = bandFractions,
+            onBandFractionChange = ::changeBandFraction,
+            onDismiss = { settingsOpen = false },
+        )
     }
 }
