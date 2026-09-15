@@ -38,6 +38,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default is 'tools platform-tools'; the standalone legacy "tools" package no longer
+          # resolves in Google's SDK repository (sdkmanager: "Failed to find package 'tools'"),
+          # which fails this whole step before the build ever starts. Nothing in this workflow
+          # uses the old `tools`-bundled binaries (android, monitor, etc.) -- adb comes from
+          # platform-tools, the rest from the explicit platforms/build-tools install below.
+          packages: 'platform-tools'
 
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
