@@ -68,6 +68,10 @@ data class IndexedFile(
     val directory: Boolean,
     val tags: Set<String> = emptySet(),
     val indexedAtMillis: Long = System.currentTimeMillis(),
+    /** A short sample of the file's own text (PDF, .docx/.xlsx/.pptx), for [RuleField.TEXT_CONTENT]
+     * -- null for every other kind, and for one of these that failed to extract, not just "not yet
+     * sampled". See [io.github.mbaliga.fylz.index.ContentTextExtractor]. */
+    val textSample: String? = null,
 )
 
 /** Status of the local index rebuild job, persisted so the UI survives process death. */

@@ -45,12 +45,23 @@ class SmartCollectionEngineTest {
     }
 
     @Test
-    fun textContentRulesNeverMatchBecauseNoContentIsSampled() {
+    fun textContentRulesFailClosedWhenNoContentWasSampled() {
         val collection = SmartCollection(
             name = "Mentions revenue",
             rules = listOf(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue")),
         )
         assertFalse(SmartCollectionEngine.matches(file, collection))
+    }
+
+    @Test
+    fun textContentRulesMatchAgainstWhateverWasSampledAtIndexTime() {
+        val withSample = file.copy(textSample = "Q3 revenue grew 12% year over year.")
+        val collection = SmartCollection(
+            name = "Mentions revenue",
+            rules = listOf(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue")),
+        )
+        assertTrue(SmartCollectionEngine.matches(withSample, collection))
+        assertFalse(SmartCollectionEngine.matches(withSample.copy(textSample = "Unrelated content."), collection))
     }
 
     @Test

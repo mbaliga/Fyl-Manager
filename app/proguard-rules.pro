@@ -53,3 +53,11 @@
 # ---------------------------------------------------------------------------
 -dontwarn com.github.luben.zstd.ZstdInputStream
 -dontwarn org.brotli.dec.BrotliInputStream
+
+# ---------------------------------------------------------------------------
+# pdfbox-android's JPXFilter optionally decodes JPEG2000-encoded images via
+# com.gemalto.jp2.JP2Decoder, a separate library Fylz does not bundle. PdfTextExtractor
+# never decodes any image in a PDF at all (text extraction only), so this path is
+# unreachable at runtime regardless.
+# ---------------------------------------------------------------------------
+-dontwarn com.gemalto.jp2.JP2Decoder

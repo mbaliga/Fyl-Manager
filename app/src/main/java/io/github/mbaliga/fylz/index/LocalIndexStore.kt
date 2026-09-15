@@ -98,6 +98,7 @@ class LocalIndexStore(context: Context) {
         put("extension", value.extension); put("sizeBytes", value.sizeBytes ?: JSONObject.NULL)
         put("modifiedAtMillis", value.modifiedAtMillis ?: JSONObject.NULL); put("directory", value.directory)
         put("tags", JSONArray(value.tags.toList())); put("indexedAtMillis", value.indexedAtMillis)
+        put("textSample", value.textSample ?: JSONObject.NULL)
     }
 
     private fun decodeFile(value: JSONObject): IndexedFile? = runCatching {
@@ -107,6 +108,9 @@ class LocalIndexStore(context: Context) {
             sizeBytes = value.optLongOrNull("sizeBytes"), modifiedAtMillis = value.optLongOrNull("modifiedAtMillis"),
             directory = value.getBoolean("directory"), tags = value.optJSONArray("tags")?.toStringSet().orEmpty(),
             indexedAtMillis = value.optLong("indexedAtMillis", System.currentTimeMillis()),
+            // Absent on every record written before this field existed -- optStringOrNull reads
+            // that the same way as a record whose extraction legitimately found nothing.
+            textSample = value.optStringOrNull("textSample"),
         )
     }.getOrNull()
 

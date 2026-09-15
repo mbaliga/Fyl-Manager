@@ -30,9 +30,10 @@ object SmartCollectionEngine {
         RuleField.PATH -> compareText(file.name, rule.operator, rule.value)
         RuleField.EXTENSION -> compareText(file.extension, rule.operator, rule.value.trimStart('.'))
         RuleField.MIME -> compareText(file.mimeType, rule.operator, rule.value)
-        // No text-content sampling is captured by this index, so a content rule can never match.
-        // This fails closed (excludes the file) instead of pretending a sample was inspected.
-        RuleField.TEXT_CONTENT -> false
+        // Content rules match against whatever ContentTextExtractor sampled at index time (PDF,
+        // .docx/.xlsx/.pptx). A file with no sample -- an unsupported kind, or one that failed to
+        // extract -- still fails closed rather than pretending a sample was inspected.
+        RuleField.TEXT_CONTENT -> file.textSample?.let { compareText(it, rule.operator, rule.value) } ?: false
         RuleField.SIZE -> compareLong(file.sizeBytes, rule.operator, parseSize(rule.value))
         RuleField.MODIFIED -> compareLong(file.modifiedAtMillis, rule.operator, rule.value.toLongOrNull())
         RuleField.DIRECTORY -> compareBoolean(file.directory, rule.operator, parseBoolean(rule.value))

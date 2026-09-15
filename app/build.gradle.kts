@@ -126,6 +126,18 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+    // Reads a PDF's own embedded text objects for content-search indexing -- distinct from (and
+    // much faster than) SearchablePdfService's on-device OCR, which is for image-only/scanned
+    // pages and is deliberately opt-in/slow. Ships its own consumer ProGuard rules.
+    //
+    // Excludes its own BouncyCastle transitives (bcprov/bcpkix/bcutil-jdk15to18): sshj/smbj
+    // below already pull the jdk18on family, and both families define the same class names,
+    // which fails :app:checkReleaseDuplicateClasses outright. Safe to drop here because
+    // PdfTextExtractor never decrypts a PDF -- it checks isEncrypted and bails -- so PDFBox's
+    // own use of BouncyCastle (encrypted-PDF crypto) is a path this app never takes.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
+        exclude(group = "org.bouncycastle")
+    }
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
 
     // Hyle Design System, via the hyle-design-system submodule + includeBuild (see

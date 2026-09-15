@@ -85,6 +85,7 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
     var results by remember { mutableStateOf(store.query()) }
     var collectionName by remember { mutableStateOf("") }
     var extensionRule by remember { mutableStateOf("") }
+    var contentRule by remember { mutableStateOf("") }
 
     fun refresh() {
         scopes = store.scopes()
@@ -207,18 +208,27 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
                 OutlinedTextField(extensionRule, { extensionRule = it }, label = { Text("File extension, for example obj") }, modifier = Modifier.fillMaxWidth())
             }
             item {
+                OutlinedTextField(
+                    contentRule,
+                    { contentRule = it },
+                    // PDF and .docx/.xlsx/.pptx only -- ContentTextExtractor is what samples the
+                    // text this rule matches against, and it does not read any other kind.
+                    label = { Text("Contains text (PDF, Word, Excel, PowerPoint)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
                 Button(
-                    enabled = collectionName.isNotBlank() && extensionRule.isNotBlank(),
+                    enabled = collectionName.isNotBlank() && (extensionRule.isNotBlank() || contentRule.isNotBlank()),
                     onClick = {
-                        store.putCollection(
-                            SmartCollection(
-                                name = collectionName.trim(),
-                                join = RuleJoin.ALL,
-                                rules = listOf(SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, extensionRule.trim().removePrefix("."))),
-                            ),
-                        )
+                        val rules = buildList {
+                            if (extensionRule.isNotBlank()) add(SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, extensionRule.trim().removePrefix(".")))
+                            if (contentRule.isNotBlank()) add(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, contentRule.trim()))
+                        }
+                        store.putCollection(SmartCollection(name = collectionName.trim(), join = RuleJoin.ALL, rules = rules))
                         collectionName = ""
                         extensionRule = ""
+                        contentRule = ""
                         Toast.makeText(context, "Smart collection saved", Toast.LENGTH_SHORT).show()
                     },
                 ) { Text("Save collection") }
