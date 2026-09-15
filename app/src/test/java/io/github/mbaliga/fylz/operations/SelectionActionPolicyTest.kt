@@ -1,11 +1,20 @@
 package io.github.mbaliga.fylz.operations
 
+import android.net.Uri
 import io.github.mbaliga.fylz.core.model.EntryKind
+import io.github.mbaliga.fylz.model.FileEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+/** Robolectric only for the "annotate dxf" test's own [Uri.parse] call -- every other test here is
+ * plain [EntryKind] arithmetic and would pass under any runner. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class SelectionActionPolicyTest {
 
     @Test
@@ -64,6 +73,24 @@ class SelectionActionPolicyTest {
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF, EntryKind.PDF)).annotatePdf)
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.PDF, EntryKind.IMAGE)).annotatePdf)
         assertFalse(SelectionActionPolicy.evaluate(listOf(EntryKind.IMAGE)).annotatePdf)
+    }
+
+    private fun entry(name: String, mimeType: String = "application/octet-stream") = FileEntry(
+        uri = Uri.parse("content://fake/$name"),
+        name = name,
+        mimeType = mimeType,
+        sizeBytes = null,
+        lastModifiedMillis = null,
+        flags = 0,
+        kind = EntryKind.OTHER,
+    )
+
+    @Test
+    fun `annotate dxf needs exactly one dxf drawing`() {
+        assertTrue(SelectionActionPolicy.annotatesDxf(listOf(entry("plan.dxf"))))
+        assertFalse(SelectionActionPolicy.annotatesDxf(listOf(entry("plan.dxf"), entry("other.dxf"))))
+        assertFalse(SelectionActionPolicy.annotatesDxf(listOf(entry("model.stl"))))
+        assertFalse(SelectionActionPolicy.annotatesDxf(emptyList()))
     }
 
     @Test

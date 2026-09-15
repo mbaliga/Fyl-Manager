@@ -1,6 +1,8 @@
 package io.github.mbaliga.fylz.operations
 
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import io.github.mbaliga.fylz.core.model.EntryKind
+import io.github.mbaliga.fylz.model.FileEntry
 
 /**
  * Which file actions a given selection actually supports.
@@ -21,6 +23,7 @@ data class SelectionActions(
     val pdfTools: Boolean = false,
     val annotate: Boolean = false,
     val annotatePdf: Boolean = false,
+    val annotateDxf: Boolean = false,
     val convertImage: Boolean = false,
     val imagesToPdf: Boolean = false,
     val selectImage: Boolean = false,
@@ -59,6 +62,12 @@ data class SelectionActions(
  *   rasterized like the image path, and always writes to a new file rather than overwriting the
  *   source -- different enough underneath that one boolean covering two dispatch targets would
  *   hide which is which at every call site.
+ * - **Annotate DXF** is checked by [annotatesDxf], a separate function taking [FileEntry] rather
+ *   than [EntryKind] -- DXF, OBJ, STL, PLY, OFF and glTF/GLB all collapse to the same coarse
+ *   [EntryKind.OTHER], which [evaluate]'s kind-only signature has no way to tell apart; only the
+ *   file's own [FileFormatRegistry] descriptor (`rendererId == "dxf"`) can. The call site folds
+ *   the result into [SelectionActions] with a `.copy()` after calling [evaluate], rather than
+ *   [evaluate] taking entries directly, so its existing kind-only callers and tests are untouched.
  * - **Convert image** takes exactly one image, same shape as annotate and for the same reason --
  *   the format picker is asking about one file's own bytes, and the same JPEG/PNG/WebP-only
  *   round-trip narrowing happens where the dialog would open, not here.
@@ -99,4 +108,13 @@ object SelectionActionPolicy {
             share = kinds.none { it == EntryKind.DIRECTORY },
         )
     }
+
+    /**
+     * Whether the selection is exactly one DXF drawing, per the file's own [FileFormatRegistry]
+     * descriptor rather than [EntryKind] -- see [SelectionActions]'s own note on why this one flag
+     * needs a second, separate check instead of living inside [evaluate].
+     */
+    fun annotatesDxf(entries: List<FileEntry>): Boolean = entries.singleOrNull()?.let {
+        FileFormatRegistry.describe(it.name, it.mimeType, it.kind).rendererId == "dxf"
+    } == true
 }

@@ -58,6 +58,7 @@ internal enum class FylzAction {
     PDF_TOOLS,
     ANNOTATE,
     ANNOTATE_PDF,
+    ANNOTATE_DXF,
     CONVERT_IMAGE,
     IMAGES_TO_PDF,
     SELECT_IMAGE,
@@ -191,6 +192,13 @@ internal fun ActionsRoom(
                     item {
                         ActionCard(Icons.Outlined.Draw, "Annotate PDF", "Draw on a page, save as a new PDF") {
                             onAction(FylzAction.ANNOTATE_PDF)
+                        }
+                    }
+                }
+                if (selection.annotateDxf) {
+                    item {
+                        ActionCard(Icons.Outlined.Draw, "Annotate drawing", "Draw on it, save as a new DXF") {
+                            onAction(FylzAction.ANNOTATE_DXF)
                         }
                     }
                 }

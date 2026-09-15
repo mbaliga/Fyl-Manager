@@ -827,6 +827,7 @@ private fun FylzV1Workspace(
     var pdfDialog by remember { mutableStateOf(false) }
     var annotateDialog by remember { mutableStateOf(false) }
     var annotatePdfDialog by remember { mutableStateOf(false) }
+    var annotateDxfDialog by remember { mutableStateOf(false) }
     var convertImageDialog by remember { mutableStateOf(false) }
     var selectImageDialog by remember { mutableStateOf(false) }
     var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
@@ -933,6 +934,7 @@ private fun FylzV1Workspace(
     // written inline wherever a button happened to be drawn.
     val selectionActions = remember(selectedEntries) {
         SelectionActionPolicy.evaluate(selectedEntries.map(FileEntry::kind))
+            .copy(annotateDxf = SelectionActionPolicy.annotatesDxf(selectedEntries))
     }
 
     // Every known tag, cached once per write rather than re-scanned on every recomposition, per
@@ -2261,6 +2263,7 @@ private fun FylzV1Workspace(
                 }
             }
             FylzAction.ANNOTATE_PDF -> annotatePdfDialog = true
+            FylzAction.ANNOTATE_DXF -> annotateDxfDialog = true
             FylzAction.CONVERT_IMAGE -> {
                 val target = selectedEntries.singleOrNull()
                 if (target != null && target.mimeType in ImageExportFormat.SUPPORTED_MIME_TYPES) {
@@ -3678,6 +3681,21 @@ private fun FylzV1Workspace(
                 onDismiss = { annotatePdfDialog = false },
                 onSaved = {
                     annotatePdfDialog = false
+                    selectedUris = emptySet()
+                    selectedEntryDetails = emptyMap()
+                    refresh()
+                },
+            )
+        }
+    }
+
+    if (annotateDxfDialog) {
+        selectedEntries.singleOrNull()?.let { entry ->
+            DxfAnnotateOverlay(
+                entry = entry,
+                onDismiss = { annotateDxfDialog = false },
+                onSaved = {
+                    annotateDxfDialog = false
                     selectedUris = emptySet()
                     selectedEntryDetails = emptyMap()
                     refresh()
