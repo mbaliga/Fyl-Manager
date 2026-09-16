@@ -7,6 +7,26 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
+/**
+ * The stretch of an indexed file's [IndexedFile.textSample] around the first hit for [query], for a
+ * results row to show why a document matched -- null when the query is blank, the file has no
+ * sample, or the sample does not contain the query (a name/tag hit needs no excerpt).
+ */
+internal fun contentSnippet(sample: String?, query: String, radius: Int = 40): String? {
+    val needle = query.trim()
+    if (sample.isNullOrBlank() || needle.isBlank()) return null
+    val at = sample.indexOf(needle, ignoreCase = true)
+    if (at < 0) return null
+    val start = (at - radius).coerceAtLeast(0)
+    val end = (at + needle.length + radius).coerceAtMost(sample.length)
+    val window = sample.substring(start, end).replace(Regex("\\s+"), " ").trim()
+    return buildString {
+        if (start > 0) append('…')
+        append(window)
+        if (end < sample.length) append('…')
+    }
+}
+
 class LocalIndexStore(context: Context) {
     private val root = File(context.filesDir, "local-index")
     private val filesFile = File(root, "files.json")
@@ -87,17 +107,26 @@ class LocalIndexStore(context: Context) {
         val collection = collectionId?.let { id -> collections().firstOrNull { it.id == id } }
         val normalized = text.trim().lowercase()
         return files().asSequence()
-            .filter { normalized.isBlank() || normalized in it.name.lowercase() || normalized in it.extension.lowercase() || it.tags.any { tag -> normalized in tag.lowercase() } }
+            .filter { normalized.isBlank() || it.matchesText(normalized) }
             .filter { collection == null || SmartCollectionEngine.matches(it, collection) }
             .sortedWith(compareByDescending<IndexedFile> { it.directory }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name })
             .toList()
     }
+
+    private fun IndexedFile.matchesText(normalized: String): Boolean =
+        normalized in name.lowercase() ||
+            normalized in extension.lowercase() ||
+            tags.any { tag -> normalized in tag.lowercase() } ||
+            // The sampled document text is what "Contains text" collections match on; a plain
+            // search has to see it too, or content extraction is write-only from the user's side.
+            textSample?.contains(normalized, ignoreCase = true) == true
 
     private fun encodeFile(value: IndexedFile) = JSONObject().apply {
         put("uri", value.uri); put("rootUri", value.rootUri); put("name", value.name); put("mimeType", value.mimeType)
         put("extension", value.extension); put("sizeBytes", value.sizeBytes ?: JSONObject.NULL)
         put("modifiedAtMillis", value.modifiedAtMillis ?: JSONObject.NULL); put("directory", value.directory)
         put("tags", JSONArray(value.tags.toList())); put("indexedAtMillis", value.indexedAtMillis)
+        put("textSample", value.textSample ?: JSONObject.NULL)
     }
 
     private fun decodeFile(value: JSONObject): IndexedFile? = runCatching {
@@ -107,6 +136,9 @@ class LocalIndexStore(context: Context) {
             sizeBytes = value.optLongOrNull("sizeBytes"), modifiedAtMillis = value.optLongOrNull("modifiedAtMillis"),
             directory = value.getBoolean("directory"), tags = value.optJSONArray("tags")?.toStringSet().orEmpty(),
             indexedAtMillis = value.optLong("indexedAtMillis", System.currentTimeMillis()),
+            // Absent on every record written before this field existed -- optStringOrNull reads
+            // that the same way as a record whose extraction legitimately found nothing.
+            textSample = value.optStringOrNull("textSample"),
         )
     }.getOrNull()
 

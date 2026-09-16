@@ -99,6 +99,9 @@ private fun PostV1ToolsScreen() {
                 DocumentsContract.getTreeDocumentId(uri).substringAfterLast('/').ifBlank { "Indexed folder" }
             }.getOrDefault("Indexed folder")
             indexStore.putScope(IndexScope(uri.toString(), name, enabled = true))
+            // Same as IndexManagerActivity: a freshly added folder should start indexing itself
+            // rather than sit at "0 indexed" until the user also finds Rebuild.
+            scheduler.rebuild()
             refresh()
         }
     }

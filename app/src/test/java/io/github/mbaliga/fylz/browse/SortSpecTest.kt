@@ -1,12 +1,13 @@
 package io.github.mbaliga.fylz.browse
 
 import android.net.Uri
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Sorting used to be hardcoded in `DocumentRepository` with no UI and no test. These lock in the
@@ -16,6 +17,7 @@ import org.robolectric.RobolectricTestRunner
  * android.jar stub cannot construct (same reason `PdfPagePlanPolicyTest` opts in).
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class SortSpecTest {
 
     private fun entry(

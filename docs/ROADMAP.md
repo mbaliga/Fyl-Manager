@@ -39,8 +39,11 @@ Reliability, data safety and provider behavior remain more important than parity
 
 - Bounded text/source preview and UTF-8 editing.
 - Markdown, JSON, YAML, TOML, prompts, instructions, logs, diffs and patches.
-- Images including SVG, GIF and animated WebP.
-- First-page PDF preview, media metadata, archive browsing and unknown-file inspection.
+- Images including SVG, GIF and animated WebP; freehand annotation; JPEG/PNG/WebP conversion; lasso, magic-wand and magnetic-lasso selection with crop, cut-out and copy.
+- Paged PDF preview; merge, split, page export, images-to-PDF, pages-to-images, on-device OCR into a searchable PDF; freehand ink burned into a page's content stream.
+- Audio/video playback with subtitle and audio-track selection, speed and an equalizer; media metadata.
+- Office (Word, Excel, PowerPoint) and font previews; 3D/CAD wireframes (OBJ, STL, PLY, OFF, glTF/GLB, DXF) with DXF annotation written as real drawing entities.
+- Archive browsing for ZIP, 7z and the tar family with per-entry extraction; unknown-file inspection.
 - Pre-write file-history capture for supported writes.
 
 ### File history
@@ -77,13 +80,21 @@ Reliability, data safety and provider behavior remain more important than parity
 - Transactional provider output with rollback after failure or cancellation.
 - Hostile archive metadata and randomized traversal fixtures.
 
-### Additional v1 utilities
+### Search, index and organization
 
-- Scan-to-PDF through the platform scanner integration and SAF export.
-- Duplicate detection.
-- Batch rename planning/execution foundations.
-- Favourites, tags and saved-library metadata.
-- Optional WebDAV, local-model and BYOK adapter foundations isolated from deterministic file operations.
+- Opt-in local index with explicit folder scope, pause, rebuild and delete controls; smart collections with rule predicates, listable and applicable from the index screen.
+- Indexed text sampling of PDF and Office files (bounded per file), so search and "Contains text" collections match document contents.
+- Favourites, tags and saved searches, with metadata export/import.
+- Duplicate detection (report), batch rename, scan-to-PDF.
+
+### Remote providers and connectors
+
+- SFTP (pinned host keys), SMB, WebDAV (HTTPS only) and S3-compatible object storage (HTTPS only); secrets only in the Keystore-encrypted vault.
+- BYOK AI organization proposals behind an explicit transmission approval; no autonomous destructive operations.
+
+### Desktop, widgets and system integration
+
+- Desktop (widgets, recents, favourites), canvas and stacks views; three home-screen widgets; launcher shortcuts; share-to-Fylz inbox; live wallpaper; crash recovery surfaced on next launch.
 
 ### Release engineering
 
@@ -101,7 +112,7 @@ Stable v1 is blocked until the following evidence is completed and linked from t
 
 Execute [`DEVICE_ACCEPTANCE.md`](DEVICE_ACCEPTANCE.md) across:
 
-- representative Android versions from API 26 through the release target;
+- representative Android versions from API 31 (the minSdk) through API 36 (the target);
 - local storage;
 - SD and USB storage where supported;
 - at least one cloud DocumentsProvider;
@@ -143,52 +154,51 @@ Follow [`RELEASE.md`](RELEASE.md):
 
 A failure involving data loss, unsafe overwrite/delete, provider-boundary bypass, credential exposure, parser traversal, incomplete rollback or unrecoverable migration blocks release.
 
-## Post-v1 backlog
+## Known limitations and deferred work
 
-### Document and media utilities
+Implemented behaviour that is deliberately narrower than it could be, or scaffolding that is built but not wired. Each is a real decision still open, not an oversight.
 
-- PDF page thumbnails and navigation.
-- PDF merge, split, rotate, reorder and metadata editing after choosing a safe licence-compatible stack.
-- Optional OCR/searchable PDF with explicit local/remote disclosure.
-- Richer media/font/office-document preview plug-ins.
-- Gallery view and deeper metadata inspection.
+### Annotation and editing
 
-### Organization and indexing
+- Annotate overlays fit the whole image/page/drawing to one fixed canvas — no zoom or pan while drawing. Deliberate, so a screen point maps to exactly one document point; precision markup on large images is the trade-off.
+- Multi-layer, shape and text annotation tools are a later step; today's tools are freehand pen only.
+- The text editor assumes UTF-8; encoding detection for legacy files is not implemented.
 
-- Export/import for tags and workspace metadata.
-- Smart collections and rule predicates.
-- Expanded batch-rename templates and dry-run review.
-- Duplicate cleanup workflow with cautious deletion.
-- Background local index with explicit scope, pause, rebuild and delete controls.
+### Archives and formats
+
+- Whole-archive extraction is ZIP only; 7z and the tar family extract per entry.
+- RAR (read-only) and DWG remain out: RAR needs a licence-compatible decoder, and the only capable DWG library (LibreDWG) is GPL, which this Apache-licensed app does not link.
+- EPUB has no dedicated preview.
+
+### Architecture
+
+- `core-vfs.CapabilityPolicy` and `core-model.ItemCapability` are declared by both storage backends but no command consults them yet — visibility is still decided by `SelectionActionPolicy` per entry kind.
+- Recycle-bin records, batch-rename plans and duplicate groups still identify items by `Uri`; the `ItemRef` migration covers the operation journal only.
+- `ItemIdentity.compareVersions` is built and tested but unwired: whether an unreadable size should block or allow **Finish move** is a product decision.
+- The operation journal has no last-known-good backup; a corrupt payload is decoded per record so one bad entry no longer drops the rest.
+- Undo over the operation journal, folder rows as drop targets with spring-loading, and pick-up-more mid-drag are the ranked desktop-parity gaps (docs/product/desktop-parity-study.md).
+- `KeyboardShortcutPolicy` and the dual-pane models exist without a key handler or a second pane; a full shortcut map is Chromebook/desktop polish.
 
 ### Optional local models
 
-- Signed model-pack manifests, checksums, licences and removal controls.
-- Semantic-search embeddings, suggested tags/names/clusters and bounded summaries.
-- Structured proposal review with confidence/rationale.
-- No autonomous destructive operations.
+- Signed model-pack manifests, a signed catalogue and a local model manager are implemented as libraries with tests but have no UI and load no runtime. Shipping them needs the research gate below.
 
-### Optional remote-model connectors
+## Post-v1 backlog
 
-- Provider-neutral connector catalogue.
-- Per-request transmission preview and local-only override.
-- Redaction and maximum-content controls.
-- Cost/token estimate where APIs allow it.
-- Settings export without secrets.
-
-### Provider and desktop expansion
-
-- Dedicated SMB, SFTP, WebDAV and object-storage modules after security/maintenance review.
-- Better cloud offline/cache status.
-- Optional dual-pane transfer mode.
-- Full keyboard shortcut map and Chromebook/desktop-mode polish.
-- F-Droid readiness and Play distribution review.
+- Gallery view and deeper metadata inspection.
+- Expanded batch-rename templates and dry-run review; duplicate cleanup with cautious deletion (detection is report-only today).
+- Better cloud offline/cache status; remote-to-local transfers through a destination picker.
+- Optional dual-pane transfer mode; full keyboard shortcut map and Chromebook/desktop-mode polish.
+- Semantic-search embeddings, suggested tags/names/clusters and bounded summaries over the local index.
+- Connector catalogue, per-request local-only override and settings export without secrets for the BYOK connectors.
+- Translations: every user-facing string is English-only today; resource extraction is in progress.
+- F-Droid readiness (fastlane metadata, reproducible build) and the Play `MANAGE_EXTERNAL_STORAGE` declaration and review.
 
 ## Research gates
 
-- Additional archive formats such as 7z, tar/gzip and RAR read-only require ABI-size, CVE-response and licence review.
+- RAR read-only and any further archive format require ABI-size, CVE-response and licence review.
 - Local model runtimes require benchmarks on low-, mid- and high-end devices covering memory, thermals, battery, package size, latency and quality.
-- Broad file access is not added merely for convenience; any future request requires an isolated architecture and explicit platform-policy justification.
+- Broad file access was adopted deliberately for the file-manager use case; any widening beyond it requires an isolated architecture and explicit platform-policy justification.
 
 ## Community issue labels
 

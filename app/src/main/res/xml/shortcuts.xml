@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+        These three target MainActivity, not the tool Activity itself. A launcher-published
+        shortcut is started by the launcher's own process; android:exported="false" (which all
+        three tool Activities now are) blocks that start even with an explicit targetClass, since
+        export governs which UID may start a component, not how the caller names it. Routing
+        through this always-exported MainActivity, which then starts the tool Activity itself as
+        a same-app call, keeps the shortcut working without exporting a component no other app
+        has any business launching. See io.github.mbaliga.fylz.intents.FylzIntents.
+    -->
     <shortcut
         android:shortcutId="operation_history"
         android:enabled="true"
@@ -7,9 +16,9 @@
         android:shortcutShortLabel="@string/operation_history_title"
         android:shortcutLongLabel="@string/operation_history_shortcut_long">
         <intent
-            android:action="android.intent.action.VIEW"
+            android:action="io.github.mbaliga.fylz.action.OPEN_OPERATION_HISTORY"
             android:targetPackage="io.github.mbaliga.fylz"
-            android:targetClass="io.github.mbaliga.fylz.OperationHistoryActivity" />
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="advanced_tools"
@@ -18,15 +27,10 @@
         android:shortcutShortLabel="@string/post_v1_tools_title"
         android:shortcutLongLabel="@string/post_v1_tools_shortcut_long">
         <intent
-            android:action="android.intent.action.VIEW"
+            android:action="io.github.mbaliga.fylz.action.OPEN_TOOLS"
             android:targetPackage="io.github.mbaliga.fylz"
-            android:targetClass="io.github.mbaliga.fylz.PostV1ToolsActivity" />
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
     </shortcut>
-    <!--
-        IndexManagerActivity had no manifest declaration at all until now, so nothing could reach
-        the index/ package. It is exported="false", which a launcher shortcut with an explicit
-        targetClass can still start because the shortcut is published by this same app.
-    -->
     <shortcut
         android:shortcutId="index_manager"
         android:enabled="true"
@@ -34,8 +38,48 @@
         android:shortcutShortLabel="@string/index_manager_title"
         android:shortcutLongLabel="@string/index_manager_shortcut_long">
         <intent
-            android:action="android.intent.action.VIEW"
+            android:action="io.github.mbaliga.fylz.action.OPEN_INDEX_MANAGER"
             android:targetPackage="io.github.mbaliga.fylz"
-            android:targetClass="io.github.mbaliga.fylz.IndexManagerActivity" />
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
+
+    <!--
+        Action-only shortcuts (no extras): each intent's android:action literal must match
+        io.github.mbaliga.fylz.intents.FylzIntents' own constant exactly, since a manifest XML
+        cannot reference a Kotlin const val. FylzIntentsTest pins the constants' actual values;
+        keep both in sync by hand if either ever changes.
+    -->
+    <shortcut
+        android:shortcutId="scan_document"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_scan"
+        android:shortcutShortLabel="@string/shortcut_scan_short"
+        android:shortcutLongLabel="@string/shortcut_scan_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.SCAN"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="search"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_search"
+        android:shortcutShortLabel="@string/shortcut_search_short"
+        android:shortcutLongLabel="@string/shortcut_search_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.SEARCH"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="shelf"
+        android:enabled="true"
+        android:icon="@drawable/ic_widget_shelf"
+        android:shortcutShortLabel="@string/shortcut_shelf_short"
+        android:shortcutLongLabel="@string/shortcut_shelf_long">
+        <intent
+            android:action="io.github.mbaliga.fylz.action.OPEN_SHELF"
+            android:targetPackage="io.github.mbaliga.fylz"
+            android:targetClass="io.github.mbaliga.fylz.MainActivity" />
     </shortcut>
 </shortcuts>

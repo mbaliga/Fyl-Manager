@@ -2,6 +2,15 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.core.model.ItemRef
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.JournalSchema
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationRecoveryPolicy
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -86,8 +95,8 @@ class OperationJournal(context: Context) {
                 items.put(
                     JSONObject()
                         .put("id", item.id)
-                        .put("source", item.source.toString())
-                        .put("destination", item.destination?.toString())
+                        .put("source", item.source.toJson())
+                        .put("destination", item.destination?.toJson())
                         .put("displayName", item.displayName)
                         .put("expectedBytes", item.expectedBytes)
                         .put("completedBytes", item.completedBytes)
@@ -97,6 +106,7 @@ class OperationJournal(context: Context) {
             }
             root.put(
                 JSONObject()
+                    .put("schemaVersion", JournalSchema.CURRENT_VERSION)
                     .put("id", operation.id)
                     .put("type", operation.type.name)
                     .put("conflictPolicy", operation.conflictPolicy.name)
@@ -111,49 +121,75 @@ class OperationJournal(context: Context) {
         }
     }
 
+    private fun ItemRef.toJson(): JSONObject = JSONObject()
+        .put("providerId", providerId)
+        .put("locationId", locationId)
+        .put("opaqueItemId", opaqueItemId)
+
+    /**
+     * Reads a `source`/`destination` field by JSON shape rather than by the record's
+     * `schemaVersion`, per the migration contract in [JournalSchema]'s KDoc: an object is the
+     * current [ItemRef] encoding, a string is a pre-WP-1.1 `Uri`, decoded through
+     * `app/storage/ItemRefs.kt`'s adapter into an equivalent ref.
+     */
+    private fun JSONObject.decodeItemRef(key: String): ItemRef? =
+        when (val value = opt(key)) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> ItemRef(
+                providerId = value.getString("providerId"),
+                locationId = value.getString("locationId"),
+                opaqueItemId = value.getString("opaqueItemId"),
+            )
+            is String -> value.takeIf(String::isNotBlank)?.let { Uri.parse(it).toItemRef() }
+            else -> null
+        }
+
+    /**
+     * Decodes each record independently, so one malformed [FileOperation] -- a future schema
+     * this build does not understand, a partial write, a single flipped bit -- costs only
+     * itself. The array as a whole is still lost if [raw] is not valid JSON at all, since there
+     * is then no record boundary left to salvage anything by.
+     */
     private fun decode(raw: String?): List<FileOperation> {
         if (raw.isNullOrBlank()) return emptyList()
-        return runCatching {
-            val root = JSONArray(raw)
-            buildList {
-                for (index in 0 until root.length()) {
-                    val value = root.getJSONObject(index)
-                    val itemsJson = value.getJSONArray("items")
-                    val items = buildList {
-                        for (itemIndex in 0 until itemsJson.length()) {
-                            val item = itemsJson.getJSONObject(itemIndex)
-                            add(
-                                OperationItem(
-                                    id = item.getString("id"),
-                                    source = Uri.parse(item.getString("source")),
-                                    destination = item.optString("destination")
-                                        .takeIf(String::isNotBlank)
-                                        ?.let(Uri::parse),
-                                    displayName = item.getString("displayName"),
-                                    expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE)
-                                        .takeUnless { it == Long.MIN_VALUE },
-                                    completedBytes = item.optLong("completedBytes", 0L),
-                                    state = OperationState.valueOf(item.getString("state")),
-                                    errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
-                                ),
-                            )
-                        }
-                    }
-                    add(
-                        FileOperation(
-                            id = value.getString("id"),
-                            type = FileOperationType.valueOf(value.getString("type")),
-                            items = items,
-                            conflictPolicy = ConflictPolicy.valueOf(value.getString("conflictPolicy")),
-                            state = OperationState.valueOf(value.getString("state")),
-                            createdAtMillis = value.getLong("createdAtMillis"),
-                            updatedAtMillis = value.getLong("updatedAtMillis"),
-                        ),
-                    )
-                }
+        val root = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (index in 0 until root.length()) {
+                runCatching { decodeOperation(root.getJSONObject(index)) }.getOrNull()?.let(::add)
             }
-        }.getOrElse { emptyList() }
+        }
     }
+
+    private fun decodeOperation(value: JSONObject): FileOperation {
+        val itemsJson = value.getJSONArray("items")
+        val items = buildList {
+            for (itemIndex in 0 until itemsJson.length()) {
+                add(decodeItem(itemsJson.getJSONObject(itemIndex)))
+            }
+        }
+        return FileOperation(
+            id = value.getString("id"),
+            type = FileOperationType.valueOf(value.getString("type")),
+            items = items,
+            conflictPolicy = ConflictPolicy.valueOf(value.getString("conflictPolicy")),
+            state = OperationState.valueOf(value.getString("state")),
+            createdAtMillis = value.getLong("createdAtMillis"),
+            updatedAtMillis = value.getLong("updatedAtMillis"),
+        )
+    }
+
+    private fun decodeItem(item: JSONObject): OperationItem = OperationItem(
+        id = item.getString("id"),
+        source = requireNotNull(item.decodeItemRef("source")) {
+            "Operation journal item is missing its source reference."
+        },
+        destination = item.decodeItemRef("destination"),
+        displayName = item.getString("displayName"),
+        expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE).takeUnless { it == Long.MIN_VALUE },
+        completedBytes = item.optLong("completedBytes", 0L),
+        state = OperationState.valueOf(item.getString("state")),
+        errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
+    )
 
     private companion object {
         const val PREFERENCES_NAME = "fylz_operation_journal"

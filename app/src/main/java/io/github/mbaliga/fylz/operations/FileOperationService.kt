@@ -2,7 +2,17 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
+import android.os.CancellationSignal
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import io.github.mbaliga.fylz.core.operations.ConflictPolicy
+import io.github.mbaliga.fylz.core.operations.FileOperation
+import io.github.mbaliga.fylz.core.operations.FileOperationType
+import io.github.mbaliga.fylz.core.operations.OperationItem
+import io.github.mbaliga.fylz.core.operations.OperationState
+import io.github.mbaliga.fylz.storage.toItemRef
+import io.github.mbaliga.fylz.storage.toUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -14,6 +24,15 @@ import kotlin.coroutines.coroutineContext
 class FileOperationService(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
+    // Fired for a MOVE item at the point its source delete succeeds -- never for COPY, and
+    // never for a conflict-skipped item. No store type leaks in here; callers translate.
+    private val onItemRelocated: ((Uri, Uri) -> Unit)? = null,
+    // One tracker per service instance, not a shared singleton: FylzAppShell's own instance
+    // (crash-recovery replay) and FylzV1App's (every interactive move/copy) are deliberately
+    // separate FileOperationService instances already, and this follows that same seam rather
+    // than crossing it. The caller that wants its operations to show as on-screen Activities
+    // reads THIS property; nothing here assumes there is only ever one service alive.
+    val activityTracker: ActivityTracker = ActivityTracker(),
 ) {
     data class Progress(
         val itemIndex: Int,
@@ -33,15 +52,19 @@ class FileOperationService(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        destinationPathSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, onProgress)
+    ): List<Uri> =
+        transfer(sourceUris, destinationTreeUri, false, conflictPolicy, destinationPathSegments, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        destinationPathSegments: List<String> = emptyList(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, onProgress)
+    ): List<Uri> =
+        transfer(sourceUris, destinationTreeUri, true, conflictPolicy, destinationPathSegments, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -58,11 +81,11 @@ class FileOperationService(
             coroutineContext.ensureActive()
             val destinationUri = item.destination
                 ?: return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
-            val destination = DocumentFile.fromSingleUri(context, destinationUri)
+            val destination = DocumentFile.fromSingleUri(context, destinationUri.toUri())
             if (destination?.exists() != true) {
                 return@map item.copy(state = OperationState.NEEDS_ATTENTION, errorCode = MOVE_DESTINATION_MISSING)
             }
-            val source = DocumentFile.fromSingleUri(context, item.source)
+            val source = DocumentFile.fromSingleUri(context, item.source.toUri())
             if (source?.exists() != true) {
                 changed = true
                 return@map item.copy(state = OperationState.SUCCEEDED, errorCode = null)
@@ -100,22 +123,38 @@ class FileOperationService(
         destinationTreeUri: Uri,
         move: Boolean,
         conflictPolicy: ConflictPolicy,
+        destinationPathSegments: List<String>,
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
-        val destination = DocumentFile.fromTreeUri(context, destinationTreeUri)
+        // Subfolder destinations are reached by walking display names down from the granted
+        // tree root. Walking is the only provider-neutral resolution: synthesising a tree URI
+        // rooted at the subfolder works on our own provider and fails permission checks on
+        // third-party ones, and parsing the document ID for a path assumes an ID scheme no
+        // contract promises (acceptance law #8).
+        val root = DocumentFile.fromTreeUri(context, destinationTreeUri)
             ?: error("Unable to open the destination folder.")
+        val destination = destinationPathSegments.fold(root) { folder, segment ->
+            folder.findFile(segment)
+                ?.takeIf(DocumentFile::isDirectory)
+                ?: error("The destination folder “$segment” no longer exists.")
+        }
         require(destination.isDirectory && destination.canWrite()) {
             "The destination folder is not writable."
         }
+        // Journaled destination: the resolved folder's own URI when walking happened. The
+        // retry policy refuses to replay these (it cannot re-walk display names), which is the
+        // conservative outcome — a replay against the raw tree URI would land files in the
+        // tree ROOT, silently the wrong folder.
+        val journaledDestination = if (destinationPathSegments.isEmpty()) destinationTreeUri else destination.uri
 
         val operation = FileOperation(
             type = if (move) FileOperationType.MOVE else FileOperationType.COPY,
             items = sourceUris.map { uri ->
                 val source = DocumentFile.fromSingleUri(context, uri)
                 OperationItem(
-                    source = uri,
-                    destination = destinationTreeUri,
+                    source = uri.toItemRef(),
+                    destination = journaledDestination.toItemRef(),
                     displayName = source?.name ?: "untitled",
                     expectedBytes = source?.length()?.takeIf { source.isFile && it >= 0L },
                     state = OperationState.QUEUED,
@@ -131,6 +170,15 @@ class FileOperationService(
             updatedAtMillis = System.currentTimeMillis(),
         )
         journal.put(current)
+        activityTracker.start(
+            id = operation.id,
+            label = if (move) "Moving" else "Copying",
+            itemCount = sourceUris.size,
+            kind = ActivityKind.TRANSFER,
+            // Bounded on purpose: the expanded card fans at most three, so handing it the whole
+            // batch (12,366 of them, in the owner's own example) would be a list nobody reads.
+            previewUris = sourceUris.take(ACTIVITY_PREVIEW_LIMIT),
+        )
 
         try {
             val result = buildList {
@@ -167,6 +215,7 @@ class FileOperationService(
                             )
                         }
                         journal.put(current)
+                        activityTracker.update(operation.id, itemIndex = progress.itemIndex, itemCount = progress.itemCount)
                         onProgress(progress)
                     }
                     verifyCopy(source, staged)
@@ -175,7 +224,7 @@ class FileOperationService(
                     if (move && !source.delete()) {
                         current = updateItem(current, index) { item ->
                             item.copy(
-                                destination = copied.uri,
+                                destination = copied.uri.toItemRef(),
                                 completedBytes = item.expectedBytes ?: item.completedBytes,
                                 state = OperationState.NEEDS_ATTENTION,
                                 errorCode = MOVE_SOURCE_DELETE_PENDING,
@@ -186,9 +235,13 @@ class FileOperationService(
                         return@forEachIndexed
                     }
 
+                    // Reached only when move is false (a plain copy) or move is true and the
+                    // source delete above already succeeded -- the one point a MOVE is complete.
+                    if (move) onItemRelocated?.invoke(sourceUri, copied.uri)
+
                     current = updateItem(current, index) { item ->
                         item.copy(
-                            destination = copied.uri,
+                            destination = copied.uri.toItemRef(),
                             completedBytes = item.expectedBytes ?: item.completedBytes,
                             state = OperationState.SUCCEEDED,
                             errorCode = null,
@@ -234,6 +287,10 @@ class FileOperationService(
             )
             journal.put(current)
             throw failure
+        } finally {
+            // Every exit path -- success, cancellation, failure -- means this operation is no
+            // longer IN FLIGHT, which is the only thing an Activity card has an opinion about.
+            activityTracker.finish(operation.id)
         }
     }
 
@@ -263,7 +320,9 @@ class FileOperationService(
             val directory = destinationDirectory.createDirectory(requestedName)
                 ?: error("Unable to create $progressName.")
             try {
-                source.listFiles().forEach { child ->
+                listChildUris(source.uri).forEach { childUri ->
+                    val child = DocumentFile.fromSingleUri(context, childUri)
+                        ?: error("Unable to open a child of $progressName.")
                     copyDocument(
                         source = child,
                         destinationDirectory = directory,
@@ -320,6 +379,33 @@ class FileOperationService(
             target.delete()
             throw failure
         }
+    }
+
+    /**
+     * A directory source's immediate children, queried directly rather than through
+     * [DocumentFile.listFiles]. Every source here opens via [DocumentFile.fromSingleUri] --
+     * `transfer()` takes heterogeneous, independently-granted sources, never a shared tree -- and
+     * `SingleDocumentFile.listFiles()` is an unconditional `UnsupportedOperationException` in the
+     * pinned documentfile artifact, a folder source included. [source]'s uri is already
+     * tree-shaped (every uri this app hands to copy/move is minted via
+     * `buildDocumentUriUsingTree`), so it doubles as the tree uri this query needs.
+     */
+    private fun listChildUris(directoryUri: Uri): List<Uri> {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            directoryUri,
+            DocumentsContract.getDocumentId(directoryUri),
+        )
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+        val queryArgs: Bundle? = null
+        val signal: CancellationSignal? = null
+        val children = mutableListOf<Uri>()
+        context.contentResolver.query(childrenUri, projection, queryArgs, signal)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            while (cursor.moveToNext()) {
+                children += DocumentsContract.buildDocumentUriUsingTree(directoryUri, cursor.getString(idIndex))
+            }
+        }
+        return children
     }
 
     private fun verifyCopy(source: DocumentFile, target: DocumentFile) {
@@ -392,5 +478,8 @@ class FileOperationService(
         const val MOVE_SOURCE_DELETE_PENDING = "MOVE_SOURCE_DELETE_PENDING"
         const val MOVE_DESTINATION_MISSING = "MOVE_DESTINATION_MISSING"
         const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
+
+        /** How many of a batch's sources the Activity card is handed to fan as previews. */
+        const val ACTIVITY_PREVIEW_LIMIT = 3
     }
 }

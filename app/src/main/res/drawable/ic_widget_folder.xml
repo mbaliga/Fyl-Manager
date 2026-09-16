@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written 24dp folder glyph — the folder shortcut widget's icon and the shelf/scan
+     shortcuts' sibling in this app's own vector set (never material-icons-extended, which
+     RemoteViews cannot use). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4,5 L10,5 L12,7.5 L20,7.5 C20.55,7.5 21,7.95 21,8.5 L21,18 C21,18.55 20.55,19 20,19 L4,19 C3.45,19 3,18.55 3,18 L3,6 C3,5.45 3.45,5 4,5 Z" />
+</vector>

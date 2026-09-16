@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.backup
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
@@ -242,7 +243,14 @@ class BackupWorker(
             .setOngoing(true)
             .setProgress(0, progress, true)
             .build()
-        return ForegroundInfo(NOTIFICATION_ID_BASE + title.hashCode().and(0x0fff), notification)
+        // The type must be stated here as well as on the manifest's SystemForegroundService entry:
+        // from target 34 a typeless foreground start is rejected, and WorkManager then quietly
+        // runs the job unpromoted -- no notification, and eligible to be killed mid-backup.
+        return ForegroundInfo(
+            NOTIFICATION_ID_BASE + title.hashCode().and(0x0fff),
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
     }
 
     private fun formatBytes(bytes: Long): String = when {

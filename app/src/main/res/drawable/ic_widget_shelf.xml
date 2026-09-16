@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written 24dp stacked-bars glyph for the Shelf quick action / shortcut — three shelves,
+     read literally. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4,5 H20 V7.5 H4 Z M4,10.75 H20 V13.25 H4 Z M4,16.5 H20 V19 H4 Z" />
+</vector>

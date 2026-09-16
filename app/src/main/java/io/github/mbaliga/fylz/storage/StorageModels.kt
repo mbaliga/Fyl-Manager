@@ -2,40 +2,6 @@ package io.github.mbaliga.fylz.storage
 
 import android.net.Uri
 
-/**
- * What a concrete [StorageProvider] can actually do.
- *
- * Downstream services (file operations, recycle bin, archives, backup, history) are all written
- * against SAF tree URIs. Rather than teach each of them a second backend, every provider in this
- * app hands back *document* URIs that a `ContentResolver` can service; the capability set here
- * tells the UI what to offer, not how to talk to the backend.
- */
-enum class StorageCapability {
-    /** Roots can be listed and walked without any user gesture. */
-    BROWSE_WITHOUT_PICKER,
-
-    /** Provider exposes whole storage volumes rather than individually granted subtrees. */
-    WHOLE_VOLUME,
-
-    /** New files/folders can be created under a root. */
-    CREATE,
-
-    /** Items can be renamed in place. */
-    RENAME,
-
-    /** Items can be deleted. */
-    DELETE,
-
-    /** An app-managed `.fylz-trash` recycle location can be created inside the root. */
-    RECYCLE_BIN,
-
-    /** Children can be enumerated recursively for search. */
-    RECURSIVE_SEARCH,
-
-    /** File bytes can be opened for content search. */
-    CONTENT_SEARCH,
-}
-
 /** Broad shape of a launch-surface entry, used for grouping and iconography. */
 enum class StorageRootKind {
     /** Primary/internal shared storage. */
@@ -55,6 +21,9 @@ enum class StorageRootKind {
 
     /** A configured network location (WebDAV/SFTP/SMB/S3). */
     REMOTE,
+
+    /** A camera, phone, or e-reader reachable through the platform's MTP document provider. */
+    USB_DEVICE,
 }
 
 /**
@@ -78,6 +47,22 @@ data class StorageRoot(
 ) {
     /** True when tapping this entry can open a tab directly, with no picker round-trip. */
     val opensDirectly: Boolean get() = treeUri != null && documentUri != null
+
+    /**
+     * True when nothing about opening this entry is gated on a grant or a picker round-trip --
+     * either it [opensDirectly], or (a REMOTE root) its one "grant" already happened when the
+     * connection was saved, so there is nothing left to ask for.
+     *
+     * [opensDirectly] alone cannot express the REMOTE case: a remote root carries neither a
+     * [treeUri] nor a [documentUri] -- browsing one runs through
+     * [io.github.mbaliga.fylz.network.RemoteBrowser]'s own protocol clients, never SAF -- so
+     * [opensDirectly] reads false for it even though tapping it never needs a permission. Reading
+     * [opensDirectly] directly anywhere a "does this still need a grant" question is actually
+     * being asked (the lock badge, the action label read out to accessibility, the tap dispatch
+     * that decides between opening and picking) would answer that question wrong for every saved
+     * connection.
+     */
+    val readyToOpen: Boolean get() = opensDirectly || kind == StorageRootKind.REMOTE
 
     /**
      * True when this root lives on the device's primary shared volume — the region

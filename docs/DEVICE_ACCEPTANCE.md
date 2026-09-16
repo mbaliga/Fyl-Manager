@@ -6,12 +6,13 @@ For every run, record the app commit, device, Android version, provider version,
 
 ## Required environments
 
-- Android 8 / API 26 reference or emulator-compatible device
-- Android 10 / API 29
-- Android 12 / API 31
+The app's minSdk is 31 (set by the Hyle design system); nothing below Android 12 can install it.
+
+- Android 12 / API 31 (the minimum)
+- Android 13 / API 33 (first version with the runtime notification permission)
 - Android 14 / API 34
 - Android 15 / API 35
-- Android 16 / API 36 when available in the release environment
+- Android 16 / API 36 (the target)
 - Small phone, landscape phone, tablet or foldable-sized window
 - Hardware keyboard and pointer-capable environment
 
@@ -69,6 +70,23 @@ For every run, record the app commit, device, Android version, provider version,
 - Exercise low cache space and low provider space where reported.
 - Test traversal, absolute path, case collision, duplicate path, oversized entry, entry-count, depth and compression-ratio rejection.
 - Interrupt extraction and verify rollback of the newly created destination folder.
+
+## Permissions and first run
+
+- Decline "All files access" on first launch, confirm the Storage Access Framework fallback works, then grant it from Settings and confirm the volumes appear without a picker.
+- Confirm the per-app "All files access" screen opens (not the device-wide list) on API 31+.
+- Enable a scheduled backup plan on API 33+ and confirm the notification permission prompt appears once and the progress notification shows during a run.
+
+## Documents, media and annotation
+
+- Annotate a JPEG/PNG/WebP, a multi-page PDF and a DXF; open each saved output in a third-party viewer (a PDF reader, a CAD viewer) and confirm the ink is present and positioned where it was drawn.
+- Merge, split and export PDF pages; export pages as PNG/JPEG; run OCR on a scanned PDF and search its text.
+- Play a video with embedded subtitles and multiple audio tracks; switch tracks, change speed, adjust the equalizer, and confirm audio focus/interruption behaviour on a call.
+- Add a folder to the local index, wait for the rebuild to finish, and search for a phrase that appears only inside a PDF and a .docx in that folder.
+
+## Remote providers
+
+- Connect to SFTP, SMB, WebDAV and an S3-compatible endpoint; browse, preview and copy a file to local storage; confirm a wrong password fails cleanly and no secret appears in logs or exports.
 
 ## Accessibility and adaptive UI
 

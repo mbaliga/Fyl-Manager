@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    StorageWidgetProvider's 2x2 face: a title, the segmented usage bar rendered into a bitmap by
+    the provider itself (setImageViewBitmap — this ImageView never gets a static android:src),
+    and an honest status line ("as of <date>" once a scan has run, or "No scan yet" before one
+    ever has). RemoteViews-safe views only: LinearLayout, TextView, ImageView.
+
+    Build 11.5 inset rule (the one this repo's three widget layouts now share, replacing the old
+    6dp/14dp/4dp chaos): 14dp root padding on every widget face EXCEPT the 1x1 folder widget,
+    which uses 10dp — a cell that small needs its icon+label to keep more of the available
+    footprint. This layout's own root padding is StorageWidgetProvider.renderBar's
+    WIDGET_INSET_DP, read back to size the bar bitmap's real content width.
+
+    Type is Hyle Grotesk Classic throughout — medium for the title ("Names in black medium" per
+    the Build 11.5 fidelity spec), regular for the secondary status line.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_storage_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_background"
+    android:padding="14dp">
+
+    <TextView
+        android:id="@+id/widget_storage_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/widget_on_surface"
+        android:textSize="14sp"
+        android:fontFamily="@font/hyle_grotesk_classic_medium" />
+
+    <ImageView
+        android:id="@+id/widget_storage_bar"
+        android:layout_width="match_parent"
+        android:layout_height="20dp"
+        android:layout_marginTop="12dp"
+        android:scaleType="fitXY"
+        android:contentDescription="@string/widget_storage_bar_description" />
+
+    <TextView
+        android:id="@+id/widget_storage_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textColor="@color/widget_on_surface_variant"
+        android:textSize="12sp"
+        android:fontFamily="@font/hyle_grotesk_classic_regular" />
+</LinearLayout>

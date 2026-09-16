@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hand-written 24dp magnifying-glass glyph for the Search quick action / shortcut: a stroked
+     ring (drawn as a near-360-degree arc back to its own start, the standard vector-path trick
+     for a full circle) plus a straight handle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:fillColor="#00000000"
+        android:pathData="M10,4 A6,6 0 1,1 9.99,4 Z" />
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:pathData="M14.5,14.5 L21,21" />
+</vector>

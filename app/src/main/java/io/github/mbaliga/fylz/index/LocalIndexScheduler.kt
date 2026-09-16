@@ -10,7 +10,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import io.github.mbaliga.fylz.library.LibraryStore
-import io.github.mbaliga.fylz.preview.FileFormatRegistry
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -105,16 +105,26 @@ class LocalIndexWorker(
                 visited += 1
                 val name = child.name ?: "Untitled"
                 val mime = child.type ?: if (child.isDirectory) "vnd.android.document/directory" else "application/octet-stream"
+                val extension = FileFormatRegistry.compoundExtension(name)
+                val sizeBytes = child.length().takeIf { it >= 0L }
+                val textSample = if (!child.isDirectory && ContentTextExtractor.supports(extension, mime)) {
+                    // A corrupt or password-protected document must not stall a walk of up to
+                    // 500,000 entries -- ContentTextExtractor itself already fails closed to null.
+                    ContentTextExtractor.extract(applicationContext, child.uri, extension, mime, sizeBytes)
+                } else {
+                    null
+                }
                 files += IndexedFile(
                     uri = child.uri.toString(),
                     rootUri = scope.rootUri,
                     name = name,
                     mimeType = mime,
-                    extension = FileFormatRegistry.compoundExtension(name),
-                    sizeBytes = child.length().takeIf { it >= 0L },
+                    extension = extension,
+                    sizeBytes = sizeBytes,
                     modifiedAtMillis = child.lastModified().takeIf { it > 0L },
                     directory = child.isDirectory,
                     tags = library.tags(child.uri),
+                    textSample = textSample,
                 )
                 if (child.isDirectory) queue.add(child to depth + 1)
             }

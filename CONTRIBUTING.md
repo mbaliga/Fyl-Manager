@@ -19,14 +19,16 @@ Feature count is not the goal. A smaller reliable workflow is preferred over a b
 ## Development setup
 
 - JDK 17
-- Android SDK 35
-- Gradle 8.11.1
+- Android SDK: `platforms;android-36` and `build-tools;36.0.0` (the app targets and compiles against API 36; minSdk is 31)
+- Gradle 8.14.3 — use the wrapper (`./gradlew`), which provisions it
+- The `hyle-design-system` and `shared-libraries` git submodules must be initialized: `git submodule update --init --recursive`
 
 ```bash
-gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./gradlew :core-model:test :core-format:test :core-vfs:test :core-operations:test
 ```
 
-CI runs the same core checks and uploads a debug APK.
+CI runs the same core checks and uploads a debug APK; the Release readiness workflow adds release lint, R8 assembly and an unsigned App Bundle.
 
 ## Branch and pull request guidance
 

@@ -1,6 +1,9 @@
 package io.github.mbaliga.fylz.preview
 
-import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.core.format.FileFormatRegistry
+import io.github.mbaliga.fylz.core.format.PreviewDepth
+import io.github.mbaliga.fylz.core.format.PreviewFamily
+import io.github.mbaliga.fylz.core.model.EntryKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

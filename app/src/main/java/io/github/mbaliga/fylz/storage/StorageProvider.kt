@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.storage
 
 import android.content.Context
 import android.content.Intent
+import io.github.mbaliga.fylz.core.model.ItemCapability
 
 /**
  * The capability adapter: one interface behind which the `java.io.File`-backed source and the
@@ -15,7 +16,20 @@ interface StorageProvider {
     val id: String
 
     /** What this provider supports; the UI branches on this rather than on the flavor name. */
-    val capabilities: Set<StorageCapability>
+    val capabilities: Set<ItemCapability>
+
+    /**
+     * True when this provider's roots can be listed and walked without any user gesture.
+     *
+     * Describes the provider's *launch-surface* behavior -- how a root is reached -- not
+     * anything about an item's operations once reached, so it lives here rather than in
+     * [capabilities]. See [ItemCapability]'s KDoc for why it was deliberately left out of that
+     * vocabulary.
+     */
+    val browseWithoutPicker: Boolean get() = false
+
+    /** True when this provider exposes whole storage volumes rather than individually granted subtrees. */
+    val wholeVolume: Boolean get() = false
 
     /**
      * True when the provider can enumerate roots right now.

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Moss, matching AccentPreset.MOSS which FylzV1App selects. -->
-    <color name="ic_launcher_background">#2E5A43</color>
+    <!-- The source artwork's ground. Black is load-bearing here: the box's own linework is
+         black, so the backdrop and the drawing share an ink and the icon reads as one mark
+         rather than as a picture pasted onto a panel. -->
+    <color name="ic_launcher_background">#000000</color>
 </resources>

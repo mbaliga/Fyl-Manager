@@ -5,20 +5,22 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.RestorePage
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import io.github.mbaliga.fylz.backup.BackupImporter
 import kotlinx.coroutines.launch
 
+/**
+ * Rediscovers verified manifest-bearing backup folders. There is no dialog of its own — the whole
+ * journey is the system folder picker — so `open` means "launch it now" and the picker's own
+ * result callback is what reports back down through [onDismiss], whichever way it was left (a
+ * folder chosen or the user backing out).
+ */
 @Composable
-fun BackupImportOverlay(modifier: Modifier = Modifier) {
+fun BackupImportHost(open: Boolean, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val importer = remember { BackupImporter(context.applicationContext) }
@@ -29,6 +31,7 @@ fun BackupImportOverlay(modifier: Modifier = Modifier) {
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        onDismiss()
         if (uri == null) return@rememberLauncherForActivityResult
         persist(uri)
         scope.launch {
@@ -43,10 +46,7 @@ fun BackupImportOverlay(modifier: Modifier = Modifier) {
         }
     }
 
-    FloatingActionButton(
-        onClick = { picker.launch(null) },
-        modifier = modifier,
-    ) {
-        Icon(Icons.Outlined.RestorePage, contentDescription = "Import existing backups")
+    LaunchedEffect(open) {
+        if (open) picker.launch(null)
     }
 }

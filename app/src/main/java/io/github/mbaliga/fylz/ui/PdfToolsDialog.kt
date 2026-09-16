@@ -9,16 +9,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -28,12 +25,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 
 /**
- * PDF page tools: the UI for `pdf/PdfToolService`, `pdf/PdfPageTools` and
- * `pdf/SearchablePdfService`, all of which were fully implemented with **no UI references at all**.
+ * PDF page tools: the UI for `pdf/PdfToolService`.
  *
  * What is exposed:
  *
@@ -41,6 +43,8 @@ import io.github.mbaliga.fylz.pdf.PdfToolService
  * - **Extract pages** — a `1-3,7,9-12` style range, with optional per-page rotation, written to a
  *   destination the caller supplies through `CreateDocument`.
  * - **Merge** — every selected PDF, in selection order, into one document.
+ * - **Export as images** — the chosen page range rendered to a PNG or JPEG per page, written
+ *   directly into a picked destination folder rather than repackaged into a new PDF.
  * - **Searchable (OCR)** — runs on-device ML Kit text recognition and draws an invisible text layer.
  *   Off by default: it is much slower and it is a processing decision the user should make.
  *
@@ -53,6 +57,7 @@ fun PdfToolsDialog(
     onDismiss: () -> Unit,
     onExport: (pages: List<PdfPageRef>, searchableOcr: Boolean) -> Unit,
     onMerge: (searchableOcr: Boolean) -> Unit,
+    onExportImages: (pages: List<PdfPageRef>, format: ImageExportFormat) -> Unit,
     onError: (String) -> Unit,
 ) {
     var pageCount by remember { mutableStateOf<Int?>(null) }
@@ -60,6 +65,7 @@ fun PdfToolsDialog(
     var range by remember { mutableStateOf("") }
     var rotation by remember { mutableStateOf(0) }
     var searchableOcr by remember { mutableStateOf(false) }
+    var imageFormat by remember { mutableStateOf(ImageExportFormat.PNG) }
 
     val single = sources.singleOrNull()
 
@@ -98,21 +104,38 @@ fun PdfToolsDialog(
                     pageCount?.let { count ->
                         Text("$count page${if (count == 1) "" else "s"}", style = MaterialTheme.typography.bodyMedium)
                     }
-                    OutlinedTextField(
+                    TactileField(
                         value = range,
                         onValueChange = { range = it },
-                        label = { Text("Pages") },
-                        supportingText = { Text("For example 1-3,7,9-12. Blank means every page.") },
+                        label = "Pages",
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Rotate", Modifier.width(80.dp))
-                        listOf(0, 90, 180, 270).forEach { degrees ->
-                            TextButton(onClick = { rotation = degrees }) {
-                                Text(
-                                    if (rotation == degrees) "[$degrees°]" else "$degrees°",
-                                    style = MaterialTheme.typography.labelLarge,
+                    // TactileField has no persistent (non-error) supporting-text slot, unlike the
+                    // OutlinedTextField this replaces -- this hint was never an error state, so it
+                    // moves to a plain caption below the field rather than being dropped or
+                    // recast as an invented Error().
+                    Text(
+                        "For example 1-3,7,9-12. Blank means every page.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Rotate", style = MaterialTheme.typography.labelLarge)
+                        // Four rotation choices is past what TactileToggle supports (its cap-slant
+                        // rule only distinguishes a first/last segment, per the type's own KDoc) --
+                        // and well before that, 4 segments plus "180°"/"270°" widening two of them
+                        // need more room than an AlertDialog's ~240-280dp usable content width
+                        // reliably has on a phone. A vertical stack of TactileOptionRow is the
+                        // kit's own idiom for a single-select group that doesn't fit a segmented
+                        // toggle -- same pattern SettingsOverlay uses for its
+                        // ThemeMode/HomeMode/DensityMode rows.
+                        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            ROTATION_DEGREES.forEach { degrees ->
+                                TactileOptionRow(
+                                    text = "$degrees°",
+                                    selected = rotation == degrees,
+                                    onClick = { rotation = degrees },
                                 )
                             }
                         }
@@ -124,7 +147,7 @@ fun PdfToolsDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
-                    Switch(checked = searchableOcr, onCheckedChange = { searchableOcr = it })
+                    TactileSwitch(checked = searchableOcr, onCheckedChange = { searchableOcr = it })
                     Spacer(Modifier.width(10.dp))
                     Column {
                         Text("Make searchable (OCR)")
@@ -137,31 +160,65 @@ fun PdfToolsDialog(
                         )
                     }
                 }
+
+                if (single != null) {
+                    HorizontalDivider()
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Export as images", style = MaterialTheme.typography.labelLarge)
+                        Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IMAGE_EXPORT_FORMATS.forEach { format ->
+                                TactileOptionRow(
+                                    text = format.label,
+                                    selected = imageFormat == format,
+                                    onClick = { imageFormat = format },
+                                )
+                            }
+                        }
+                        TactileButton(
+                            text = if (parsedPages.isEmpty()) {
+                                "Export as images"
+                            } else {
+                                "Export ${parsedPages.size} page${if (parsedPages.size == 1) "" else "s"} as images"
+                            },
+                            onClick = { onExportImages(parsedPages.map { PdfPageRef(single, it, rotation) }, imageFormat) },
+                            style = TactileButtonStyle.SECONDARY,
+                            enabled = parsedPages.isNotEmpty(),
+                            fillWidth = true,
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             if (sources.size > 1) {
-                Button(onClick = { onMerge(searchableOcr) }) { Text("Merge") }
+                TactileButton(text = "Merge", onClick = { onMerge(searchableOcr) }, style = TactileButtonStyle.PRIMARY)
             } else {
-                Button(
+                TactileButton(
+                    text = if (parsedPages.isEmpty()) {
+                        "Extract"
+                    } else {
+                        "Extract ${parsedPages.size} page${if (parsedPages.size == 1) "" else "s"}"
+                    },
                     onClick = {
-                        val uri = single ?: return@Button
+                        val uri = single ?: return@TactileButton
                         onExport(
                             parsedPages.map { PdfPageRef(uri, it, rotation) },
                             searchableOcr,
                         )
                     },
+                    style = TactileButtonStyle.PRIMARY,
                     enabled = parsedPages.isNotEmpty(),
-                ) {
-                    Text(
-                        if (parsedPages.isEmpty()) "Extract" else "Extract ${parsedPages.size} pages",
-                    )
-                }
+                )
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TactileButton(text = "Cancel", onClick = onDismiss, style = TactileButtonStyle.SECONDARY) },
     )
 }
+
+private val ROTATION_DEGREES = listOf(0, 90, 180, 270)
+
+/** WebP is deliberately excluded -- the task this dialog covers is scoped to PNG/JPEG only. */
+private val IMAGE_EXPORT_FORMATS = listOf(ImageExportFormat.PNG, ImageExportFormat.JPEG)
 
 /**
  * Parses a `1-3,7,9-12` page range into zero-based indices.

@@ -10,11 +10,11 @@ The workflow performs:
 
 - JVM unit tests;
 - release lint;
-- R8/resource-shrunk release assembly;
+- R8/resource-shrunk release assembly (APK) and Android App Bundle (`bundleRelease`);
 - generation of the `releaseRuntimeClasspath` dependency graph;
-- upload of the unsigned release APK, lint report and dependency report.
+- upload of the unsigned release APK and AAB, lint report and dependency report.
 
-An unsigned APK is a build-validation artifact only. It is not a distributable production release.
+An unsigned APK or AAB is a build-validation artifact only. It is not a distributable production release.
 
 ## Signing-key requirements
 
@@ -30,7 +30,12 @@ Use a unique Fylz upload key and protect it through the maintainer's secret-mana
 
 ## Signed candidate
 
-A maintainer should sign the validated release output with Android's supported signing tooling or through the intended app-store pipeline. Verify the signed artifact with:
+`app/build.gradle.kts` signs the `release` build type when — and only when — signing inputs are present, read in this order:
+
+1. a gitignored `keystore.properties` at the repository root with `storeFile`, `storePassword`, `keyAlias` and `keyPassword` (`storeFile` is resolved relative to the repository root);
+2. the environment variables `FYLZ_KEYSTORE_FILE`, `FYLZ_KEYSTORE_PASSWORD`, `FYLZ_KEY_ALIAS` and `FYLZ_KEY_PASSWORD`.
+
+With neither present the release output stays unsigned, which is what CI validates. On a maintainer machine with the inputs in place, `./gradlew :app:bundleRelease` produces the signed `app/build/outputs/bundle/release/app-release.aab` for Play, and `:app:assembleRelease` the signed APK for sideload distribution. Verify a signed artifact with:
 
 ```bash
 apksigner verify --verbose --print-certs app-release.apk

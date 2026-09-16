@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Workstream B (browse-fidelity components: CountChip, DogEarPage, DateSections,
+    LeftTimelineRail, FolderHero, the FolderFace sticker upgrade) owned strings.
+
+    groupByDay() in DateSections.kt is deliberately Android-framework-free (see its own KDoc) so
+    it stays callable from a plain JUnit test; its `undatedLabel`/`countLabel` parameters default
+    to plain English literals rather than these resources for that reason. A composable call site
+    assembling the real date-sectioned grid should pass
+    stringResource(R.string.browse_date_undated) and
+    pluralStringResource(R.plurals.browse_date_document_count, n, n) instead, so what actually
+    renders on screen is this localized copy, not the JVM-test fallback.
+-->
+<resources>
+    <string name="browse_date_undated">Undated</string>
+
+    <plurals name="browse_date_document_count">
+        <item quantity="one">%1$d document</item>
+        <item quantity="other">%1$d documents</item>
+    </plurals>
+</resources>

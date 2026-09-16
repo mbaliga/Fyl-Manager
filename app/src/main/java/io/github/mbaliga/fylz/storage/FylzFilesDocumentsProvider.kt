@@ -328,7 +328,7 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         val cleaned = trimmed.map { char ->
             if (char == '/' || char == '\\' || char.code < 0x20 || char.code == 0x7F) '_' else char
         }.joinToString("")
-        return cleaned.take(255)
+        return truncateToUtf8Bytes(cleaned, MAX_NAME_BYTES)
     }
 
     private fun disambiguate(name: String, attempt: Int): String {
@@ -347,6 +347,9 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     companion object {
         private const val TAG = "FylzFilesProvider"
         private const val THUMBNAIL_CACHE_DIR = "video-thumbnails"
+
+        /** ext4/f2fs's own `NAME_MAX`, in encoded bytes. */
+        private const val MAX_NAME_BYTES = 255
 
         /** Must match the authority declared in `src/full/AndroidManifest.xml`. */
         const val AUTHORITY: String = "io.github.mbaliga.fylz.files"
@@ -428,6 +431,25 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
                 "$rootId:$relativePath",
             )
     }
+}
+
+/**
+ * Truncates [text] to at most [maxBytes] once encoded as UTF-8, cutting only on a whole
+ * code-point boundary -- never leaving a dangling lead byte or surrogate half.
+ *
+ * The filesystem's own 255-byte `NAME_MAX` counts encoded bytes, not UTF-16 code units, so a
+ * name near the limit that is heavy with multi-byte characters (CJK, emoji) can pass a
+ * `String.take(255)` check by code-unit count while still exceeding 255 bytes once written,
+ * failing with `ENAMETOOLONG` at the filesystem rather than here.
+ */
+internal fun truncateToUtf8Bytes(text: String, maxBytes: Int): String {
+    val bytes = text.toByteArray(Charsets.UTF_8)
+    if (bytes.size <= maxBytes) return text
+    var end = maxBytes
+    // A UTF-8 continuation byte matches 10xxxxxx; walking back over them un-splits whichever
+    // multi-byte sequence the cut landed inside, discarding it whole rather than partially.
+    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end -= 1
+    return bytes.decodeToString(0, end)
 }
 
 /** Description of one mounted storage volume, shared by the provider and the launch surface. */

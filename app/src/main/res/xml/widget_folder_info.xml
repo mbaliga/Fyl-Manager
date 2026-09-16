@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Metadata for io.github.mbaliga.fylz.widgets.FolderShortcutWidgetProvider. configure names
+    FolderWidgetConfigActivity, launched automatically right after placement (APPWIDGET_CONFIGURE)
+    and again from the widget's own unconfigured face if that first pass is ever dismissed.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_folder"
+    android:previewLayout="@layout/widget_folder"
+    android:configure="io.github.mbaliga.fylz.widgets.FolderWidgetConfigActivity"
+    android:resizeMode="none"
+    android:widgetCategory="home_screen"
+    android:description="@string/widget_folder_description" />

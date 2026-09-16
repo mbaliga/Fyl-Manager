@@ -40,10 +40,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.preview.FileFormatDescriptor
+import io.github.mbaliga.fylz.core.format.FileFormatDescriptor
 import io.github.mbaliga.fylz.preview.GeometryPreview
 import io.github.mbaliga.fylz.preview.GeometryPreviewParser
-import io.github.mbaliga.fylz.preview.PreviewFamily
+import io.github.mbaliga.fylz.core.format.PreviewFamily
 import io.github.mbaliga.fylz.preview.UniversalFileInspector
 import io.github.mbaliga.fylz.preview.UniversalInspection
 import io.github.mbaliga.fylz.preview.Vec3

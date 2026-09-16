@@ -1,46 +1,30 @@
 package io.github.mbaliga.fylz.ui.components
 
-import android.os.Build
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
-import coil3.gif.AnimatedImageDecoder
-import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import coil3.size.Size
-import coil3.svg.SvgDecoder
 import io.github.mbaliga.fylz.model.FileEntry
 
 /** SVG, GIF, animated WebP/HEIF and bounded raster preview. */
 @Composable
-fun RichImagePreview(entry: FileEntry, modifier: Modifier = Modifier) {
+fun RichImagePreview(
+    entry: FileEntry,
+    modifier: Modifier = Modifier,
+    onIntrinsicAspect: ((Float) -> Unit)? = null,
+) {
     val context = LocalContext.current
-    val imageLoader = remember(context) {
-        ImageLoader.Builder(context.applicationContext)
-            .components {
-                if (Build.VERSION.SDK_INT >= 28) {
-                    add(AnimatedImageDecoder.Factory())
-                } else {
-                    add(GifDecoder.Factory())
-                }
-                add(SvgDecoder.Factory())
-            }
-            .build()
-    }
+    // The application's loader already registers the SVG and animated decoders this needs; a
+    // second one here would decode the same file into a second memory cache.
     val request = remember(entry.uri) {
         ImageRequest.Builder(context)
             .data(entry.uri)
@@ -49,16 +33,21 @@ fun RichImagePreview(entry: FileEntry, modifier: Modifier = Modifier) {
             .build()
     }
 
-    Box(modifier.padding(12.dp), contentAlignment = Alignment.Center) {
+    // No padding: the card is sized to the image's own aspect once onIntrinsicAspect reports it,
+    // so Fit no longer needs a margin to keep the picture off a mismatched frame's edges.
+    Box(modifier, contentAlignment = Alignment.Center) {
         AsyncImage(
             model = request,
-            imageLoader = imageLoader,
             contentDescription = "Preview of ${entry.name}",
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
             onState = { state ->
-                // State is rendered by AsyncImage; explicit callback keeps lifecycle ownership local.
-                if (state is AsyncImagePainter.State.Error) Unit
+                if (state is AsyncImagePainter.State.Success) {
+                    val size = state.painter.intrinsicSize
+                    if (size.width > 0f && size.height > 0f) {
+                        onIntrinsicAspect?.invoke(size.width / size.height)
+                    }
+                }
             },
         )
     }

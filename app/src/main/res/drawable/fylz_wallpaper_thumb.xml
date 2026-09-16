@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Picker thumbnail for the pond-water live wallpaper: deep teal rounded card + three
+     translucent bokeh circles, echoing PondWaterRenderer's own palette (DEEP_TEAL / MOTE_TINT_DARK). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="162dp"
+    android:viewportWidth="108"
+    android:viewportHeight="162">
+    <path
+        android:pathData="M8,0 H100 A8,8 0 0 1 108,8 V154 A8,8 0 0 1 100,162 H8 A8,8 0 0 1 0,154 V8 A8,8 0 0 1 8,0 Z"
+        android:fillColor="#FF395C6A" />
+    <path
+        android:pathData="M32,52 m-22,0 a22,22 0 1,0 44,0 a22,22 0 1,0 -44,0"
+        android:fillColor="#33E6F2F0" />
+    <path
+        android:pathData="M80,90 m-16,0 a16,16 0 1,0 32,0 a16,16 0 1,0 -32,0"
+        android:fillColor="#26E6F2F0" />
+    <path
+        android:pathData="M46,126 m-12,0 a12,12 0 1,0 24,0 a12,12 0 1,0 -12,0"
+        android:fillColor="#3DE6F2F0" />
+</vector>

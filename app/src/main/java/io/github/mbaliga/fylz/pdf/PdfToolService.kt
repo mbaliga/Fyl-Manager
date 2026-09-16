@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.pdf
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -9,7 +10,9 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.provider.DocumentsContract
 import com.google.android.gms.tasks.Tasks
+import io.github.mbaliga.fylz.data.ImageExportFormat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -50,7 +53,28 @@ data class PdfToolExportResult(
     val searchableTextAdded: Boolean = false,
 )
 
+data class PdfImagesExportResult(val pageCount: Int)
+
+/**
+ * The output filename for one page of [PdfToolService.exportPagesAsImages] -- zero-padded to
+ * [total]'s own digit width (floor of 2) so a 5-page and a 500-page document both sort correctly
+ * in a plain file listing, e.g. "invoice-01.png" .. "invoice-10.png" rather than "invoice-1.png"
+ * sorting after "invoice-10.png".
+ */
+internal fun pdfImageFileName(baseName: String, index: Int, total: Int, extension: String): String {
+    val digits = total.toString().length.coerceAtLeast(2)
+    return "$baseName-${(index + 1).toString().padStart(digits, '0')}.$extension"
+}
+
 class PdfToolService(private val context: Context) {
+    /** A page rendered for on-screen display, e.g. so [io.github.mbaliga.fylz.ui.PdfAnnotateOverlay]
+     * can show what it is about to draw ink onto. Unlike every other caller of the private
+     * [renderPage] below, the returned bitmap outlives this call -- it is not auto-recycled, since
+     * a Composable needs to keep it alive on screen; the caller owns disposing of it. */
+    suspend fun renderPagePreview(uri: Uri, pageIndex: Int): Bitmap = withContext(Dispatchers.IO) {
+        renderPage(uri, pageIndex, rotationDegrees = 0).bitmap
+    }
+
     suspend fun inspect(uri: Uri): PdfInspection = withContext(Dispatchers.IO) {
         openRenderer(uri) { renderer ->
             require(renderer.pageCount <= MAX_PAGES) { "PDF exceeds the $MAX_PAGES-page safety limit." }
@@ -103,6 +127,82 @@ class PdfToolService(private val context: Context) {
             throw cancelled
         } finally {
             recognizer?.close()
+            document.close()
+            temp.delete()
+        }
+    }
+
+    /**
+     * The inverse of [imagesToPdf]: one image file per page, written directly into
+     * [destinationFolderUri] rather than repackaged into a new PDF. Names are zero-padded to the
+     * page count's own digit width (floor of 2) so a 5-page and a 500-page document both sort
+     * correctly in a plain file listing.
+     */
+    suspend fun exportPagesAsImages(
+        pages: List<PdfPageRef>,
+        format: ImageExportFormat,
+        destinationFolderUri: Uri,
+        baseName: String,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): PdfImagesExportResult = withContext(Dispatchers.IO) {
+        require(pages.isNotEmpty()) { "At least one page is required." }
+        require(pages.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
+        pages.forEachIndexed { index, reference ->
+            coroutineContext.ensureActive()
+            val rendered = renderPage(reference.sourceUri, reference.pageIndex, reference.rotationDegrees)
+            rendered.useBitmap { bitmap ->
+                val name = pdfImageFileName(baseName, index, pages.size, format.extension)
+                val fileUri = DocumentsContract.createDocument(context.contentResolver, destinationFolderUri, format.mimeType, name)
+                    ?: error("The provider could not create $name.")
+                val output = context.contentResolver.openOutputStream(fileUri, "w")
+                    ?: error("Unable to open a stream for $name.")
+                output.use { stream -> bitmap.compress(format.compressFormat, format.quality, stream) }
+            }
+            onProgress(index + 1, pages.size)
+        }
+        PdfImagesExportResult(pages.size)
+    }
+
+    /**
+     * One page per image, in the given order. Unlike [exportPages] (re-rendering an existing
+     * PDF's own pages), there is no source page to inspect for size -- each page is sized to its
+     * own image's decoded pixel dimensions, so a mix of a phone photo and a scanned document does
+     * not force one to the other's aspect ratio.
+     */
+    suspend fun imagesToPdf(
+        imageUris: List<Uri>,
+        outputUri: Uri,
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): PdfToolExportResult = withContext(Dispatchers.IO) {
+        require(imageUris.isNotEmpty()) { "At least one image is required." }
+        require(imageUris.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
+        val temp = File(context.cacheDir, "pdf-tools-${UUID.randomUUID()}.pdf")
+        val document = PdfDocument()
+        try {
+            imageUris.forEachIndexed { index, uri ->
+                coroutineContext.ensureActive()
+                val bitmap = context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+                    ?: error("Unable to decode one of the selected images.")
+                try {
+                    val pageInfo = PdfDocument.PageInfo.Builder(bitmap.width, bitmap.height, index + 1).create()
+                    val page = document.startPage(pageInfo)
+                    try {
+                        page.canvas.drawColor(Color.WHITE)
+                        page.canvas.drawBitmap(bitmap, 0f, 0f, null)
+                    } finally {
+                        document.finishPage(page)
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+                onProgress(index + 1, imageUris.size)
+            }
+            FileOutputStream(temp).use { output -> document.writeTo(output); output.fd.sync() }
+            val output = context.contentResolver.openOutputStream(outputUri, "w")
+                ?: error("The selected provider did not return a writable stream.")
+            output.use { target -> temp.inputStream().use { source -> source.copyTo(target); target.flush() } }
+            PdfToolExportResult(imageUris.size, temp.length())
+        } finally {
             document.close()
             temp.delete()
         }

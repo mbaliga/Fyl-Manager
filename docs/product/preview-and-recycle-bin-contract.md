@@ -31,8 +31,8 @@ Required behavior:
 1. A delete request moves the item into a Fylz-managed recycle bin when the backing provider permits it.
 2. The recycle-bin record stores the original location, original display name, deletion time, source provider, size when known, and enough information to attempt restoration.
 3. Restore returns the item to its original location. If that location no longer exists or a name conflict occurs, Fylz asks the user to select a destination or conflict policy.
-4. Items in the recycle bin remain there indefinitely. There is no automatic expiry, scheduled cleanup, storage-pressure purge, background deletion, or default retention period.
-5. Permanent deletion is manual only and is exposed only inside the recycle-bin interface or through an explicitly labelled advanced action.
+4. By default, items in the recycle bin remain there indefinitely: no automatic expiry, scheduled cleanup, storage-pressure purge, or background deletion. The user may opt into an automatic retention window instead -- 7, 30, or 60 days after an item was recycled -- via a single preference (`RecycleBinRetentionPeriod`, `KEEP_UNTIL_EMPTIED` unless changed). Choosing a window is the only thing that authorizes a background purge; the app must never remove an item automatically on any other basis (storage pressure, app updates, an arbitrary schedule of its own choosing).
+5. Permanent deletion is manual only and is exposed only inside the recycle-bin interface or through an explicitly labelled advanced action -- except for the background purge item 4 describes, which stands in for that per-item confirmation with the user's own prior, explicit retention-window choice. That purge may only ever act on items already past the window the user selected; it must never touch anything else, and choosing `KEEP_UNTIL_EMPTIED` (the default) disables it entirely.
 6. Empty Recycle Bin is always a deliberate manual action and requires confirmation that clearly states the number of items and known total size.
 7. Permanent deletion of one or more selected items also requires explicit confirmation. Undo is not claimed after the provider confirms deletion.
 8. Fylz must never silently fall back from Move to Recycle Bin to permanent deletion.
@@ -53,3 +53,5 @@ Every recycle, restore, and permanent-delete operation must have an operation re
 Batch operations must be resumable or recoverable after process death where the provider permits it. Partial completion must be shown item by item.
 
 These rules apply equally to local files, removable storage, and third-party providers, subject to their actual capabilities.
+
+A retention-window purge (see section 2, item 4) is an ordinary permanent-delete operation for auditability purposes: it writes the same operation record as a manual one, and one item's failure never aborts or retries work already completed for the rest of the sweep.

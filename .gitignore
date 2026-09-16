@@ -3,6 +3,9 @@
 build/
 **/build/
 
+# Kotlin compiler daemon session metadata
+.kotlin/
+
 # Android Studio / IntelliJ
 .idea/
 *.iml

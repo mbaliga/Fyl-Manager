@@ -16,6 +16,17 @@ enum class SortDirection(val label: String) {
 }
 
 /**
+ * Which attribute Stacks sections a listing by. Independent of [SortField]: a folder can be
+ * sorted by date and still stacked by kind, or sorted by name and stacked by date.
+ */
+enum class GroupAxis(val label: String) {
+    KIND("Kind"),
+    DATE("Date"),
+    SIZE("Size"),
+    LETTER("Name"),
+}
+
+/**
  * A complete browser ordering.
  *
  * Replaces `DocumentRepository`'s hardcoded "directories first, then case-insensitive name",
@@ -23,11 +34,15 @@ enum class SortDirection(val label: String) {
  *
  * [foldersFirst] is kept independent of [direction] on purpose: reversing to Z-A should not
  * shuffle folders into the middle of the file list.
+ *
+ * [groupBy] is `null` for the four plain view modes and set for STACKS; `GroupedListing` is what
+ * actually turns it into section headers, so `sortEntries` never has to know it exists.
  */
 data class SortSpec(
     val field: SortField = SortField.NAME,
     val direction: SortDirection = SortDirection.ASCENDING,
     val foldersFirst: Boolean = true,
+    val groupBy: GroupAxis? = null,
 ) {
     val descending: Boolean get() = direction == SortDirection.DESCENDING
 

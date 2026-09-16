@@ -1,12 +1,48 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Release signing inputs, in order of precedence: a gitignored keystore.properties at the repo
+// root (storeFile / storePassword / keyAlias / keyPassword), then FYLZ_KEYSTORE_FILE /
+// FYLZ_KEYSTORE_PASSWORD / FYLZ_KEY_ALIAS / FYLZ_KEY_PASSWORD in the environment. With neither
+// present the release build stays unsigned -- exactly what the release-readiness workflow
+// validates; signing is a maintainer step (docs/RELEASE.md) and never a CI secret.
+val releaseSigning: Map<String, String>? = run {
+    val keys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    val propertiesFile = rootProject.file("keystore.properties")
+    val fromFile = if (propertiesFile.isFile) {
+        val properties = Properties().apply { propertiesFile.inputStream().use(::load) }
+        keys.associateWith { properties.getProperty(it).orEmpty() }
+    } else {
+        null
+    }
+    val fromEnv = mapOf(
+        "storeFile" to System.getenv("FYLZ_KEYSTORE_FILE").orEmpty(),
+        "storePassword" to System.getenv("FYLZ_KEYSTORE_PASSWORD").orEmpty(),
+        "keyAlias" to System.getenv("FYLZ_KEY_ALIAS").orEmpty(),
+        "keyPassword" to System.getenv("FYLZ_KEY_PASSWORD").orEmpty(),
+    )
+    listOfNotNull(fromFile, fromEnv).firstOrNull { candidate -> candidate.values.all(String::isNotBlank) }
+}
+
 android {
     namespace = "io.github.mbaliga.fylz"
     compileSdk = 36
+
+    signingConfigs {
+        releaseSigning?.let { signing ->
+            create("release") {
+                storeFile = rootProject.file(signing.getValue("storeFile"))
+                storePassword = signing.getValue("storePassword")
+                keyAlias = signing.getValue("keyAlias")
+                keyPassword = signing.getValue("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "io.github.mbaliga.fylz"
@@ -14,7 +50,7 @@ android {
         // dependency's minSdk can never be lower than its consumer's, so adopting the
         // shared design system means dropping Android 8.0-11 (API 26-30) support.
         minSdk = 31
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1_000_001
         versionName = "1.0.0-alpha01"
 
@@ -48,6 +84,19 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.all {
+            // The storage contract suite creates non-ASCII filenames through java.io.File and
+            // lists them back. The JVM decodes directory entries with the HOST's locale, so a
+            // C/POSIX-locale machine reads UTF-8 names back as '?' and fails those tests for
+            // reasons no provider can see. Android itself is always UTF-8; pin the forked test
+            // JVM to match the platform under test instead of the machine it happens to run on.
+            it.environment("LANG", "C.UTF-8")
+            it.environment("LC_ALL", "C.UTF-8")
+        }
+    }
+
     packaging {
         resources.excludes += setOf(
             "/META-INF/AL2.0",
@@ -65,18 +114,26 @@ android {
 
 // AGP 8.9 supports Kotlin 2.1. Several fast-moving libraries publish against newer Kotlin
 // runtimes. Keep the runtime metadata aligned with the compiler until the project migrates to
-// AGP 9.1+ as one deliberate toolchain change.
+// AGP 9.1+ as one deliberate toolchain change. The version here follows the constellation
+// lockstep (2.1.0, matching both submodules' catalogs — see root build.gradle.kts).
 configurations.configureEach {
     resolutionStrategy.force(
-        "org.jetbrains.kotlin:kotlin-stdlib:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.20",
-        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.20",
+        "org.jetbrains.kotlin:kotlin-stdlib:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.0",
+        "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.0",
     )
 }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.04.01")
     val media3Version = "1.10.1"
+
+    // The portable core (WP-1.3): pure Kotlin/JVM, zero Android dependency. See their KDoc and
+    // settings.gradle.kts for the module map and dependency order.
+    implementation(project(":core-model"))
+    implementation(project(":core-format"))
+    implementation(project(":core-vfs"))
+    implementation(project(":core-operations"))
 
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -98,14 +155,34 @@ dependencies {
     implementation("org.tukaani:xz:1.12")
     implementation("com.hierynomus:sshj:0.40.0")
     implementation("com.hierynomus:smbj:0.14.0")
-    implementation("io.minio:minio:9.0.1")
     implementation("io.coil-kt.coil3:coil-compose:3.5.0")
     implementation("io.coil-kt.coil3:coil-gif:3.5.0")
     implementation("io.coil-kt.coil3:coil-svg:3.5.0")
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+    // Reads a PDF's own embedded text objects for content-search indexing -- distinct from (and
+    // much faster than) PdfToolService's on-device ML Kit OCR, which is for image-only/scanned
+    // pages and is deliberately opt-in/slow. Ships its own consumer ProGuard rules.
+    //
+    // Excludes its own BouncyCastle transitives (bcprov/bcpkix/bcutil-jdk15to18): sshj/smbj
+    // below already pull the jdk18on family, and both families define the same class names,
+    // which fails :app:checkReleaseDuplicateClasses outright. Safe to drop here because
+    // PdfTextExtractor never decrypts a PDF -- it checks isEncrypted and bails -- so PDFBox's
+    // own use of BouncyCastle (encrypted-PDF crypto) is a path this app never takes.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0") {
+        exclude(group = "org.bouncycastle")
+    }
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
+
+    // sshj and smbj pull the three BouncyCastle jdk18on artifacts at different versions (bcprov
+    // 1.80.x, bcpkix 1.80, bcutil 1.80.2). They are one library released in lockstep and must
+    // move together, and the newest of the family is what should ship: pin all three.
+    constraints {
+        implementation("org.bouncycastle:bcprov-jdk18on:1.84")
+        implementation("org.bouncycastle:bcpkix-jdk18on:1.84")
+        implementation("org.bouncycastle:bcutil-jdk18on:1.84")
+    }
 
     // Hyle Design System, via the hyle-design-system submodule + includeBuild (see
     // settings.gradle.kts). Gradle's composite-build dependency substitution resolves
@@ -117,6 +194,9 @@ dependencies {
     // Shared rather than local so Fylz and Foto Xplorr move identically — which is the whole
     // of the owner's "followed everywhere".
     implementation("dev.aarso:cell-shell:0.1.0")
+    // The natural-language search engine (io.github.mbaliga.fylz.search.FylzSearch), same
+    // includeBuild substitution as the rest of the constellation.
+    implementation("dev.aarso:search-core:0.2.0")
 
     testImplementation("junit:junit:4.13.2")
     // Plain JVM unit tests run against the android.jar STUB, whose android.* / org.json.*
@@ -132,6 +212,10 @@ dependencies {
     // class of test; only PdfPagePlanPolicyTest opts in via @RunWith(RobolectricTestRunner::class)
     // -- every other test class keeps running as a fast plain-JVM test.
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.test.espresso:espresso-core:3.6.1")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

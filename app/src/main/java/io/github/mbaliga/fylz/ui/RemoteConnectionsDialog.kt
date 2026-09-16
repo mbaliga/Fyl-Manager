@@ -25,18 +25,14 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +50,12 @@ import io.github.mbaliga.fylz.network.RemoteConnection
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.RemoteKind
 import io.github.mbaliga.fylz.network.RemoteObject
+import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
+import io.github.mbaliga.fylz.ui.tactile.TactileField
+import io.github.mbaliga.fylz.ui.tactile.TactileIconKey
+import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
+import io.github.mbaliga.fylz.util.formatBytes
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -74,6 +76,10 @@ fun RemoteConnectionsDialog(
     store: RemoteConnectionStore,
     onDismiss: () -> Unit,
     onError: (String) -> Unit,
+    // Set when this dialog is opened FROM a specific saved connection -- the storage home
+    // screen's own "Remote locations" group -- so that tap lands straight in the connection's
+    // contents rather than back at the bare list it was already showing.
+    initialConnectionId: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val browser = remember { RemoteBrowser() }
@@ -109,6 +115,14 @@ fun RemoteConnectionsDialog(
         }
     }
 
+    // Runs once per distinct focus request rather than on every recomposition -- there is no
+    // "already browsing, don't jump again" state to check because a fresh dialog instance (this
+    // composable) exists only while remoteDialog is true, so this fires exactly once per open.
+    LaunchedEffect(initialConnectionId) {
+        val target = initialConnectionId?.let { id -> connections.firstOrNull { it.id == id } }
+        if (target != null) browse(target, "")
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
@@ -118,7 +132,9 @@ fun RemoteConnectionsDialog(
             Column(Modifier.padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     if (browsing != null) {
-                        IconButton(
+                        TactileIconKey(
+                            icon = Icons.Outlined.ArrowBack,
+                            contentDescription = "Back",
                             onClick = {
                                 if (path.isBlank()) {
                                     browsing = null
@@ -127,10 +143,7 @@ fun RemoteConnectionsDialog(
                                     browse(browsing!!, path.substringBeforeLast('/', ""))
                                 }
                             },
-                            modifier = Modifier.size(48.dp),
-                        ) {
-                            Icon(Icons.Outlined.ArrowBack, contentDescription = "Back")
-                        }
+                        )
                     }
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -146,9 +159,11 @@ fun RemoteConnectionsDialog(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Close network locations")
-                    }
+                    TactileIconKey(
+                        icon = Icons.Outlined.Close,
+                        contentDescription = "Close network locations",
+                        onClick = onDismiss,
+                    )
                 }
 
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp))
@@ -189,6 +204,11 @@ fun RemoteConnectionsDialog(
                 if (addingKind == null && editing == null && browsing == null) {
                     HorizontalDivider(Modifier.padding(vertical = 10.dp))
                     Text("Add a connection", style = MaterialTheme.typography.labelMedium)
+                    // KEPT STOCK (LOUD, per the wave-2 brief's own call-out): the per-protocol
+                    // AssistChip row. These are a horizontally-packed row of short launcher chips
+                    // (WEBDAV/SFTP/SMB/S3), not a persistent control with a checked/selected state
+                    // -- AssistChip's compact pill fits that row; a RAISED CAP TactileButton per
+                    // protocol would be four full keycaps competing for the same line.
                     Row(
                         Modifier.fillMaxWidth().padding(top = 6.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -258,13 +278,12 @@ private fun ConnectionList(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    TextButton(onClick = { onEdit(connection) }) { Text("Edit") }
-                    IconButton(onClick = { onDelete(connection) }, modifier = Modifier.size(48.dp)) {
-                        Icon(
-                            Icons.Outlined.Delete,
-                            contentDescription = "Delete ${connection.displayName}",
-                        )
-                    }
+                    TactileButton(text = "Edit", onClick = { onEdit(connection) }, style = TactileButtonStyle.SECONDARY)
+                    TactileIconKey(
+                        icon = Icons.Outlined.Delete,
+                        contentDescription = "Delete ${connection.displayName}",
+                        onClick = { onDelete(connection) },
+                    )
                 }
             }
         }
@@ -304,7 +323,7 @@ private fun RemoteListing(
                     Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     entry.sizeBytes?.let { size ->
                         Text(
-                            formatStorageBytes(size),
+                            formatBytes(size),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -342,76 +361,88 @@ private fun RemoteConnectionForm(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(kind.label, style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(name, { name = it }, label = { Text("Display name") }, singleLine = true)
+        TactileField(name, { name = it }, label = "Display name", mandatory = true, singleLine = true, modifier = Modifier.fillMaxWidth())
 
         when (kind) {
             RemoteKind.WEBDAV -> {
-                OutlinedTextField(endpoint, { endpoint = it }, label = { Text("HTTPS server URL") }, singleLine = true)
-                OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true)
+                TactileField(endpoint, { endpoint = it }, label = "HTTPS server URL", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(username, { username = it }, label = "Username", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
 
             RemoteKind.SFTP -> {
-                OutlinedTextField(host, { host = it }, label = { Text("Host") }, singleLine = true)
-                OutlinedTextField(
+                TactileField(host, { host = it }, label = "Host", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(
                     port,
                     { port = it.filter(Char::isDigit) },
-                    label = { Text("Port") },
+                    label = "Port",
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true)
-                OutlinedTextField(
+                TactileField(username, { username = it }, label = "Username", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(
                     fingerprint,
                     { fingerprint = it },
-                    label = { Text("SHA-256 host key fingerprint") },
-                    supportingText = {
-                        // SftpProviderConfig rejects a config without one, by design.
-                        Text("Required. Run: ssh-keyscan host | ssh-keygen -lf -")
-                    },
+                    label = "SHA-256 host key fingerprint",
+                    mandatory = true,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // TactileField has no persistent (non-error) supporting-text slot, unlike the
+                // OutlinedTextField this replaces -- SftpProviderConfig really does reject a config
+                // without a fingerprint (hence `mandatory = true` above), but that rejection isn't
+                // surfaced as a live TactileFieldState.Error in this form, so the how-to-get-one
+                // hint stays a plain caption rather than an invented error state.
+                Text(
+                    "Required. Run: ssh-keyscan host | ssh-keygen -lf -",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
             RemoteKind.SMB -> {
-                OutlinedTextField(host, { host = it }, label = { Text("Host") }, singleLine = true)
-                OutlinedTextField(share, { share = it }, label = { Text("Share") }, singleLine = true)
-                OutlinedTextField(domain, { domain = it }, label = { Text("Domain (optional)") }, singleLine = true)
-                OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true)
+                TactileField(host, { host = it }, label = "Host", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(share, { share = it }, label = "Share", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(domain, { domain = it }, label = "Domain (optional)", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(username, { username = it }, label = "Username", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
 
             RemoteKind.S3 -> {
-                OutlinedTextField(endpoint, { endpoint = it }, label = { Text("Endpoint") }, singleLine = true)
-                OutlinedTextField(region, { region = it }, label = { Text("Region") }, singleLine = true)
-                OutlinedTextField(bucket, { bucket = it }, label = { Text("Bucket") }, singleLine = true)
-                OutlinedTextField(username, { username = it }, label = { Text("Access key id") }, singleLine = true)
+                TactileField(endpoint, { endpoint = it }, label = "Endpoint", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(region, { region = it }, label = "Region", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(bucket, { bucket = it }, label = "Bucket", singleLine = true, modifier = Modifier.fillMaxWidth())
+                TactileField(username, { username = it }, label = "Access key id", singleLine = true, modifier = Modifier.fillMaxWidth())
             }
         }
 
-        OutlinedTextField(
+        TactileField(
             secret,
             { secret = it },
-            label = { Text(if (kind == RemoteKind.S3) "Secret access key" else "Password") },
+            label = if (kind == RemoteKind.S3) "Secret access key" else "Password",
+            mandatory = !hasStoredSecret,
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            supportingText = {
-                Text(
-                    if (hasStoredSecret) {
-                        "A credential is already stored. Leave blank to keep it."
-                    } else {
-                        "Stored encrypted with an Android Keystore key. Never written in plaintext."
-                    },
-                )
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            if (hasStoredSecret) {
+                "A credential is already stored. Leave blank to keep it."
+            } else {
+                "Stored encrypted with an Android Keystore key. Never written in plaintext."
             },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.heightIn(min = 48.dp)) {
-            Switch(checked = writes, onCheckedChange = { writes = it })
+            TactileSwitch(checked = writes, onCheckedChange = { writes = it })
             Spacer(Modifier.width(10.dp))
             Text("Allow writes (uploads and deletions)")
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
+            TactileButton(
+                text = "Save",
                 onClick = {
                     val connection = RemoteConnection(
                         id = existing?.id ?: "remote-${UUID.randomUUID()}",
@@ -431,11 +462,8 @@ private fun RemoteConnectionForm(
                     onSave(connection, secret.takeIf(String::isNotEmpty)?.toCharArray())
                 },
                 enabled = name.isNotBlank() && (secret.isNotEmpty() || hasStoredSecret),
-                modifier = Modifier.heightIn(min = 48.dp),
-            ) {
-                Text("Save")
-            }
-            TextButton(onClick = onCancel, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
+            )
+            TactileButton(text = "Cancel", onClick = onCancel, style = TactileButtonStyle.SECONDARY)
         }
         Spacer(Modifier.height(4.dp))
     }

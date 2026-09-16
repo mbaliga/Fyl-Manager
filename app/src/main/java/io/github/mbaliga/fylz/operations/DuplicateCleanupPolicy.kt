@@ -1,11 +1,11 @@
 package io.github.mbaliga.fylz.operations
 
-import android.net.Uri
+import io.github.mbaliga.fylz.core.model.ItemRef
 
 data class DuplicateCleanupSelection(
     val group: DuplicateGroup,
-    val keep: Uri,
-    val recycle: Set<Uri>,
+    val keep: ItemRef,
+    val recycle: Set<ItemRef>,
 )
 
 data class DuplicateCleanupValidation(val valid: Boolean, val reason: String? = null)
@@ -13,7 +13,7 @@ data class DuplicateCleanupValidation(val valid: Boolean, val reason: String? = 
 object DuplicateCleanupPolicy {
     fun defaultSelection(group: DuplicateGroup): DuplicateCleanupSelection {
         require(group.items.size >= 2)
-        val sorted = group.items.sortedBy(Uri::toString)
+        val sorted = group.items.sortedWith(compareBy({ it.providerId }, { it.locationId }, { it.opaqueItemId }))
         return DuplicateCleanupSelection(group, sorted.first(), sorted.drop(1).toSet())
     }
 
