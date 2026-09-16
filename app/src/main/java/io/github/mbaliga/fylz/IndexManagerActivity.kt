@@ -27,6 +27,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -34,6 +35,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import io.github.mbaliga.fylz.index.IndexScope
 import io.github.mbaliga.fylz.index.LocalIndexScheduler
 import io.github.mbaliga.fylz.index.LocalIndexStore
@@ -52,6 +57,7 @@ import io.github.mbaliga.fylz.index.RuleJoin
 import io.github.mbaliga.fylz.index.RuleOperator
 import io.github.mbaliga.fylz.index.SmartCollection
 import io.github.mbaliga.fylz.index.SmartRule
+import io.github.mbaliga.fylz.index.contentSnippet
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.model.AccentPreset
@@ -82,6 +88,8 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
     var scopes by remember { mutableStateOf(store.scopes()) }
     var state by remember { mutableStateOf(store.state()) }
     var query by remember { mutableStateOf("") }
+    var collections by remember { mutableStateOf(store.collections()) }
+    var activeCollectionId by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf(store.query()) }
     var collectionName by remember { mutableStateOf("") }
     var extensionRule by remember { mutableStateOf("") }
@@ -90,8 +98,18 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
     fun refresh() {
         scopes = store.scopes()
         state = store.state()
-        results = store.query(query)
+        collections = store.collections()
+        results = store.query(query, activeCollectionId)
     }
+
+    // Follow the rebuild job itself, so the count and results move while it runs instead of
+    // freezing at whatever this screen read when it opened until some other button happened to
+    // call refresh().
+    val workInfos by remember {
+        WorkManager.getInstance(context.applicationContext).getWorkInfosForUniqueWorkFlow(LocalIndexScheduler.WORK_NAME)
+    }.collectAsState(initial = emptyList())
+    val rebuilding = workInfos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+    LaunchedEffect(workInfos) { refresh() }
 
     fun persist(uri: Uri) {
         runCatching {
@@ -107,6 +125,9 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
             persist(uri)
             val root = DocumentFile.fromTreeUri(context, uri)
             store.putScope(IndexScope(uri.toString(), root?.name ?: "Indexed folder"))
+            // Adding a folder is the whole reason to open this screen; making the user also find
+            // "Rebuild" afterwards left "0 indexed items" on screen with no hint why.
+            scheduler.rebuild()
             refresh()
         }
     }
@@ -140,7 +161,9 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
         ) {
             item {
                 Text(
-                    "Only folders you explicitly add are indexed. Fylz stores names and metadata, not file contents.",
+                    "Only folders you explicitly add are indexed. Fylz keeps names, metadata and a short text sample " +
+                        "from PDF, Word, Excel and PowerPoint files on this device so search can look inside them. " +
+                        "Nothing leaves the device.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(top = 12.dp),
                 )
@@ -166,7 +189,8 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
                 }
             }
             item {
-                Text("${state.indexedFiles} indexed items${if (state.truncated) " · bounded" else ""}")
+                Text("${state.indexedFiles} indexed items${if (state.truncated) " · bounded" else ""}${if (rebuilding) " · rebuilding…" else ""}")
+                if (rebuilding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                 state.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
             items(scopes, key = IndexScope::rootUri) { scope ->
@@ -184,10 +208,49 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
             item {
                 OutlinedTextField(
                     value = query,
-                    onValueChange = { query = it; results = store.query(it) },
-                    label = { Text("Search local index") },
+                    onValueChange = { query = it; results = store.query(it, activeCollectionId) },
+                    label = { Text("Search names, tags and document text") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            if (collections.isNotEmpty()) {
+                item { Text("Saved collections", style = MaterialTheme.typography.titleSmall) }
+                items(collections, key = SmartCollection::id) { collection ->
+                    val active = collection.id == activeCollectionId
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(collection.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                ruleSummary(collection),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        FilledTonalButton(onClick = {
+                            activeCollectionId = if (active) null else collection.id
+                            results = store.query(query, activeCollectionId)
+                        }) { Text(if (active) "Clear" else "Apply") }
+                        IconButton(onClick = {
+                            store.removeCollection(collection.id)
+                            if (active) activeCollectionId = null
+                            refresh()
+                        }) {
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete collection ${collection.name}")
+                        }
+                    }
+                }
+            }
+            activeCollectionId?.let { id ->
+                collections.firstOrNull { it.id == id }?.let { collection ->
+                    item {
+                        Text(
+                            "Showing ${results.size} ${if (results.size == 1) "match" else "matches"} in \"${collection.name}\"",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
             items(results.take(500), key = { it.uri }) { file ->
                 Column(Modifier.fillMaxWidth()) {
@@ -197,6 +260,14 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    contentSnippet(file.textSample, query)?.let { snippet ->
+                        Text(
+                            snippet,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
             item { HorizontalDivider() }
@@ -225,11 +296,16 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
                             if (extensionRule.isNotBlank()) add(SmartRule(RuleField.EXTENSION, RuleOperator.EQUALS, extensionRule.trim().removePrefix(".")))
                             if (contentRule.isNotBlank()) add(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, contentRule.trim()))
                         }
-                        store.putCollection(SmartCollection(name = collectionName.trim(), join = RuleJoin.ALL, rules = rules))
+                        val collection = SmartCollection(name = collectionName.trim(), join = RuleJoin.ALL, rules = rules)
+                        store.putCollection(collection)
                         collectionName = ""
                         extensionRule = ""
                         contentRule = ""
-                        Toast.makeText(context, "Smart collection saved", Toast.LENGTH_SHORT).show()
+                        // Apply it straight away: a saved rule that then has to be found and
+                        // applied by hand reads as "nothing happened".
+                        activeCollectionId = collection.id
+                        refresh()
+                        Toast.makeText(context, "Collection saved and applied", Toast.LENGTH_SHORT).show()
                     },
                 ) { Text("Save collection") }
             }
@@ -242,4 +318,29 @@ private fun IndexManagerScreen(onClose: () -> Unit) {
             }
         }
     }
+}
+
+private fun ruleSummary(collection: SmartCollection): String = collection.rules.joinToString(" · ") { rule ->
+    val field = when (rule.field) {
+        RuleField.NAME -> "name"
+        RuleField.PATH -> "path"
+        RuleField.EXTENSION -> "extension"
+        RuleField.MIME -> "type"
+        RuleField.SIZE -> "size"
+        RuleField.MODIFIED -> "modified"
+        RuleField.TEXT_CONTENT -> "text"
+        RuleField.DIRECTORY -> "folder"
+    }
+    val operator = when (rule.operator) {
+        RuleOperator.CONTAINS -> "contains"
+        RuleOperator.EQUALS -> "is"
+        RuleOperator.STARTS_WITH -> "starts with"
+        RuleOperator.ENDS_WITH -> "ends with"
+        RuleOperator.GREATER_THAN -> "over"
+        RuleOperator.LESS_THAN -> "under"
+        RuleOperator.BEFORE -> "before"
+        RuleOperator.AFTER -> "after"
+        RuleOperator.IS -> "is"
+    }
+    "${if (rule.negate) "not " else ""}$field $operator \"${rule.value}\""
 }
