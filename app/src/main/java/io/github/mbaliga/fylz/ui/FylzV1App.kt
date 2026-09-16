@@ -37,6 +37,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.automirrored.outlined.Sort
+import androidx.compose.material.icons.automirrored.outlined.ViewSidebar
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
@@ -44,7 +47,6 @@ import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SelectAll
@@ -53,13 +55,11 @@ import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.TableRows
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -120,6 +120,8 @@ import io.github.mbaliga.fylz.OperationHistoryActivity
 import io.github.mbaliga.fylz.PostV1ToolsActivity
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
+import io.github.mbaliga.fylz.ai.AiTransmissionPolicy
+import io.github.mbaliga.fylz.ai.AiTransmissionRequest
 import io.github.mbaliga.fylz.browse.Density
 import io.github.mbaliga.fylz.browse.GroupAxis
 import io.github.mbaliga.fylz.browse.GroupedListing
@@ -2580,7 +2582,7 @@ private fun FylzV1Workspace(
     // estimate of that same width and is overwritten by the real measurement on the first layout
     // pass after a selection starts.
     val layoutDensity = LocalDensity.current
-    var actionsBarWidth by remember { mutableStateOf(209.dp) }
+    var actionsBarWidth by remember { mutableStateOf(265.dp) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
@@ -3051,6 +3053,7 @@ private fun FylzV1Workspace(
                 onZip = { runAction(FylzAction.ARCHIVE) },
                 onMove = { runAction(FylzAction.MOVE) },
                 onCopy = { runAction(FylzAction.COPY) },
+                onMore = { shell.open(RoomEdge.BOTTOM) },
                 // The measurement the top bar reserves against -- see [actionsBarWidth]. Chained
                 // after statusBarsPadding so what is reported is the bar's whole occupied width,
                 // whatever ui/chrome sizes it to, rather than a number copied out of that file.
@@ -3545,15 +3548,22 @@ private fun FylzV1Workspace(
                 aiDialog = false
                 scope.launch {
                     runCatching {
+                        require(approved) { "Remote analysis requires explicit user approval." }
                         aiVault.save("custom", key.toCharArray())
                         val text = if (FileType.isTextPreviewable(entry.kind)) previewText else null
-                        aiClient.proposeOrganization(
-                            config = AiProviderConfig("custom", "Custom provider", endpoint, model),
-                            fileName = entry.name,
-                            mimeType = entry.mimeType,
-                            boundedText = text,
-                            userApprovedTransmission = approved,
+                        val config = AiProviderConfig("custom", "Custom provider", endpoint, model)
+                        val preview = AiTransmissionPolicy.preview(
+                            AiTransmissionRequest(
+                                providerId = config.id,
+                                providerName = config.displayName,
+                                endpoint = config.baseUrl,
+                                model = config.model,
+                                fileName = entry.name,
+                                mimeType = entry.mimeType,
+                                content = text,
+                            ),
                         )
+                        aiClient.proposeOrganization(config, preview, preview.payloadSha256)
                     }.onSuccess { proposal ->
                         duplicateResult = buildString {
                             append(proposal.summary)
@@ -4640,7 +4650,7 @@ private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         TactileIconKey(
-            icon = Icons.Outlined.Sort,
+            icon = Icons.AutoMirrored.Outlined.Sort,
             contentDescription = stringResource(R.string.browser_sort),
             onClick = { expanded = true },
             latched = expanded,
@@ -4778,10 +4788,10 @@ private fun ArrangeMenu(
 }
 
 private fun ViewMode.arrangeIcon() = when (this) {
-    ViewMode.LIST -> Icons.Outlined.List
+    ViewMode.LIST -> Icons.AutoMirrored.Outlined.List
     ViewMode.GRID -> Icons.Outlined.GridView
     ViewMode.DETAILS -> Icons.Outlined.TableRows
-    ViewMode.STACKS -> Icons.Outlined.ViewSidebar
+    ViewMode.STACKS -> Icons.AutoMirrored.Outlined.ViewSidebar
     ViewMode.CANVAS -> Icons.Outlined.Dashboard
 }
 

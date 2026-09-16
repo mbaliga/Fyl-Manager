@@ -9,15 +9,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
@@ -65,33 +68,71 @@ private val ActionsRunInsetEnd: Dp = 20.dp + FolderTabSlant - ActionsRunSpread
  * same three operations (zip/move/copy), so a selection sees the same glyph whether it reads it
  * here or scrolls to the full actions room.
  *
+ * [onMore] is a second, separate touch target trailing the slab rather than a fourth glyph
+ * inside it: the slab's width/shape are pinned to the export referenced above, and everything
+ * the full [io.github.mbaliga.fylz.ui.ActionsRoom] carries beyond these three (find duplicates,
+ * the AI proposal, recycle-bin recovery) used to be reachable only by dragging the bottom edge
+ * up -- a gesture nothing on screen advertises. This button is that room's one visible, tappable
+ * door, the same courtesy the folder title in the top bar pays the details room above it.
+ *
  * @param onZip "Add to a ZIP..." -- [io.github.mbaliga.fylz.ui.ActionsRoom]'s `FylzAction.ARCHIVE`.
  * @param onMove "Move to..." -- `FylzAction.MOVE`.
- * @param onCopy "Copy to..." -- `FylzAction.COPY`.
+ * @param onCopy "Copy to another folder" -- `FylzAction.COPY`.
+ * @param onMore Opens the full actions room.
  */
 @Composable
 fun ActionsBar(
     onZip: () -> Unit,
     onMove: () -> Unit,
     onCopy: () -> Unit,
+    onMore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    Row(modifier, verticalAlignment = Alignment.Top) {
+        Surface(
+            modifier = Modifier.size(width = ActionsBarWidth, height = ActionsBarHeight),
+            shape = FolderTabShape(mirrored = true),
+            color = ChromeInk,
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(start = ActionsRunInsetStart, end = ActionsRunInsetEnd),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ActionGlyph(Icons.Outlined.Archive, "Add to a ZIP", onZip)
+                ActionGlyph(Icons.AutoMirrored.Outlined.DriveFileMove, "Move to another folder", onMove)
+                ActionGlyph(Icons.Outlined.ContentCopy, "Copy to another folder", onCopy)
+            }
+        }
+        MoreActionsButton(onMore, Modifier.padding(start = 8.dp))
+    }
+}
+
+/** A plain 48dp circular touch target, matching the slab's own ink/shadow so it reads as the
+ *  same chrome rather than a second, unrelated control bolted on beside it. */
+@Composable
+private fun MoreActionsButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Surface(
-        modifier = modifier.size(width = ActionsBarWidth, height = ActionsBarHeight),
-        shape = FolderTabShape(mirrored = true),
+        modifier = modifier.size(ActionsGlyphTouch),
+        shape = CircleShape,
         color = ChromeInk,
         shadowElevation = 8.dp,
     ) {
-        Row(
+        Box(
             Modifier
-                .fillMaxSize()
-                .padding(start = ActionsRunInsetStart, end = ActionsRunInsetEnd),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically,
+                .clip(CircleShape)
+                .clickable(onClick = onClick, onClickLabel = "More actions", role = Role.Button),
+            contentAlignment = Alignment.Center,
         ) {
-            ActionGlyph(Icons.Outlined.Archive, "Add to a ZIP", onZip)
-            ActionGlyph(Icons.AutoMirrored.Outlined.DriveFileMove, "Move to another folder", onMove)
-            ActionGlyph(Icons.Outlined.ContentCopy, "Copy to another folder", onCopy)
+            Icon(
+                Icons.Outlined.MoreVert,
+                contentDescription = "More actions",
+                tint = ChromeOn,
+                modifier = Modifier.size(ActionsGlyphVisual),
+            )
         }
     }
 }

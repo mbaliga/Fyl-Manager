@@ -68,30 +68,6 @@ class AiClient(private val vault: ApiKeyVault) {
         }
     }
 
-    /** Compatibility path; new UI should display AiTransmissionPolicy.preview and use the fingerprint overload. */
-    @Deprecated("Show and approve an AiTransmissionPreview before transmission")
-    suspend fun proposeOrganization(
-        config: AiProviderConfig,
-        fileName: String,
-        mimeType: String,
-        boundedText: String?,
-        userApprovedTransmission: Boolean,
-    ): AiProposal {
-        require(userApprovedTransmission) { "Remote analysis requires explicit user approval." }
-        val preview = AiTransmissionPolicy.preview(
-            AiTransmissionRequest(
-                providerId = config.id,
-                providerName = config.displayName,
-                endpoint = config.baseUrl,
-                model = config.model,
-                fileName = fileName,
-                mimeType = mimeType,
-                content = boundedText,
-            ),
-        )
-        return proposeOrganization(config, preview, preview.payloadSha256)
-    }
-
     private suspend fun execute(config: AiProviderConfig, key: CharArray, request: JSONObject): AiProposal {
         val endpoint = config.baseUrl.trimEnd('/') + "/chat/completions"
         val connection = URL(endpoint).openConnection() as HttpURLConnection
