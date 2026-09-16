@@ -176,7 +176,7 @@ internal fun ActionsRoom(
                 }
                 if (selection.pdfTools) {
                     item {
-                        ActionCard(Icons.Outlined.PictureAsPdf, "PDF tools", "Merge, split, or convert") {
+                        ActionCard(Icons.Outlined.PictureAsPdf, "PDF tools", "Extract, merge, or export pages") {
                             onAction(FylzAction.PDF_TOOLS)
                         }
                     }

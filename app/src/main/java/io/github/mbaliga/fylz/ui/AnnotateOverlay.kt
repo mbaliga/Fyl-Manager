@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -58,6 +59,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -74,7 +78,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-internal val SWATCHES = listOf(Color.Red, Color(0xFFFFC107), Color(0xFF2196F3), Color.Black, Color.White)
+internal val SWATCHES = listOf(
+    Color.Red to "Red",
+    Color(0xFFFFC107) to "Amber",
+    Color(0xFF2196F3) to "Blue",
+    Color.Black to "Black",
+    Color.White to "White",
+)
 internal val STROKE_WIDTHS = listOf(6f to "Thin", 16f to "Thick")
 
 /**
@@ -95,7 +105,7 @@ fun AnnotateOverlay(entry: FileEntry, repository: DocumentRepository, onDismiss:
     var loadFailed by remember(entry.uri) { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(Size.Zero) }
-    var color by remember { mutableStateOf(SWATCHES.first()) }
+    var color by remember { mutableStateOf(SWATCHES.first().first) }
     var strokeWidthPx by remember { mutableFloatStateOf(STROKE_WIDTHS.first().first) }
     val strokes = remember { mutableStateListOf<AnnotationStroke>() }
     var activePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
@@ -189,8 +199,8 @@ fun AnnotateOverlay(entry: FileEntry, repository: DocumentRepository, onDismiss:
 
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(SWATCHES) { swatch ->
-                            ColorSwatch(swatch, selected = swatch == color, onClick = { color = swatch })
+                        items(SWATCHES) { (swatch, label) ->
+                            ColorSwatch(swatch, label, selected = swatch == color, onClick = { color = swatch })
                         }
                     }
                     STROKE_WIDTHS.forEach { (width, label) ->
@@ -282,18 +292,29 @@ private fun DrawingSurface(
 }
 
 @Composable
-internal fun ColorSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
+internal fun ColorSwatch(color: Color, label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
+        // The visible swatch is 36dp, but the touch target and the swatch's own accessible
+        // identity (name, radio-button role and selected state) belong on a full 48dp box --
+        // Material's own minimum, and what lets TalkBack announce "Red, selected" rather than
+        // silence on an unlabeled circle.
         Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(color)
-            .border(
-                width = if (selected) 3.dp else 1.dp,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                shape = CircleShape,
-            )
-            .clickable(onClick = onClick),
-    )
+            .size(48.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(color)
+                .border(
+                    width = if (selected) 3.dp else 1.dp,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                    shape = CircleShape,
+                ),
+        )
+    }
 }
 

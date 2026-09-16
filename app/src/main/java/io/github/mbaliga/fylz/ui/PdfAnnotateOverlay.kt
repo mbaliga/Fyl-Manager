@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,22 +61,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mbaliga.fylz.model.FileEntry
-import io.github.mbaliga.fylz.pdf.PdfInkStroke
 import io.github.mbaliga.fylz.pdf.PdfAnnotationService
+import io.github.mbaliga.fylz.pdf.PdfInkStroke
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.ui.tactile.TactileButton
+import io.github.mbaliga.fylz.ui.tactile.TactileButtonStyle
 import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import kotlinx.coroutines.launch
 
 /**
- * Freehand pen markup for one page of a PDF, burned into that page's own content stream as real
+ * Freehand pen markup for a PDF, burned into each drawn-on page's own content stream as real
  * vector drawing operators -- not a rasterized copy. See [PdfAnnotationService]'s own KDoc for
  * why that is the right trade-off given what pdfbox-android's port actually ships.
  *
  * Unlike [AnnotateOverlay] (image annotation, which can overwrite the source), this always writes
  * to a new file: there is no in-place edit of a PDF's own bytes anywhere in this app. Strokes are
- * scoped to whichever page is currently shown -- switching pages discards them, same as switching
- * tools already does in [SelectImageOverlay] -- so one save covers one page at a time.
+ * kept per page as the user moves between them -- switching pages no longer discards anything --
+ * and one "Save as…" burns every marked-up page into one output PDF via
+ * [PdfAnnotationService.annotatePages].
  *
  * @param entry the single selected PDF; the caller (`SelectionActionPolicy.annotatePdf`) has
  *   already established there is exactly one.
@@ -86,20 +89,30 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
     val scope = rememberCoroutineScope()
 
     var pageCount by remember(entry.uri) { mutableStateOf<Int?>(null) }
+    var documentFailed by remember(entry.uri) { mutableStateOf(false) }
     var pageIndex by remember(entry.uri) { mutableIntStateOf(0) }
     var pageBitmap by remember(entry.uri) { mutableStateOf<Bitmap?>(null) }
-    var loadFailed by remember(entry.uri) { mutableStateOf(false) }
+    // Keyed by page too, unlike documentFailed: a render failure is about the one page being
+    // shown, not the document as a whole, so it must not follow the user to a page that would
+    // otherwise render fine -- turning one bad page into a poisoned overlay.
+    var pageLoadFailed by remember(entry.uri, pageIndex) { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var canvasSize by remember { mutableStateOf(Size.Zero) }
-    var color by remember { mutableStateOf(SWATCHES.first()) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    var color by remember { mutableStateOf(SWATCHES.first().first) }
     var strokeWidthPx by remember { mutableFloatStateOf(STROKE_WIDTHS.first().first) }
-    val strokes = remember(pageIndex) { mutableStateListOf<PdfInkStroke>() }
+    // Per page, not one flat list: switching pages used to silently drop whatever had been
+    // drawn on the page just left. canvasSizeByPage doesn't need to be observable -- it is only
+    // ever read once, at save time.
+    val strokesByPage = remember(entry.uri) { mutableStateMapOf<Int, List<PdfInkStroke>>() }
+    val canvasSizeByPage = remember(entry.uri) { mutableMapOf<Int, Size>() }
     var activePoints by remember(pageIndex) { mutableStateOf<List<Offset>>(emptyList()) }
+    val currentPageStrokes = strokesByPage[pageIndex].orEmpty()
+    val hasAnyStrokes = strokesByPage.values.any { it.isNotEmpty() }
 
     LaunchedEffect(entry.uri) {
         runCatching { service.inspect(entry.uri) }
             .onSuccess { pageCount = it.pageCount }
-            .onFailure { loadFailed = true }
+            .onFailure { documentFailed = true }
     }
 
     LaunchedEffect(entry.uri, pageIndex) {
@@ -107,16 +120,16 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
         pageBitmap = null
         runCatching { service.renderPagePreview(entry.uri, pageIndex) }
             .onSuccess { pageBitmap = it }
-            .onFailure { loadFailed = true }
+            .onFailure { pageLoadFailed = true }
     }
 
     fun save(destinationUri: Uri) {
-        val ink = strokes.toList()
-        if (ink.isEmpty()) return
+        val pages = strokesByPage.filterValues { it.isNotEmpty() }
+        if (pages.isEmpty()) return
         scope.launch {
             busy = true
             runCatching {
-                PdfAnnotationService.annotatePage(context, entry.uri, pageIndex, canvasSize, ink, destinationUri)
+                PdfAnnotationService.annotatePages(context, entry.uri, pages, canvasSizeByPage.toMap(), destinationUri)
             }
                 .onSuccess {
                     Toast.makeText(context, "Saved", Toast.LENGTH_LONG).show()
@@ -135,8 +148,13 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
         if (destination != null) save(destination)
     }
 
+    fun requestDismiss() {
+        if (busy) return
+        if (hasAnyStrokes) confirmDiscard = true else onDismiss()
+    }
+
     Dialog(
-        onDismissRequest = { if (!busy) onDismiss() },
+        onDismissRequest = ::requestDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
@@ -145,15 +163,21 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    IconButton(onClick = { if (!busy) onDismiss() }) {
+                    IconButton(onClick = ::requestDismiss, enabled = !busy) {
                         Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Cancel")
                     }
                     Text("Annotate PDF", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }, enabled = strokes.isNotEmpty() && !busy) {
-                        Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "Undo last stroke")
+                    IconButton(
+                        onClick = { strokesByPage[pageIndex] = currentPageStrokes.dropLast(1) },
+                        enabled = currentPageStrokes.isNotEmpty() && !busy,
+                    ) {
+                        Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = "Undo last stroke on this page")
                     }
-                    IconButton(onClick = { strokes.clear() }, enabled = strokes.isNotEmpty() && !busy) {
-                        Icon(Icons.Outlined.DeleteSweep, contentDescription = "Clear all strokes")
+                    IconButton(
+                        onClick = { strokesByPage[pageIndex] = emptyList() },
+                        enabled = currentPageStrokes.isNotEmpty() && !busy,
+                    ) {
+                        Icon(Icons.Outlined.DeleteSweep, contentDescription = "Clear this page's strokes")
                     }
                 }
 
@@ -163,7 +187,10 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
                             IconButton(onClick = { pageIndex -= 1 }, enabled = pageIndex > 0 && !busy) {
                                 Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous page")
                             }
-                            Text("Page ${pageIndex + 1} of $count", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Page ${pageIndex + 1} of $count" + if (strokesByPage[pageIndex]?.isNotEmpty() == true) " · marked up" else "",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                             IconButton(onClick = { pageIndex += 1 }, enabled = pageIndex < count - 1 && !busy) {
                                 Icon(Icons.Outlined.ChevronRight, contentDescription = "Next page")
                             }
@@ -173,24 +200,30 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
 
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     when {
-                        loadFailed -> Text(
+                        documentFailed -> Text(
                             "Unable to open this PDF.",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(24.dp),
+                        )
+                        pageLoadFailed -> Text(
+                            "Unable to open this page. Try another page, or come back to this one later.",
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(24.dp),
                         )
                         pageBitmap == null -> CircularProgressIndicator()
                         else -> PdfDrawingSurface(
                             bitmap = pageBitmap!!,
-                            strokes = strokes,
+                            strokes = currentPageStrokes,
                             activePoints = activePoints,
                             color = color,
                             strokeWidthPx = strokeWidthPx,
-                            onCanvasSizeChanged = { canvasSize = it },
+                            onCanvasSizeChanged = { canvasSizeByPage[pageIndex] = it },
                             onStrokeStart = { activePoints = listOf(it) },
                             onStrokeContinue = { activePoints = activePoints + it },
                             onStrokeEnd = {
                                 if (activePoints.size >= 2) {
-                                    strokes.add(PdfInkStroke(activePoints, color.toArgb(), strokeWidthPx))
+                                    strokesByPage[pageIndex] =
+                                        currentPageStrokes + PdfInkStroke(activePoints, color.toArgb(), strokeWidthPx)
                                 }
                                 activePoints = emptyList()
                             },
@@ -200,27 +233,45 @@ fun PdfAnnotateOverlay(entry: FileEntry, service: PdfToolService, onDismiss: () 
 
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(SWATCHES) { swatch ->
-                            ColorSwatch(swatch, selected = swatch == color, onClick = { color = swatch })
+                        items(SWATCHES) { (swatch, label) ->
+                            ColorSwatch(swatch, label, selected = swatch == color, onClick = { color = swatch })
                         }
                     }
                     STROKE_WIDTHS.forEach { (width, label) ->
                         TactileOptionRow(text = label, selected = strokeWidthPx == width, onClick = { strokeWidthPx = width })
                     }
                     Text(
-                        "Saves as a new PDF -- the original is never overwritten.",
+                        "Saves every page you've drawn on into one new PDF -- the original is never overwritten.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     TactileButton(
-                        text = "Save as…",
+                        text = if (busy) "Saving…" else "Save as…",
                         onClick = { saveAsLauncher.launch("annotated_${entry.name}") },
-                        enabled = !busy && strokes.isNotEmpty(),
+                        enabled = !busy && hasAnyStrokes,
                         fillWidth = true,
                     )
                 }
             }
         }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard your markup?") },
+            text = { Text("The ink you've drawn hasn't been saved. Leaving now discards it.") },
+            confirmButton = {
+                TactileButton(
+                    text = "Discard",
+                    style = TactileButtonStyle.DESTRUCTIVE,
+                    onClick = { confirmDiscard = false; onDismiss() },
+                )
+            },
+            dismissButton = {
+                TactileButton(text = "Keep drawing", style = TactileButtonStyle.SECONDARY, onClick = { confirmDiscard = false })
+            },
+        )
     }
 }
 

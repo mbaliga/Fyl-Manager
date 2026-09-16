@@ -87,7 +87,7 @@ fun DxfAnnotateOverlay(entry: FileEntry, onDismiss: () -> Unit, onSaved: () -> U
     var loadFailed by remember(entry.uri) { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(Size.Zero) }
-    var color by remember { mutableStateOf(SWATCHES.first()) }
+    var color by remember { mutableStateOf(SWATCHES.first().first) }
     var strokeWidthPx by remember { mutableFloatStateOf(STROKE_WIDTHS.first().first) }
     val strokes = remember { mutableStateListOf<DxfInkStroke>() }
     var activePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
@@ -175,8 +175,8 @@ fun DxfAnnotateOverlay(entry: FileEntry, onDismiss: () -> Unit, onSaved: () -> U
 
                 Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(SWATCHES) { swatch ->
-                            ColorSwatch(swatch, selected = swatch == color, onClick = { color = swatch })
+                        items(SWATCHES) { (swatch, label) ->
+                            ColorSwatch(swatch, label, selected = swatch == color, onClick = { color = swatch })
                         }
                     }
                     STROKE_WIDTHS.forEach { (width, label) ->

@@ -178,6 +178,66 @@ class PdfAnnotationServiceTest {
         }
     }
 
+    private fun writeBlankPdf(uri: Uri, pages: Int, width: Float = 200f, height: Float = 200f) {
+        PDDocument().use { document ->
+            repeat(pages) { document.addPage(PDPage(PDRectangle(width, height))) }
+            context.contentResolver.openOutputStream(uri, "w")!!.use { document.save(it) }
+        }
+    }
+
+    @Test
+    fun `annotatePages burns ink into every page it was given, in one save`() {
+        val source = createFile("multi-source.pdf")
+        writeBlankPdf(source, pages = 3)
+        val destination = createFile("multi-out.pdf")
+
+        runBlocking {
+            PdfAnnotationService.annotatePages(
+                context,
+                source,
+                mapOf(0 to oneStroke(), 2 to oneStroke()),
+                mapOf(0 to Size(200f, 200f), 2 to Size(200f, 200f)),
+                destination,
+            )
+        }
+
+        assertTrue("page 0 (annotated) should have drawing operators", "S" in operatorNames(destination, pageIndex = 0))
+        assertTrue("page 1 (untouched) should have none", operatorNames(destination, pageIndex = 1).isEmpty())
+        assertTrue("page 2 (annotated) should have drawing operators", "S" in operatorNames(destination, pageIndex = 2))
+    }
+
+    @Test
+    fun `annotatePage delegates to annotatePages for a single page`() {
+        val source = createFile("delegate-source.pdf")
+        writeBlankPdf(source, pages = 1)
+        val destination = createFile("delegate-out.pdf")
+
+        runBlocking {
+            PdfAnnotationService.annotatePage(context, source, 0, Size(200f, 200f), oneStroke(), destination)
+        }
+
+        assertTrue("S" in operatorNames(destination))
+    }
+
+    @Test
+    fun `annotatePages rejects a page whose canvas was never measured, even if others were`() {
+        val source = createFile("mixed-source.pdf")
+        writeBlankPdf(source, pages = 2)
+        val destination = createFile("mixed-out.pdf")
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                PdfAnnotationService.annotatePages(
+                    context,
+                    source,
+                    mapOf(0 to oneStroke(), 1 to oneStroke()),
+                    mapOf(0 to Size(200f, 200f)), // page 1 never measured
+                    destination,
+                )
+            }
+        }
+    }
+
     @Test
     fun `maps canvas coordinates into PDF point space, flipping y`() {
         val source = createFile("source7.pdf")

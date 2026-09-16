@@ -85,11 +85,11 @@ class AnnotateToolbarRender {
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFF888888),
                         )
-                        var color by remember { mutableStateOf(SWATCHES.first()) }
+                        var color by remember { mutableStateOf(SWATCHES.first().first) }
                         var width by remember { mutableStateOf(STROKE_WIDTHS.first().first) }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SWATCHES.forEach { swatch ->
-                                ColorSwatch(swatch, selected = swatch == color, onClick = { color = swatch })
+                            SWATCHES.forEach { (swatch, label) ->
+                                ColorSwatch(swatch, label, selected = swatch == color, onClick = { color = swatch })
                             }
                         }
                         STROKE_WIDTHS.forEach { (value, label) ->

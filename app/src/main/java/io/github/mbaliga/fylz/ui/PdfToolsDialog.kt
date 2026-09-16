@@ -35,8 +35,7 @@ import io.github.mbaliga.fylz.ui.tactile.TactileOptionRow
 import io.github.mbaliga.fylz.ui.tactile.TactileSwitch
 
 /**
- * PDF page tools: the UI for `pdf/PdfToolService`, `pdf/PdfPageTools` and
- * `pdf/SearchablePdfService`, all of which were fully implemented with **no UI references at all**.
+ * PDF page tools: the UI for `pdf/PdfToolService`.
  *
  * What is exposed:
  *
@@ -195,7 +194,11 @@ fun PdfToolsDialog(
                 TactileButton(text = "Merge", onClick = { onMerge(searchableOcr) }, style = TactileButtonStyle.PRIMARY)
             } else {
                 TactileButton(
-                    text = if (parsedPages.isEmpty()) "Extract" else "Extract ${parsedPages.size} pages",
+                    text = if (parsedPages.isEmpty()) {
+                        "Extract"
+                    } else {
+                        "Extract ${parsedPages.size} page${if (parsedPages.size == 1) "" else "s"}"
+                    },
                     onClick = {
                         val uri = single ?: return@TactileButton
                         onExport(

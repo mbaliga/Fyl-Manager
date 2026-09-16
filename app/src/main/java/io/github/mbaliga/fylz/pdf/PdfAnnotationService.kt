@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 data class PdfInkStroke(val points: List<Offset>, val colorArgb: Int, val strokeWidthPx: Float)
 
 /**
- * Burns freehand ink directly into one PDF page's own content stream -- real vector drawing
+ * Burns freehand ink directly into a PDF page's own content stream -- real vector drawing
  * operators (`moveTo`/`lineTo`/`stroke`), appended after the page's existing content rather than
  * replacing it, so that page's original text/vectors/searchability survive untouched and every
  * other page in the document is not even opened for writing.
@@ -33,6 +33,8 @@ data class PdfInkStroke(val points: List<Offset>, val colorArgb: Int, val stroke
  * there is no in-place edit of an existing PDF's bytes anywhere in this codebase.
  */
 object PdfAnnotationService {
+    /** Single-page convenience over [annotatePages], for callers (and the existing test suite)
+     * that only ever touch one page at a time. */
     suspend fun annotatePage(
         context: Context,
         sourceUri: Uri,
@@ -40,20 +42,41 @@ object PdfAnnotationService {
         canvasSize: Size,
         strokes: List<PdfInkStroke>,
         destinationUri: Uri,
+    ) = annotatePages(context, sourceUri, mapOf(pageIndex to strokes), mapOf(pageIndex to canvasSize), destinationUri)
+
+    /**
+     * Same operation, across every page the user actually drew on in one sitting -- one document
+     * open and one [PDDocument.save], rather than the overlay calling [annotatePage] once per
+     * page and re-opening (and re-encoding) the whole file each time. [canvasSizeByPage] carries
+     * the on-screen box each page was measured at, since pages in the same PDF can have different
+     * aspect ratios and the fit-to-canvas box differs per page as a result.
+     */
+    suspend fun annotatePages(
+        context: Context,
+        sourceUri: Uri,
+        strokesByPage: Map<Int, List<PdfInkStroke>>,
+        canvasSizeByPage: Map<Int, Size>,
+        destinationUri: Uri,
     ) = withContext(Dispatchers.IO) {
-        require(strokes.isNotEmpty()) { "At least one stroke is required." }
-        require(canvasSize.width > 0f && canvasSize.height > 0f) { "The page was not measured yet." }
+        val pages = strokesByPage.filterValues { it.isNotEmpty() }
+        require(pages.isNotEmpty()) { "At least one stroke is required." }
+        require(pages.keys.all { canvasSizeByPage[it].let { size -> size != null && size.width > 0f && size.height > 0f } }) {
+            "Every annotated page must have been measured."
+        }
         val input = context.contentResolver.openInputStream(sourceUri) ?: error("The source PDF is unavailable.")
         val document = input.use { PDDocument.load(it) }
         try {
             require(!document.isEncrypted) { "This PDF is encrypted and cannot be annotated." }
-            require(pageIndex in 0 until document.numberOfPages) { "PDF page index is out of range." }
-            val page = document.getPage(pageIndex)
-            val mediaBox = page.mediaBox
-            val scaleX = mediaBox.width / canvasSize.width
-            val scaleY = mediaBox.height / canvasSize.height
-            PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true).use { stream ->
-                strokes.forEach { stroke -> drawStroke(stream, stroke, mediaBox, scaleX, scaleY) }
+            pages.forEach { (pageIndex, strokes) ->
+                require(pageIndex in 0 until document.numberOfPages) { "PDF page index is out of range." }
+                val canvasSize = canvasSizeByPage.getValue(pageIndex)
+                val page = document.getPage(pageIndex)
+                val mediaBox = page.mediaBox
+                val scaleX = mediaBox.width / canvasSize.width
+                val scaleY = mediaBox.height / canvasSize.height
+                PDPageContentStream(document, page, PDPageContentStream.AppendMode.APPEND, true, true).use { stream ->
+                    strokes.forEach { stroke -> drawStroke(stream, stroke, mediaBox, scaleX, scaleY) }
+                }
             }
             val output = context.contentResolver.openOutputStream(destinationUri, "w")
                 ?: error("The destination is not writable.")
@@ -71,7 +94,13 @@ object PdfAnnotationService {
         scaleY: Float,
     ) {
         if (stroke.points.size < 2) return
-        stream.setStrokingColor(Color.red(stroke.colorArgb), Color.green(stroke.colorArgb), Color.blue(stroke.colorArgb))
+        // The (Int, Int, Int) 0..255 overload is deprecated in this PDFBox version in favour of
+        // this 0..1 float one; same RG operator either way.
+        stream.setStrokingColor(
+            Color.red(stroke.colorArgb) / 255f,
+            Color.green(stroke.colorArgb) / 255f,
+            Color.blue(stroke.colorArgb) / 255f,
+        )
         stream.setLineWidth((stroke.strokeWidthPx * scaleX).coerceAtLeast(0.1f))
         stream.setLineCapStyle(ROUND_CAP_STYLE)
         stream.setLineJoinStyle(ROUND_JOIN_STYLE)
