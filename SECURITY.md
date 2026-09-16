@@ -45,14 +45,23 @@ Maintainers will acknowledge a complete report, assess impact, work on a fix, an
 
 ## Current security posture
 
-The foundation:
+Permissions and network:
 
-- uses SAF-scoped, user-selected URI permissions;
-- requests no network, legacy external-storage, or all-files permission;
-- disables cleartext traffic;
-- bounds initial text previews;
-- excludes sensitive work directories from Android backup;
-- validates ZIP extraction paths and rejects extracted symlinks;
-- stores no model/API credentials because remote connectors are not yet implemented.
+- `MANAGE_EXTERNAL_STORAGE` is requested up front through the system "All files access" screen, with a plain rationale and a working Storage Access Framework fallback if declined (see docs/ARCHITECTURE.md, "Broad storage access"). No legacy `READ/WRITE_EXTERNAL_STORAGE`, no `QUERY_ALL_PACKAGES`.
+- `INTERNET` is held for the optional remote providers (SFTP, SMB, WebDAV, S3-compatible) and for BYOK AI connectors. Nothing is transmitted unless the user configures such a connection or explicitly approves an AI transmission preview.
+- Cleartext traffic is disabled application-wide; S3 and WebDAV endpoints must be HTTPS, AI connector endpoints must be HTTPS or loopback, and SFTP host keys are pinned on first connection.
+- `POST_NOTIFICATIONS` is requested only when a backup plan is given an automatic schedule, for the backup worker's progress notification.
 
-The current archive service is staged, not declared production-ready. Additional size/ratio/count limits, fuzz/malformed fixtures, cancellation tests, and password-lifetime hardening are required before the archive UI is released.
+Data at rest:
+
+- Passwords, S3 secret keys and BYOK API keys are stored only in `ApiKeyVault`, encrypted with an Android Keystore key. Remote-connection records themselves hold hosts, ports, usernames and bucket names, never the secret.
+- Android backup and device-to-device transfer exclude the vault, the operation journal work directories, backup state and file-history stores (`res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`).
+- The local content index keeps names, metadata and a bounded text sample (at most 4,000 characters) of PDF and Office files the user explicitly chose to index; it never leaves the device.
+
+Components:
+
+- Fylz's own `DocumentsProvider` is exported behind the signature-level `MANAGE_DOCUMENTS` permission; the tool activities are not exported and launcher shortcuts reach them through `MainActivity` actions.
+- Archive handling validates extraction paths, rejects symlinks, and enforces entry-count, path-depth, per-file, total-expansion and compression-ratio limits with hostile-fixture tests.
+- Previews and text extraction are bounded (input size, page and character caps) so an untrusted file cannot exhaust memory.
+
+Known limitations are tracked in docs/ROADMAP.md; the remaining stable-release gates are listed in README.md.

@@ -59,6 +59,39 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added the session trash bulge with Put back and **Shred**. Shredding permanently deletes through the existing recycle-bin gate with honest copy: no secure-erase claims, ever — flash storage makes them a lie.
 - Subfolder-destination operations refuse journal replay rather than risk replaying into the tree root (`OperationRetryPolicy.isReplayableDestination`).
 
+### Documents, media and annotation
+
+- Added paged PDF preview and PDF tools: merge, split, page export, images-to-PDF, pages-to-images (PNG/JPEG) and on-device OCR into a searchable PDF.
+- Added freehand annotation for images (saved in place or as a copy), for one PDF page at a time (ink burned into the page's own content stream, always to a new file), and for DXF drawings (ink written as `POLYLINE` entities into the drawing's own `ENTITIES` section, always to a new file).
+- Added image format conversion (JPEG/PNG/WebP) and image selection tools — lasso, magic wand and magnetic lasso — with crop, cut-out and copy.
+- Added audio/video playback with subtitle and audio-track selection, playback speed and an equalizer.
+- Added Office (Word, Excel, PowerPoint), font and 3D/CAD wireframe previews (OBJ, STL, PLY, OFF, glTF/GLB, DXF).
+- Added 7z creation and browsing/per-entry extraction of 7z and the tar family alongside ZIP.
+
+### Search, index and organization
+
+- Added an opt-in local index with explicit folder scope, pause, rebuild and delete controls, and smart collections with rule predicates.
+- The index now samples the text of PDF and Office files (bounded to 4,000 characters per file, 25 MiB source size) so search and "Contains text" collections match document contents. Fixed the search path so a plain query actually consults the sample — previously the sample was written but never read — and made saved collections listable, applicable and deletable from the index screen. Adding a folder now starts indexing immediately, and the screen follows the rebuild live.
+- Added tags/favourites/saved-search metadata export and import, duplicate detection and batch rename.
+
+### Remote providers and connectors
+
+- Added SFTP (pinned host keys), SMB, WebDAV (HTTPS only) and S3-compatible (HTTPS only, Signature V4) browsing. Secrets are stored only in the Keystore-encrypted vault.
+- Added BYOK AI organization proposals behind an explicit transmission approval; the app never acts on a proposal without confirmation.
+
+### Desktop, widgets and system integration
+
+- Added the desktop (widgets, recents, favourites), canvas and stacks views, three home-screen widgets, launcher shortcuts, a share-to-Fylz inbox and a live wallpaper.
+- Added crash recovery: uncaught exceptions and native crashes/ANRs are recorded and surfaced on the next launch.
+
+### Release hardening
+
+- Raised `targetSdk` to 36. Desktop widget placement now measures the window rather than `Configuration.screenWidthDp`, which no longer subtracts system bars on API 36.
+- Declared `POST_NOTIFICATIONS`, requested when a backup plan is given an automatic schedule; the backup worker's foreground service now states its `dataSync` type, which API 34+ requires.
+- Added the package-visibility `<queries>` entry the per-app "All files access" settings screen needs; it was silently unreachable before.
+- Removed the unused MinIO dependency (S3 is a hand-written Signature V4 client over OkHttp) and pinned the three Bouncy Castle artifacts to one version.
+- Added a release signing configuration fed from a gitignored `keystore.properties` or `FYLZ_KEYSTORE_*` environment variables; unsigned when absent. Release readiness now also builds and uploads an unsigned App Bundle.
+
 ### Release engineering
 
 - Added debug CI and release-readiness workflows.

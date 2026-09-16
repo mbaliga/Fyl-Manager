@@ -29,9 +29,13 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 ### Preview and editing
 
 - Text, source code, Markdown and common agent artifacts such as JSON, YAML, TOML, prompts, instructions, logs, diffs and patches.
-- Images including SVG, GIF and animated WebP.
-- PDF first-page preview, media metadata, archive browsing and unknown-file inspection.
+- Images including SVG, GIF and animated WebP, with freehand annotation, JPEG/PNG/WebP conversion, and lasso / magic-wand / magnetic-lasso selection with crop, cut-out and copy.
+- PDF: paged preview, merge, split, page export, images-to-PDF, pages-to-images, on-device OCR into a searchable PDF, and freehand ink burned into a page's own content stream.
+- Audio and video playback with subtitle and audio-track selection, playback speed and an equalizer, plus media metadata.
+- Office documents (Word, Excel, PowerPoint), fonts, and 3D/CAD wireframes (OBJ, STL, PLY, OFF, glTF/GLB, DXF) with freehand annotation written back into a DXF as real drawing entities.
+- Archive browsing for ZIP, 7z and the tar family, with per-entry extraction; unknown-file inspection for everything else.
 - Lightweight UTF-8 text editing with pre-write history capture.
+- Content search: an opt-in local index of user-chosen folders that samples the text of PDF and Office files so search and smart collections can match what a document says, not only its name.
 
 ### File history
 
@@ -56,19 +60,23 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 
 ### Archives
 
-- Standard and AES-256 password-protected ZIP creation.
-- Archive inspection before extraction.
+- Standard and AES-256 password-protected ZIP creation, and 7z (LZMA2, optionally password-protected) creation.
+- Archive inspection before extraction; whole-archive extraction for ZIP, per-entry extraction for ZIP, 7z and tar/gz/bz2/xz.
 - Limits for archive input, entries, paths, depth, per-file size, total expansion and compression ratio.
 - Temporary and destination storage preflight when the device/provider reports capacity.
 - Per-entry bounded extraction with declared-versus-actual size verification.
 - Transactional provider output and rollback after failure or cancellation.
 - Hostile metadata and randomized traversal fixtures.
 
+### Remote providers
+
+- SFTP (host keys pinned on first connection), SMB, WebDAV (HTTPS only) and S3-compatible object storage (HTTPS only, Signature V4), browsed in-app; secrets live in a Keystore-encrypted vault, never in the connection record.
+
 ### Additional foundations
 
-- Scan-to-PDF.
-- Duplicate detection, batch rename and saved-library metadata.
-- Optional WebDAV, local-model and BYOK adapter foundations kept separate from deterministic file operations.
+- Scan-to-PDF, duplicate detection, batch rename, favourites, tags and saved searches with metadata export/import.
+- A desktop with widgets, a canvas and stacks view, home-screen widgets, launcher shortcuts, a share-to-Fylz inbox and a live wallpaper.
+- Optional BYOK AI organization proposals: every transmission is previewed (destination, redactions, size, cost estimate) and approved before anything leaves the device; the app never acts on a proposal without confirmation.
 
 ## Required before stable v1
 
@@ -96,15 +104,16 @@ See [the roadmap](docs/ROADMAP.md) for longer-term work beyond stable v1.
 Requirements:
 
 - JDK 17
-- Android SDK 36
-- Gradle 8.11.1, or the version provisioned by CI
+- Android SDK 36 (`platforms;android-36`, `build-tools;36.0.0`); minSdk is 31
+- Gradle 8.14.3 via the wrapper (`./gradlew`)
+- Submodules initialized: `git submodule update --init --recursive`
 
 ```bash
-gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-gradle --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease
 ```
 
-GitHub Actions uploads the debug APK after the Android CI workflow and an unsigned release candidate plus dependency graph after Release readiness. Unsigned artifacts are validation outputs, not production releases.
+GitHub Actions uploads the debug APK after the Android CI workflow, and an unsigned release APK and App Bundle plus dependency graph after Release readiness. Unsigned artifacts are validation outputs, not production releases; see [docs/RELEASE.md](docs/RELEASE.md) for how a maintainer's keystore signs them.
 
 ## Documentation
 
