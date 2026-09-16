@@ -144,49 +144,52 @@ class OperationJournal(context: Context) {
             else -> null
         }
 
+    /**
+     * Decodes each record independently, so one malformed [FileOperation] -- a future schema
+     * this build does not understand, a partial write, a single flipped bit -- costs only
+     * itself. The array as a whole is still lost if [raw] is not valid JSON at all, since there
+     * is then no record boundary left to salvage anything by.
+     */
     private fun decode(raw: String?): List<FileOperation> {
         if (raw.isNullOrBlank()) return emptyList()
-        return runCatching {
-            val root = JSONArray(raw)
-            buildList {
-                for (index in 0 until root.length()) {
-                    val value = root.getJSONObject(index)
-                    val itemsJson = value.getJSONArray("items")
-                    val items = buildList {
-                        for (itemIndex in 0 until itemsJson.length()) {
-                            val item = itemsJson.getJSONObject(itemIndex)
-                            add(
-                                OperationItem(
-                                    id = item.getString("id"),
-                                    source = requireNotNull(item.decodeItemRef("source")) {
-                                        "Operation journal item is missing its source reference."
-                                    },
-                                    destination = item.decodeItemRef("destination"),
-                                    displayName = item.getString("displayName"),
-                                    expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE)
-                                        .takeUnless { it == Long.MIN_VALUE },
-                                    completedBytes = item.optLong("completedBytes", 0L),
-                                    state = OperationState.valueOf(item.getString("state")),
-                                    errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
-                                ),
-                            )
-                        }
-                    }
-                    add(
-                        FileOperation(
-                            id = value.getString("id"),
-                            type = FileOperationType.valueOf(value.getString("type")),
-                            items = items,
-                            conflictPolicy = ConflictPolicy.valueOf(value.getString("conflictPolicy")),
-                            state = OperationState.valueOf(value.getString("state")),
-                            createdAtMillis = value.getLong("createdAtMillis"),
-                            updatedAtMillis = value.getLong("updatedAtMillis"),
-                        ),
-                    )
-                }
+        val root = runCatching { JSONArray(raw) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (index in 0 until root.length()) {
+                runCatching { decodeOperation(root.getJSONObject(index)) }.getOrNull()?.let(::add)
             }
-        }.getOrElse { emptyList() }
+        }
     }
+
+    private fun decodeOperation(value: JSONObject): FileOperation {
+        val itemsJson = value.getJSONArray("items")
+        val items = buildList {
+            for (itemIndex in 0 until itemsJson.length()) {
+                add(decodeItem(itemsJson.getJSONObject(itemIndex)))
+            }
+        }
+        return FileOperation(
+            id = value.getString("id"),
+            type = FileOperationType.valueOf(value.getString("type")),
+            items = items,
+            conflictPolicy = ConflictPolicy.valueOf(value.getString("conflictPolicy")),
+            state = OperationState.valueOf(value.getString("state")),
+            createdAtMillis = value.getLong("createdAtMillis"),
+            updatedAtMillis = value.getLong("updatedAtMillis"),
+        )
+    }
+
+    private fun decodeItem(item: JSONObject): OperationItem = OperationItem(
+        id = item.getString("id"),
+        source = requireNotNull(item.decodeItemRef("source")) {
+            "Operation journal item is missing its source reference."
+        },
+        destination = item.decodeItemRef("destination"),
+        displayName = item.getString("displayName"),
+        expectedBytes = item.optLong("expectedBytes", Long.MIN_VALUE).takeUnless { it == Long.MIN_VALUE },
+        completedBytes = item.optLong("completedBytes", 0L),
+        state = OperationState.valueOf(item.getString("state")),
+        errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
+    )
 
     private companion object {
         const val PREFERENCES_NAME = "fylz_operation_journal"

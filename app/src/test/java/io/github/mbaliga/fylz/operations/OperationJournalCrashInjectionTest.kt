@@ -336,7 +336,7 @@ class OperationJournalCrashInjectionTest {
     }
 
     @Test
-    fun `corrupted journal payload yields an empty list not a crash`() {
+    fun `journal payload that is not valid JSON at all yields an empty list not a crash`() {
         val journal = OperationJournal(context)
         journal.put(
             operation(FileOperationType.COPY, OperationState.RUNNING, listOf(item("x", OperationState.RUNNING))),
@@ -346,9 +346,31 @@ class OperationJournalCrashInjectionTest {
             .putString("operations", "{not json[")
             .commit()
 
-        // Documented current contract: corruption drops all records rather than crashing the
-        // app. (RecycleBinStore keeps a last-known-good backup; the journal does not yet —
-        // hardening candidate for the Phase 1 engine extraction, not for this test WP.)
+        // With no record boundary at all to work from, there is nothing left to salvage.
+        // (RecycleBinStore keeps a last-known-good backup for exactly this case; the journal
+        // does not yet -- hardening candidate for the Phase 1 engine extraction, not this WP.)
         assertTrue(OperationJournal(context).list().isEmpty())
+    }
+
+    @Test
+    fun `one corrupted record in an otherwise valid journal only costs that record`() {
+        val journal = OperationJournal(context)
+        val good1 = operation(FileOperationType.COPY, OperationState.RUNNING, listOf(item("a", OperationState.RUNNING)))
+        val good2 = operation(FileOperationType.MOVE, OperationState.SUCCEEDED, listOf(item("b", OperationState.SUCCEEDED)))
+        journal.put(good1)
+        journal.put(good2)
+
+        // Corrupt only good1's record in place: a syntactically valid JSON array with one
+        // structurally broken element, the shape a partial/interrupted write on a shared-prefs
+        // commit could actually leave behind -- unlike the fully-garbled payload above, this one
+        // still has a record boundary the decoder can recover around.
+        val prefs = context.getSharedPreferences("fylz_operation_journal", Context.MODE_PRIVATE)
+        val corrupted = prefs.getString("operations", null)!!.replaceFirst("\"state\":\"RUNNING\"", "\"state\":\"NOT_A_REAL_STATE\"")
+        prefs.edit().putString("operations", corrupted).commit()
+
+        val recovered = OperationJournal(context).list()
+
+        assertEquals(1, recovered.size)
+        assertEquals(good2.id, recovered.single().id)
     }
 }
