@@ -95,30 +95,28 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!--
+            These three tool activities are exported="false": nothing outside this app has any
+            business launching them directly. The static shortcuts that reach them
+            (res/xml/shortcuts.xml) target MainActivity instead, which is exported for exactly
+            this reason and starts the tool activity itself as a same-app call once
+            io.github.mbaliga.fylz.intents.FylzIntents decodes which one was asked for.
+        -->
         <activity
             android:name=".PostV1ToolsActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
-        <!--
-            IndexManagerActivity was never declared, which made the whole index/ package
-            unreachable at runtime — starting it threw ActivityNotFoundException. Declared here
-            and reached from the Tools surface and a launcher shortcut.
-
-            exported="true" matches its two sibling tool activities: a static launcher shortcut
-            is started by the launcher process, not by Fylz, so the target must be exported for the
-            shortcut in res/xml/shortcuts.xml to work.
-        -->
         <activity
             android:name=".IndexManagerActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".OperationHistoryActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 

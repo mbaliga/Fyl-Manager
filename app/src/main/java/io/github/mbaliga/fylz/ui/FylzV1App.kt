@@ -116,6 +116,7 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import io.github.mbaliga.fylz.ai.AiClient
 import io.github.mbaliga.fylz.ai.AiProviderConfig
 import io.github.mbaliga.fylz.IndexManagerActivity
+import io.github.mbaliga.fylz.OperationHistoryActivity
 import io.github.mbaliga.fylz.PostV1ToolsActivity
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
@@ -1834,6 +1835,19 @@ private fun FylzV1Workspace(
             FylzCommand.OpenShelf -> deckOpen = DeckSource.SHELF
             FylzCommand.OpenTrash -> trashSheetOpen = true
             is FylzCommand.OpenFolder -> openCommandFolder(command.treeUri, command.folderUri)
+            // These three start a standalone tool Activity from inside this already-running,
+            // exported MainActivity -- see FylzIntents' own KDoc on why the launcher shortcuts
+            // that reach them (res/xml/shortcuts.xml) target this action instead of the tool
+            // Activity directly.
+            FylzCommand.OpenTools -> runCatching {
+                context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
+            }.onFailure { toast("Tools are unavailable on this build") }
+            FylzCommand.OpenIndexManager -> runCatching {
+                context.startActivity(Intent(context, IndexManagerActivity::class.java))
+            }.onFailure { toast("The index manager is unavailable") }
+            FylzCommand.OpenOperationHistory -> runCatching {
+                context.startActivity(Intent(context, OperationHistoryActivity::class.java))
+            }.onFailure { toast("Operation history is unavailable") }
         }
         onCommandConsumed()
     }

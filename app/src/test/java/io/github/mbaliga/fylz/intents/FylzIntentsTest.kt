@@ -45,6 +45,23 @@ class FylzIntentsTest {
         assertEquals(FylzCommand.OpenTrash, FylzIntents.parse(Intent(FylzIntents.ACTION_OPEN_TRASH)))
     }
 
+    // ── the three shortcut-only tool-activity launchers ────────────────────────────────
+
+    @Test
+    fun `ACTION_OPEN_TOOLS parses to OpenTools`() {
+        assertEquals(FylzCommand.OpenTools, FylzIntents.parse(Intent(FylzIntents.ACTION_OPEN_TOOLS)))
+    }
+
+    @Test
+    fun `ACTION_OPEN_INDEX_MANAGER parses to OpenIndexManager`() {
+        assertEquals(FylzCommand.OpenIndexManager, FylzIntents.parse(Intent(FylzIntents.ACTION_OPEN_INDEX_MANAGER)))
+    }
+
+    @Test
+    fun `ACTION_OPEN_OPERATION_HISTORY parses to OpenOperationHistory`() {
+        assertEquals(FylzCommand.OpenOperationHistory, FylzIntents.parse(Intent(FylzIntents.ACTION_OPEN_OPERATION_HISTORY)))
+    }
+
     // ── OpenFolder ────────────────────────────────────────────────────────────────────
 
     @Test

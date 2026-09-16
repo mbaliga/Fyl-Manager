@@ -21,6 +21,15 @@ object FylzIntents {
     const val ACTION_OPEN_TRASH = "io.github.mbaliga.fylz.action.OPEN_TRASH"
     const val ACTION_OPEN_FOLDER = "io.github.mbaliga.fylz.action.OPEN_FOLDER"
 
+    // These three exist only so a launcher-started shortcut can reach a standalone tool Activity
+    // without that Activity itself needing android:exported="true" -- exported="false" blocks a
+    // start from the launcher's own process even with an explicit component name, so the
+    // shortcut instead targets this always-exported MainActivity, which starts the tool Activity
+    // itself as a same-app, same-process call. See res/xml/shortcuts.xml.
+    const val ACTION_OPEN_TOOLS = "io.github.mbaliga.fylz.action.OPEN_TOOLS"
+    const val ACTION_OPEN_INDEX_MANAGER = "io.github.mbaliga.fylz.action.OPEN_INDEX_MANAGER"
+    const val ACTION_OPEN_OPERATION_HISTORY = "io.github.mbaliga.fylz.action.OPEN_OPERATION_HISTORY"
+
     const val EXTRA_TREE_URI = "io.github.mbaliga.fylz.extra.TREE_URI"
     const val EXTRA_FOLDER_URI = "io.github.mbaliga.fylz.extra.FOLDER_URI"
 
@@ -30,6 +39,9 @@ object FylzIntents {
         ACTION_OPEN_SHELF -> FylzCommand.OpenShelf
         ACTION_OPEN_TRASH -> FylzCommand.OpenTrash
         ACTION_OPEN_FOLDER -> parseOpenFolder(intent)
+        ACTION_OPEN_TOOLS -> FylzCommand.OpenTools
+        ACTION_OPEN_INDEX_MANAGER -> FylzCommand.OpenIndexManager
+        ACTION_OPEN_OPERATION_HISTORY -> FylzCommand.OpenOperationHistory
         else -> null
     }
 
@@ -55,4 +67,7 @@ sealed interface FylzCommand {
     object OpenShelf : FylzCommand
     object OpenTrash : FylzCommand
     data class OpenFolder(val treeUri: Uri, val folderUri: Uri?) : FylzCommand
+    object OpenTools : FylzCommand
+    object OpenIndexManager : FylzCommand
+    object OpenOperationHistory : FylzCommand
 }
