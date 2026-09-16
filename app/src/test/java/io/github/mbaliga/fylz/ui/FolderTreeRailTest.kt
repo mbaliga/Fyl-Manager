@@ -8,6 +8,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * [flattenInto]'s depth bookkeeping in isolation, away from a composition.
@@ -21,6 +22,7 @@ import org.robolectric.RobolectricTestRunner
  * lock in the depth sequence that guarantee rests on.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class FolderTreeRailTest {
 
     private fun folder(name: String) = FolderLocation(Uri.parse("content://test/$name"), name)

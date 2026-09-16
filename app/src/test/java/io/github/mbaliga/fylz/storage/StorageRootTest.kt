@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.junit.runner.RunWith
 
 /**
@@ -14,6 +15,7 @@ import org.junit.runner.RunWith
  * rows come back next to the Downloads folder the user can already open.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class StorageRootTest {
 
     private fun root(treeUri: Uri?) = StorageRoot(

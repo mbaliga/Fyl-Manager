@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Contract tests for the storage capability adapter.
@@ -18,6 +19,7 @@ import org.robolectric.RobolectricTestRunner
  * surface branches on.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class StorageModelsTest {
 
     @Test

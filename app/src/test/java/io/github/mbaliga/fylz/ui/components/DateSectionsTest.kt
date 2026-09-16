@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
@@ -21,6 +22,7 @@ import java.util.Locale
  * real [Uri]; [groupByDay] itself touches no Android framework API (see its own KDoc).
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class DateSectionsTest {
 
     private val utc = ZoneOffset.UTC

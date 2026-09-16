@@ -8,6 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.Locale
@@ -20,6 +21,7 @@ import java.util.Locale
  * months down an A-Z list would be worse than none — it would be a map of somewhere else.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class EntryStopsTest {
 
     private val utc = ZoneOffset.UTC

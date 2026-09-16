@@ -9,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Robolectric only because [FileEntry] is keyed by a real `android.net.Uri`, which the plain
@@ -16,6 +17,7 @@ import org.robolectric.RobolectricTestRunner
  * test here is otherwise a pure function of its arguments, no Context involved.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class CanvasLayoutPolicyTest {
 
     private fun entry(

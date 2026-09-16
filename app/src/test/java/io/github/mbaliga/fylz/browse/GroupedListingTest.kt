@@ -9,6 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.Locale
@@ -20,6 +21,7 @@ import java.util.Locale
  * scrubber has no other way to keep mapping the right entry to the right row.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class GroupedListingTest {
 
     private val utc = ZoneOffset.UTC
