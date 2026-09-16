@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Runtime permission from API 33: without it the backup worker's progress notification is
+         never shown, even though the foreground service itself still runs. Requested from the
+         backup screen at the moment a plan is enabled, not at launch. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Normal (non-dangerous) permission, no runtime request needed: required for the
          LocalHapticFeedback.performHapticFeedback(LongPress) calls entryGestures() (and the
          desktop/canvas tile gestures beside it) fire on a long-press; Compose routes those
@@ -29,6 +33,19 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+
+    <!--
+        Package visibility (API 30+): storage.FullAccessPermission asks whether the per-app
+        "All files access" settings screen resolves before preferring it over the device-wide
+        list. Without this declaration that query is filtered to empty on every device, so the
+        per-app screen was never reached.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION" />
+            <data android:scheme="package" />
+        </intent>
+    </queries>
 
     <!--
         Declared android:required="false": a file manager must not be filtered off the Play

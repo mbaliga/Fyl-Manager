@@ -2,7 +2,9 @@ package io.github.mbaliga.fylz.storage
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 
@@ -33,9 +35,15 @@ object FullAccessPermission {
             Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
             Uri.fromParts("package", context.packageName, null),
         )
-        val resolvable = context.packageManager
-            .queryIntentActivities(perApp, 0)
-            .isNotEmpty()
+        // Needs the matching <queries> entry in the manifest: package visibility would otherwise
+        // filter this to "nothing resolves" on every device and the per-app screen never shows.
+        val packageManager = context.packageManager
+        val resolvable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.resolveActivity(perApp, PackageManager.ResolveInfoFlags.of(0L)) != null
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.resolveActivity(perApp, 0) != null
+        }
         return if (resolvable) perApp else Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
     }
 

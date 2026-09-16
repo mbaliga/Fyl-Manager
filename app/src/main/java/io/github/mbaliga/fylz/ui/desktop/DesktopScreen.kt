@@ -42,9 +42,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -290,7 +290,11 @@ fun DesktopScreen(
     // very first placement, and (like io.github.mbaliga.fylz.desktop.DesktopPolicy.defaultSeed's
     // own REFERENCE_VIEWPORT_WIDTH_DP) is re-validated against the device's own real width the
     // instant the card renders and the user's first drag runs it back through snapWidget.
-    val configuration = LocalConfiguration.current
+    // The window's own width, not Configuration.screenWidthDp: from target 36 the latter no
+    // longer subtracts system bars and reads as the whole display, which on a tablet in
+    // split-screen would snap a new card against an edge this window does not actually have.
+    val density = LocalDensity.current
+    val windowWidthDp = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
     fun addWidget(type: DesktopWidgetType, config: Map<String, String> = emptyMap()) {
         val registration = WidgetRegistry.of(type)
         // nextFreePlacement finds clear water; snapWidget then pulls the card onto the widget
@@ -298,7 +302,7 @@ fun DesktopScreen(
         val placement = DesktopPolicy.snapWidget(
             DesktopPolicy.nextFreePlacement(items.map(DesktopItem::placement)),
             registration.defaultSize,
-            configuration.screenWidthDp.toFloat(),
+            windowWidthDp.value,
             DesktopPolicy.WORLD_MIN_HEIGHT_DP.toFloat(),
         )
         store.upsert(

@@ -1,7 +1,10 @@
 package io.github.mbaliga.fylz.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
 import io.github.mbaliga.fylz.backup.BackupConditions
 import io.github.mbaliga.fylz.backup.BackupNetworkConstraint
 import io.github.mbaliga.fylz.backup.BackupPlan
@@ -128,6 +132,17 @@ fun BackupHost(open: Boolean, onDismiss: () -> Unit) {
         }
     }
 
+    // The worker's progress notification needs POST_NOTIFICATIONS on API 33+. Asked for at the
+    // moment a plan actually gets an automatic schedule, not at app launch; a "no" is fine -- the
+    // backup still runs, it just runs without a visible progress line.
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     if (open) {
         BackupManagerDialog(
             plans = plans,
@@ -170,6 +185,7 @@ fun BackupHost(open: Boolean, onDismiss: () -> Unit) {
                 val plan = it.toPlan()
                 store.putPlan(plan)
                 scheduler.schedule(plan)
+                if (plan.enabled && plan.schedule.hasAutomaticTrigger) ensureNotificationPermission()
                 editor = null
                 refresh()
             },
