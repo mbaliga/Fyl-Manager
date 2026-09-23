@@ -2,12 +2,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        P0.12: without this, Android 11+'s package-visibility rules hide every third-party
+        DocumentsProvider from queryIntentContentProviders, including USB drivers like
+        Paragon's, so SafStorageProvider.providerRoots() silently sees only the platform's own
+        providers no matter what the user has installed.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+        </intent>
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Normal (non-dangerous) permission, no runtime request needed: required for
          HyleTabHaptics.settle()'s direct VibratorManager.vibrate() call. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- P0.12: declared here; P1.2 requests it at runtime for the backup/long-operation
+         foreground notifications. Merely declaring it changes nothing on its own. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
         Fylz is a file manager: full filesystem access is its default posture, not an opt-in
@@ -66,9 +81,16 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!--
+            P0.12: exported="false" on this and its two siblings below (IndexManagerActivity,
+            OperationHistoryActivity). None of the three has an intent-filter another app could
+            target anyway; a launcher shortcut with an explicit targetClass (res/xml/shortcuts.xml)
+            still starts a non-exported activity, because the shortcut is published by this same
+            app, not by the launcher process on its own behalf. See res/xml/shortcuts.xml.
+        -->
         <activity
             android:name=".PostV1ToolsActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
@@ -76,20 +98,16 @@
             IndexManagerActivity was never declared, which made the whole index/ package
             unreachable at runtime — starting it threw ActivityNotFoundException. Declared here
             and reached from the Tools surface and a launcher shortcut.
-
-            exported="true" matches its two sibling tool activities: a static launcher shortcut
-            is started by the launcher process, not by Fylz, so the target must be exported for the
-            shortcut in res/xml/shortcuts.xml to work.
         -->
         <activity
             android:name=".IndexManagerActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".OperationHistoryActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
@@ -108,15 +126,35 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- P0.12: widened to the families PreviewPane actually renders (FileFormatRegistry),
+                 not just a handful of text/document types: "Open with Fylz" now shows up for
+                 anything the app can meaningfully preview, down to a generic binary/unknown
+                 fallback via application/octet-stream. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="text/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="font/*" />
+                <data android:mimeType="model/*" />
+                <data android:mimeType="application/pdf" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/xml" />
-                <data android:mimeType="application/pdf" />
-                <data android:mimeType="image/svg+xml" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
 
             <meta-data

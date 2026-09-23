@@ -156,6 +156,7 @@ import io.github.mbaliga.fylz.search.SearchQuery
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
+import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
 import io.github.mbaliga.fylz.ui.components.PreviewPane
@@ -238,6 +239,7 @@ private const val MAX_RESTORED_TABS = 8
  */
 @Composable
 fun FylzV1App(
+    viewUri: Uri? = null,
     recoveryRoom: @Composable () -> Unit = {},
     overlays: @Composable () -> Unit = {},
 ) {
@@ -251,6 +253,7 @@ fun FylzV1App(
             themeMode = themeMode,
             onThemeModeChange = { themeMode = it },
             recoveryRoom = recoveryRoom,
+            viewUri = viewUri,
         )
         overlays()
     }
@@ -261,6 +264,7 @@ private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     recoveryRoom: @Composable () -> Unit,
+    viewUri: Uri? = null,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -312,6 +316,7 @@ private fun FylzV1Workspace(
     var batchRenameDialog by remember { mutableStateOf(false) }
     var recycleDialog by remember { mutableStateOf(false) }
     var permanentDeleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
+    var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
@@ -566,6 +571,17 @@ private fun FylzV1Workspace(
                     tabs += tab
                 }
             }
+    }
+
+    // P0.12: another app's "Open with Fylz" (ACTION_VIEW). Keyed on the incoming uri itself
+    // (from MainActivity's own Compose state, via FylzAppShell), not Unit, so a *second*
+    // "Open with Fylz" while Fylz is already running (singleTask -> onNewIntent) opens that
+    // file too, not just the first one this composition ever saw.
+    LaunchedEffect(viewUri) {
+        val uri = viewUri ?: return@LaunchedEffect
+        runCatching { repository.resolveExternalEntry(uri) }
+            .onSuccess { externalDocument = it }
+            .onFailure { toast(it.message ?: "Unable to open this file") }
     }
 
     // Legacy (pre-P0.3, dot-stripped) recycle bins for the active tree, if any -- excluded from
@@ -1168,6 +1184,14 @@ private fun FylzV1Workspace(
                 permanentDeleteRequest = null
                 request.onConfirmed()
             },
+        )
+    }
+
+    externalDocument?.let { entry ->
+        ExternalDocumentDialog(
+            entry = entry,
+            repository = repository,
+            onDismiss = { externalDocument = null },
         )
     }
 

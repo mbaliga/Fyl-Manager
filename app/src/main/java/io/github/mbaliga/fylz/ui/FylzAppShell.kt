@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.ui
 
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -68,7 +69,7 @@ import kotlinx.coroutines.launch
  * colours instead of the bare `MaterialTheme` default it used to sit in.
  */
 @Composable
-fun FylzAppShell() {
+fun FylzAppShell(viewUri: Uri? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
@@ -84,6 +85,7 @@ fun FylzAppShell() {
     }
 
     FylzV1App(
+        viewUri = viewUri,
         recoveryRoom = {
             RecoveryHome(
                 operations = operations,

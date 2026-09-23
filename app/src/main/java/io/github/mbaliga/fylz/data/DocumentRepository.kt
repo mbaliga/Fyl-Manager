@@ -4,7 +4,9 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import io.github.mbaliga.fylz.history.FileHistoryReason
 import io.github.mbaliga.fylz.history.FileHistoryStore
 import io.github.mbaliga.fylz.model.FileEntry
@@ -266,6 +268,44 @@ class DocumentRepository(context: Context) {
         )?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }
+    }
+
+    /**
+     * A [FileEntry] for an arbitrary content:// [uri] handed to Fylz from outside (P0.12, an
+     * ACTION_VIEW "Open with Fylz" launch) -- unlike [listChildren], this URI is not necessarily
+     * from a DocumentsProvider at all, so it's queried through [android.provider.OpenableColumns]
+     * (which `DocumentsContract.Document`'s own column names are defined to match) rather than
+     * DocumentsContract-specific columns, and the Bundle-based query overload throughout: see
+     * `DocNode`'s own KDoc for why the classic (selection, selectionArgs, sortOrder) overload
+     * can't be trusted here.
+     */
+    suspend fun resolveExternalEntry(uri: Uri): FileEntry = withContext(Dispatchers.IO) {
+        val name = resolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null as Bundle?,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getString(0) else null
+        } ?: uri.lastPathSegment ?: "file"
+        val sizeBytes = resolver.query(
+            uri,
+            arrayOf(OpenableColumns.SIZE),
+            null as Bundle?,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
+        }
+        val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+        FileEntry(
+            uri = uri,
+            name = name,
+            mimeType = mimeType,
+            sizeBytes = sizeBytes,
+            lastModifiedMillis = null,
+            flags = 0,
+            kind = FileType.classify(name, mimeType),
+        )
     }
 
     /** Copies [uri]'s current content into a fresh file under the app cache, to be restored by
