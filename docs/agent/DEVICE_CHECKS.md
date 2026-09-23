@@ -208,3 +208,33 @@ could before. `BackupScheduler.reconcile()` moving off `MainActivity.onCreate`'s
 path onto `lifecycleScope.launch(Dispatchers.IO)` should be invisible — scheduled backups still get
 (re)armed correctly after a cold launch; confirm by checking a plan's next scheduled run is still
 correct after a fresh install-and-launch.
+
+## 11. Local index: FTS5 probe, MediaStore-generation skip, and search fast path (P1.12)
+
+**Steps:**
+1. In the Tools screen, add a folder on internal storage as an indexed scope and run "Rebuild".
+   Once it completes, browse into that same folder in the file browser and search for a term that
+   matches several file names, then a `content:`/quoted-phrase term that only appears inside one
+   text file's contents.
+2. While the index is still built from step 1, edit a file inside the indexed folder from another
+   app (or `adb shell`), then trigger another rebuild (Rebuild button, or wait for the periodic
+   one) without touching Fylz's own UI first.
+3. Add a second scope on a real SD card or USB drive and rebuild.
+4. Build a folder with roughly 50,000+ files on internal storage, index it, then search it and time
+   how long results take to appear compared to searching an equivalent un-indexed folder.
+
+**Expected:** step 1's name search returns the same files an un-indexed folder's live walk would
+(same substring semantics); the content search returns the file whose text was actually captured
+at index time, with a highlighted snippet, and does NOT need the file's live bytes read again.
+Check `adb shell run-as <package> sqlite3 files/databases/fylz.db ".schema index_files_fts"` (or
+equivalent) once to confirm which module (`fts5` vs `fts4`) this device's SQLite build actually
+picked — `FylzDatabase.supportsFts5`'s probe is exercised for real here, not just in Robolectric,
+where FTS5 availability may differ. Step 2's edited file is picked up by the next rebuild (the
+internal-storage scope's `MediaStore.getGeneration` check must see the volume's generation change
+and do a real rescan, not skip it) — confirm by searching for content unique to the edit. Step 3's
+SD-card/USB scope always rescans on every rebuild regardless of whether anything changed (no
+generation tracking applies to a non-primary volume) — confirm by checking `lastMediaStoreGeneration`
+stays null for that scope's row across rebuilds (or simply that Rebuild always takes roughly the
+same time for it, never a near-instant skip). Step 4's indexed search should return results
+near-instantly (a plain indexed SQL query, no SAF walk), versus the live walk's own visibly slower,
+progressively-emitted results for the equivalent un-indexed folder.
