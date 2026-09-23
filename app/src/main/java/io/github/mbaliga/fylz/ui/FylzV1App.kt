@@ -104,8 +104,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import io.github.mbaliga.fylz.ai.AiClient
 import io.github.mbaliga.fylz.ai.AiProviderConfig
@@ -113,6 +111,8 @@ import io.github.mbaliga.fylz.IndexManagerActivity
 import io.github.mbaliga.fylz.PostV1ToolsActivity
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
+import io.github.mbaliga.fylz.scan.DocumentScanner
+import io.github.mbaliga.fylz.scan.GmsDocumentScannerAdapter
 import io.github.mbaliga.fylz.browse.OpenTabsStore
 import io.github.mbaliga.fylz.browse.SortDirection
 import io.github.mbaliga.fylz.browse.SortField
@@ -510,18 +510,7 @@ private fun FylzV1Workspace(
         }
     }
 
-    val scannerOptions = remember {
-        GmsDocumentScannerOptions.Builder()
-            .setGalleryImportAllowed(true)
-            .setPageLimit(100)
-            .setResultFormats(
-                GmsDocumentScannerOptions.RESULT_FORMAT_JPEG,
-                GmsDocumentScannerOptions.RESULT_FORMAT_PDF,
-            )
-            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-            .build()
-    }
-    val scanner = remember { GmsDocumentScanning.getClient(scannerOptions) }
+    val scanner: DocumentScanner = remember { GmsDocumentScannerAdapter() }
     val scannerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->

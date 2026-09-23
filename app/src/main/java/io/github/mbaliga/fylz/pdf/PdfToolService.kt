@@ -9,10 +9,6 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -50,7 +46,15 @@ data class PdfToolExportResult(
     val searchableTextAdded: Boolean = false,
 )
 
-class PdfToolService(private val context: Context) {
+/**
+ * [ocrEngineFactory] is the P0.13 seam for decision D1 (see [OcrEngine]) -- it defaults to
+ * [MlKitOcrEngine], today's only implementation, and this service always requests
+ * [OcrScript.LATIN] as it always did, so this keeps the exact behavior it had before.
+ */
+class PdfToolService(
+    private val context: Context,
+    private val ocrEngineFactory: OcrEngineFactory = MlKitOcrEngine.Companion,
+) {
     suspend fun inspect(uri: Uri): PdfInspection = withContext(Dispatchers.IO) {
         openRenderer(uri) { renderer ->
             require(renderer.pageCount <= MAX_PAGES) { "PDF exceeds the $MAX_PAGES-page safety limit." }
@@ -73,7 +77,7 @@ class PdfToolService(private val context: Context) {
         require(pages.size <= MAX_PAGES) { "Output exceeds the $MAX_PAGES-page safety limit." }
         val temp = File(context.cacheDir, "pdf-tools-${UUID.randomUUID()}.pdf")
         val document = PdfDocument()
-        val recognizer = if (searchableOcr) TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) else null
+        val recognizer = if (searchableOcr) ocrEngineFactory.create(OcrScript.LATIN) else null
         try {
             pages.forEachIndexed { outputIndex, reference ->
                 coroutineContext.ensureActive()
@@ -85,7 +89,7 @@ class PdfToolService(private val context: Context) {
                         outputPage.canvas.drawColor(Color.WHITE)
                         outputPage.canvas.drawBitmap(bitmap, 0f, 0f, null)
                         if (recognizer != null) {
-                            val recognized = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0)))
+                            val recognized = recognizer.recognize(bitmap)
                             drawInvisibleSearchText(outputPage.canvas, recognized.textBlocks.flatMap { it.lines }, bitmap.width, bitmap.height)
                         }
                     } finally {

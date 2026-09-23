@@ -8,28 +8,14 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import com.google.android.gms.tasks.Task
-import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.TextRecognizer
-import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlin.math.max
 import kotlin.math.roundToInt
-
-enum class OcrScript {
-    LATIN,
-    DEVANAGARI,
-}
 
 data class SearchablePdfOptions(
     val script: OcrScript = OcrScript.LATIN,
@@ -54,8 +40,14 @@ data class SearchablePdfResult(
 /**
  * Creates a visual copy of a PDF and adds a transparent best-effort text layer from on-device OCR.
  * The output is intentionally written to a distinct destination URI and never modifies the source.
+ *
+ * [ocrEngineFactory] is the P0.13 seam for decision D1 (see [OcrEngine]) -- it defaults to
+ * [MlKitOcrEngine], today's only implementation, so this keeps the exact behavior it had before.
  */
-class SearchablePdfService(private val context: Context) {
+class SearchablePdfService(
+    private val context: Context,
+    private val ocrEngineFactory: OcrEngineFactory = MlKitOcrEngine.Companion,
+) {
     suspend fun export(
         sourceUri: Uri,
         destinationUri: Uri,
@@ -73,7 +65,7 @@ class SearchablePdfService(private val context: Context) {
             "The PDF has $pageCount pages; the configured OCR limit is ${options.maximumPages}."
         }
         val document = PdfDocument()
-        val recognizer = recognizer(options.script)
+        val recognizer = ocrEngineFactory.create(options.script)
         var pagesWithText = 0
         var recognizedCharacters = 0L
         try {
@@ -85,7 +77,7 @@ class SearchablePdfService(private val context: Context) {
                     try {
                         bitmap.eraseColor(Color.WHITE)
                         sourcePage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-                        val recognized = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
+                        val recognized = recognizer.recognize(bitmap)
                         val pageInfo = PdfDocument.PageInfo.Builder(
                             sourcePage.width.coerceAtLeast(1),
                             sourcePage.height.coerceAtLeast(1),
@@ -131,13 +123,6 @@ class SearchablePdfService(private val context: Context) {
             runCatching(output::close)
         }
         SearchablePdfResult(pageCount, pagesWithText, recognizedCharacters)
-    }
-
-    private fun recognizer(script: OcrScript): TextRecognizer = when (script) {
-        OcrScript.LATIN -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        OcrScript.DEVANAGARI -> TextRecognition.getClient(
-            DevanagariTextRecognizerOptions.Builder().build(),
-        )
     }
 
     private fun drawTextLayer(
@@ -190,10 +175,4 @@ class SearchablePdfService(private val context: Context) {
         }
         return width to height
     }
-}
-
-private suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { continuation ->
-    addOnSuccessListener { value -> if (continuation.isActive) continuation.resume(value) }
-    addOnFailureListener { error -> if (continuation.isActive) continuation.resumeWithException(error) }
-    addOnCanceledListener { continuation.cancel() }
 }
