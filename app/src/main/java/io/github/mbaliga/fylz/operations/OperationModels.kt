@@ -14,6 +14,7 @@ enum class FileOperationType {
     CREATE_FILE,
     ARCHIVE,
     EXTRACT,
+    PDF,
 }
 
 enum class OperationState {

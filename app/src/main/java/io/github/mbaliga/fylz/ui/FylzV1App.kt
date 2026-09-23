@@ -74,6 +74,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -84,6 +85,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -129,10 +131,14 @@ import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
+import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationService
+import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.FileTools
+import io.github.mbaliga.fylz.operations.OperationProgress
 import io.github.mbaliga.fylz.operations.RecycleBinService
+import io.github.mbaliga.fylz.operations.RunningOperation
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
@@ -228,6 +234,10 @@ private fun FylzV1Workspace(
     val pdfTools = remember { PdfToolService(context.applicationContext) }
     val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
     val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
+    val operationRunner = remember {
+        (context.applicationContext as FylzApplication).operationRunner
+    }
+    val runningOperations by operationRunner.operations.collectAsState()
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
@@ -347,25 +357,30 @@ private fun FylzV1Workspace(
         pendingDestinationAction = null
         if (destination == null || action == null) return@rememberLauncherForActivityResult
         repository.persistTreePermission(destination)
+        val sources = selectedEntries.map { it.uri }
+        val archiveUri = pendingArchiveUri
+        // Runs on the app-scoped OperationRunner (P0.5, A3): this launch only awaits the result
+        // to update UI state on completion, so rotating away mid-copy never cancels the copy.
         scope.launch {
-            loading = true
             runCatching {
                 when (action) {
-                    PendingDestinationAction.COPY -> fileOperations.copy(
-                        selectedEntries.map { it.uri },
-                        destination,
-                        ConflictPolicy.KEEP_BOTH,
-                    ) { progress -> operationMessage = "Copying ${progress.displayName}" }
-                    PendingDestinationAction.MOVE -> fileOperations.move(
-                        selectedEntries.map { it.uri },
-                        destination,
-                        ConflictPolicy.KEEP_BOTH,
-                    ) { progress -> operationMessage = "Moving ${progress.displayName}" }
-                    PendingDestinationAction.EXTRACT -> archiveService.extractZip(
-                        archiveUri = pendingArchiveUri ?: error("Choose an archive."),
-                        destinationTreeUri = destination,
-                    )
-                }
+                    PendingDestinationAction.COPY -> operationRunner.run(FileOperationType.COPY, "Copying") { report ->
+                        fileOperations.copy(sources, destination, ConflictPolicy.KEEP_BOTH) { progress ->
+                            report(progress.toOperationProgress("Copying"))
+                        }
+                    }
+                    PendingDestinationAction.MOVE -> operationRunner.run(FileOperationType.MOVE, "Moving") { report ->
+                        fileOperations.move(sources, destination, ConflictPolicy.KEEP_BOTH) { progress ->
+                            report(progress.toOperationProgress("Moving"))
+                        }
+                    }
+                    PendingDestinationAction.EXTRACT -> operationRunner.run(FileOperationType.EXTRACT, "Extracting") {
+                        archiveService.extractZip(
+                            archiveUri = archiveUri ?: error("Choose an archive."),
+                            destinationTreeUri = destination,
+                        )
+                    }
+                }.await()
             }.onSuccess {
                 toast(
                     when (action) {
@@ -378,8 +393,6 @@ private fun FylzV1Workspace(
                 pendingArchiveUri = null
                 refresh()
             }.onFailure { toast(it.message ?: "Operation failed") }
-            operationMessage = null
-            loading = false
         }
     }
 
@@ -409,27 +422,30 @@ private fun FylzV1Workspace(
         pendingPdfMerge = false
         if (destination == null) return@rememberLauncherForActivityResult
         scope.launch {
-            loading = true
             runCatching {
-                if (merge) {
-                    pdfTools.merge(
-                        sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
-                        outputUri = destination,
-                        searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Merging page \$done of \$total" }
-                } else {
-                    pdfTools.exportPages(
-                        pages = pages,
-                        outputUri = destination,
-                        searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Writing page \$done of \$total" }
-                }
+                operationRunner.run(FileOperationType.PDF, if (merge) "Merging PDF" else "Writing PDF") { report ->
+                    if (merge) {
+                        pdfTools.merge(
+                            sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
+                            outputUri = destination,
+                            searchableOcr = ocr,
+                        ) { done, total ->
+                            report(OperationProgress(label = "Merging page $done of $total", itemIndex = done, itemCount = total))
+                        }
+                    } else {
+                        pdfTools.exportPages(
+                            pages = pages,
+                            outputUri = destination,
+                            searchableOcr = ocr,
+                        ) { done, total ->
+                            report(OperationProgress(label = "Writing page $done of $total", itemIndex = done, itemCount = total))
+                        }
+                    }
+                }.await()
             }.onSuccess {
                 toast("PDF written")
                 refresh()
             }.onFailure { toast(it.message ?: "The PDF operation failed") }
-            operationMessage = null
-            loading = false
         }
     }
 
@@ -580,20 +596,28 @@ private fun FylzV1Workspace(
 
     fun recycleSelection() {
         val tab = activeTab ?: return
-        if (selectedEntries.isEmpty()) return
+        val selection = selectedEntries
+        if (selection.isEmpty()) return
         scope.launch {
-            loading = true
             runCatching {
-                val recycleRoot = recycleBin.recycleRootFor(tab.treeUri)
-                selectedEntries.forEach { entry ->
-                    recycleBin.recycle(entry.uri, tab.current.uri, recycleRoot.uri)
-                }
+                operationRunner.run(FileOperationType.RECYCLE, "Moving to Recycle Bin") { report ->
+                    val recycleRoot = recycleBin.recycleRootFor(tab.treeUri)
+                    selection.forEachIndexed { index, entry ->
+                        report(
+                            OperationProgress(
+                                label = "Moving ${entry.name} to Recycle Bin",
+                                itemIndex = index + 1,
+                                itemCount = selection.size,
+                            ),
+                        )
+                        recycleBin.recycle(entry.uri, tab.current.uri, recycleRoot.uri)
+                    }
+                }.await()
             }.onSuccess {
                 toast("Moved to Recycle Bin")
                 selectedUris = emptySet()
                 refresh()
             }.onFailure { toast(it.message ?: "Unable to recycle selection") }
-            loading = false
         }
     }
 
@@ -813,6 +837,8 @@ private fun FylzV1Workspace(
                         viewMode = viewMode,
                         loading = loading,
                         operationMessage = operationMessage,
+                        runningOperations = runningOperations,
+                        onCancelOperation = operationRunner::cancel,
                         onOpenStorageRoot = ::openStorageRoot,
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
@@ -1165,6 +1191,8 @@ private fun FileBrowser(
     viewMode: ViewMode,
     loading: Boolean,
     operationMessage: String?,
+    runningOperations: List<RunningOperation>,
+    onCancelOperation: (String) -> Unit,
     onOpenStorageRoot: (StorageRoot) -> Unit,
     onPickFolder: (StorageRoot?) -> Unit,
     onOpenRemotes: () -> Unit,
@@ -1258,6 +1286,15 @@ private fun FileBrowser(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
         HorizontalDivider()
+
+        if (runningOperations.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                runningOperations.forEach { operation ->
+                    OperationProgressRow(operation, onCancel = { onCancelOperation(operation.id) })
+                }
+            }
+            HorizontalDivider()
+        }
 
         if (searchRecursive && query.isNotBlank()) {
             SearchResults(
@@ -1354,6 +1391,52 @@ private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
                 onClick = { onChange(spec.copy(foldersFirst = !spec.foldersFirst)) },
             )
         }
+    }
+}
+
+/** One row of an in-flight operation (P0.5): its label, a determinate progress bar when bytes or
+ * item counts are known and an indeterminate one otherwise, and a Cancel button. */
+@Composable
+private fun OperationProgressRow(operation: RunningOperation, onCancel: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(operation.label, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                operationProgressDetail(operation)?.let { detail ->
+                    Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Outlined.Close, "Cancel ${operation.label}")
+            }
+        }
+        val fraction = operationProgressFraction(operation)
+        if (fraction != null) {
+            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+    }
+}
+
+private fun operationProgressFraction(operation: RunningOperation): Float? {
+    val totalBytes = operation.totalBytes
+    return when {
+        totalBytes != null && totalBytes > 0 ->
+            (operation.completedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+        operation.itemCount > 0 ->
+            (operation.itemIndex.toFloat() / operation.itemCount.toFloat()).coerceIn(0f, 1f)
+        else -> null
+    }
+}
+
+private fun operationProgressDetail(operation: RunningOperation): String? {
+    val totalBytes = operation.totalBytes
+    return when {
+        totalBytes != null && totalBytes > 0 ->
+            "${formatBytes(operation.completedBytes)} of ${formatBytes(totalBytes)}"
+        operation.itemCount > 0 -> "Item ${operation.itemIndex} of ${operation.itemCount}"
+        else -> null
     }
 }
 
@@ -1717,6 +1800,14 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+private fun FileOperationService.Progress.toOperationProgress(verb: String): OperationProgress = OperationProgress(
+    label = "$verb $displayName",
+    itemIndex = itemIndex,
+    itemCount = itemCount,
+    completedBytes = completedBytes,
+    totalBytes = totalBytes,
+)
 
 private fun fileIcon(kind: EntryKind) = when (kind) {
     EntryKind.ARCHIVE -> Icons.Outlined.Archive
