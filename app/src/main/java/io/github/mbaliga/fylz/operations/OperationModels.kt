@@ -52,6 +52,12 @@ data class OperationItem(
      * can delete exactly this document -- and nothing else -- for an item a dead process left
      * mid-copy. Cleared once the item reaches a terminal state. */
     val stagingUri: Uri? = null,
+    /** The item's actual final document, once it has one (P1.1 storage; not yet populated by any
+     * write path -- a later task wires it). */
+    val finalUri: Uri? = null,
+    /** The transferred content's SHA-256, once computed (P1.1 storage for P1.4's verification;
+     * not yet populated by any write path). */
+    val sha256: String? = null,
 )
 
 data class FileOperation(
@@ -62,6 +68,9 @@ data class FileOperation(
     val state: OperationState = OperationState.QUEUED,
     val createdAtMillis: Long = System.currentTimeMillis(),
     val updatedAtMillis: Long = createdAtMillis,
+    /** The operation's overall target folder, once callers set one (P1.1 storage; distinct from
+     * each item's own [OperationItem.destination] -- not yet populated by any write path). */
+    val destination: Uri? = null,
 ) {
     val totalBytes: Long? = items.mapNotNull { it.expectedBytes }.takeIf { it.size == items.size }?.sum()
     val completedBytes: Long = items.sumOf { it.completedBytes }
