@@ -24,6 +24,10 @@ enum class OperationState {
     PAUSED,
     SUCCEEDED,
     FAILED,
+    /** Some items succeeded and some failed (P1.7) -- every item was attempted; this is not a
+     * failure that aborted the batch partway through, which now never happens. [FAILED] means
+     * none of the items succeeded; [SUCCEEDED] means all of them did. */
+    PARTIAL,
     CANCELLED,
     NEEDS_ATTENTION,
     /** A dead process left this item mid-copy (P0.6); its staged partial write, if any, was
@@ -117,6 +121,7 @@ object OperationRecoveryPolicy {
     fun isTerminal(state: OperationState): Boolean = state in setOf(
         OperationState.SUCCEEDED,
         OperationState.FAILED,
+        OperationState.PARTIAL,
         OperationState.CANCELLED,
         OperationState.NEEDS_ATTENTION,
         OperationState.INTERRUPTED,

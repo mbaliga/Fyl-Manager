@@ -15,6 +15,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -219,6 +220,90 @@ class FileOperationServiceTest {
         assertEquals(destinationBefore, destinationFingerprint())
         val finished = service.operations().first { it.id == pending.id }
         assertEquals(OperationState.SUCCEEDED, finished.state)
+    }
+
+    @Test
+    fun `one item's failure does not abort the rest of the batch, and the operation ends PARTIAL`() = runBlocking {
+        buildTree(
+            sourceDir,
+            listOf(TreeNode.FileNode("a.txt", 5), TreeNode.FileNode("b.txt", 5), TreeNode.FileNode("c.txt", 5)),
+        )
+        // Each item's copy ends with exactly one rename (staged name -> final name, no conflict),
+        // so the 2nd rename across this 3-item batch is item b's own -- failing only it.
+        faulty.refuseRenameAtCall = 2
+
+        val thrown = assertThrows(java.io.FileNotFoundException::class.java) {
+            runBlocking {
+                service.copy(
+                    listOf(documentUri("source/a.txt"), documentUri("source/b.txt"), documentUri("source/c.txt")),
+                    treeUriFor("destination"),
+                )
+            }
+        }
+        assertTrue(thrown.message.orEmpty().contains("simulated"))
+
+        assertTrue("item a must still have been copied", File(destinationDir, "a.txt").exists())
+        assertTrue("item c must still have been copied, despite running after the failed item b", File(destinationDir, "c.txt").exists())
+        assertFalse("item b's rename was refused, so it must never reach its final name", File(destinationDir, "b.txt").exists())
+
+        val operation = service.operations().single()
+        assertEquals(OperationState.PARTIAL, operation.state)
+        val itemsByName = operation.items.associateBy { it.displayName }
+        assertEquals(OperationState.SUCCEEDED, itemsByName.getValue("a.txt").state)
+        assertEquals(OperationState.FAILED, itemsByName.getValue("b.txt").state)
+        assertEquals("FileNotFoundException", itemsByName.getValue("b.txt").errorCode)
+        assertEquals(OperationState.SUCCEEDED, itemsByName.getValue("c.txt").state)
+    }
+
+    @Test
+    fun `every item failing ends the operation FAILED, not PARTIAL`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("a.txt", 5), TreeNode.FileNode("b.txt", 5)))
+        faulty.refuseRename = true
+
+        // Two different items fail (not one), so this is the generic summary-message path, not
+        // the single-failure type-preserving rethrow -- see the "one item's failure" test above
+        // for that case.
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                service.copy(
+                    listOf(documentUri("source/a.txt"), documentUri("source/b.txt")),
+                    treeUriFor("destination"),
+                )
+            }
+        }
+        assertTrue(thrown.message.orEmpty().contains("All 2 items failed"))
+
+        val operation = service.operations().single()
+        assertEquals(OperationState.FAILED, operation.state)
+        assertTrue(operation.items.all { it.state == OperationState.FAILED })
+    }
+
+    @Test
+    fun `a PARTIAL operation's failed item can be retried through OperationRetryPolicy and lands correctly`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("a.txt", 5), TreeNode.FileNode("b.txt", 5)))
+        faulty.refuseRenameAtCall = 2
+
+        assertThrows(java.io.FileNotFoundException::class.java) {
+            runBlocking {
+                service.copy(listOf(documentUri("source/a.txt"), documentUri("source/b.txt")), treeUriFor("destination"))
+            }
+        }
+        val partial = service.operations().single()
+        assertEquals(OperationState.PARTIAL, partial.state)
+
+        val plan = OperationRetryPolicy.plan(partial)
+        assertTrue("a PARTIAL operation must be retryable", plan is OperationRetryPlan.Transfer)
+        val transferPlan = plan as OperationRetryPlan.Transfer
+        assertEquals(
+            "only the failed item (b.txt) should be replayed, not the already-succeeded a.txt",
+            listOf(documentUri("source/b.txt")),
+            transferPlan.sourceUris,
+        )
+
+        faulty.refuseRenameAtCall = null
+        service.copy(transferPlan.sourceUris, transferPlan.destinationTreeUri, transferPlan.conflictPolicy)
+
+        assertTrue(File(destinationDir, "b.txt").exists())
     }
 
     @Test

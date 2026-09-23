@@ -22,6 +22,7 @@ internal object OperationsDao {
     private val FINISHED_STATES = listOf(
         OperationState.SUCCEEDED,
         OperationState.FAILED,
+        OperationState.PARTIAL,
         OperationState.CANCELLED,
     )
 

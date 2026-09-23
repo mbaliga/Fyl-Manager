@@ -159,146 +159,174 @@ class FileOperationService(
         )
         journal.put(current)
 
-        try {
+        // Every per-item failure caught below, keyed by index -- when exactly one item fails
+        // (still the common case: most transfers are, or behave like, a single item), the batch
+        // rethrows that ORIGINAL exception unchanged rather than a generic summary, so a caller
+        // catching a specific exception type (ChecksumMismatchException, say) still can.
+        val itemFailures = mutableMapOf<Int, Throwable>()
+
+        // Assigned rather than directly returned from the try/catch below (P1.7): the
+        // FAILED/PARTIAL throw further down must happen OUTSIDE this try's own catch blocks, so
+        // it is never itself caught and re-marks a correctly-computed PARTIAL operation as FAILED.
+        val transferResult = try {
             val result = buildList {
                 sourceUris.forEachIndexed { index, sourceUri ->
                     coroutineContext.ensureActive()
-                    val source = DocNode.load(resolver, sourceUri)
-                        ?: error("Unable to open a selected item.")
-                    // P1.5: a Preflight sheet's own auto-rename choice, when the source's own name
-                    // has a problem at the destination -- the copy lands under this name, the
-                    // source itself is never touched.
-                    val sourceName = nameOverrides[sourceUri] ?: source.name
-                    // P1.6: a ConflictSheet's own per-item choice, resolved up front against this
-                    // exact item before the transfer ever started; the batch-level conflictPolicy
-                    // is only a fallback for a conflict nothing pre-resolved (see resolveTargetPlan's
-                    // own ASK doc -- normally unreachable once every conflict has been checked and
-                    // resolved before this call, per the UI's own PreflightSheet-then-ConflictSheet
-                    // sequencing in FylzV1App.kt).
-                    val itemPolicy = conflictResolutions[sourceUri] ?: conflictPolicy
-                    val plan = resolveTargetPlan(destination, sourceName, source.lastModified, itemPolicy)
-                    if (plan == null) {
-                        current = updateItem(current, index) {
-                            it.copy(state = OperationState.SUCCEEDED, errorCode = "SKIPPED_CONFLICT")
+                    // P1.7: one item's failure no longer aborts the rest of the batch -- every
+                    // exception this item's own work below can throw (a missing source, a
+                    // provider I/O error, a checksum mismatch) is caught here, recorded as this
+                    // ONE item's own FAILED state and error code, and the loop moves on to the
+                    // next item. A real cancellation is deliberately NOT caught here (rethrown
+                    // immediately): stopping the whole batch is still exactly what a
+                    // user-requested cancel does.
+                    try {
+                        val source = DocNode.load(resolver, sourceUri)
+                            ?: error("Unable to open a selected item.")
+                        // P1.5: a Preflight sheet's own auto-rename choice, when the source's own name
+                        // has a problem at the destination -- the copy lands under this name, the
+                        // source itself is never touched.
+                        val sourceName = nameOverrides[sourceUri] ?: source.name
+                        // P1.6: a ConflictSheet's own per-item choice, resolved up front against this
+                        // exact item before the transfer ever started; the batch-level conflictPolicy
+                        // is only a fallback for a conflict nothing pre-resolved (see resolveTargetPlan's
+                        // own ASK doc -- normally unreachable once every conflict has been checked and
+                        // resolved before this call, per the UI's own PreflightSheet-then-ConflictSheet
+                        // sequencing in FylzV1App.kt).
+                        val itemPolicy = conflictResolutions[sourceUri] ?: conflictPolicy
+                        val plan = resolveTargetPlan(destination, sourceName, source.lastModified, itemPolicy)
+                        if (plan == null) {
+                            current = updateItem(current, index) {
+                                it.copy(state = OperationState.SUCCEEDED, errorCode = "SKIPPED_CONFLICT")
+                            }
+                            journal.put(current)
+                            return@forEachIndexed
                         }
-                        journal.put(current)
-                        return@forEachIndexed
-                    }
 
-                    val total = source.size.takeIf { !source.isDirectory }
+                        val total = source.size.takeIf { !source.isDirectory }
 
-                    // P1.3/A5: try a direct move first -- LocalFileTransfer's File.renameTo on
-                    // the same volume, or DocumentsTransfer's DocumentsContract.moveDocument when
-                    // the provider supports it -- before falling back to the copy-then-delete
-                    // path below. Only when there's no conflict to resolve: a Replace needs the
-                    // aside-then-recycle dance finalizeTarget already handles, which a direct move
-                    // bypasses entirely. sourceParent is always null here -- no caller of
-                    // FileOperationService.move() tracks a selected item's parent folder today, so
-                    // DocumentsTransfer's own moveDocument fast path (the only one that needs it)
-                    // stays unreachable until a future caller supplies one; LocalFileTransfer's
-                    // rename fast path needs no parent and works today.
-                    if (move && plan.existing == null) {
-                        val moved = transferEngines.forPair(source, destination).moveFile(
+                        // P1.3/A5: try a direct move first -- LocalFileTransfer's File.renameTo on
+                        // the same volume, or DocumentsTransfer's DocumentsContract.moveDocument when
+                        // the provider supports it -- before falling back to the copy-then-delete
+                        // path below. Only when there's no conflict to resolve: a Replace needs the
+                        // aside-then-recycle dance finalizeTarget already handles, which a direct move
+                        // bypasses entirely. sourceParent is always null here -- no caller of
+                        // FileOperationService.move() tracks a selected item's parent folder today, so
+                        // DocumentsTransfer's own moveDocument fast path (the only one that needs it)
+                        // stays unreachable until a future caller supplies one; LocalFileTransfer's
+                        // rename fast path needs no parent and works today.
+                        if (move && plan.existing == null) {
+                            val moved = transferEngines.forPair(source, destination).moveFile(
+                                source = source,
+                                sourceParent = null,
+                                destinationDirectory = destination,
+                                requestedName = plan.requestedName,
+                            )
+                            if (moved != null) {
+                                current = updateItem(current, index) { item ->
+                                    item.copy(
+                                        destination = moved.uri,
+                                        completedBytes = item.expectedBytes ?: total ?: item.completedBytes,
+                                        state = OperationState.SUCCEEDED,
+                                        errorCode = null,
+                                    )
+                                }
+                                journal.put(current)
+                                add(moved.uri)
+                                return@forEachIndexed
+                            }
+                        }
+
+                        val progressThrottle = ProgressWriteThrottle()
+                        val staged = copyDocument(
                             source = source,
-                            sourceParent = null,
                             destinationDirectory = destination,
-                            requestedName = plan.requestedName,
-                        )
-                        if (moved != null) {
+                            requestedName = stagingName(current.id, index, plan.requestedName),
+                            progressName = plan.requestedName,
+                            itemIndex = index,
+                            itemCount = sourceUris.size,
+                            totalBytes = total,
+                            onStaged = { uri ->
+                                // Recorded before the first byte is written (P0.6): OperationRunner.recover
+                                // can find and delete exactly this document if the process dies mid-copy.
+                                current = updateItem(current, index) { it.copy(stagingUri = uri) }
+                                journal.put(current)
+                            },
+                        ) { progress ->
                             current = updateItem(current, index) { item ->
                                 item.copy(
-                                    destination = moved.uri,
-                                    completedBytes = item.expectedBytes ?: total ?: item.completedBytes,
-                                    state = OperationState.SUCCEEDED,
-                                    errorCode = null,
+                                    completedBytes = progress.completedBytes,
+                                    expectedBytes = progress.totalBytes ?: item.expectedBytes,
+                                    state = OperationState.RUNNING,
+                                )
+                            }
+                            // P1.2: no more often than every 250 ms or every 8 MiB -- this used to call
+                            // journal.put on every single buffer read (every 8 KiB).
+                            val isFinalForThisFile = progress.totalBytes != null &&
+                                progress.completedBytes >= progress.totalBytes
+                            if (progressThrottle.shouldWrite(progress.completedBytes, isFinalForThisFile)) {
+                                journal.put(current)
+                            }
+                            onProgress(progress)
+                        }
+                        // P1.4: only ever for a file, never a directory -- a folder has no single
+                        // byte stream for one hash to describe, and operation_items.sha256 has room
+                        // for exactly one. A mismatch throws ChecksumMismatchException, which unwinds
+                        // straight out (finalizeTarget below is never reached, so staged is never
+                        // renamed to its final name) to this item's own P1.7 catch just below, which
+                        // marks only THIS item FAILED with that exception's own name and moves on to
+                        // the next one -- and, deliberately unlike a size mismatch, never deletes
+                        // staged: a checksum failure is worth keeping to inspect, not just corruption
+                        // to discard.
+                        if (verifyThisTransfer && !source.isDirectory) {
+                            val hash = verifyChecksum(resolver, source, staged)
+                            current = updateItem(current, index) { it.copy(sha256 = hash) }
+                            journal.put(current)
+                        }
+
+                        val copied = finalizeTarget(destination, plan, staged)
+
+                        if (move && !source.delete(resolver)) {
+                            current = updateItem(current, index) { item ->
+                                item.copy(
+                                    destination = copied.uri,
+                                    completedBytes = item.expectedBytes ?: item.completedBytes,
+                                    state = OperationState.NEEDS_ATTENTION,
+                                    errorCode = MOVE_SOURCE_DELETE_PENDING,
+                                    stagingUri = null,
                                 )
                             }
                             journal.put(current)
-                            add(moved.uri)
+                            add(copied.uri)
                             return@forEachIndexed
                         }
-                    }
 
-                    val progressThrottle = ProgressWriteThrottle()
-                    val staged = copyDocument(
-                        source = source,
-                        destinationDirectory = destination,
-                        requestedName = stagingName(current.id, index, plan.requestedName),
-                        progressName = plan.requestedName,
-                        itemIndex = index,
-                        itemCount = sourceUris.size,
-                        totalBytes = total,
-                        onStaged = { uri ->
-                            // Recorded before the first byte is written (P0.6): OperationRunner.recover
-                            // can find and delete exactly this document if the process dies mid-copy.
-                            current = updateItem(current, index) { it.copy(stagingUri = uri) }
-                            journal.put(current)
-                        },
-                    ) { progress ->
-                        current = updateItem(current, index) { item ->
-                            item.copy(
-                                completedBytes = progress.completedBytes,
-                                expectedBytes = progress.totalBytes ?: item.expectedBytes,
-                                state = OperationState.RUNNING,
-                            )
-                        }
-                        // P1.2: no more often than every 250 ms or every 8 MiB -- this used to call
-                        // journal.put on every single buffer read (every 8 KiB).
-                        val isFinalForThisFile = progress.totalBytes != null &&
-                            progress.completedBytes >= progress.totalBytes
-                        if (progressThrottle.shouldWrite(progress.completedBytes, isFinalForThisFile)) {
-                            journal.put(current)
-                        }
-                        onProgress(progress)
-                    }
-                    // P1.4: only ever for a file, never a directory -- a folder has no single
-                    // byte stream for one hash to describe, and operation_items.sha256 has room
-                    // for exactly one. A mismatch throws ChecksumMismatchException, which unwinds
-                    // straight out of this coroutine (finalizeTarget below is never reached, so
-                    // staged is never renamed to its final name) to the whole-operation catch
-                    // below, which marks this item FAILED with that exception's own name -- and,
-                    // deliberately unlike a size mismatch, never deletes staged: a checksum
-                    // failure is worth keeping to inspect, not just corruption to discard.
-                    if (verifyThisTransfer && !source.isDirectory) {
-                        val hash = verifyChecksum(resolver, source, staged)
-                        current = updateItem(current, index) { it.copy(sha256 = hash) }
-                        journal.put(current)
-                    }
-
-                    val copied = finalizeTarget(destination, plan, staged)
-
-                    if (move && !source.delete(resolver)) {
                         current = updateItem(current, index) { item ->
                             item.copy(
                                 destination = copied.uri,
                                 completedBytes = item.expectedBytes ?: item.completedBytes,
-                                state = OperationState.NEEDS_ATTENTION,
-                                errorCode = MOVE_SOURCE_DELETE_PENDING,
+                                state = OperationState.SUCCEEDED,
+                                errorCode = null,
                                 stagingUri = null,
                             )
                         }
                         journal.put(current)
                         add(copied.uri)
-                        return@forEachIndexed
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Throwable) {
+                        itemFailures[index] = failure
+                        current = updateItem(current, index) { item ->
+                            item.copy(state = OperationState.FAILED, errorCode = failure::class.java.simpleName)
+                        }
+                        journal.put(current)
                     }
-
-                    current = updateItem(current, index) { item ->
-                        item.copy(
-                            destination = copied.uri,
-                            completedBytes = item.expectedBytes ?: item.completedBytes,
-                            state = OperationState.SUCCEEDED,
-                            errorCode = null,
-                            stagingUri = null,
-                        )
-                    }
-                    journal.put(current)
-                    add(copied.uri)
                 }
             }
-            val finalState = if (current.items.any { it.state == OperationState.NEEDS_ATTENTION }) {
-                OperationState.NEEDS_ATTENTION
-            } else {
-                OperationState.SUCCEEDED
+            val finalState = when {
+                current.items.any { it.state == OperationState.NEEDS_ATTENTION } -> OperationState.NEEDS_ATTENTION
+                current.items.all { it.state == OperationState.SUCCEEDED } -> OperationState.SUCCEEDED
+                current.items.any { it.state == OperationState.SUCCEEDED } -> OperationState.PARTIAL
+                else -> OperationState.FAILED
             }
             current = current.copy(state = finalState, updatedAtMillis = System.currentTimeMillis())
             journal.put(current)
@@ -332,6 +360,32 @@ class FileOperationService(
             journal.put(current)
             throw failure
         }
+        // P1.7: preserves every existing caller's contract (TransferWorker/OperationRunner.enqueueTransfer
+        // and every direct copy()/move() call site still treat "did not throw" as "fully succeeded") --
+        // a batch where every item was attempted but not every item succeeded still throws, just
+        // only now that every item has actually had its turn, never partway through. The durable
+        // journal record (current.state, already SUCCEEDED/PARTIAL/FAILED/NEEDS_ATTENTION by this
+        // point) is what OperationHistoryDialog actually renders; this throw is only about what a
+        // caller awaiting this suspend function itself observes.
+        if (current.state == OperationState.FAILED || current.state == OperationState.PARTIAL) {
+            // Exactly one item failed, whether or not others in the same batch succeeded:
+            // rethrow it as itself (ChecksumMismatchException, IOException, whatever it actually
+            // was), preserving the type a caller might be catching for, rather than a generic
+            // wrapped summary -- true regardless of whether that makes the OPERATION's own state
+            // FAILED (a single-item batch, or every item failed the same way) or PARTIAL.
+            if (itemFailures.size == 1) {
+                throw itemFailures.values.single()
+            }
+            val failedCount = current.items.count { it.state == OperationState.FAILED }
+            error(
+                if (current.state == OperationState.PARTIAL) {
+                    "$failedCount of ${current.items.size} items failed."
+                } else {
+                    "All ${current.items.size} items failed."
+                },
+            )
+        }
+        transferResult
     }
 
     private fun updateItem(

@@ -1,9 +1,17 @@
 package io.github.mbaliga.fylz.operations
 
+import android.net.Uri
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+/** Most cases here test the pure [OperationRetryPolicy.canRetry]/[OperationRetryPolicy.isMoveCleanupRetry]
+ *  functions directly and need no Android classes at all; the [OperationRetryPolicy.plan] cases
+ *  build a real [FileOperation] with [Uri.parse]-backed URIs, which needs Robolectric. */
+@RunWith(RobolectricTestRunner::class)
 class OperationRetryPolicyTest {
     @Test
     fun `failed copy with one shared destination can retry`() {
@@ -55,6 +63,49 @@ class OperationRetryPolicyTest {
                 incompleteItemsShareDestination = false,
             ),
         )
+    }
+
+    @Test
+    fun `a PARTIAL operation can retry, replaying only its failed items`() {
+        assertTrue(
+            "P1.7: PARTIAL means some items succeeded and some failed; retrying replays the failed ones",
+            OperationRetryPolicy.canRetry(
+                type = FileOperationType.COPY,
+                state = OperationState.PARTIAL,
+                incompleteItemCount = 1,
+                allIncompleteItemsHaveSourceAndDestination = true,
+                incompleteItemsShareDestination = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `plan for a PARTIAL operation replays exactly the non-succeeded items`() {
+        val operation = FileOperation(
+            id = "op-partial",
+            type = FileOperationType.COPY,
+            items = listOf(
+                OperationItem(
+                    source = Uri.parse("content://fylz/a"),
+                    destination = Uri.parse("content://fylz/tree/dest"),
+                    displayName = "a.txt",
+                    state = OperationState.SUCCEEDED,
+                ),
+                OperationItem(
+                    source = Uri.parse("content://fylz/b"),
+                    destination = Uri.parse("content://fylz/tree/dest"),
+                    displayName = "b.txt",
+                    state = OperationState.FAILED,
+                    errorCode = "IOException",
+                ),
+            ),
+            state = OperationState.PARTIAL,
+        )
+
+        val plan = OperationRetryPolicy.plan(operation)
+
+        assertTrue(plan is OperationRetryPlan.Transfer)
+        assertEquals(listOf(Uri.parse("content://fylz/b")), (plan as OperationRetryPlan.Transfer).sourceUris)
     }
 
     @Test

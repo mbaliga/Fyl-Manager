@@ -27,6 +27,10 @@ object OperationRetryPolicy {
 
     private val retryableStates = setOf(
         OperationState.FAILED,
+        // P1.7: a PARTIAL operation's own incomplete items (state != SUCCEEDED) are exactly its
+        // failed items, so the existing plan()/replay-incomplete-items logic below already IS
+        // "Retry failed items" for this state -- no separate plan type needed.
+        OperationState.PARTIAL,
         OperationState.CANCELLED,
         OperationState.NEEDS_ATTENTION,
         OperationState.INTERRUPTED,
