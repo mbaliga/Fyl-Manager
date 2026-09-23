@@ -6,6 +6,7 @@ import android.database.MatrixCursor
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.CancellationSignal
 import android.os.Environment
 import android.os.ParcelFileDescriptor
@@ -452,6 +453,32 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
                 treeUri(rootId, relativePath),
                 "$rootId:$relativePath",
             )
+
+        /**
+         * Resolves [uri] to the real [File] behind it, when [uri] is one of this provider's own
+         * documents (P1.3/A5) -- the same-process shortcut [LocalFileTransfer] needs to operate on
+         * a source or destination directly, bypassing a [android.content.ContentResolver] stream
+         * round trip entirely.
+         *
+         * [android.content.ContentProviderClient.getLocalContentProvider] returns the live
+         * [FylzFilesDocumentsProvider] instance without a Binder call when it runs in this same
+         * process -- true for every real install, since this provider is declared in this app's own
+         * manifest -- which lets this reuse [resolveFile]'s existing root-resolution and
+         * canonical-path escape checks instead of duplicating them. Returns null for any other
+         * provider's uri, or one that does not resolve (including simply not existing); never
+         * throws.
+         */
+        fun fileFor(context: Context, uri: Uri): File? {
+            if (uri.authority != AUTHORITY) return null
+            val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+            val client = context.contentResolver.acquireContentProviderClient(AUTHORITY) ?: return null
+            return try {
+                val provider = client.localContentProvider as? FylzFilesDocumentsProvider ?: return null
+                runCatching { provider.resolveFile(documentId) }.getOrNull()
+            } finally {
+                client.close()
+            }
+        }
     }
 }
 

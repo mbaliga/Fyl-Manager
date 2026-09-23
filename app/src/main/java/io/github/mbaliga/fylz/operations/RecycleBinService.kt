@@ -22,6 +22,7 @@ class RecycleBinService(
     private val context: Context,
     private val store: RecycleBinStore = RecycleBinStore(context),
     private val journal: OperationJournal = OperationJournal(context),
+    private val transferEngines: TransferEngines = TransferEngines(context),
 ) {
     private val resolver: ContentResolver get() = context.contentResolver
 
@@ -108,8 +109,29 @@ class RecycleBinService(
             var recordStored = false
 
             try {
-                val recycled = copyDocument(source, container, displayName)
-                verifyCopy(source, recycled)
+                // P1.3/A5: on the same volume, recycling is a File.renameTo into the container --
+                // instant, and the original is already gone the moment this succeeds, rather than
+                // still existing (as it does on every other path below) until the explicit delete
+                // a few lines down. That narrows, rather than widens, the usual "copied and
+                // verified and recorded before the original is removed" window this class's own
+                // doc promises -- with one accepted trade-off: if store.put a few lines down were
+                // to fail after a fast-path rename, the failure handler's container.delete(resolver)
+                // would remove the user's only remaining copy of the file, where it only ever
+                // discards an extra copy on every other path. Not specially guarded against here --
+                // a plain local key-value write failing right after a filesystem rename that just
+                // succeeded is the same near-impossible case every other journal/store write in
+                // this codebase already trusts not to happen.
+                var movedDirectly = false
+                val recycled = transferEngines.forPair(source, container).moveFile(
+                    source = source,
+                    sourceParent = null,
+                    destinationDirectory = container,
+                    requestedName = displayName,
+                )?.also { movedDirectly = true } ?: run {
+                    val copied = copyDocument(source, container, displayName)
+                    verifyCopy(source, copied)
+                    copied
+                }
                 val record = RecycleRecord(
                     itemId = itemId,
                     originalUri = sourceUri,
@@ -124,8 +146,10 @@ class RecycleBinService(
 
                 store.put(record)
                 recordStored = true
-                check(source.delete(resolver)) {
-                    "The item was copied to the recycle bin, but the provider refused to remove the original."
+                if (!movedDirectly) {
+                    check(source.delete(resolver)) {
+                        "The item was copied to the recycle bin, but the provider refused to remove the original."
+                    }
                 }
 
                 if (journaled) {
@@ -489,27 +513,14 @@ class RecycleBinService(
             }
         }
 
-        val target = destinationDirectory.createChild(resolver, source.mimeType, requestedName)
-        try {
-            val input = resolver.openInputStream(source.uri) ?: error("Unable to read $requestedName.")
-            val output = resolver.openOutputStream(target.uri, "w") ?: error("Unable to write $requestedName.")
-            input.use { sourceStream ->
-                output.use { targetStream ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val count = sourceStream.read(buffer)
-                        if (count < 0) break
-                        targetStream.write(buffer, 0, count)
-                    }
-                    targetStream.flush()
-                }
-            }
-            return target.refresh(resolver) ?: error("$requestedName was written but has already vanished.")
-        } catch (failure: Throwable) {
-            target.delete(resolver)
-            throw failure
-        }
+        // P1.3/A5: same engine choice FileOperationService.copyDocument makes -- LocalFileTransfer
+        // when both ends are local to this device, DocumentsTransfer (with its own copyDocument
+        // fast path and 512 KiB stream fallback) otherwise.
+        return transferEngines.forPair(source, destinationDirectory).copyFile(
+            source = source,
+            destinationDirectory = destinationDirectory,
+            requestedName = requestedName,
+        ) { }
     }
 
     private fun verifyCopy(source: DocNode, target: DocNode) {

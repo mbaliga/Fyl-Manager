@@ -16,6 +16,7 @@ class FileOperationService(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
     private val recycleBin: RecycleBinService = RecycleBinService(context),
+    private val transferEngines: TransferEngines = TransferEngines(context),
 ) {
     private val resolver: ContentResolver get() = context.contentResolver
 
@@ -164,6 +165,39 @@ class FileOperationService(
                     }
 
                     val total = source.size.takeIf { !source.isDirectory }
+
+                    // P1.3/A5: try a direct move first -- LocalFileTransfer's File.renameTo on
+                    // the same volume, or DocumentsTransfer's DocumentsContract.moveDocument when
+                    // the provider supports it -- before falling back to the copy-then-delete
+                    // path below. Only when there's no conflict to resolve: a Replace needs the
+                    // aside-then-recycle dance finalizeTarget already handles, which a direct move
+                    // bypasses entirely. sourceParent is always null here -- no caller of
+                    // FileOperationService.move() tracks a selected item's parent folder today, so
+                    // DocumentsTransfer's own moveDocument fast path (the only one that needs it)
+                    // stays unreachable until a future caller supplies one; LocalFileTransfer's
+                    // rename fast path needs no parent and works today.
+                    if (move && plan.existing == null) {
+                        val moved = transferEngines.forPair(source, destination).moveFile(
+                            source = source,
+                            sourceParent = null,
+                            destinationDirectory = destination,
+                            requestedName = plan.requestedName,
+                        )
+                        if (moved != null) {
+                            current = updateItem(current, index) { item ->
+                                item.copy(
+                                    destination = moved.uri,
+                                    completedBytes = item.expectedBytes ?: total ?: item.completedBytes,
+                                    state = OperationState.SUCCEEDED,
+                                    errorCode = null,
+                                )
+                            }
+                            journal.put(current)
+                            add(moved.uri)
+                            return@forEachIndexed
+                        }
+                    }
+
                     val progressThrottle = ProgressWriteThrottle()
                     val staged = copyDocument(
                         source = source,
@@ -327,41 +361,33 @@ class FileOperationService(
             }
         }
 
-        val target = destinationDirectory.createChild(resolver, source.mimeType, requestedName)
-        onStaged(target.uri)
+        // P1.3/A5: LocalFileTransfer (File.renameTo-adjacent sendfile/splice, when both ends are
+        // local to this device) or DocumentsTransfer (the provider-neutral path this used to run
+        // unconditionally, now with copyDocument and a 512 KiB stream fallback instead of an 8 KiB
+        // one) -- picked per file, transparently to every caller of copyDocument.
+        val written = transferEngines.forPair(source, destinationDirectory).copyFile(
+            source = source,
+            destinationDirectory = destinationDirectory,
+            requestedName = requestedName,
+            onStaged = { staged -> onStaged(staged.uri) },
+        ) { completed ->
+            onProgress(
+                Progress(
+                    itemIndex = itemIndex,
+                    itemCount = itemCount,
+                    displayName = progressName,
+                    completedBytes = completed,
+                    totalBytes = totalBytes,
+                ),
+            )
+        }
         try {
-            val input = resolver.openInputStream(source.uri) ?: error("Unable to read $progressName.")
-            val output = resolver.openOutputStream(target.uri, "w") ?: error("Unable to write $progressName.")
-            var completed = 0L
-            input.use { sourceStream ->
-                output.use { targetStream ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val count = sourceStream.read(buffer)
-                        if (count < 0) break
-                        targetStream.write(buffer, 0, count)
-                        completed += count
-                        onProgress(
-                            Progress(
-                                itemIndex = itemIndex,
-                                itemCount = itemCount,
-                                displayName = progressName,
-                                completedBytes = completed,
-                                totalBytes = totalBytes,
-                            ),
-                        )
-                    }
-                    targetStream.flush()
-                }
-            }
-            val written = target.refresh(resolver) ?: error("$progressName was written but has already vanished.")
             verifyFile(source, written)
-            return written
         } catch (failure: Throwable) {
-            target.delete(resolver)
+            written.delete(resolver)
             throw failure
         }
+        return written
     }
 
     private fun verifyFile(source: DocNode, target: DocNode) {

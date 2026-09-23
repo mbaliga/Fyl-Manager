@@ -129,3 +129,21 @@ states the correct item count and known total size (and handles an item with unk
 gracefully). The Recycle Bin list updates immediately after either action with no manual
 refresh needed (this was the P0.8 `StateFlow` fix — confirm it's not just a Robolectric artifact).
 Emptying reports how many items succeeded and leaves the recycle bin folder itself clean.
+
+## 9. Transfer throughput (P1.3)
+
+**Steps:**
+1. Call `TransferBenchmark.run(primaryVolumeDir = <a real writable dir on internal storage>,
+   secondaryVolumeDir = <a real writable dir on an SD card or USB drive, or null to skip that
+   scenario>)` from a debug build (there is no UI trigger for this yet — see the P1.3 progress
+   note) and read `Report.summary()`.
+2. Separately, on the same device, time `cp` on the same 4 GB file and the same 10,000×4 KB tree
+   (e.g. `time cp bigfile.bin copy.bin`, `time cp -r manyfiles/ copy/`).
+
+**Expected:** the same-volume 4 GB scenario's `megabytesPerSecond` is at least 90% of `cp`'s own
+throughput for the same file on the same device — the brief's own target, and the reason this is a
+device check rather than an automated one: the Robolectric sandbox this task was built in has no
+real disk to measure, only `TransferBenchmarkTest`'s proof that the scenarios themselves run
+correctly at a small scale. Also confirm the cross-volume and many-small-files numbers are
+directionally reasonable (cross-volume slower than same-volume; many small files bottlenecked by
+per-file overhead rather than raw throughput), and note all three numbers here once measured.
