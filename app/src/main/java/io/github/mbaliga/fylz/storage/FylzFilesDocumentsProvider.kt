@@ -14,6 +14,7 @@ import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.annotation.VisibleForTesting
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -43,6 +44,14 @@ import java.io.IOException
  * this provider simply reports the directories the app can legitimately read.
  */
 class FylzFilesDocumentsProvider : DocumentsProvider() {
+
+    /**
+     * Test seam (P0.0): when set, [volumeRoots] returns this list instead of asking
+     * [StorageManager] for the device's real volumes, so tests can host this provider over a
+     * temporary directory. Production code never sets this.
+     */
+    @VisibleForTesting
+    internal var volumeOverride: List<VolumeDescriptor>? = null
 
     override fun onCreate(): Boolean = true
 
@@ -307,6 +316,7 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     // --------------------------------------------------------------- volumes
 
     private fun volumeRoots(): List<VolumeDescriptor> {
+        volumeOverride?.let { return it }
         val context = context ?: return emptyList()
         return discoverVolumes(context)
     }
