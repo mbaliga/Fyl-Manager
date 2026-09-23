@@ -22,7 +22,7 @@ class FylzApplication : Application() {
      * launched through [operationRunner] keeps running across rotation, folding or resizing
      * instead of dying with whatever `rememberCoroutineScope()` started it. */
     val operationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val operationRunner: OperationRunner by lazy { OperationRunner(operationScope) }
+    val operationRunner: OperationRunner by lazy { OperationRunner(operationScope, this) }
 
     override fun onCreate() {
         super.onCreate()

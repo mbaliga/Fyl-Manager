@@ -1,6 +1,12 @@
 package io.github.mbaliga.fylz.operations
 
 import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -9,6 +15,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -49,7 +58,12 @@ data class OperationProgress(
  * correct to record every cancellation it sees as user-initiated. Before this, composable teardown
  * cancelled the UI's `rememberCoroutineScope()` and looked identical to the user pressing Cancel.
  */
-class OperationRunner(private val scope: CoroutineScope) {
+class OperationRunner(
+    private val scope: CoroutineScope,
+    /** Only needed for [enqueueTransfer]/[cancel]'s WorkManager path (P1.2) -- every other member
+     * here is plain-JVM testable without one, which existing tests rely on. */
+    private val context: Context? = null,
+) {
 
     private val _operations = MutableStateFlow<List<RunningOperation>>(emptyList())
     val operations: StateFlow<List<RunningOperation>> = _operations.asStateFlow()
@@ -103,10 +117,72 @@ class OperationRunner(private val scope: CoroutineScope) {
         return deferred
     }
 
-    /** Cancels the running operation tracked under [id], if any. A no-op once it has already
-     * finished (the id is no longer tracked by then). */
+    /** Cancels the running operation tracked under [id], if any -- whether it's a [run]-tracked
+     * job or, if this runner has a [context] (P1.2), a [enqueueTransfer]-tracked WorkManager
+     * request. A no-op once it has already finished (the id is no longer tracked by then). */
     fun cancel(id: String) {
         jobs[id]?.cancel()
+        val appContext = context ?: return
+        val workId = runCatching { UUID.fromString(id) }.getOrNull() ?: return
+        WorkManager.getInstance(appContext).cancelWorkById(workId)
+    }
+
+    /**
+     * P1.2: enqueues a copy or move as durable work (unique work [TransferWorker.UNIQUE_WORK_NAME],
+     * `APPEND_OR_REPLACE`) instead of running it on [scope] directly -- see [TransferWorker] for
+     * why only copy and move go through this path. Tracks it in [operations] exactly like [run]
+     * does, deriving progress from the same [WorkInfo] the notification itself is built from, so
+     * the existing progress UI needs no changes to show a transfer alongside every other kind of
+     * tracked operation.
+     *
+     * Suspends until the transfer reaches a terminal [WorkInfo.State], throwing if it didn't
+     * succeed -- matching [run]'s `Deferred.await()` contract closely enough that a call site can
+     * switch from one to the other with a small, local diff.
+     */
+    suspend fun enqueueTransfer(
+        type: FileOperationType,
+        label: String,
+        sourceUris: List<Uri>,
+        destinationTreeUri: Uri,
+        conflictPolicy: ConflictPolicy,
+    ) {
+        val appContext = requireNotNull(context) { "OperationRunner needs a context to enqueue durable transfers." }
+        val workManager = WorkManager.getInstance(appContext)
+        val request = OneTimeWorkRequestBuilder<TransferWorker>()
+            .setInputData(TransferWorker.inputData(type, sourceUris, destinationTreeUri, conflictPolicy))
+            .build()
+        val trackingId = request.id.toString()
+        _operations.update { it + RunningOperation(trackingId, type, label, itemCount = sourceUris.size) }
+        try {
+            workManager.enqueueUniqueWork(TransferWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            val terminal = workManager.getWorkInfoByIdFlow(request.id)
+                .filterNotNull()
+                .onEach { info -> applyWorkInfo(trackingId, info) }
+                .first { it.state.isFinished }
+            if (terminal.state != WorkInfo.State.SUCCEEDED) {
+                error(terminal.outputData.getString(TransferWorker.KEY_ERROR_MESSAGE) ?: "The transfer failed.")
+            }
+        } finally {
+            _operations.update { list -> list.filterNot { it.id == trackingId } }
+        }
+    }
+
+    private fun applyWorkInfo(id: String, info: WorkInfo) {
+        _operations.update { list ->
+            list.map { existing ->
+                if (existing.id != id) {
+                    existing
+                } else {
+                    existing.copy(
+                        itemIndex = info.progress.getInt(TransferWorker.KEY_PROGRESS_ITEM_INDEX, existing.itemIndex),
+                        itemCount = info.progress.getInt(TransferWorker.KEY_PROGRESS_ITEM_COUNT, existing.itemCount),
+                        completedBytes = info.progress.getLong(TransferWorker.KEY_PROGRESS_COMPLETED_BYTES, existing.completedBytes),
+                        totalBytes = info.progress.getLong(TransferWorker.KEY_PROGRESS_TOTAL_BYTES, -1L)
+                            .takeIf { it >= 0 } ?: existing.totalBytes,
+                    )
+                }
+            }
+        }
     }
 
     companion object {

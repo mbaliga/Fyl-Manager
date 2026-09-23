@@ -142,7 +142,11 @@ class FileOperationServiceTest {
 
     @Test
     fun `cancelling mid-copy leaves nothing under the final name`() = runBlocking {
-        buildTree(sourceDir, listOf(TreeNode.FileNode("big.bin", 5 * 1024 * 1024)))
+        // P1.2 throttled the journal write that used to happen on every buffer read (the exact
+        // defect it fixes), so a copy this test relies on being interruptible now runs much
+        // faster with no synchronous per-buffer DB write to give the cancelling thread scheduling
+        // room; sized up from 5 MiB so there's still real work in flight when cancelAndJoin runs.
+        buildTree(sourceDir, listOf(TreeNode.FileNode("big.bin", 64 * 1024 * 1024)))
         val progressed = CompletableDeferred<Unit>()
 
         val job = launch {

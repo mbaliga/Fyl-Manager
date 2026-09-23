@@ -238,6 +238,7 @@ private fun OperationState.presentation(): StatePresentation = when (this) {
     OperationState.PREFLIGHT -> StatePresentation("Checking", Icons.Outlined.Schedule)
     OperationState.RUNNING -> StatePresentation("Running", Icons.Outlined.Schedule)
     OperationState.PAUSED -> StatePresentation("Paused", Icons.Outlined.Schedule)
+    OperationState.PAUSED_BY_SYSTEM -> StatePresentation("Paused by system", Icons.Outlined.Schedule)
     OperationState.SUCCEEDED -> StatePresentation("Completed", Icons.Outlined.CheckCircle)
     OperationState.FAILED -> StatePresentation("Failed", Icons.Outlined.ErrorOutline)
     OperationState.CANCELLED -> StatePresentation("Cancelled", Icons.Outlined.Cancel)

@@ -29,6 +29,10 @@ enum class OperationState {
     /** A dead process left this item mid-copy (P0.6); its staged partial write, if any, was
      * deleted by [OperationRunner.recover] and it is safely retryable from scratch. */
     INTERRUPTED,
+    /** WorkManager stopped the transfer's worker (P1.2) -- Android 15's six-hour daily `dataSync`
+     * budget, memory pressure, or the app being force-stopped -- rather than the user pausing it.
+     * [TransferWorker] requests a retry with backoff when this happens. */
+    PAUSED_BY_SYSTEM,
 }
 
 enum class ConflictPolicy {

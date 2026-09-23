@@ -1,12 +1,16 @@
 package io.github.mbaliga.fylz.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -137,7 +141,6 @@ import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.operations.ConflictPolicy
-import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.OperationProgress
@@ -271,7 +274,6 @@ private fun FylzV1Workspace(
     val scope = rememberCoroutineScope()
     val repository = remember { DocumentRepository(context.applicationContext) }
     val openTabsStore = remember { OpenTabsStore(context.applicationContext) }
-    val fileOperations = remember { FileOperationService(context.applicationContext) }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
     val archiveService = remember { ArchiveService(context.applicationContext) }
     val fileTools = remember { FileTools(context.applicationContext) }
@@ -397,6 +399,20 @@ private fun FylzV1Workspace(
         openTabAt(treeUri, FolderLocation(documentUri, root.title))
     }
 
+    // P1.2: durable transfers run as WorkManager foreground work, whose progress notification
+    // needs this permission on API 33+. Requesting it is best-effort -- a denial (or a pre-33
+    // device, which needs no request at all) never blocks the transfer itself from running, only
+    // its notification from showing.
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) {}
+    fun ensureNotificationPermissionRequested() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     val rootPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             repository.persistTreePermission(uri)
@@ -418,29 +434,38 @@ private fun FylzV1Workspace(
         repository.persistTreePermission(destination)
         val sources = selectedEntries.map { it.uri }
         val archiveUri = pendingArchiveUri
-        // Runs on the app-scoped OperationRunner (P0.5, A3): this launch only awaits the result
-        // to update UI state on completion, so rotating away mid-copy never cancels the copy.
+        if (action == PendingDestinationAction.COPY || action == PendingDestinationAction.MOVE) {
+            ensureNotificationPermissionRequested()
+        }
+        // Copy and move (P1.2) run as durable WorkManager work instead of only on the app-scoped
+        // OperationRunner (P0.5, A3) directly; extract still runs there. Either way this launch
+        // only awaits the result to update UI state on completion, so rotating away mid-transfer
+        // never cancels it.
         scope.launch {
             runCatching {
                 when (action) {
-                    PendingDestinationAction.COPY -> operationRunner.run(FileOperationType.COPY, "Copying") { report ->
-                        fileOperations.copy(sources, destination, ConflictPolicy.KEEP_BOTH) { progress ->
-                            report(progress.toOperationProgress("Copying"))
-                        }
-                    }
-                    PendingDestinationAction.MOVE -> operationRunner.run(FileOperationType.MOVE, "Moving") { report ->
-                        fileOperations.move(sources, destination, ConflictPolicy.KEEP_BOTH) { progress ->
-                            report(progress.toOperationProgress("Moving"))
-                        }
-                    }
+                    PendingDestinationAction.COPY -> operationRunner.enqueueTransfer(
+                        FileOperationType.COPY,
+                        "Copying",
+                        sources,
+                        destination,
+                        ConflictPolicy.KEEP_BOTH,
+                    )
+                    PendingDestinationAction.MOVE -> operationRunner.enqueueTransfer(
+                        FileOperationType.MOVE,
+                        "Moving",
+                        sources,
+                        destination,
+                        ConflictPolicy.KEEP_BOTH,
+                    )
                     PendingDestinationAction.EXTRACT -> operationRunner.run(FileOperationType.EXTRACT, "Extracting") {
                         archiveService.extractZip(
                             archiveUri = archiveUri ?: error("Choose an archive."),
                             destinationTreeUri = destination,
                             password = extractPassword.takeIf { it.isNotEmpty() }?.toCharArray(),
                         )
-                    }
-                }.await()
+                    }.await()
+                }
             }.onSuccess {
                 toast(
                     when (action) {
@@ -1994,14 +2019,6 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
-
-private fun FileOperationService.Progress.toOperationProgress(verb: String): OperationProgress = OperationProgress(
-    label = "$verb $displayName",
-    itemIndex = itemIndex,
-    itemCount = itemCount,
-    completedBytes = completedBytes,
-    totalBytes = totalBytes,
-)
 
 private fun fileIcon(kind: EntryKind) = when (kind) {
     EntryKind.ARCHIVE -> Icons.Outlined.Archive

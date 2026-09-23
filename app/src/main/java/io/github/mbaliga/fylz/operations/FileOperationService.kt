@@ -164,6 +164,7 @@ class FileOperationService(
                     }
 
                     val total = source.size.takeIf { !source.isDirectory }
+                    val progressThrottle = ProgressWriteThrottle()
                     val staged = copyDocument(
                         source = source,
                         destinationDirectory = destination,
@@ -186,7 +187,13 @@ class FileOperationService(
                                 state = OperationState.RUNNING,
                             )
                         }
-                        journal.put(current)
+                        // P1.2: no more often than every 250 ms or every 8 MiB -- this used to call
+                        // journal.put on every single buffer read (every 8 KiB).
+                        val isFinalForThisFile = progress.totalBytes != null &&
+                            progress.completedBytes >= progress.totalBytes
+                        if (progressThrottle.shouldWrite(progress.completedBytes, isFinalForThisFile)) {
+                            journal.put(current)
+                        }
                         onProgress(progress)
                     }
                     val copied = finalizeTarget(destination, plan, staged)
