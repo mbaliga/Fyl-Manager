@@ -50,6 +50,7 @@ fun PreviewPane(
     entry: FileEntry?,
     textContent: String?,
     textTruncated: Boolean,
+    textEncodingOk: Boolean = true,
     loading: Boolean,
     editorValue: String,
     onEditorValueChange: (String) -> Unit,
@@ -66,6 +67,16 @@ fun PreviewPane(
         val descriptor = remember(entry.name, entry.mimeType, entry.kind) {
             FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
         }
+        // P0.7: a text/markdown file is only actually editable when the read wasn't capped (over
+        // 512 KiB) and decoded as valid UTF-8 -- either one means a save would not reproduce the
+        // file, so editing must be refused with a visible reason rather than silently corrupting it.
+        val editBlockedReason = when {
+            !FileType.isEditable(entry.kind) -> null
+            textTruncated -> "Too large to edit (over 512 KiB)."
+            !textEncodingOk -> "Not valid UTF-8 text, so it can't be edited here."
+            else -> null
+        }
+        val canEdit = FileType.isEditable(entry.kind) && editBlockedReason == null
         Column(Modifier.fillMaxSize()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -80,7 +91,7 @@ fun PreviewPane(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (FileType.isEditable(entry.kind)) {
+                if (canEdit) {
                     FilledTonalButton(onClick = { editing = !editing }) {
                         Icon(Icons.Outlined.Edit, contentDescription = null)
                         Text(if (editing) "Preview" else "Edit", Modifier.padding(start = 6.dp))
@@ -91,6 +102,12 @@ fun PreviewPane(
                             Text("Save", Modifier.padding(start = 6.dp))
                         }
                     }
+                } else if (editBlockedReason != null) {
+                    Text(
+                        editBlockedReason,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 ExternalOpenButton(entry)
             }
@@ -100,7 +117,7 @@ fun PreviewPane(
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                editing && FileType.isEditable(entry.kind) -> OutlinedTextField(
+                editing && canEdit -> OutlinedTextField(
                     value = editorValue,
                     onValueChange = onEditorValueChange,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),

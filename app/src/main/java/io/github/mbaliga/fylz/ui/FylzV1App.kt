@@ -117,6 +117,7 @@ import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
+import io.github.mbaliga.fylz.data.SaveResult
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.library.SavedSearch
 import io.github.mbaliga.fylz.model.AccentPreset
@@ -253,6 +254,8 @@ private fun FylzV1Workspace(
     var previewMode by remember { mutableStateOf(PreviewMode.DOCKED) }
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
+    var previewEncodingOk by remember { mutableStateOf(true) }
+    var previewHasBom by remember { mutableStateOf(false) }
     var editorValue by remember { mutableStateOf("") }
     var previewLoading by remember { mutableStateOf(false) }
     var pendingDestinationAction by remember { mutableStateOf<PendingDestinationAction?>(null) }
@@ -562,6 +565,8 @@ private fun FylzV1Workspace(
     LaunchedEffect(focusedEntry?.uri) {
         previewText = null
         previewTruncated = false
+        previewEncodingOk = true
+        previewHasBom = false
         editorValue = ""
         val entry = focusedEntry ?: return@LaunchedEffect
         if (!FileType.isTextPreviewable(entry.kind)) return@LaunchedEffect
@@ -570,6 +575,8 @@ private fun FylzV1Workspace(
             .onSuccess {
                 previewText = it.value
                 previewTruncated = it.truncated
+                previewEncodingOk = it.encodingOk
+                previewHasBom = it.hasBom
                 editorValue = it.value
             }
             .onFailure { previewText = it.message ?: "Unable to preview" }
@@ -597,6 +604,19 @@ private fun FylzV1Workspace(
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             )
         }.onFailure { toast("No app can open this file") }
+    }
+
+    fun saveEditorText() {
+        val entry = focusedEntry ?: return
+        scope.launch {
+            when (val result = repository.writeText(entry.uri, editorValue, hasBom = previewHasBom)) {
+                is SaveResult.Success -> {
+                    previewText = editorValue
+                    toast("Saved")
+                }
+                is SaveResult.Failed -> toast(result.message)
+            }
+        }
     }
 
     fun recycleSelection() {
@@ -873,18 +893,11 @@ private fun FylzV1Workspace(
                             entry = focusedEntry,
                             textContent = previewText,
                             textTruncated = previewTruncated,
+                            textEncodingOk = previewEncodingOk,
                             loading = previewLoading,
                             editorValue = editorValue,
                             onEditorValueChange = { editorValue = it },
-                            onSave = {
-                                focusedEntry?.let { entry ->
-                                    scope.launch {
-                                        runCatching { repository.writeText(entry.uri, editorValue) }
-                                            .onSuccess { previewText = editorValue; toast("Saved") }
-                                            .onFailure { toast(it.message ?: "Unable to save") }
-                                    }
-                                }
-                            },
+                            onSave = ::saveEditorText,
                             modifier = Modifier.width(380.dp).fillMaxHeight(),
                         )
                     }
@@ -927,14 +940,11 @@ private fun FylzV1Workspace(
                     entry = focusedEntry,
                     textContent = previewText,
                     textTruncated = previewTruncated,
+                    textEncodingOk = previewEncodingOk,
                     loading = previewLoading,
                     editorValue = editorValue,
                     onEditorValueChange = { editorValue = it },
-                    onSave = {
-                        focusedEntry?.let { entry ->
-                            scope.launch { repository.writeText(entry.uri, editorValue) }
-                        }
-                    },
+                    onSave = ::saveEditorText,
                     modifier = Modifier.fillMaxSize(),
                 )
             }

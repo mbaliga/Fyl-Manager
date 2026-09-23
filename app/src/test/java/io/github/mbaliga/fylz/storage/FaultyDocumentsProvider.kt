@@ -1,9 +1,11 @@
 package io.github.mbaliga.fylz.storage
 
 import android.database.Cursor
+import android.database.MatrixCursor
 import android.graphics.Point
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
 import java.io.FileNotFoundException
 import org.robolectric.Robolectric
@@ -64,6 +66,16 @@ class FaultyDocumentsProvider : DocumentsProvider() {
         private set
 
     /**
+     * When set, a [queryDocument] call whose projection asks for exactly `COLUMN_SIZE` (as
+     * [io.github.mbaliga.fylz.data.DocumentRepository.writeText]'s write-then-verify step does)
+     * reports this value instead of the real on-disk size -- simulating a provider whose
+     * post-write size read doesn't match what was actually written, deterministically and without
+     * racing a background thread the way [throwAfterBytes] would. Every other query, and every
+     * other projection, is unaffected.
+     */
+    var reportedSizeOverride: Long? = null
+
+    /**
      * The real provider this double wraps. Attached with a plain, direct `attachInfo()` call --
      * not through Robolectric's [Robolectric.buildContentProvider]/`ContentProviderController`,
      * which would also register it with `ShadowContentResolver` under the same authority this
@@ -95,8 +107,13 @@ class FaultyDocumentsProvider : DocumentsProvider() {
 
     override fun queryRoots(projection: Array<out String>?): Cursor = real.queryRoots(projection)
 
-    override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor =
-        real.queryDocument(documentId, projection)
+    override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
+        val overrideSize = reportedSizeOverride
+        if (overrideSize != null && projection?.toList() == listOf(DocumentsContract.Document.COLUMN_SIZE)) {
+            return MatrixCursor(projection).apply { addRow(arrayOf(overrideSize)) }
+        }
+        return real.queryDocument(documentId, projection)
+    }
 
     override fun queryChildDocuments(
         parentDocumentId: String,
