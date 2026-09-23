@@ -17,6 +17,7 @@ class FileOperationService(
     private val journal: OperationJournal = OperationJournal(context),
     private val recycleBin: RecycleBinService = RecycleBinService(context),
     private val transferEngines: TransferEngines = TransferEngines(context),
+    private val verifySettings: VerifySettings = VerifySettings(context),
 ) {
     private val resolver: ContentResolver get() = context.contentResolver
 
@@ -125,6 +126,10 @@ class FileOperationService(
             "The destination folder is not writable."
         }
 
+        // P1.4: decided once for the whole transfer, from the destination's own root -- every
+        // item in a batch lands on the same volume, so there is nothing per-item to re-classify.
+        val verifyThisTransfer = shouldVerify(verifySettings.mode.value, classifyDestination(context, destinationTreeUri))
+
         val operation = FileOperation(
             type = if (move) FileOperationType.MOVE else FileOperationType.COPY,
             items = sourceUris.map { uri ->
@@ -230,6 +235,20 @@ class FileOperationService(
                         }
                         onProgress(progress)
                     }
+                    // P1.4: only ever for a file, never a directory -- a folder has no single
+                    // byte stream for one hash to describe, and operation_items.sha256 has room
+                    // for exactly one. A mismatch throws ChecksumMismatchException, which unwinds
+                    // straight out of this coroutine (finalizeTarget below is never reached, so
+                    // staged is never renamed to its final name) to the whole-operation catch
+                    // below, which marks this item FAILED with that exception's own name -- and,
+                    // deliberately unlike a size mismatch, never deletes staged: a checksum
+                    // failure is worth keeping to inspect, not just corruption to discard.
+                    if (verifyThisTransfer && !source.isDirectory) {
+                        val hash = verifyChecksum(resolver, source, staged)
+                        current = updateItem(current, index) { it.copy(sha256 = hash) }
+                        journal.put(current)
+                    }
+
                     val copied = finalizeTarget(destination, plan, staged)
 
                     if (move && !source.delete(resolver)) {

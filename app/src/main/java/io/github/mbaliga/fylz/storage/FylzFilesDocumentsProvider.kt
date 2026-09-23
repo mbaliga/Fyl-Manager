@@ -471,10 +471,33 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         fun fileFor(context: Context, uri: Uri): File? {
             if (uri.authority != AUTHORITY) return null
             val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+            return withLocalInstance(context) { provider -> runCatching { provider.resolveFile(documentId) }.getOrNull() }
+        }
+
+        /**
+         * Whether [rootId] names a removable volume under this provider (P1.4, for
+         * [io.github.mbaliga.fylz.operations.classifyDestination]) -- null when [rootId] does not
+         * name any of this provider's current roots.
+         *
+         * Goes through the same live-instance lookup as [fileFor], rather than calling
+         * [discoverVolumes] directly, specifically so it sees a test's [volumeOverride]: that seam
+         * is set on a live provider *instance*, and [discoverVolumes] itself always asks
+         * [android.os.storage.StorageManager] fresh with no way to override it.
+         */
+        fun isRemovableRoot(context: Context, rootId: String): Boolean? =
+            withLocalInstance(context) { provider -> provider.volumeRoots().firstOrNull { it.rootId == rootId }?.removable }
+
+        /**
+         * Runs [block] against the live [FylzFilesDocumentsProvider] instance in this process, via
+         * [android.content.ContentProviderClient.getLocalContentProvider] -- true for every real
+         * install, since this provider is declared in this app's own manifest. Null if this
+         * process has no such instance (or [block] itself returns null).
+         */
+        private fun <T> withLocalInstance(context: Context, block: (FylzFilesDocumentsProvider) -> T?): T? {
             val client = context.contentResolver.acquireContentProviderClient(AUTHORITY) ?: return null
             return try {
                 val provider = client.localContentProvider as? FylzFilesDocumentsProvider ?: return null
-                runCatching { provider.resolveFile(documentId) }.getOrNull()
+                block(provider)
             } finally {
                 client.close()
             }

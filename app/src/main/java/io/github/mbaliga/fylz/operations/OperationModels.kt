@@ -59,8 +59,9 @@ data class OperationItem(
     /** The item's actual final document, once it has one (P1.1 storage; not yet populated by any
      * write path -- a later task wires it). */
     val finalUri: Uri? = null,
-    /** The transferred content's SHA-256, once computed (P1.1 storage for P1.4's verification;
-     * not yet populated by any write path). */
+    /** The transferred content's SHA-256, populated by [FileOperationService.transfer] only when
+     * [VerifySettings]/[shouldVerify] call for it (P1.4) -- null otherwise, including for every
+     * directory item, which has no single byte stream for one hash to describe. */
     val sha256: String? = null,
 )
 
