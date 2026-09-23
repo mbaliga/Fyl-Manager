@@ -51,8 +51,11 @@ data class FileFormatDescriptor(
  * signatures and bounds before parsing untrusted input.
  */
 object FileFormatRegistry {
-    private val markdown = setOf("md", "markdown", "mdown", "mkd", "mdx")
-    private val text = setOf(
+    /** The one source of truth for which extensions are markdown/plain text (P0.9, defect 10):
+     * [io.github.mbaliga.fylz.util.FileType] reads these too, rather than keeping its own,
+     * smaller, drifted-apart copy. */
+    val markdownExtensions: Set<String> = setOf("md", "markdown", "mdown", "mkd", "mdx")
+    val textExtensions: Set<String> = setOf(
         "txt", "text", "log", "csv", "tsv", "json", "jsonl", "ndjson", "xml", "yaml", "yml",
         "toml", "ini", "conf", "cfg", "properties", "gradle", "kts", "kt", "java", "py",
         "js", "mjs", "cjs", "jsx", "ts", "tsx", "html", "htm", "css", "scss", "sass",
@@ -62,10 +65,21 @@ object FileFormatRegistry {
         "gitattributes", "dockerfile", "makefile", "cmake", "ninja", "srt", "vtt", "ass", "ssa",
         "ics", "vcf", "bib", "tex", "rst", "adoc", "graphql", "proto", "smali",
     )
+    private val markdown = markdownExtensions
+    private val text = textExtensions
     private val images = setOf(
         "jpg", "jpeg", "jpe", "png", "gif", "webp", "avif", "heic", "heif", "bmp", "dib",
         "tif", "tiff", "ico", "cur", "svg", "svgz", "jp2", "j2k", "jxl", "psd", "xcf", "kra",
         "raw", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2",
+    )
+
+    /** Image formats no built-in decoder (Coil's default set, or the platform on API 31+ for
+     * `dng`/`heic`/`heif`/`avif`) actually renders (P0.9, defect 9) -- shown as INSPECTED with a
+     * note rather than a silently-broken RENDERED promise. `cur` is a Windows cursor container,
+     * not a raster format any decoder here understands either. */
+    private val undecodableImages = setOf(
+        "tif", "tiff", "jp2", "j2k", "jxl", "psd", "xcf", "kra", "raw", "cr2", "cr3", "nef",
+        "arw", "orf", "rw2", "cur",
     )
     private val audio = setOf(
         "mp3", "m4a", "aac", "ogg", "oga", "opus", "wav", "wave", "flac", "alac", "amr", "mid",
@@ -93,8 +107,10 @@ object FileFormatRegistry {
         "scn", "usd", "usda", "usdc", "usdz", "wrl", "vrml", "x3d", "ifc", "step", "stp", "iges",
         "igs", "brep", "sat", "sab",
     )
+    // svg/svgz deliberately excluded (P0.9, defect 8): they used to hit this list before the
+    // image list and render as hex instead of an image.
     private val cad2d = setOf(
-        "dxf", "dwg", "dws", "dwt", "dxb", "svg", "svgz", "hpgl", "hpg", "plt", "cgm", "emf", "wmf",
+        "dxf", "dwg", "dws", "dwt", "dxb", "hpgl", "hpg", "plt", "cgm", "emf", "wmf",
         "gbr", "ger", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "drl", "excellon", "sch", "brd",
         "kicad_sch", "kicad_pcb", "kicad_mod", "kicad_sym", "dsn", "pcbdoc", "schdoc",
     )
@@ -132,10 +148,10 @@ object FileFormatRegistry {
             extension == "pdf" || mime == "application/pdf" || kind == EntryKind.PDF -> descriptor(PreviewFamily.PDF, PreviewDepth.RENDERED, "PDF document", extension, "pdf")
             extension in cad2d -> descriptor(
                 PreviewFamily.CAD_2D,
-                if (extension in setOf("dxf", "svg", "svgz", "hpgl", "hpg", "plt", "gbr", "ger")) PreviewDepth.RENDERED else PreviewDepth.INSPECTED,
+                if (extension in setOf("dxf", "hpgl", "hpg", "plt", "gbr", "ger")) PreviewDepth.RENDERED else PreviewDepth.INSPECTED,
                 cadLabel(extension),
                 extension,
-                if (extension == "dxf") "dxf" else if (extension in setOf("svg", "svgz")) "image" else null,
+                if (extension == "dxf") "dxf" else null,
                 if (extension == "dwg") "DWG is proprietary; Fylz exposes signatures, metadata and extractable text when a native decoder is unavailable." else null,
             )
             extension in models3d || mime.startsWith("model/") -> descriptor(
@@ -145,7 +161,14 @@ object FileFormatRegistry {
                 extension,
                 if (extension in setOf("obj", "stl", "ply", "off")) "mesh-wireframe" else if (extension in setOf("gltf", "glb")) "gltf" else null,
             )
-            extension in images || mime.startsWith("image/") || kind == EntryKind.IMAGE -> descriptor(PreviewFamily.IMAGE, PreviewDepth.RENDERED, "Image", extension, "image")
+            extension in images || mime.startsWith("image/") || kind == EntryKind.IMAGE -> descriptor(
+                PreviewFamily.IMAGE,
+                if (extension in undecodableImages) PreviewDepth.INSPECTED else PreviewDepth.RENDERED,
+                "Image",
+                extension,
+                "image",
+                if (extension in undecodableImages) "Rendering this format needs the image pack (planned)." else null,
+            )
             extension in audio || mime.startsWith("audio/") || kind == EntryKind.AUDIO -> descriptor(PreviewFamily.AUDIO, PreviewDepth.RENDERED, "Audio", extension, "media")
             extension in video || mime.startsWith("video/") || kind == EntryKind.VIDEO -> descriptor(PreviewFamily.VIDEO, PreviewDepth.RENDERED, "Video", extension, "media")
             extension in archives || kind == EntryKind.ARCHIVE || isArchiveMime(mime) -> descriptor(PreviewFamily.ARCHIVE, PreviewDepth.STRUCTURED, "Archive or disk image", extension, "archive")

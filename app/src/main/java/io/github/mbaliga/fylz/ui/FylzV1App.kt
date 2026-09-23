@@ -143,6 +143,7 @@ import io.github.mbaliga.fylz.operations.RunningOperation
 import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.preview.resolvePreviewKind
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
 import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
@@ -583,7 +584,10 @@ private fun FylzV1Workspace(
         previewHasBom = false
         editorValue = ""
         val entry = focusedEntry ?: return@LaunchedEffect
-        if (!FileType.isTextPreviewable(entry.kind)) return@LaunchedEffect
+        // P0.9: `.ts` is TypeScript source or an MPEG transport stream depending on content, not
+        // extension/MIME alone -- resolvePreviewKind sniffs it rather than trusting entry.kind.
+        val kind = resolvePreviewKind(entry, context.contentResolver)
+        if (!FileType.isTextPreviewable(kind)) return@LaunchedEffect
         previewLoading = true
         runCatching { repository.readText(entry.uri) }
             .onSuccess {
@@ -725,6 +729,11 @@ private fun FylzV1Workspace(
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
+        // P0.9: Dock and Close both leave previewMode permanently HIDDEN; without this, a phone
+        // user who ever dismissed the preview once could never see another file's preview again.
+        LaunchedEffect(focusedEntry?.uri) {
+            if (!wide && focusedEntry != null) previewMode = PreviewMode.FLOATING
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -949,6 +958,7 @@ private fun FylzV1Workspace(
             FloatingPreviewPane(
                 onDock = { previewMode = PreviewMode.HIDDEN },
                 onClose = { previewMode = PreviewMode.HIDDEN },
+                showDock = wide,
             ) {
                 PreviewPane(
                     entry = focusedEntry,
