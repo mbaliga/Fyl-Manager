@@ -160,8 +160,8 @@ import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.RunningOperation
 import io.github.mbaliga.fylz.operations.gatherPreflightItems
 import io.github.mbaliga.fylz.operations.isStagingName
-import io.github.mbaliga.fylz.pdf.PdfPageRef
-import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.pdf.PdfPageReference
+import io.github.mbaliga.fylz.pdf.PdfPageTools
 import io.github.mbaliga.fylz.preview.FileFormatRegistry
 import io.github.mbaliga.fylz.preview.resolvePreviewKind
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
@@ -366,7 +366,7 @@ private fun FylzV1Workspace(
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
     val aiClient = remember { AiClient(aiVault) }
     val webDav = remember { WebDavService() }
-    val pdfTools = remember { PdfToolService(context.applicationContext) }
+    val pdfTools = remember { PdfPageTools(context.applicationContext) }
     val remoteStore = remember { RemoteConnectionStore(context.applicationContext) }
     val searchEngine = remember { RecursiveSearchEngine(context.applicationContext) }
     val operationRunner = remember {
@@ -426,7 +426,7 @@ private fun FylzV1Workspace(
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
     var pdfDialog by remember { mutableStateOf(false) }
-    var pendingPdfPages by remember { mutableStateOf<List<PdfPageRef>>(emptyList()) }
+    var pendingPdfPages by remember { mutableStateOf<List<PdfPageReference>>(emptyList()) }
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
@@ -709,9 +709,9 @@ private fun FylzV1Workspace(
                             report(OperationProgress(label = "Merging page $done of $total", itemIndex = done, itemCount = total))
                         }
                     } else {
-                        pdfTools.exportPages(
-                            pages = pages,
-                            outputUri = destination,
+                        pdfTools.export(
+                            references = pages,
+                            destinationUri = destination,
                             searchableOcr = ocr,
                         ) { done, total ->
                             report(OperationProgress(label = "Writing page $done of $total", itemIndex = done, itemCount = total))

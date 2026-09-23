@@ -238,3 +238,25 @@ stays null for that scope's row across rebuilds (or simply that Rebuild always t
 same time for it, never a near-instant skip). Step 4's indexed search should return results
 near-instantly (a plain indexed SQL query, no SAF walk), versus the live walk's own visibly slower,
 progressively-emitted results for the equivalent un-indexed folder.
+
+## 12. PDF tools: rotation and searchable OCR (P1.13)
+
+Neither `PdfPageTools` nor the `PdfToolService` it replaced this task had ever had a device check
+before now, despite the PDF tools dialog being live UI since before this session -- there is no
+prior baseline to regress against, only a first-ever confirmation that the feature actually works.
+
+**Steps:**
+1. Open a multi-page PDF, extract a range of pages with no rotation, and open the result.
+2. Repeat, rotating the extracted pages 90°, then separately 180°, then 270°, checking each
+   output.
+3. Select two or more PDFs and Merge them; check page order matches selection order.
+4. Repeat steps 1-3 with "Make searchable (OCR)" on, then use the output PDF viewer's own
+   text-selection or search feature to select/search for text visible on a page.
+
+**Expected:** every rotation in step 2 shows the page right-side-up, not sideways, upside down, or
+mirrored -- this specifically exercises `pageDrawMatrix` (new this task; unit-tested for its matrix
+math in `PageDrawMatrixTest`, but never rendered to a real page before). Step 4's recognized text
+selects/searches at roughly the same on-screen position as the visible (rasterized) text beneath
+it, for every rotation, not just 0° -- this is the one thing `PageDrawMatrixTest` cannot itself
+prove, since it never draws a real bitmap or invisible text layer, only the matrix each of those
+draws through.

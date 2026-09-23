@@ -21,7 +21,8 @@ enum class OcrScript {
  * Abstracts which on-device text-recognition backend Fylz uses behind a seam for a decision
  * Madhav hasn't made yet (P0.13, decision D1): no behavior change today, since [MlKitOcrEngine]
  * is the only implementation, wrapping ML Kit's `TextRecognizer` exactly as
- * [PdfToolService][io.github.mbaliga.fylz.pdf.PdfToolService] and
+ * [PdfPageTools][io.github.mbaliga.fylz.pdf.PdfPageTools] (P1.13 absorbed the same OCR wiring
+ * `PdfToolService` used to own) and
  * [SearchablePdfService][io.github.mbaliga.fylz.pdf.SearchablePdfService] both already did
  * directly before this. Returns ML Kit's own [Text] result -- both call sites already depend on
  * its bounding-box structure to lay text back onto a page, so redesigning that is a separate,

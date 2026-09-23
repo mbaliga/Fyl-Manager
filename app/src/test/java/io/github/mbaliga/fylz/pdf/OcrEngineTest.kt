@@ -17,9 +17,9 @@ import org.robolectric.annotation.Config
 
 /**
  * P0.13: [Task.await] is the same cancellable-coroutine wrapper [SearchablePdfService] used to
- * define privately (and [PdfToolService] achieved via a blocking `Tasks.await` instead) before
- * both moved onto the seam in this file -- this pins its exact success/failure behavior so the
- * move is provably "no behaviour change".
+ * define privately (and the now-consolidated `PdfToolService` achieved via a blocking
+ * `Tasks.await` instead) before both moved onto the seam in this file -- this pins its exact
+ * success/failure behavior so the move is provably "no behaviour change".
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
