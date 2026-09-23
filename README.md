@@ -11,19 +11,21 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Full filesystem access on launch: storage volumes, removable media and standard folders, no picker required.
 - Storage Access Framework folder access with persisted user grants, for cloud, USB and third-party providers.
 - Multiple folder tabs, breadcrumbs, parent navigation, filtering and refresh.
-- Adaptive list, grid and details views.
+- Adaptive list and grid views (a details view is planned).
 - Collapsible navigation and docked or floating preview panes.
 - Phone, landscape and larger-window layouts.
-- System, light and dark themes, accent presets and optional dynamic colour.
+- System, light and dark themes and optional dynamic colour (accent presets exist internally but
+  aren't yet user-selectable).
 - Primary **Files** and **Recovery** destinations rather than independent floating recovery controls.
 
 ### Files and recovery
 
 - Create files and folders.
-- Rename, duplicate, copy and move.
+- Rename, copy and move (a duplicate action is planned).
 - Recycle, restore and explicit permanent deletion.
 - Durable operation journal with progress, cancellation and process-death recovery states.
-- Conflict policies for skip, keep-both and guarded replacement.
+- A conflict policy engine (skip, keep-both, guarded replacement) used by restore; copy and move
+  currently always keep both, a picker is planned.
 - Dedicated cleanup-only recovery when a move copied successfully but the provider refused to remove the original; finishing the move never copies again.
 
 ### Preview and editing
@@ -97,7 +99,7 @@ Requirements:
 
 - JDK 17
 - Android SDK 36
-- Gradle 8.11.1, or the version provisioned by CI
+- Gradle 8.14.3, or the version provisioned by CI
 
 ```bash
 gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug

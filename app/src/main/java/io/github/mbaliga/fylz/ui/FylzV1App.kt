@@ -61,6 +61,8 @@ import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Tag
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
@@ -111,6 +113,7 @@ import io.github.mbaliga.fylz.IndexManagerActivity
 import io.github.mbaliga.fylz.PostV1ToolsActivity
 import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
+import io.github.mbaliga.fylz.browse.OpenTabsStore
 import io.github.mbaliga.fylz.browse.SortDirection
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
@@ -143,6 +146,7 @@ import io.github.mbaliga.fylz.operations.RunningOperation
 import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.preview.FileFormatRegistry
 import io.github.mbaliga.fylz.preview.resolvePreviewKind
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
 import io.github.mbaliga.fylz.search.SearchHit
@@ -181,8 +185,32 @@ import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
+
+/** Extensions [io.github.mbaliga.fylz.data.ArchiveService.extractZip] can actually extract
+ * (P0.10): it's a ZIP reader (zip4j), so offering Extract for `.7z`/`.rar`/`.tar`/... would fail
+ * on every attempt despite [io.github.mbaliga.fylz.model.EntryKind.ARCHIVE] covering all of them. */
+private val ZIP_FAMILY_EXTENSIONS = setOf("zip", "zipx", "jar", "apk", "cbz")
+
+internal fun isZipFamilyArchive(name: String): Boolean =
+    FileFormatRegistry.compoundExtension(name) in ZIP_FAMILY_EXTENSIONS
+
+/** Selected entries in the order the user actually selected them (P0.10) -- [selectedUris]
+ * preserves insertion order at runtime (every mutation site builds it via `Set.plus`/`.minus`,
+ * which the stdlib backs with a `LinkedHashSet`), but a plain `entries.filter { it.uri in
+ * selectedUris }` derives order from the folder listing instead, breaking the ordering promise
+ * a dialog like PDF merge makes. */
+internal fun orderedBySelection(entries: List<FileEntry>, selectedUris: Set<Uri>): List<FileEntry> =
+    selectedUris.mapNotNull { uri -> entries.find { it.uri == uri } }
+
+/** P0.10: an escaped `\${…}` in these two output names produced the literal text `${…}` instead
+ * of the timestamp -- valid Kotlin (an escaped dollar sign), so it compiled clean and never
+ * surfaced as anything but a wrong file name on every export. */
+internal fun pdfPagesFileName(nowMillis: Long): String = "Fylz-pages-$nowMillis.pdf"
+internal fun pdfMergedFileName(nowMillis: Long): String = "Fylz-merged-$nowMillis.pdf"
 
 /** A permanent delete (one recycle bin item, or Empty Recycle Bin) waiting on the high-friction
  * [io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog] (P0.8, contract
@@ -238,6 +266,7 @@ private fun FylzV1Workspace(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val repository = remember { DocumentRepository(context.applicationContext) }
+    val openTabsStore = remember { OpenTabsStore(context.applicationContext) }
     val fileOperations = remember { FileOperationService(context.applicationContext) }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
     val archiveService = remember { ArchiveService(context.applicationContext) }
@@ -274,6 +303,8 @@ private fun FylzV1Workspace(
     var previewLoading by remember { mutableStateOf(false) }
     var pendingDestinationAction by remember { mutableStateOf<PendingDestinationAction?>(null) }
     var pendingArchiveUri by remember { mutableStateOf<Uri?>(null) }
+    var extractPasswordDialog by remember { mutableStateOf(false) }
+    var extractPassword by remember { mutableStateOf("") }
     var operationMessage by remember { mutableStateOf<String?>(null) }
     var createDialog by remember { mutableStateOf<String?>(null) }
     var renameDialog by remember { mutableStateOf(false) }
@@ -345,6 +376,10 @@ private fun FylzV1Workspace(
         val tab = FolderTab(treeUri = treeUri, locations = listOf(location))
         tabs += tab
         activeTabId = tab.id
+        // P0.10: only a tab the user actually opened is remembered for restoration -- a
+        // copy/move/extract destination, backup folder or index folder persists its own grant
+        // (repository.persistTreePermission) without ever calling openTabAt, so it stays out.
+        openTabsStore.record(treeUri)
     }
 
     /**
@@ -397,6 +432,7 @@ private fun FylzV1Workspace(
                         archiveService.extractZip(
                             archiveUri = archiveUri ?: error("Choose an archive."),
                             destinationTreeUri = destination,
+                            password = extractPassword.takeIf { it.isNotEmpty() }?.toCharArray(),
                         )
                     }
                 }.await()
@@ -410,6 +446,7 @@ private fun FylzV1Workspace(
                 )
                 selectedUris = emptySet()
                 pendingArchiveUri = null
+                extractPassword = ""
                 refresh()
             }.onFailure { toast(it.message ?: "Operation failed") }
         }
@@ -511,16 +548,21 @@ private fun FylzV1Workspace(
             .addOnFailureListener { toast(it.message ?: "Scanner is unavailable") }
     }
 
-    // Restore previously granted subtrees as tabs. This used to be the ONLY way content ever
-    // appeared, which is why a fresh install showed nothing at all; the storage home surface below
-    // is now the real entry point and this is just tab restoration on top of it.
+    // Restore previously OPENED subtrees as tabs (P0.10) -- not every persisted grant, since a
+    // one-off copy/move/extract destination, backup folder or index folder also persists a grant
+    // without ever being something the user meant to browse. openTabsStore only ever gains an
+    // entry through openTabAt, so this is exactly the set of tabs the user actually opened; a
+    // grant the OS has since revoked is still filtered out here rather than restored broken.
     LaunchedEffect(Unit) {
-        context.contentResolver.persistedUriPermissions
+        val livePermissions = context.contentResolver.persistedUriPermissions
             .filter { it.isReadPermission }
+            .mapTo(mutableSetOf()) { it.uri }
+        openTabsStore.list()
+            .filter { it in livePermissions }
             .take(MAX_RESTORED_TABS)
-            .forEach { permission ->
-                runCatching { repository.rootLocation(permission.uri) }.getOrNull()?.let { root ->
-                    val tab = FolderTab(treeUri = permission.uri, locations = listOf(root))
+            .forEach { uri ->
+                runCatching { repository.rootLocation(uri) }.getOrNull()?.let { root ->
+                    val tab = FolderTab(treeUri = uri, locations = listOf(root))
                     tabs += tab
                 }
             }
@@ -814,7 +856,9 @@ private fun FylzV1Workspace(
                     SelectionActionBar(
                         count = selectedEntries.size,
                         canRename = selectedEntries.size == 1,
-                        canExtract = selectedEntries.size == 1 && selectedEntries.first().kind == EntryKind.ARCHIVE,
+                        canExtract = selectedEntries.size == 1 &&
+                            selectedEntries.first().kind == EntryKind.ARCHIVE &&
+                            isZipFamilyArchive(selectedEntries.first().name),
                         canPdfTools = selectedEntries.isNotEmpty() &&
                             selectedEntries.all { it.kind == EntryKind.PDF },
                         onPdfTools = { pdfDialog = true },
@@ -825,9 +869,19 @@ private fun FylzV1Workspace(
                         onTags = { tagDialog = true },
                         onArchive = { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") },
                         onExtract = {
-                            pendingArchiveUri = selectedEntries.first().uri
-                            pendingDestinationAction = PendingDestinationAction.EXTRACT
-                            destinationPicker.launch(null)
+                            val archiveUri = selectedEntries.first().uri
+                            pendingArchiveUri = archiveUri
+                            extractPassword = ""
+                            scope.launch {
+                                val encrypted = runCatching { archiveService.inspectZip(archiveUri).encrypted }
+                                    .getOrDefault(false)
+                                if (encrypted) {
+                                    extractPasswordDialog = true
+                                } else {
+                                    pendingDestinationAction = PendingDestinationAction.EXTRACT
+                                    destinationPicker.launch(null)
+                                }
+                            }
                         },
                         onBatchRename = { batchRenameDialog = true },
                         onShare = {
@@ -1126,6 +1180,34 @@ private fun FylzV1Workspace(
         )
     }
 
+    if (extractPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = { extractPasswordDialog = false; pendingArchiveUri = null },
+            title = { Text("Archive password") },
+            text = {
+                PasswordField(
+                    value = extractPassword,
+                    onValueChange = { extractPassword = it },
+                    label = "Password",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        extractPasswordDialog = false
+                        pendingDestinationAction = PendingDestinationAction.EXTRACT
+                        destinationPicker.launch(null)
+                    },
+                    enabled = extractPassword.isNotEmpty(),
+                ) { Text("Continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { extractPasswordDialog = false; pendingArchiveUri = null }) { Text("Cancel") }
+            },
+        )
+    }
+
     if (aiDialog) {
         AiDialog(
             entry = focusedEntry,
@@ -1160,7 +1242,8 @@ private fun FylzV1Workspace(
 
     if (pdfDialog) {
         PdfToolsDialog(
-            sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
+            // P0.10: merge order must follow selection order, not the folder listing's order.
+            sources = orderedBySelection(entries, selectedUris).filter { it.kind == EntryKind.PDF }.map { it.uri },
             service = pdfTools,
             onDismiss = { pdfDialog = false },
             onExport = { pages, ocr ->
@@ -1168,14 +1251,14 @@ private fun FylzV1Workspace(
                 pendingPdfPages = pages
                 pendingPdfOcr = ocr
                 pendingPdfMerge = false
-                pdfOutputCreator.launch("Fylz-pages-\${System.currentTimeMillis()}.pdf")
+                pdfOutputCreator.launch(pdfPagesFileName(System.currentTimeMillis()))
             },
             onMerge = { ocr ->
                 pdfDialog = false
                 pendingPdfPages = emptyList()
                 pendingPdfOcr = ocr
                 pendingPdfMerge = true
-                pdfOutputCreator.launch("Fylz-merged-\${System.currentTimeMillis()}.pdf")
+                pdfOutputCreator.launch(pdfMergedFileName(System.currentTimeMillis()))
             },
             onError = ::toast,
         )
@@ -1820,6 +1903,29 @@ private fun RecycleBinDialog(
     )
 }
 
+/** A masked secret field with a show/hide toggle (P0.10) -- used for anything that shoulder-surfing
+ * shouldn't reveal: an AI provider API key, a WebDAV password, an archive password. */
+@Composable
+private fun PasswordField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
+    var visible by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        modifier = modifier,
+        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton(onClick = { visible = !visible }) {
+                Icon(
+                    if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                    contentDescription = if (visible) "Hide $label" else "Show $label",
+                )
+            }
+        },
+    )
+}
+
 @Composable
 private fun AiDialog(entry: FileEntry?, onDismiss: () -> Unit, onRun: (String, String, String, Boolean) -> Unit) {
     var endpoint by remember { mutableStateOf("https://api.openai.com/v1") }
@@ -1834,7 +1940,7 @@ private fun AiDialog(entry: FileEntry?, onDismiss: () -> Unit, onRun: (String, S
                 Text("Only ${entry?.name.orEmpty()} and bounded preview text will be sent. Fylz will not apply changes automatically.")
                 OutlinedTextField(endpoint, { endpoint = it }, label = { Text("OpenAI-compatible endpoint") })
                 OutlinedTextField(model, { model = it }, label = { Text("Model") })
-                OutlinedTextField(key, { key = it }, label = { Text("API key") })
+                PasswordField(key, { key = it }, label = "API key")
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(approved, { approved = it })
                     Text("I approve this transmission")
@@ -1863,7 +1969,7 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(url, { url = it }, label = { Text("HTTPS server URL") })
                 OutlinedTextField(username, { username = it }, label = { Text("Username") })
-                OutlinedTextField(password, { password = it }, label = { Text("Password") })
+                PasswordField(password, { password = it }, label = "Password")
                 OutlinedTextField(path, { path = it }, label = { Text("Path") })
             }
         },
