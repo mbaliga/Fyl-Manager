@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.storage
 
+import android.database.Cursor
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import org.junit.Assert.assertEquals
@@ -12,6 +13,12 @@ import org.junit.Test
  * temp directory supplied through [FylzDocumentsProviderTestBase].
  */
 class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
+
+    // DocumentsProvider overloads queryChildDocuments on (String? sortOrder) and (Bundle?
+    // queryArgs); a literal null third argument is ambiguous between them, so every call in this
+    // file goes through this helper instead.
+    private fun queryChildren(parentDocumentId: String): Cursor =
+        provider.queryChildDocuments(parentDocumentId, null, null as String?)
 
     @Test
     fun `queryRoots reports the overridden primary volume`() {
@@ -26,7 +33,7 @@ class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
 
     @Test
     fun `an empty root lists zero children`() {
-        val cursor = provider.queryChildDocuments(rootDocumentId(), null, null)
+        val cursor = queryChildren(rootDocumentId())
         assertEquals(0, cursor.count)
     }
 
@@ -38,7 +45,7 @@ class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
             it.write("hello fylz".toByteArray())
         }
 
-        val children = provider.queryChildDocuments(rootDocumentId(), null, null)
+        val children = queryChildren(rootDocumentId())
         assertEquals(1, children.count)
         assertTrue(children.moveToFirst())
         assertEquals(
@@ -60,7 +67,7 @@ class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
         val folderId = provider.createDocument(rootDocumentId(), DocumentsContract.Document.MIME_TYPE_DIR, "sub")
         val fileId = provider.createDocument(folderId, "text/plain", "inside.txt")
 
-        val children = provider.queryChildDocuments(folderId, null, null)
+        val children = queryChildren(folderId)
         assertEquals(1, children.count)
         assertTrue(children.moveToFirst())
         assertEquals(

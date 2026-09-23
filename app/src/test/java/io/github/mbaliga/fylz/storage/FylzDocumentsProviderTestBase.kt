@@ -43,8 +43,10 @@ abstract class FylzDocumentsProviderTestBase {
     @Before
     fun setUpFylzDocumentsProvider() {
         rootDir = tempFolder.newFolder("primary")
-        provider = Robolectric.setupContentProvider(
-            FylzFilesDocumentsProvider::class.java,
+        provider = registerForContentResolver(
+            Robolectric.buildContentProvider(FylzFilesDocumentsProvider::class.java)
+                .create(testProviderInfo(FylzFilesDocumentsProvider::class.java))
+                .get(),
             FylzFilesDocumentsProvider.AUTHORITY,
         )
         provider.volumeOverride = listOf(primaryVolume(rootDir))
@@ -52,7 +54,7 @@ abstract class FylzDocumentsProviderTestBase {
 
     /** Builds the single-volume override most tests want; override [setUpFylzDocumentsProvider]'s
      * volume list directly (`provider.volumeOverride = ...`) for multi-volume scenarios. */
-    protected fun primaryVolume(directory: File, rootId: String = FylzFilesDocumentsProvider.PRIMARY_ROOT_ID) =
+    internal fun primaryVolume(directory: File, rootId: String = FylzFilesDocumentsProvider.PRIMARY_ROOT_ID) =
         VolumeDescriptor(
             rootId = rootId,
             title = "Internal storage",

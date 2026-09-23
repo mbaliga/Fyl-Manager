@@ -2,7 +2,6 @@ package io.github.mbaliga.fylz.storage
 
 import android.os.ParcelFileDescriptor
 import java.io.FileNotFoundException
-import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -11,7 +10,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
-import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
@@ -34,10 +32,7 @@ class FaultyDocumentsProviderTest {
     @Before
     fun setUp() {
         rootDir = tempFolder.newFolder("primary")
-        faulty = Robolectric.setupContentProvider(
-            FaultyDocumentsProvider::class.java,
-            FaultyDocumentsProvider.AUTHORITY,
-        )
+        faulty = FaultyDocumentsProvider.install()
         faulty.volumeOverride = listOf(
             VolumeDescriptor(
                 rootId = FylzFilesDocumentsProvider.PRIMARY_ROOT_ID,
@@ -55,7 +50,7 @@ class FaultyDocumentsProviderTest {
     @Test
     fun `unconfigured double behaves like the real provider`() {
         val id = faulty.createDocument(rootId(), "text/plain", "ok.txt")
-        val children = faulty.queryChildDocuments(rootId(), null, null)
+        val children = faulty.queryChildDocuments(rootId(), null, null as String?)
         assertEquals(1, children.count)
         assertTrue(id.isNotBlank())
     }
@@ -86,17 +81,20 @@ class FaultyDocumentsProviderTest {
     }
 
     @Test
-    fun `throwAfterBytes lets the first N bytes through then breaks the pipe`() {
+    fun `throwAfterBytes truncates the underlying file at exactly the configured limit`() {
         val id = faulty.createDocument(rootId(), "application/octet-stream", "big.bin")
         faulty.throwAfterBytes = 4L
 
-        assertThrows(IOException::class.java) {
-            ParcelFileDescriptor.AutoCloseOutputStream(faulty.openDocument(id, "w", null)).use { out ->
-                // A single large write so the short write lands entirely inside the failure
-                // window and the broken pipe surfaces on this call rather than a later one.
-                repeat(100) { out.write(ByteArray(4096)) }
-            }
+        ParcelFileDescriptor.AutoCloseOutputStream(faulty.openDocument(id, "w", null)).use { out ->
+            repeat(100) { out.write(ByteArray(4096)) }
         }
+        // See throwAfterBytes's own KDoc: Robolectric's ParcelFileDescriptor shadow never signals
+        // the caller's write, so the 400 KiB write above completes without error either way.
+        // What this double can guarantee is that the real file never received more than the
+        // configured limit -- join the background copy first so this doesn't race it.
+        faulty.lastTruncationThread?.join(THREAD_JOIN_TIMEOUT_MS)
+
+        assertEquals(4L, File(rootDir, "big.bin").length())
     }
 
     @Test
@@ -110,5 +108,9 @@ class FaultyDocumentsProviderTest {
         val bytes = ParcelFileDescriptor.AutoCloseInputStream(faulty.openDocument(id, "r", null))
             .use { it.readBytes() }
         assertEquals("hello", String(bytes))
+    }
+
+    private companion object {
+        const val THREAD_JOIN_TIMEOUT_MS = 5_000L
     }
 }

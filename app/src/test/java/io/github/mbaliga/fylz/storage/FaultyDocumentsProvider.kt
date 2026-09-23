@@ -7,12 +7,14 @@ import android.os.ParcelFileDescriptor
 import android.provider.DocumentsProvider
 import java.io.FileNotFoundException
 import org.robolectric.Robolectric
+import org.robolectric.RuntimeEnvironment
 import kotlin.concurrent.thread
 
 /**
  * P0.0 test double: wraps a real, temp-directory-backed [FylzFilesDocumentsProvider] and can be
  * configured to simulate the provider failures the Phase 0 recovery paths need proof against —
- * refused rename, delete or create, and a write that throws partway through.
+ * refused rename, delete or create, and a write that stops partway through (see [throwAfterBytes]
+ * for what that can and can't signal to the caller under Robolectric).
  *
  * Every call this double doesn't specifically fault-inject is forwarded unchanged to the real
  * provider, so a test only needs to describe the one failure it's proving recovery from.
@@ -29,26 +31,47 @@ class FaultyDocumentsProvider : DocumentsProvider() {
     var refuseCreate: Boolean = false
 
     /**
-     * When set, a write-mode [openDocument] returns a pipe that silently stops forwarding bytes
-     * to the underlying file after this many bytes, then closes — so the caller's next write
-     * fails with a broken-pipe [java.io.IOException], simulating a provider that throws mid-write.
-     * Read-mode opens are never affected.
+     * When set, a write-mode [openDocument] returns a pipe that stops forwarding bytes to the
+     * underlying file after this many bytes, simulating a provider that fails partway through a
+     * write. Read-mode opens are never affected.
+     *
+     * Real `DocumentsProvider`s signal this failure to the caller's `write()`/`close()` as a
+     * broken-pipe [java.io.IOException]. Under Robolectric's `ParcelFileDescriptor` shadow that
+     * signal never reaches the writer -- confirmed empirically: neither a plain pipe's OS
+     * backpressure nor a reliable pipe's `closeWithError()` propagates to the write side here, so
+     * the caller's write and close calls both silently "succeed" regardless of this setting.
+     * What IS reliable, because it's controlled entirely on this side rather than depending on
+     * that signal: the real underlying file ends up truncated at exactly this many bytes. Tests
+     * assert that -- join [lastTruncationThread] first so the assertion doesn't race the
+     * background copy.
      */
     var throwAfterBytes: Long? = null
 
+    /** The background thread the most recent truncating [openDocument] call started, if any.
+     * Join it before asserting on the resulting file -- see [throwAfterBytes]. */
+    internal var lastTruncationThread: Thread? = null
+        private set
+
     /**
-     * The real provider this double wraps. Built directly through Robolectric so it's a fully
-     * attached, working [FylzFilesDocumentsProvider] without being registered under any authority
-     * of its own — every call reaches it only via this double's forwarding methods below.
+     * The real provider this double wraps. Attached with a plain, direct `attachInfo()` call --
+     * not through Robolectric's [Robolectric.buildContentProvider]/`ContentProviderController`,
+     * which would also register it with `ShadowContentResolver` under the same authority this
+     * double itself registers under in [install], racing to decide which of the two instances
+     * `ContentResolver` calls actually reach. `attachInfo` alone satisfies
+     * [android.provider.DocumentsProvider]'s own security checks (exported, grantUriPermissions,
+     * the MANAGE_DOCUMENTS permissions -- built by hand below, since this instance has no
+     * manifest entry of its own to read them from) and runs `onCreate()`, without touching the
+     * resolver's routing table at all. Every call reaches this instance only via this double's
+     * own forwarding methods below.
      */
     private val real: FylzFilesDocumentsProvider by lazy {
-        Robolectric.buildContentProvider(FylzFilesDocumentsProvider::class.java)
-            .create(AUTHORITY)
-            .get()
+        FylzFilesDocumentsProvider().apply {
+            attachInfo(RuntimeEnvironment.getApplication(), testProviderInfo(FylzFilesDocumentsProvider::class.java))
+        }
     }
 
     /** Pass-through to the real provider's P0.0 test seam; set this before any operation. */
-    var volumeOverride: List<VolumeDescriptor>?
+    internal var volumeOverride: List<VolumeDescriptor>?
         get() = real.volumeOverride
         set(value) {
             real.volumeOverride = value
@@ -111,15 +134,17 @@ class FaultyDocumentsProvider : DocumentsProvider() {
     ) = real.openDocumentThumbnail(documentId, sizeHint, signal)
 
     /**
-     * Hands the caller the write end of a pipe. A background thread copies bytes from it into
-     * [target] until [limit] is reached, then closes both ends — after which the caller's next
-     * `write()` fails with a broken pipe, exactly as if the real provider had thrown mid-write.
+     * Hands the caller the write end of a pipe. A background thread ([lastTruncationThread])
+     * copies at most [limit] bytes from it into [target], then stops draining and closes both
+     * ends -- so [target] ends up truncated at exactly [limit] bytes regardless of how much the
+     * caller goes on to write into the pipe. See [throwAfterBytes] for what this can and can't
+     * signal back to the caller under Robolectric.
      */
     private fun truncatingPipe(target: ParcelFileDescriptor, limit: Long): ParcelFileDescriptor {
         val pipe = ParcelFileDescriptor.createPipe()
         val readSide = pipe[0]
         val writeSide = pipe[1]
-        thread(isDaemon = true, name = "faulty-provider-write") {
+        lastTruncationThread = thread(isDaemon = true, name = "faulty-provider-write") {
             ParcelFileDescriptor.AutoCloseInputStream(readSide).use { input ->
                 ParcelFileDescriptor.AutoCloseOutputStream(target).use { output ->
                     val buffer = ByteArray(8 * 1024)
@@ -139,5 +164,20 @@ class FaultyDocumentsProvider : DocumentsProvider() {
 
     companion object {
         const val AUTHORITY: String = FylzFilesDocumentsProvider.AUTHORITY
+
+        /**
+         * Registers a fresh [FaultyDocumentsProvider], attached the way Robolectric would from a
+         * real manifest `<provider>` entry -- which this test-only class doesn't have one of.
+         * [android.provider.DocumentsProvider.attachInfo] throws `SecurityException` unless
+         * `exported`, `grantUriPermissions` and both `MANAGE_DOCUMENTS` permissions are set, so
+         * this builds that [ProviderInfo] by hand, matching `FylzFilesDocumentsProvider`'s real
+         * manifest entry field for field.
+         */
+        fun install(): FaultyDocumentsProvider {
+            val provider = Robolectric.buildContentProvider(FaultyDocumentsProvider::class.java)
+                .create(testProviderInfo(FaultyDocumentsProvider::class.java, AUTHORITY))
+                .get()
+            return registerForContentResolver(provider, AUTHORITY)
+        }
     }
 }
