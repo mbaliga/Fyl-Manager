@@ -187,4 +187,45 @@ class RecycleBinServiceTest {
         )
         assertTrue(service.records().any { it.itemId == record.itemId })
     }
+
+    @Test
+    fun `records flow reflects a recycle and a permanent delete without polling`() = runBlocking {
+        buildTree(docsDir, listOf(TreeNode.DirNode("photos", photoTreeChildren())))
+        assertTrue(service.records.value.isEmpty())
+
+        val record = recycle()
+        assertEquals(listOf(record.itemId), service.records.value.map { it.itemId })
+
+        service.permanentlyDelete(record.itemId, confirmed = true)
+        assertTrue(service.records.value.isEmpty())
+    }
+
+    @Test
+    fun `emptying the bin deletes every record and reports how many succeeded`() = runBlocking {
+        buildTree(docsDir, listOf(TreeNode.DirNode("a", photoTreeChildren())))
+        buildTree(docsDir, listOf(TreeNode.DirNode("b", photoTreeChildren())))
+        recycle("a")
+        recycle("b")
+        assertEquals(2, service.records().size)
+
+        val succeeded = service.emptyBin(confirmed = true)
+
+        assertEquals(2, succeeded)
+        assertTrue(service.records().isEmpty())
+        assertTrue(service.records.value.isEmpty())
+        // Nothing recoverable is left behind under the bin itself.
+        assertEquals(0, File(docsDir, ".fylz-trash").listFiles()?.size ?: 0)
+    }
+
+    @Test
+    fun `emptying the bin without confirmation is refused and deletes nothing`() = runBlocking {
+        buildTree(docsDir, listOf(TreeNode.DirNode("photos", photoTreeChildren())))
+        recycle()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { service.emptyBin(confirmed = false) }
+        }
+
+        assertEquals(1, service.records().size)
+    }
 }

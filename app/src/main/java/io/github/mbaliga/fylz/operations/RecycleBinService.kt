@@ -7,6 +7,7 @@ import android.provider.DocumentsContract
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
@@ -342,6 +343,32 @@ class RecycleBinService(
     }
 
     fun records(): List<RecycleRecord> = store.list()
+
+    /** Live view of the recycle manifest (P0.8); see [RecycleBinStore.records]. */
+    val records: StateFlow<List<RecycleRecord>> get() = store.records
+
+    /**
+     * Permanently deletes every current recycle record (contract §2.5-2.8's "Empty Recycle
+     * Bin"), behind the exact same confirmation gate as a single permanent delete. Continues past
+     * a single item's failure so one bad record can't block emptying the rest; the returned count
+     * is how many actually succeeded.
+     */
+    suspend fun emptyBin(confirmed: Boolean): Int = withContext(Dispatchers.IO) {
+        require(
+            RecycleBinPolicy.allowPermanentDelete(
+                invokedFromRecycleBin = true,
+                explicitAdvancedAction = false,
+                confirmed = confirmed,
+            ),
+        ) { "Permanent deletion requires explicit confirmation from the recycle bin." }
+
+        var succeeded = 0
+        store.list().forEach { record ->
+            runCatching { permanentlyDelete(record.itemId, confirmed = true) }
+                .onSuccess { succeeded++ }
+        }
+        succeeded
+    }
 
     /**
      * `fylz-trash` or `fylz-trash (n)` folders directly under [rootTreeUri] (P0.3, defect 3):

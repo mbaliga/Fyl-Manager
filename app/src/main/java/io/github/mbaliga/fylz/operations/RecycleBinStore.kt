@@ -2,6 +2,9 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,13 +16,18 @@ import org.json.JSONObject
  */
 class RecycleBinStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val _records = MutableStateFlow(readRecords())
+
+    /**
+     * Live view of this instance's own manifest, refreshed after every [put]/[remove] made
+     * through it (P0.8, contract §2.5-2.8) -- lets the Recycle Bin dialog observe changes
+     * reactively instead of needing a manual, one-shot re-read. Like [list], it does not see a
+     * write made through a different `RecycleBinStore` instance backed by the same preferences.
+     */
+    val records: StateFlow<List<RecycleRecord>> = _records.asStateFlow()
 
     @Synchronized
-    fun list(): List<RecycleRecord> {
-        val current = decode(preferences.getString(RECORDS_KEY, null))
-        if (current != null) return current
-        return decode(preferences.getString(BACKUP_RECORDS_KEY, null)).orEmpty()
-    }
+    fun list(): List<RecycleRecord> = readRecords()
 
     @Synchronized
     fun put(record: RecycleRecord) {
@@ -47,6 +55,13 @@ class RecycleBinStore(context: Context) {
         }
 
         check(editor.commit()) { "Unable to persist the recycle manifest." }
+        _records.value = records
+    }
+
+    private fun readRecords(): List<RecycleRecord> {
+        val current = decode(preferences.getString(RECORDS_KEY, null))
+        if (current != null) return current
+        return decode(preferences.getString(BACKUP_RECORDS_KEY, null)).orEmpty()
     }
 
     private fun encode(records: List<RecycleRecord>): String {

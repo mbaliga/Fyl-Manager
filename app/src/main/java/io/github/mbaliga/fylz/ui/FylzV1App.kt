@@ -152,7 +152,9 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
+import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
 import io.github.mbaliga.fylz.ui.components.PreviewPane
+import io.github.mbaliga.fylz.ui.components.totalKnownBytes
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.flow.collectLatest
@@ -180,6 +182,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
+
+/** A permanent delete (one recycle bin item, or Empty Recycle Bin) waiting on the high-friction
+ * [io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog] (P0.8, contract
+ * §2.5-2.8) before [onConfirmed] actually runs it. */
+private data class PermanentDeleteRequest(
+    val itemCount: Int,
+    val totalBytes: Long?,
+    val itemName: String? = null,
+    val onConfirmed: () -> Unit,
+)
 
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
@@ -240,6 +252,7 @@ private fun FylzV1Workspace(
         (context.applicationContext as FylzApplication).operationRunner
     }
     val runningOperations by operationRunner.operations.collectAsState()
+    val recycleRecords by recycleBin.records.collectAsState()
 
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
@@ -266,6 +279,7 @@ private fun FylzV1Workspace(
     var tagDialog by remember { mutableStateOf(false) }
     var batchRenameDialog by remember { mutableStateOf(false) }
     var recycleDialog by remember { mutableStateOf(false) }
+    var permanentDeleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
@@ -1027,7 +1041,7 @@ private fun FylzV1Workspace(
 
     if (recycleDialog) {
         RecycleBinDialog(
-            records = recycleBin.records(),
+            records = recycleRecords,
             legacyBinCount = legacyBinNames.size,
             onDismiss = { recycleDialog = false },
             onRestore = { id ->
@@ -1038,11 +1052,32 @@ private fun FylzV1Workspace(
                 }
             },
             onDelete = { id ->
-                scope.launch {
-                    runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
-                        .onSuccess { recycleDialog = false; recycleDialog = true }
-                        .onFailure { toast(it.message ?: "Permanent deletion failed") }
-                }
+                val record = recycleRecords.firstOrNull { it.itemId == id }
+                permanentDeleteRequest = PermanentDeleteRequest(
+                    itemCount = 1,
+                    totalBytes = record?.sizeBytes,
+                    itemName = record?.originalDisplayName,
+                    onConfirmed = {
+                        scope.launch {
+                            runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
+                                .onFailure { toast(it.message ?: "Permanent deletion failed") }
+                        }
+                    },
+                )
+            },
+            onEmptyRecycleBin = {
+                permanentDeleteRequest = PermanentDeleteRequest(
+                    itemCount = recycleRecords.size,
+                    totalBytes = totalKnownBytes(recycleRecords.map { it.sizeBytes }),
+                    onConfirmed = {
+                        scope.launch {
+                            val succeeded = runCatching { recycleBin.emptyBin(confirmed = true) }
+                                .onFailure { toast(it.message ?: "Unable to empty the Recycle Bin") }
+                                .getOrNull()
+                            if (succeeded != null) toast("Permanently deleted $succeeded item(s)")
+                        }
+                    },
+                )
             },
             onTidyLegacyBins = {
                 val tab = activeTab ?: return@RecycleBinDialog
@@ -1055,6 +1090,19 @@ private fun FylzV1Workspace(
                         .onSuccess { toast("Legacy recycle folders tidied"); refresh() }
                         .onFailure { toast(it.message ?: "Unable to tidy legacy recycle folders") }
                 }
+            },
+        )
+    }
+
+    permanentDeleteRequest?.let { request ->
+        PermanentDeleteConfirmationDialog(
+            itemCount = request.itemCount,
+            totalBytes = request.totalBytes,
+            itemName = request.itemName,
+            onDismiss = { permanentDeleteRequest = null },
+            onConfirm = {
+                permanentDeleteRequest = null
+                request.onConfirmed()
             },
         )
     }
@@ -1723,6 +1771,7 @@ private fun RecycleBinDialog(
     onDismiss: () -> Unit,
     onRestore: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onEmptyRecycleBin: () -> Unit,
     onTidyLegacyBins: () -> Unit,
 ) {
     AlertDialog(
@@ -1741,6 +1790,7 @@ private fun RecycleBinDialog(
                 if (records.isEmpty()) {
                     Text("Recycle Bin is empty. Items are never removed automatically.")
                 } else {
+                    TextButton(onClick = onEmptyRecycleBin) { Text("Empty Recycle Bin") }
                     LazyColumn(Modifier.height(360.dp)) {
                         items(records, key = { it.itemId }) { record ->
                             Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
