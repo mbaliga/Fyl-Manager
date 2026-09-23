@@ -39,6 +39,10 @@ enum class ConflictPolicy {
     ASK,
     KEEP_BOTH,
     REPLACE,
+    /** Replace only when the source is newer than the existing destination item (P1.6) --
+     * otherwise the same outcome as [SKIP]. Meaningless, and never selected, for a directory:
+     * there is no single "modified" instant for a whole tree to compare. */
+    REPLACE_IF_NEWER,
     SKIP,
 }
 

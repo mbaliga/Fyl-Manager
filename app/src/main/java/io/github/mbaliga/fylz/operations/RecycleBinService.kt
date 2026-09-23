@@ -562,6 +562,12 @@ class RecycleBinService(
                 stagingName = uniqueStagingName(destination, requestedName),
                 existing = existing,
             )
+            // P1.6's own ConflictSheet -- the only caller that ever selects this policy -- is
+            // wired to FileOperationService's copy/move flow only, not restore-from-recycle-bin,
+            // which keeps its own pre-existing ASK-throws-today behavior unchanged; the safest
+            // stub for a policy nothing here actually offers a user is the same as SKIP, not a
+            // silent replace.
+            ConflictPolicy.REPLACE_IF_NEWER -> null
         }
     }
 

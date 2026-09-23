@@ -143,6 +143,8 @@ import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.operations.ConflictPolicy
+import io.github.mbaliga.fylz.operations.ConflictedItem
+import io.github.mbaliga.fylz.operations.findConflicts
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.OperationProgress
@@ -165,6 +167,7 @@ import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.VolumeInfoResolver
+import io.github.mbaliga.fylz.ui.components.ConflictSheet
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
@@ -246,6 +249,19 @@ private data class PreflightRequest(
     val action: PendingDestinationAction,
     val sources: List<Uri>,
     val destination: Uri,
+)
+
+/** A copy or move waiting on [io.github.mbaliga.fylz.ui.components.ConflictSheet] (P1.6) because
+ * one or more top-level [sources] already have a same-named sibling at [destination] -- checked
+ * after Preflight (P1.5), against [sources]/[nameOverrides] exactly as Preflight left them, so a
+ * renamed or skipped item is checked (or not checked) correctly here too. */
+private data class ConflictRequest(
+    val conflicts: List<ConflictedItem>,
+    val action: PendingDestinationAction,
+    val sources: List<Uri>,
+    val destination: Uri,
+    val archiveUri: Uri?,
+    val nameOverrides: Map<Uri, String>,
 )
 
 /**
@@ -361,6 +377,7 @@ private fun FylzV1Workspace(
     var recycleDialog by remember { mutableStateOf(false) }
     var permanentDeleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
     var pendingPreflight by remember { mutableStateOf<PreflightRequest?>(null) }
+    var pendingConflict by remember { mutableStateOf<ConflictRequest?>(null) }
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
@@ -481,24 +498,32 @@ private fun FylzV1Workspace(
         destination: Uri,
         archiveUri: Uri?,
         nameOverrides: Map<Uri, String>,
+        conflictResolutions: Map<Uri, ConflictPolicy>,
     ) {
         runCatching {
             when (action) {
+                // P1.6: SKIP, not KEEP_BOTH, is the batch-level fallback here -- every real
+                // conflict was already resolved per item by checkConflictsAndProceed below before
+                // this ever runs, so this value only matters for a conflict that somehow wasn't
+                // pre-resolved (a race, or a caller that skipped the check entirely), and silently
+                // duplicating a file the user never approved is the wrong default for that case.
                 PendingDestinationAction.COPY -> operationRunner.enqueueTransfer(
                     FileOperationType.COPY,
                     "Copying",
                     sources,
                     destination,
-                    ConflictPolicy.KEEP_BOTH,
+                    ConflictPolicy.SKIP,
                     nameOverrides,
+                    conflictResolutions,
                 )
                 PendingDestinationAction.MOVE -> operationRunner.enqueueTransfer(
                     FileOperationType.MOVE,
                     "Moving",
                     sources,
                     destination,
-                    ConflictPolicy.KEEP_BOTH,
+                    ConflictPolicy.SKIP,
                     nameOverrides,
+                    conflictResolutions,
                 )
                 PendingDestinationAction.EXTRACT -> operationRunner.run(FileOperationType.EXTRACT, "Extracting") {
                     archiveService.extractZip(
@@ -523,6 +548,31 @@ private fun FylzV1Workspace(
         }.onFailure { toast(it.message ?: "Operation failed") }
     }
 
+    // P1.6: the second interactive gate, after Preflight -- checked against the POST-preflight
+    // sources/names (a renamed item's collision check must use its new name, and a skipped item
+    // must never be checked at all), so the two sheets compose correctly in sequence rather than
+    // racing each other's view of what's actually about to be copied.
+    suspend fun checkConflictsAndProceed(
+        action: PendingDestinationAction,
+        sources: List<Uri>,
+        destination: Uri,
+        archiveUri: Uri?,
+        nameOverrides: Map<Uri, String>,
+    ) {
+        if (action != PendingDestinationAction.COPY && action != PendingDestinationAction.MOVE) {
+            runDestinationAction(action, sources, destination, archiveUri, nameOverrides, emptyMap())
+            return
+        }
+        val conflicts = runCatching {
+            findConflicts(context.contentResolver, sources, destination, nameOverrides)
+        }.getOrNull()
+        if (conflicts.isNullOrEmpty()) {
+            runDestinationAction(action, sources, destination, archiveUri, nameOverrides, emptyMap())
+        } else {
+            pendingConflict = ConflictRequest(conflicts, action, sources, destination, archiveUri, nameOverrides)
+        }
+    }
+
     val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
         val action = pendingDestinationAction
         pendingDestinationAction = null
@@ -540,13 +590,13 @@ private fun FylzV1Workspace(
             scope.launch {
                 val result = runCatching { runPreflight(context, sources, destination) }.getOrNull()
                 if (result == null || result.isClean) {
-                    runDestinationAction(action, sources, destination, archiveUri, emptyMap())
+                    checkConflictsAndProceed(action, sources, destination, archiveUri, emptyMap())
                 } else {
                     pendingPreflight = PreflightRequest(result, action, sources, destination)
                 }
             }
         } else {
-            scope.launch { runDestinationAction(action, sources, destination, archiveUri, emptyMap()) }
+            scope.launch { runDestinationAction(action, sources, destination, archiveUri, emptyMap(), emptyMap()) }
         }
     }
 
@@ -1277,7 +1327,27 @@ private fun FylzV1Workspace(
                 pendingPreflight = null
                 val remainingSources = request.sources.filterNot { it in skipped }
                 val archiveUri = pendingArchiveUri
-                scope.launch { runDestinationAction(request.action, remainingSources, request.destination, archiveUri, renamed) }
+                scope.launch { checkConflictsAndProceed(request.action, remainingSources, request.destination, archiveUri, renamed) }
+            },
+        )
+    }
+
+    pendingConflict?.let { request ->
+        ConflictSheet(
+            conflicts = request.conflicts,
+            onCancel = { pendingConflict = null },
+            onProceed = { resolutions ->
+                pendingConflict = null
+                scope.launch {
+                    runDestinationAction(
+                        request.action,
+                        request.sources,
+                        request.destination,
+                        request.archiveUri,
+                        request.nameOverrides,
+                        resolutions,
+                    )
+                }
             },
         )
     }

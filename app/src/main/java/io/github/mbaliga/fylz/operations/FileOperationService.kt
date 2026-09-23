@@ -39,16 +39,18 @@ class FileOperationService(
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         nameOverrides: Map<Uri, String> = emptyMap(),
+        conflictResolutions: Map<Uri, ConflictPolicy> = emptyMap(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, nameOverrides, onProgress)
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, nameOverrides, conflictResolutions, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
         nameOverrides: Map<Uri, String> = emptyMap(),
+        conflictResolutions: Map<Uri, ConflictPolicy> = emptyMap(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, nameOverrides, onProgress)
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, nameOverrides, conflictResolutions, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -114,6 +116,7 @@ class FileOperationService(
         move: Boolean,
         conflictPolicy: ConflictPolicy,
         nameOverrides: Map<Uri, String>,
+        conflictResolutions: Map<Uri, ConflictPolicy>,
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
@@ -166,7 +169,14 @@ class FileOperationService(
                     // has a problem at the destination -- the copy lands under this name, the
                     // source itself is never touched.
                     val sourceName = nameOverrides[sourceUri] ?: source.name
-                    val plan = resolveTargetPlan(destination, sourceName, conflictPolicy)
+                    // P1.6: a ConflictSheet's own per-item choice, resolved up front against this
+                    // exact item before the transfer ever started; the batch-level conflictPolicy
+                    // is only a fallback for a conflict nothing pre-resolved (see resolveTargetPlan's
+                    // own ASK doc -- normally unreachable once every conflict has been checked and
+                    // resolved before this call, per the UI's own PreflightSheet-then-ConflictSheet
+                    // sequencing in FylzV1App.kt).
+                    val itemPolicy = conflictResolutions[sourceUri] ?: conflictPolicy
+                    val plan = resolveTargetPlan(destination, sourceName, source.lastModified, itemPolicy)
                     if (plan == null) {
                         current = updateItem(current, index) {
                             it.copy(state = OperationState.SUCCEEDED, errorCode = "SKIPPED_CONFLICT")
@@ -448,9 +458,19 @@ class FileOperationService(
         )
     }
 
+    /**
+     * @param policy the effective per-item policy (P1.6) -- [ASK][ConflictPolicy.ASK] reaching
+     *   here at all means a conflict this specific item never got a real resolution for: the UI's
+     *   own `ConflictSheet` (`ui/FylzV1App.kt`) checks every source item against the destination
+     *   and resolves each one before ever starting the transfer, so in practice this only throws
+     *   for a caller that bypasses that check entirely (a direct `copy`/`move` call, as every
+     *   existing test still makes with its default `ConflictPolicy.ASK`) or a conflict that
+     *   appeared in the narrow window between that check and this actually running.
+     */
     private fun resolveTargetPlan(
         destination: DocNode,
         requestedName: String,
+        sourceLastModified: Long?,
         policy: ConflictPolicy,
     ): TargetPlan? {
         val existing = destination.findChild(resolver, requestedName)
@@ -460,6 +480,11 @@ class FileOperationService(
             ConflictPolicy.SKIP -> null
             ConflictPolicy.KEEP_BOTH -> TargetPlan(requestedName = uniqueName(destination, requestedName))
             ConflictPolicy.REPLACE -> TargetPlan(requestedName = requestedName, existing = existing)
+            ConflictPolicy.REPLACE_IF_NEWER -> {
+                val existingModified = existing.lastModified
+                val newer = sourceLastModified != null && existingModified != null && sourceLastModified > existingModified
+                if (newer) TargetPlan(requestedName = requestedName, existing = existing) else null
+            }
         }
     }
 

@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -105,6 +106,74 @@ class FileOperationServiceTest {
         assertTrue("the source keeps its own original name", File(sourceDir, "bad:name.txt").exists())
         assertTrue("the copy lands under the override name", File(destinationDir, "bad_name.txt").exists())
         assertFalse(File(destinationDir, "bad:name.txt").exists())
+    }
+
+    @Test
+    fun `REPLACE_IF_NEWER replaces the destination only when the source is actually newer`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("photo.jpg", 10)))
+        val sourceFile = File(sourceDir, "photo.jpg")
+        val sourceUri = documentUri("source/photo.jpg")
+        File(destinationDir, "photo.jpg").apply {
+            writeBytes(ByteArray(5))
+            setLastModified(sourceFile.lastModified() - 60_000)
+        }
+
+        service.copy(
+            listOf(sourceUri),
+            treeUriFor("destination"),
+            conflictResolutions = mapOf(sourceUri to ConflictPolicy.REPLACE_IF_NEWER),
+        )
+
+        assertArrayEquals(sourceFile.readBytes(), File(destinationDir, "photo.jpg").readBytes())
+    }
+
+    @Test
+    fun `REPLACE_IF_NEWER leaves a newer destination untouched`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("photo.jpg", 10)))
+        val sourceFile = File(sourceDir, "photo.jpg")
+        sourceFile.setLastModified(sourceFile.lastModified() - 60_000)
+        val sourceUri = documentUri("source/photo.jpg")
+        val existingBytes = ByteArray(5) { 9 }
+        File(destinationDir, "photo.jpg").writeBytes(existingBytes)
+
+        service.copy(
+            listOf(sourceUri),
+            treeUriFor("destination"),
+            conflictResolutions = mapOf(sourceUri to ConflictPolicy.REPLACE_IF_NEWER),
+        )
+
+        assertArrayEquals(
+            "the existing, newer file must survive untouched",
+            existingBytes,
+            File(destinationDir, "photo.jpg").readBytes(),
+        )
+    }
+
+    @Test
+    fun `conflictResolutions gives a per-item policy overriding the batch default`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("a.txt", 5), TreeNode.FileNode("b.txt", 5)))
+        File(destinationDir, "a.txt").writeBytes(ByteArray(1))
+        File(destinationDir, "b.txt").writeBytes(ByteArray(1))
+        val aUri = documentUri("source/a.txt")
+        val bUri = documentUri("source/b.txt")
+
+        service.copy(
+            listOf(aUri, bUri),
+            treeUriFor("destination"),
+            conflictPolicy = ConflictPolicy.SKIP,
+            conflictResolutions = mapOf(aUri to ConflictPolicy.REPLACE),
+        )
+
+        assertArrayEquals(
+            "a.txt has an explicit per-item override to replace",
+            File(sourceDir, "a.txt").readBytes(),
+            File(destinationDir, "a.txt").readBytes(),
+        )
+        assertArrayEquals(
+            "b.txt falls back to the batch policy (skip) and stays untouched",
+            ByteArray(1),
+            File(destinationDir, "b.txt").readBytes(),
+        )
     }
 
     @Test
