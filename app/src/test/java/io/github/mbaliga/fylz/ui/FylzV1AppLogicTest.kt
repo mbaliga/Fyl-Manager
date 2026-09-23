@@ -1,8 +1,10 @@
 package io.github.mbaliga.fylz.ui
 
 import android.net.Uri
+import io.github.mbaliga.fylz.model.ClipboardMode
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.model.FylzClipboard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -64,5 +66,16 @@ class FylzV1AppLogicTest {
         val stale = Uri.parse("content://fylz/gone")
 
         assertEquals(listOf(a), orderedBySelection(listOf(a), linkedSetOf(stale, a.uri)))
+    }
+
+    @Test
+    fun `clipboard chip label counts items and names Cut or Copy`() {
+        val a = entry("a.pdf", "content://fylz/a")
+        val b = entry("b.pdf", "content://fylz/b")
+
+        assertEquals("1 item cut", clipboardChipLabel(FylzClipboard(ClipboardMode.CUT, listOf(a))))
+        assertEquals("2 items cut", clipboardChipLabel(FylzClipboard(ClipboardMode.CUT, listOf(a, b))))
+        assertEquals("1 item copied", clipboardChipLabel(FylzClipboard(ClipboardMode.COPY, listOf(a))))
+        assertEquals("2 items copied", clipboardChipLabel(FylzClipboard(ClipboardMode.COPY, listOf(a, b))))
     }
 }

@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.operations
 
 import android.net.Uri
+import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.storage.FaultyDocumentsProvider
 import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.VolumeDescriptor
@@ -107,6 +108,38 @@ class FileOperationServiceTest {
         assertTrue("the source keeps its own original name", File(sourceDir, "bad:name.txt").exists())
         assertTrue("the copy lands under the override name", File(destinationDir, "bad_name.txt").exists())
         assertFalse(File(destinationDir, "bad:name.txt").exists())
+    }
+
+    @Test
+    fun `copies into an already resolved nested destination document, not the tree's root`() = runBlocking {
+        File(destinationDir, "nested").mkdirs()
+        buildTree(sourceDir, listOf(TreeNode.FileNode("note.txt", 5)))
+        val resolver = RuntimeEnvironment.getApplication().contentResolver
+        // Mirrors what DocNode.resolveDestinationUri's bare-tree branch itself builds -- the
+        // ONLY way to reach a real document node from a bare tree uri (a raw tree uri alone
+        // does not resolve as a queryable document).
+        val destinationRootUri = DocumentsContract.buildDocumentUriUsingTree(
+            treeUriFor("destination"),
+            DocumentsContract.getTreeDocumentId(treeUriFor("destination")),
+        )
+        val destinationRoot = DocNode.load(resolver, destinationRootUri)!!
+        // A child's uri, built by DocNode.children() from the tree's root, keeps the tree
+        // anchored at "destination" while its own document id points at "destination/nested" --
+        // exactly the shape a FolderTab's current folder or a StorageRoot's own documentUri has
+        // in production, and exactly what P0.4's PROGRESS.md note warns documentUri(rootId, path)
+        // itself can NOT produce (that helper is always self-anchored, tree id == document id).
+        val nestedDestination = destinationRoot.children(resolver).single { it.name == "nested" }.uri
+
+        service.copy(listOf(documentUri("source/note.txt")), nestedDestination)
+
+        assertTrue(
+            "the file must land inside the nested subfolder the caller actually named",
+            File(destinationDir, "nested/note.txt").exists(),
+        )
+        assertFalse(
+            "the file must not be redirected to the destination tree's own root",
+            File(destinationDir, "note.txt").exists(),
+        )
     }
 
     @Test

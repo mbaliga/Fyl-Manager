@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -46,7 +45,9 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.FolderCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
@@ -82,6 +83,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -130,11 +132,13 @@ import io.github.mbaliga.fylz.data.SaveResult
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.library.SavedSearch
 import io.github.mbaliga.fylz.model.AccentPreset
+import io.github.mbaliga.fylz.model.ClipboardMode
 import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.model.FolderTab
+import io.github.mbaliga.fylz.model.FylzClipboard
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
@@ -144,6 +148,7 @@ import io.github.mbaliga.fylz.network.WebDavService
 import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.ConflictedItem
+import io.github.mbaliga.fylz.operations.DocNode
 import io.github.mbaliga.fylz.operations.findConflicts
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.FileTools
@@ -168,6 +173,7 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.VolumeInfoResolver
 import io.github.mbaliga.fylz.ui.components.ConflictSheet
+import io.github.mbaliga.fylz.ui.components.DestinationChooserSheet
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
@@ -223,6 +229,13 @@ internal fun isZipFamilyArchive(name: String): Boolean =
 internal fun orderedBySelection(entries: List<FileEntry>, selectedUris: Set<Uri>): List<FileEntry> =
     selectedUris.mapNotNull { uri -> entries.find { it.uri == uri } }
 
+/** P1.8: the clipboard chip's own label -- "N item(s) cut"/"N item(s) copied". */
+internal fun clipboardChipLabel(clipboard: FylzClipboard): String {
+    val noun = if (clipboard.entries.size == 1) "item" else "items"
+    val verb = if (clipboard.mode == ClipboardMode.CUT) "cut" else "copied"
+    return "${clipboard.entries.size} $noun $verb"
+}
+
 /** P0.10: an escaped `\${…}` in these two output names produced the literal text `${…}` instead
  * of the timestamp -- valid Kotlin (an escaped dollar sign), so it compiled clean and never
  * surfaced as anything but a wrong file name on every export. */
@@ -264,6 +277,18 @@ private data class ConflictRequest(
     val nameOverrides: Map<Uri, String>,
 )
 
+/** A Copy to…/Move to… waiting on [io.github.mbaliga.fylz.ui.components.DestinationChooserSheet]
+ * (P1.8) for a destination -- [sources] is snapshotted at the moment the sheet opens, the same way
+ * [PreflightRequest]/[ConflictRequest] snapshot theirs, so a selection change while the sheet is up
+ * (it can't happen today -- the sheet is a full-screen [androidx.compose.ui.window.Dialog] -- but
+ * matching their own shape costs nothing and keeps the three requests reasoned about the same way)
+ * never changes what actually gets transferred. */
+private data class DestinationChooserRequest(
+    val action: PendingDestinationAction,
+    val sources: List<Uri>,
+    val archiveUri: Uri?,
+)
+
 /**
  * P1.5: resolves [destinationTreeUri]'s [io.github.mbaliga.fylz.storage.VolumeInfo] and gathers
  * [sources] into [io.github.mbaliga.fylz.operations.PreflightItem]s, then runs the pure
@@ -274,10 +299,7 @@ private data class ConflictRequest(
  */
 private suspend fun runPreflight(context: Context, sources: List<Uri>, destinationTreeUri: Uri): PreflightResult =
     withContext(Dispatchers.IO) {
-        val destinationDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
-            destinationTreeUri,
-            DocumentsContract.getTreeDocumentId(destinationTreeUri),
-        )
+        val destinationDocumentUri = DocNode.resolveDestinationUri(destinationTreeUri)
         val destinationPath = FylzFilesDocumentsProvider.fileFor(context, destinationDocumentUri)
         val volumeInfo = VolumeInfoResolver.resolve(context, destinationTreeUri, destinationPath)
         val items = gatherPreflightItems(context.contentResolver, sources)
@@ -378,6 +400,10 @@ private fun FylzV1Workspace(
     var permanentDeleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
     var pendingPreflight by remember { mutableStateOf<PreflightRequest?>(null) }
     var pendingConflict by remember { mutableStateOf<ConflictRequest?>(null) }
+    var pendingDestinationChooser by remember { mutableStateOf<DestinationChooserRequest?>(null) }
+    // P1.8: survives folder/tab navigation on purpose -- unlike selectedUris, nothing here resets
+    // it, so Cut/Copy in one folder and Paste in another actually works.
+    var clipboard by remember { mutableStateOf<FylzClipboard?>(null) }
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
@@ -573,13 +599,11 @@ private fun FylzV1Workspace(
         }
     }
 
-    val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
-        val action = pendingDestinationAction
-        pendingDestinationAction = null
-        if (destination == null || action == null) return@rememberLauncherForActivityResult
-        repository.persistTreePermission(destination)
-        val sources = selectedEntries.map { it.uri }
-        val archiveUri = pendingArchiveUri
+    // P1.5/P1.8: the shared entry point once a destination is actually known, whether it came from
+    // the system OpenDocumentTree picker, an in-app DestinationChooserSheet pick, or a clipboard
+    // Paste -- runs Preflight (P1.5) then the conflict check (P1.6) before ever enqueuing a real
+    // transfer. Pulled out of destinationPicker's own callback so every entry point shares it.
+    fun beginTransfer(action: PendingDestinationAction, sources: List<Uri>, destination: Uri, archiveUri: Uri?) {
         if (action == PendingDestinationAction.COPY || action == PendingDestinationAction.MOVE) {
             ensureNotificationPermissionRequested()
             // P1.5: checked before the transfer ever starts -- a problem this catches would
@@ -598,6 +622,27 @@ private fun FylzV1Workspace(
         } else {
             scope.launch { runDestinationAction(action, sources, destination, archiveUri, emptyMap(), emptyMap()) }
         }
+    }
+
+    // P1.8: Paste always targets the active tab's OWN current folder (its current document, not
+    // its tree's root -- DocNode.resolveDestinationUri, wired into runPreflight/findConflicts/
+    // FileOperationService, is what makes that actually land correctly), never a picker. A Cut
+    // clipboard clears once its move is under way, since its items no longer exist at the URIs it
+    // recorded; a Copy clipboard stays, so the same items can be pasted into more than one place.
+    fun pasteClipboard() {
+        val cb = clipboard ?: return
+        val tab = activeTab ?: return
+        val action = if (cb.mode == ClipboardMode.CUT) PendingDestinationAction.MOVE else PendingDestinationAction.COPY
+        beginTransfer(action, cb.entries.map { it.uri }, tab.current.uri, null)
+        if (cb.mode == ClipboardMode.CUT) clipboard = null
+    }
+
+    val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
+        val action = pendingDestinationAction
+        pendingDestinationAction = null
+        if (destination == null || action == null) return@rememberLauncherForActivityResult
+        repository.persistTreePermission(destination)
+        beginTransfer(action, selectedEntries.map { it.uri }, destination, pendingArchiveUri)
     }
 
     val archiveCreator = rememberLauncherForActivityResult(
@@ -929,6 +974,31 @@ private fun FylzV1Workspace(
                 TopAppBar(
                     title = { Text(activeTab?.current?.name ?: "Fylz") },
                     actions = {
+                        // P1.8: the Fylz clipboard chip -- tapping the chip body pastes into the
+                        // active tab's current folder; the trailing close icon clears it without
+                        // pasting. Disabled (but still visible, so it isn't clearing itself the
+                        // moment the last tab closes) when there is no active tab to paste into.
+                        clipboard?.let { cb ->
+                            InputChip(
+                                selected = false,
+                                enabled = activeTab != null,
+                                onClick = ::pasteClipboard,
+                                label = { Text(clipboardChipLabel(cb)) },
+                                leadingIcon = {
+                                    Icon(
+                                        if (cb.mode == ClipboardMode.CUT) Icons.Outlined.ContentCut else Icons.Outlined.ContentCopy,
+                                        contentDescription = null,
+                                    )
+                                },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Outlined.Close,
+                                        contentDescription = "Clear clipboard",
+                                        modifier = Modifier.size(16.dp).clickable { clipboard = null },
+                                    )
+                                },
+                            )
+                        }
                         IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
                             Icon(
                                 if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
@@ -1010,8 +1080,22 @@ private fun FylzV1Workspace(
                         canPdfTools = selectedEntries.isNotEmpty() &&
                             selectedEntries.all { it.kind == EntryKind.PDF },
                         onPdfTools = { pdfDialog = true },
-                        onCopy = { pendingDestinationAction = PendingDestinationAction.COPY; destinationPicker.launch(null) },
-                        onMove = { pendingDestinationAction = PendingDestinationAction.MOVE; destinationPicker.launch(null) },
+                        onCut = { clipboard = FylzClipboard(ClipboardMode.CUT, selectedEntries) },
+                        onCopyToClipboard = { clipboard = FylzClipboard(ClipboardMode.COPY, selectedEntries) },
+                        onCopyTo = {
+                            pendingDestinationChooser = DestinationChooserRequest(
+                                PendingDestinationAction.COPY,
+                                selectedEntries.map { it.uri },
+                                null,
+                            )
+                        },
+                        onMoveTo = {
+                            pendingDestinationChooser = DestinationChooserRequest(
+                                PendingDestinationAction.MOVE,
+                                selectedEntries.map { it.uri },
+                                null,
+                            )
+                        },
                         onRecycle = ::recycleSelection,
                         onRename = { renameDialog = true },
                         onTags = { tagDialog = true },
@@ -1349,6 +1433,29 @@ private fun FylzV1Workspace(
                     )
                 }
             },
+        )
+    }
+
+    pendingDestinationChooser?.let { request ->
+        DestinationChooserSheet(
+            tabs = tabs,
+            onChooseTab = { tab ->
+                pendingDestinationChooser = null
+                beginTransfer(request.action, request.sources, tab.current.uri, request.archiveUri)
+            },
+            onChooseRoot = { root ->
+                pendingDestinationChooser = null
+                root.documentUri?.let { destination ->
+                    beginTransfer(request.action, request.sources, destination, request.archiveUri)
+                }
+            },
+            onOtherLocation = {
+                pendingDestinationChooser = null
+                pendingDestinationAction = request.action
+                pendingArchiveUri = request.archiveUri
+                destinationPicker.launch(null)
+            },
+            onCancel = { pendingDestinationChooser = null },
         )
     }
 
@@ -1934,8 +2041,10 @@ private fun SelectionActionBar(
     canExtract: Boolean,
     canPdfTools: Boolean,
     onPdfTools: () -> Unit,
-    onCopy: () -> Unit,
-    onMove: () -> Unit,
+    onCut: () -> Unit,
+    onCopyToClipboard: () -> Unit,
+    onCopyTo: () -> Unit,
+    onMoveTo: () -> Unit,
     onRecycle: () -> Unit,
     onRename: () -> Unit,
     onTags: () -> Unit,
@@ -1952,8 +2061,10 @@ private fun SelectionActionBar(
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("$count selected", modifier = Modifier.padding(horizontal = 10.dp))
-            ActionButton(Icons.Outlined.ContentCopy, "Copy", onCopy)
-            ActionButton(Icons.Outlined.DriveFileMove, "Move", onMove)
+            ActionButton(Icons.Outlined.ContentCut, "Cut", onCut)
+            ActionButton(Icons.Outlined.ContentCopy, "Copy", onCopyToClipboard)
+            ActionButton(Icons.Outlined.FolderCopy, "Copy to…", onCopyTo)
+            ActionButton(Icons.Outlined.DriveFileMove, "Move to…", onMoveTo)
             ActionButton(Icons.Outlined.Delete, "Recycle", onRecycle)
             ActionButton(Icons.Outlined.Edit, "Rename", onRename, canRename)
             ActionButton(Icons.Outlined.Tag, "Tags", onTags)

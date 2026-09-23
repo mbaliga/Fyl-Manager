@@ -118,6 +118,52 @@ data class DocNode(
                 if (cursor.moveToFirst()) fromCursor(uri, cursor) else null
             }
 
+        /**
+         * Resolves [destination] to the exact document a transfer should land in (P1.8).
+         *
+         * [destination] is either a bare tree grant -- exactly what the system `OpenDocumentTree`
+         * picker hands back, whose root is the destination -- or a URI that already carries its own
+         * document segment, naming an exact folder that may be nested arbitrarily deep inside its
+         * tree (a `FolderTab`'s current folder, or a `StorageRoot`'s own `documentUri`, both built
+         * with [DocumentsContract.buildDocumentUriUsingTree] against a real child document id).
+         * [isResolvedDocumentUri] tells the two apart by shape alone, needing no query.
+         *
+         * Rebuilding the second kind from its own tree id -- what every call site here used to do
+         * unconditionally -- silently discards the nesting: [DocumentsContract.getTreeDocumentId]
+         * only ever returns a tree's OWN root id, never a nested child's, so the destination folder
+         * this resolves to would always be the tree's root regardless of which document [destination]
+         * actually named, redirecting the transfer to the wrong folder rather than failing loudly.
+         */
+        fun resolveDestinationUri(destination: Uri): Uri =
+            if (isResolvedDocumentUri(destination)) {
+                destination
+            } else {
+                DocumentsContract.buildDocumentUriUsingTree(
+                    destination,
+                    DocumentsContract.getTreeDocumentId(destination),
+                )
+            }
+
+        /** [resolveDestinationUri] followed by [load], for callers that just want the node. */
+        fun loadDestination(resolver: ContentResolver, destination: Uri): DocNode? =
+            load(resolver, resolveDestinationUri(destination))
+
+        /**
+         * Whether [uri] already names a specific document -- with or without a tree segment --
+         * rather than a bare tree grant. Mirrors [DocumentsContract.isDocumentUri]'s own
+         * path-shape check, deliberately without its ADDITIONAL live-[android.content.pm.PackageManager]
+         * round trip confirming the authority is a registered `DocumentsProvider`: that step is
+         * confirmed empirically (this codebase's own test suite) NOT to resolve a manifest-declared
+         * provider's intent-filter correctly under Robolectric, even though the URI's own shape is
+         * unambiguous on its own -- a bare tree grant genuinely has no `document` path segment at
+         * all, tree or not.
+         */
+        private fun isResolvedDocumentUri(uri: Uri): Boolean {
+            val segments = uri.pathSegments
+            return (segments.size == 2 && segments[0] == "document") ||
+                (segments.size >= 4 && segments[0] == "tree" && segments[2] == "document")
+        }
+
         private fun fromCursor(uri: Uri, cursor: Cursor): DocNode {
             val documentId = cursor.getString(cursor.columnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID))
             val name = cursor.getString(cursor.columnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)) ?: "Untitled"

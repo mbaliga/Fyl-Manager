@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.operations
 
+import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.storage.FylzDocumentsProviderTestBase
 import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.testing.TreeNode
@@ -100,6 +101,38 @@ class ConflictDetectionTest : FylzDocumentsProviderTestBase() {
         )
 
         assertTrue(conflicts.isEmpty())
+    }
+
+    @Test
+    fun `checks conflicts against an already resolved nested destination, not the tree's root`() = runBlocking {
+        buildTree(
+            rootDir,
+            listOf(
+                TreeNode.FileNode("source.bin", 10),
+                TreeNode.DirNode(
+                    "destination",
+                    listOf(
+                        // Same name sits at the tree's own root too -- if the fix regressed back
+                        // to always resolving a nested destination to its tree's root, this is
+                        // the (wrong) conflict that would be found instead.
+                        TreeNode.FileNode("source.bin", 999),
+                        TreeNode.DirNode("nested", listOf(TreeNode.FileNode("source.bin", 20))),
+                    ),
+                ),
+            ),
+        )
+        val resolver = RuntimeEnvironment.getApplication().contentResolver
+        val destinationTree = FylzFilesDocumentsProvider.treeUri(FylzFilesDocumentsProvider.PRIMARY_ROOT_ID, "destination")
+        val destinationRootUri = DocumentsContract.buildDocumentUriUsingTree(
+            destinationTree,
+            DocumentsContract.getTreeDocumentId(destinationTree),
+        )
+        val nestedDestination = DocNode.load(resolver, destinationRootUri)!!
+            .children(resolver).single { it.name == "nested" }.uri
+
+        val conflicts = findConflicts(resolver, listOf(node("source.bin")), nestedDestination)
+
+        assertEquals(20L, conflicts.single().existing.size)
     }
 
     @Test

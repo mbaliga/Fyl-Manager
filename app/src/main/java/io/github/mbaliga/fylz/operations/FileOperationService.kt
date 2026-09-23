@@ -120,13 +120,11 @@ class FileOperationService(
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
-        // destinationTreeUri comes from the system OpenDocumentTree picker (A2), so it names a
-        // tree, not yet a document within it; its own root is the destination document.
-        val destinationRootUri = DocumentsContract.buildDocumentUriUsingTree(
-            destinationTreeUri,
-            DocumentsContract.getTreeDocumentId(destinationTreeUri),
-        )
-        val destination = DocNode.load(resolver, destinationRootUri)
+        // destinationTreeUri is either a bare tree grant (the system OpenDocumentTree picker's own
+        // shape, whose root is the destination) or a URI that already names an exact, possibly
+        // nested, document (P1.8: a FolderTab's current folder or a StorageRoot's own documentUri)
+        // -- DocNode.resolveDestinationUri tells the two apart and never discards real nesting.
+        val destination = DocNode.loadDestination(resolver, destinationTreeUri)
             ?: error("Unable to open the destination folder.")
         require(destination.isDirectory && destination.canWrite) {
             "The destination folder is not writable."
