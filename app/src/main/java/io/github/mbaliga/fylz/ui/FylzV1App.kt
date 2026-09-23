@@ -232,6 +232,7 @@ private fun FylzV1Workspace(
     val tabs = remember { mutableStateListOf<FolderTab>() }
     var activeTabId by remember { mutableStateOf<String?>(null) }
     var entries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
+    var legacyBinNames by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var focusedEntry by remember { mutableStateOf<FileEntry?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
@@ -490,10 +491,22 @@ private fun FylzV1Workspace(
             }
     }
 
+    // Legacy (pre-P0.3, dot-stripped) recycle bins for the active tree, if any -- excluded from
+    // browsing and search exactly like .fylz-trash, until tidied via the explicit action in the
+    // Recycle Bin dialog (defect 3; nothing about them happens automatically).
+    LaunchedEffect(activeTab?.treeUri, refreshKey) {
+        val tab = activeTab
+        legacyBinNames = if (tab == null) {
+            emptySet()
+        } else {
+            runCatching { recycleBin.legacyRecycleFolderNames(tab.treeUri) }.getOrDefault(emptySet())
+        }
+    }
+
     // Recursive search. Cancelled and restarted whenever the query, scope or folder changes --
     // LaunchedEffect's own cancellation is what makes an in-flight walk stop, and the engine
     // checks for it at every folder and every entry.
-    LaunchedEffect(query, searchRecursive, activeTab?.current?.uri, refreshKey) {
+    LaunchedEffect(query, searchRecursive, activeTab?.current?.uri, refreshKey, legacyBinNames) {
         val tab = activeTab
         if (!searchRecursive || query.isBlank() || tab == null) {
             searchProgress = null
@@ -506,11 +519,11 @@ private fun FylzV1Workspace(
         }
         searchProgress = SearchProgress(emptyList(), 0, 0, complete = false)
         searchEngine
-            .search(tab.treeUri, tab.current.uri, tab.current.name, parsed)
+            .search(tab.treeUri, tab.current.uri, tab.current.name, parsed, excludedDirectoryNames = legacyBinNames)
             .collectLatest { searchProgress = it }
     }
 
-    LaunchedEffect(activeTab?.current?.uri, refreshKey) {
+    LaunchedEffect(activeTab?.current?.uri, refreshKey, legacyBinNames) {
         selectedUris = emptySet()
         focusedEntry = null
         previewText = null
@@ -520,7 +533,7 @@ private fun FylzV1Workspace(
         }
         loading = true
         runCatching { repository.listChildren(activeTab.treeUri, activeTab.current.uri) }
-            .onSuccess { entries = it.filterNot { item -> item.name == ".fylz-trash" } }
+            .onSuccess { entries = it.filterNot { item -> item.name == ".fylz-trash" || item.name in legacyBinNames } }
             .onFailure { toast(it.message ?: "Unable to read folder") }
         loading = false
     }
@@ -966,6 +979,7 @@ private fun FylzV1Workspace(
     if (recycleDialog) {
         RecycleBinDialog(
             records = recycleBin.records(),
+            legacyBinCount = legacyBinNames.size,
             onDismiss = { recycleDialog = false },
             onRestore = { id ->
                 scope.launch {
@@ -979,6 +993,18 @@ private fun FylzV1Workspace(
                     runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
                         .onSuccess { recycleDialog = false; recycleDialog = true }
                         .onFailure { toast(it.message ?: "Permanent deletion failed") }
+                }
+            },
+            onTidyLegacyBins = {
+                val tab = activeTab ?: return@RecycleBinDialog
+                scope.launch {
+                    runCatching {
+                        recycleBin.legacyRecycleFolders(tab.treeUri).forEach { legacy ->
+                            recycleBin.tidyLegacyRecycleFolder(tab.treeUri, legacy)
+                        }
+                    }
+                        .onSuccess { toast("Legacy recycle folders tidied"); refresh() }
+                        .onFailure { toast(it.message ?: "Unable to tidy legacy recycle folders") }
                 }
             },
         )
@@ -1552,24 +1578,39 @@ private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (Str
 @Composable
 private fun RecycleBinDialog(
     records: List<io.github.mbaliga.fylz.operations.RecycleRecord>,
+    legacyBinCount: Int,
     onDismiss: () -> Unit,
     onRestore: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onTidyLegacyBins: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Recycle Bin") },
         text = {
-            if (records.isEmpty()) Text("Recycle Bin is empty. Items are never removed automatically.")
-            else LazyColumn(Modifier.height(360.dp)) {
-                items(records, key = { it.itemId }) { record ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                        Text(record.originalDisplayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Row {
-                            TextButton(onClick = { onRestore(record.itemId) }) { Text("Restore") }
-                            TextButton(onClick = { onDelete(record.itemId) }) { Text("Delete permanently") }
+            Column {
+                if (legacyBinCount > 0) {
+                    Text(
+                        "Found $legacyBinCount recycle folder(s) left over from before this app kept their " +
+                            "hidden name. Their items already show below and are safe where they are.",
+                    )
+                    TextButton(onClick = onTidyLegacyBins) { Text("Tidy legacy recycle folders") }
+                    HorizontalDivider()
+                }
+                if (records.isEmpty()) {
+                    Text("Recycle Bin is empty. Items are never removed automatically.")
+                } else {
+                    LazyColumn(Modifier.height(360.dp)) {
+                        items(records, key = { it.itemId }) { record ->
+                            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                                Text(record.originalDisplayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row {
+                                    TextButton(onClick = { onRestore(record.itemId) }) { Text("Restore") }
+                                    TextButton(onClick = { onDelete(record.itemId) }) { Text("Delete permanently") }
+                                }
+                                HorizontalDivider()
+                            }
                         }
-                        HorizontalDivider()
                     }
                 }
             }

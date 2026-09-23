@@ -330,19 +330,28 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         return file.delete()
     }
 
+    /**
+     * Validates and lightly cleans a requested display name (P0.3, defect 3).
+     *
+     * Rejects only names that cannot be a document name at all: empty or whitespace-only, the
+     * reserved `.` and `..`, or containing a path separator or a NUL byte. Everything else --
+     * including a leading dot -- is a legitimate name and survives untouched apart from having
+     * other control characters replaced. This app grants full filesystem access, and its own
+     * recycle bin (`.fylz-trash`) depends on being able to create a dot-prefixed name; this
+     * method previously stripped every leading dot instead, so the directory landed on disk
+     * without one and every later name-based lookup for it silently failed.
+     */
     private fun sanitizeDisplayName(displayName: String): String {
         val trimmed = displayName.trim()
         require(trimmed.isNotBlank()) { "A name is required." }
-        // "." and ".." are filesystem-reserved, not valid document names. A leading dot
-        // otherwise is a legitimate, ordinary (if hidden-by-convention) name -- this app grants
-        // full filesystem access, and this provider's own recycle bin (`.fylz-trash`) depends on
-        // being able to create one. Stripping it here previously broke that: the directory landed
-        // on disk without its dot, so every later name-based lookup for it silently failed.
         require(trimmed != "." && trimmed != "..") { "\"$trimmed\" is not a valid name." }
-        // Strip path separators and control characters only. Spaces, hyphens and unicode
+        require(!trimmed.contains('/') && !trimmed.contains('\u0000')) {
+            "A name cannot contain \"/\" or a null character."
+        }
+        // Strip remaining control characters and backslash. Spaces, hyphens, dots and unicode
         // are legitimate in file names and must survive untouched.
         val cleaned = trimmed.map { char ->
-            if (char == '/' || char == '\\' || char.code < 0x20 || char.code == 0x7F) '_' else char
+            if (char == '\\' || char.code < 0x20 || char.code == 0x7F) '_' else char
         }.joinToString("")
         return cleaned.take(255)
     }

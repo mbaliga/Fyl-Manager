@@ -44,6 +44,12 @@ class RecursiveSearchEngine(context: Context) {
      * @param treeUri the tree that scopes the search (permission root)
      * @param rootUri the folder to start from; usually the current folder
      */
+    /**
+     * @param excludedDirectoryNames extra directory names to skip, in addition to
+     * [RECYCLE_DIRECTORY] -- legacy, pre-P0.3 recycle bins (see
+     * `RecycleBinService.legacyRecycleFolderNames`) that a caller has already identified for this
+     * [treeUri].
+     */
     fun search(
         treeUri: Uri,
         rootUri: Uri,
@@ -51,6 +57,7 @@ class RecursiveSearchEngine(context: Context) {
         query: SearchQuery,
         maxResults: Int = DEFAULT_MAX_RESULTS,
         maxFolders: Int = DEFAULT_MAX_FOLDERS,
+        excludedDirectoryNames: Set<String> = emptySet(),
     ): Flow<SearchProgress> = flow {
         if (query.isEmpty) {
             emit(SearchProgress(emptyList(), 0, 0, complete = true))
@@ -80,9 +87,10 @@ class RecursiveSearchEngine(context: Context) {
                 val childPath = if (folderPath.isEmpty()) child.name else "$folderPath/${child.name}"
 
                 if (child.isDirectory) {
-                    // .fylz-trash is the app's own recycle location; searching it would surface
-                    // items the user has already deleted as if they were still in place.
-                    if (child.name == RECYCLE_DIRECTORY) continue
+                    // .fylz-trash (and a caller-identified legacy bin) is the app's own recycle
+                    // location; searching it would surface items the user has already deleted as
+                    // if they were still in place.
+                    if (child.name == RECYCLE_DIRECTORY || child.name in excludedDirectoryNames) continue
                     if (visited.add(child.uri.toString())) queue.addLast(child.uri to childPath)
                 } else {
                     filesScanned += 1

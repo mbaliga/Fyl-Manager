@@ -96,6 +96,20 @@ class RecycleBinServiceTest {
     }
 
     @Test
+    fun `recycling twice reuses the same fylz-trash`() = runBlocking {
+        buildTree(docsDir, listOf(TreeNode.DirNode("a", photoTreeChildren())))
+        buildTree(docsDir, listOf(TreeNode.DirNode("b", photoTreeChildren())))
+
+        recycle("a")
+        recycle("b")
+
+        // Not "fylz-trash" (the pre-P0.3 dot-stripped shape) and not a second, disambiguated
+        // ".fylz-trash (1)" -- one bin, reused, exactly as its own by-name lookup expects.
+        assertEquals(listOf(".fylz-trash"), docsDir.list()?.toList().orEmpty())
+        assertEquals(2, File(docsDir, ".fylz-trash").listFiles()?.size ?: 0)
+    }
+
+    @Test
     fun `restore into a name conflict under skip does nothing`() = runBlocking {
         buildTree(docsDir, listOf(TreeNode.DirNode("photos", photoTreeChildren())))
         val record = recycle()

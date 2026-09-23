@@ -344,6 +344,64 @@ class RecycleBinService(
     fun records(): List<RecycleRecord> = store.list()
 
     /**
+     * `fylz-trash` or `fylz-trash (n)` folders directly under [rootTreeUri] (P0.3, defect 3):
+     * bins created before this provider stopped stripping the leading dot from `.fylz-trash`, so
+     * they landed on disk visible and un-findable by name. A name match alone never qualifies --
+     * a user's own, unrelated folder that happens to share the name must never be touched -- so a
+     * candidate only counts when an existing [RecycleRecord] still points inside it.
+     */
+    suspend fun legacyRecycleFolders(rootTreeUri: Uri): List<DocNode> = withContext(Dispatchers.IO) {
+        val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+            rootTreeUri,
+            DocumentsContract.getTreeDocumentId(rootTreeUri),
+        )
+        val root = DocNode.load(resolver, rootDocumentUri) ?: return@withContext emptyList()
+        val candidates = root.children(resolver).filter { it.isDirectory && LEGACY_BIN_NAME.matches(it.name) }
+        if (candidates.isEmpty()) return@withContext emptyList()
+        val records = store.list()
+        candidates.filter { candidate ->
+            records.any { record -> isInside(candidate.uri, record.recycledUri) }
+        }
+    }
+
+    /** Names of [legacyRecycleFolders], for callers that only need to exclude them from a
+     * listing or a search, not open them. */
+    suspend fun legacyRecycleFolderNames(rootTreeUri: Uri): Set<String> =
+        legacyRecycleFolders(rootTreeUri).mapTo(mutableSetOf(), DocNode::name)
+
+    /**
+     * Moves every recorded item out of [legacy] and into the real `.fylz-trash`, one at a time:
+     * copy, verify, rewrite that item's record to point at the new location, then delete the old
+     * copy -- only once that's confirmed does the next item start. [legacy] itself is removed
+     * only if it ends up empty; any content in it that isn't backed by a [RecycleRecord] is left
+     * alone rather than guessed at. Nothing here runs automatically (contract §2): this is called
+     * only from an explicit "Tidy legacy recycle folders" action.
+     */
+    suspend fun tidyLegacyRecycleFolder(rootTreeUri: Uri, legacy: DocNode): Unit = withContext(Dispatchers.IO) {
+        val recycleRoot = recycleRootFor(rootTreeUri)
+        val records = store.list().filter { record -> isInside(legacy.uri, record.recycledUri) }
+        for (record in records) {
+            coroutineContext.ensureActive()
+            val recycled = DocNode.load(resolver, record.recycledUri) ?: continue
+            val newContainer = recycleRoot.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, record.itemId)
+            try {
+                val moved = copyDocument(recycled, newContainer, record.originalDisplayName)
+                verifyCopy(recycled, moved)
+                store.put(record.copy(recycledUri = moved.uri, containerUri = newContainer.uri))
+                check(recycled.delete(resolver)) {
+                    "Moved ${record.originalDisplayName} into .fylz-trash, but the provider refused to remove " +
+                        "the old copy."
+                }
+                record.containerUri?.let { oldContainer -> DocNode.load(resolver, oldContainer)?.delete(resolver) }
+            } catch (failure: Throwable) {
+                newContainer.delete(resolver)
+                throw failure
+            }
+        }
+        legacy.refresh(resolver)?.let { fresh -> if (fresh.children(resolver).isEmpty()) fresh.delete(resolver) }
+    }
+
+    /**
      * The Replace conflict policy, shared by [restore]'s [finalizeRestore] and
      * [FileOperationService]'s equivalent: the existing item is renamed aside, never deleted,
      * until the replacement has actually landed under the requested name. Today's code deleted
@@ -469,6 +527,12 @@ class RecycleBinService(
         }
     }
 
+    /** Whether [documentUri] is [parentUri] or lives somewhere underneath it. A record whose
+     * document no longer exists (or any other provider error) safely counts as "no". */
+    private fun isInside(parentUri: Uri, documentUri: Uri): Boolean = runCatching {
+        documentUri == parentUri || DocumentsContract.isChildDocument(resolver, parentUri, documentUri)
+    }.getOrDefault(false)
+
     private fun uniqueStagingName(destination: DocNode, requestedName: String): String {
         val safeName = requestedName.replace('/', '_')
         while (true) {
@@ -500,5 +564,10 @@ class RecycleBinService(
     companion object {
         /** Must match [io.github.mbaliga.fylz.search.RecursiveSearchEngine.RECYCLE_DIRECTORY]. */
         const val RECYCLE_DIRECTORY: String = ".fylz-trash"
+
+        /** A pre-P0.3 dot-stripped recycle bin: `fylz-trash`, `fylz-trash (2)`, and so on --
+         * `FylzFilesDocumentsProvider.createDocument`'s own disambiguation shape for a repeated
+         * name. See [legacyRecycleFolders]. */
+        private val LEGACY_BIN_NAME = Regex("""fylz-trash( \(\d+\))?""")
     }
 }
