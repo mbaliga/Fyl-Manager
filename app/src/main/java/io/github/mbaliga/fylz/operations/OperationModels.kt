@@ -26,6 +26,9 @@ enum class OperationState {
     FAILED,
     CANCELLED,
     NEEDS_ATTENTION,
+    /** A dead process left this item mid-copy (P0.6); its staged partial write, if any, was
+     * deleted by [OperationRunner.recover] and it is safely retryable from scratch. */
+    INTERRUPTED,
 }
 
 enum class ConflictPolicy {
@@ -44,6 +47,11 @@ data class OperationItem(
     val completedBytes: Long = 0,
     val state: OperationState = OperationState.QUEUED,
     val errorCode: String? = null,
+    /** The `.fylz-part-*` document this item is (or was) writing to before verification and the
+     * final rename (P0.6). Recorded before the first byte is written, so [OperationRunner.recover]
+     * can delete exactly this document -- and nothing else -- for an item a dead process left
+     * mid-copy. Cleared once the item reaches a terminal state. */
+    val stagingUri: Uri? = null,
 )
 
 data class FileOperation(
@@ -93,5 +101,6 @@ object OperationRecoveryPolicy {
         OperationState.FAILED,
         OperationState.CANCELLED,
         OperationState.NEEDS_ATTENTION,
+        OperationState.INTERRUPTED,
     )
 }

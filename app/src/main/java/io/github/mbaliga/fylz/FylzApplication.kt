@@ -2,10 +2,12 @@ package io.github.mbaliga.fylz
 
 import android.app.Application
 import dev.aarso.crashrecovery.CrashRecovery
+import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationRunner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Installs the shared Hyle-constellation crash-recovery handler (dev.aarso:crash-recovery,
@@ -25,5 +27,12 @@ class FylzApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashRecovery.install(this, appLabel = "Fylz")
+
+        // Constructing this here, first, runs OperationJournal's own construction-time recovery
+        // (RUNNING/PREFLIGHT/PAUSED -> NEEDS_ATTENTION/"PROCESS_INTERRUPTED") before anything else
+        // in the process gets a chance to construct a journal of its own -- OperationRunner.recover
+        // (P0.6) depends on that having already happened.
+        val journal = OperationJournal(this)
+        operationScope.launch { OperationRunner.recover(journal, contentResolver) }
     }
 }

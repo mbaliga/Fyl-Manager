@@ -8,6 +8,9 @@ import io.github.mbaliga.fylz.storage.testing.TreeNode
 import io.github.mbaliga.fylz.storage.testing.buildTree
 import io.github.mbaliga.fylz.storage.testing.diffTrees
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -135,6 +138,27 @@ class FileOperationServiceTest {
         assertEquals(destinationBefore, destinationFingerprint())
         val finished = service.operations().first { it.id == pending.id }
         assertEquals(OperationState.SUCCEEDED, finished.state)
+    }
+
+    @Test
+    fun `cancelling mid-copy leaves nothing under the final name`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("big.bin", 5 * 1024 * 1024)))
+        val progressed = CompletableDeferred<Unit>()
+
+        val job = launch {
+            service.copy(listOf(documentUri("source/big.bin")), treeUriFor("destination")) { progress ->
+                if (!progressed.isCompleted && progress.completedBytes > 0) progressed.complete(Unit)
+            }
+        }
+        progressed.await()
+        job.cancelAndJoin()
+
+        // Not just absent under the final name (P0.6's own bar): copyDocument's existing
+        // failure-cleanup already deletes the staging document too on an in-process cancel, so
+        // nothing at all should be left behind here -- unlike a real process death, which is what
+        // OperationRunner.recover (tested separately) exists to clean up afterward.
+        assertFalse(File(destinationDir, "big.bin").exists())
+        assertTrue(destinationDir.listFiles()?.isEmpty() ?: true)
     }
 
     /** Relative path + size for every file under the destination, as a stand-in for "unchanged

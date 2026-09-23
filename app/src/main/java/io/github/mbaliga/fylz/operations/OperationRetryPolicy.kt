@@ -29,6 +29,7 @@ object OperationRetryPolicy {
         OperationState.FAILED,
         OperationState.CANCELLED,
         OperationState.NEEDS_ATTENTION,
+        OperationState.INTERRUPTED,
     )
 
     private val retryableTypes = setOf(

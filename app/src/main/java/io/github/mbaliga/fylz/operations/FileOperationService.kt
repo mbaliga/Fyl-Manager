@@ -29,7 +29,6 @@ class FileOperationService(
 
     private data class TargetPlan(
         val requestedName: String,
-        val stagingName: String,
         val existing: DocNode? = null,
     )
 
@@ -168,11 +167,17 @@ class FileOperationService(
                     val staged = copyDocument(
                         source = source,
                         destinationDirectory = destination,
-                        requestedName = plan.stagingName,
+                        requestedName = stagingName(current.id, index, plan.requestedName),
                         progressName = plan.requestedName,
                         itemIndex = index,
                         itemCount = sourceUris.size,
                         totalBytes = total,
+                        onStaged = { uri ->
+                            // Recorded before the first byte is written (P0.6): OperationRunner.recover
+                            // can find and delete exactly this document if the process dies mid-copy.
+                            current = updateItem(current, index) { it.copy(stagingUri = uri) }
+                            journal.put(current)
+                        },
                     ) { progress ->
                         current = updateItem(current, index) { item ->
                             item.copy(
@@ -193,6 +198,7 @@ class FileOperationService(
                                 completedBytes = item.expectedBytes ?: item.completedBytes,
                                 state = OperationState.NEEDS_ATTENTION,
                                 errorCode = MOVE_SOURCE_DELETE_PENDING,
+                                stagingUri = null,
                             )
                         }
                         journal.put(current)
@@ -206,6 +212,7 @@ class FileOperationService(
                             completedBytes = item.expectedBytes ?: item.completedBytes,
                             state = OperationState.SUCCEEDED,
                             errorCode = null,
+                            stagingUri = null,
                         )
                     }
                     journal.put(current)
@@ -280,6 +287,7 @@ class FileOperationService(
         itemIndex: Int,
         itemCount: Int,
         totalBytes: Long?,
+        onStaged: (Uri) -> Unit = {},
         onProgress: (Progress) -> Unit,
     ): DocNode {
         coroutineContext.ensureActive()
@@ -289,6 +297,7 @@ class FileOperationService(
                 DocumentsContract.Document.MIME_TYPE_DIR,
                 requestedName,
             )
+            onStaged(directory.uri)
             try {
                 source.children(resolver).forEach { child ->
                     copyDocument(
@@ -299,6 +308,8 @@ class FileOperationService(
                         itemIndex = itemIndex,
                         itemCount = itemCount,
                         totalBytes = null,
+                        // Nested children live under a still-staged parent, already hidden from
+                        // listings; only the top-level node's uri matters for orphan recovery.
                         onProgress = onProgress,
                     )
                 }
@@ -310,6 +321,7 @@ class FileOperationService(
         }
 
         val target = destinationDirectory.createChild(resolver, source.mimeType, requestedName)
+        onStaged(target.uri)
         try {
             val input = resolver.openInputStream(source.uri) ?: error("Unable to read $progressName.")
             val output = resolver.openOutputStream(target.uri, "w") ?: error("Unable to write $progressName.")
@@ -356,14 +368,19 @@ class FileOperationService(
     }
 
     /**
-     * On a plain create (no conflict), [plan] carries no [TargetPlan.existing] and [staged] is
-     * already the final node. A Replace conflict goes through [RecycleBinService]'s shared policy
-     * (also used by its own restore): the existing item is renamed aside and recycled -- into
-     * [destination]'s `.fylz-trash` if it has one -- only after the replacement has actually
-     * landed under the requested name, never before.
+     * [staged] is always still under its `.fylz-part-*` staging name at this point (P0.6): every
+     * copy writes there first, regardless of conflict policy, and only reaches its real name here,
+     * after verification. On a plain create or Keep-both (no [TargetPlan.existing]), that's a
+     * direct rename. A Replace conflict goes through [RecycleBinService]'s shared policy (also used
+     * by its own restore): the existing item is renamed aside and recycled -- into [destination]'s
+     * `.fylz-trash` if it has one -- only after the replacement has actually landed under the
+     * requested name, never before.
      */
     private suspend fun finalizeTarget(destination: DocNode, plan: TargetPlan, staged: DocNode): DocNode {
-        val existing = plan.existing ?: return staged
+        val existing = plan.existing
+        if (existing == null) {
+            return if (staged.name == plan.requestedName) staged else staged.rename(resolver, plan.requestedName)
+        }
         return recycleBin.replaceWithRecycleFallback(
             destinationRoot = destination,
             existing = existing,
@@ -379,27 +396,12 @@ class FileOperationService(
         policy: ConflictPolicy,
     ): TargetPlan? {
         val existing = destination.findChild(resolver, requestedName)
-            ?: return TargetPlan(requestedName = requestedName, stagingName = requestedName)
+            ?: return TargetPlan(requestedName = requestedName)
         return when (policy) {
             ConflictPolicy.ASK -> error("A file named $requestedName already exists.")
             ConflictPolicy.SKIP -> null
-            ConflictPolicy.KEEP_BOTH -> {
-                val unique = uniqueName(destination, requestedName)
-                TargetPlan(requestedName = unique, stagingName = unique)
-            }
-            ConflictPolicy.REPLACE -> TargetPlan(
-                requestedName = requestedName,
-                stagingName = uniqueStagingName(destination, requestedName),
-                existing = existing,
-            )
-        }
-    }
-
-    private fun uniqueStagingName(destination: DocNode, requestedName: String): String {
-        val safeName = requestedName.replace('/', '_')
-        while (true) {
-            val candidate = ".fylz-replace-${UUID.randomUUID()}-$safeName"
-            if (destination.findChild(resolver, candidate) == null) return candidate
+            ConflictPolicy.KEEP_BOTH -> TargetPlan(requestedName = uniqueName(destination, requestedName))
+            ConflictPolicy.REPLACE -> TargetPlan(requestedName = requestedName, existing = existing)
         }
     }
 
@@ -420,4 +422,37 @@ class FileOperationService(
         const val MOVE_DESTINATION_MISSING = "MOVE_DESTINATION_MISSING"
         const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
     }
+}
+
+/** Recognizes a staged write's name, wherever a caller (P0.6) needs to hide one from a listing or
+ * a search -- must match what [stagingName] produces. */
+internal const val STAGING_NAME_PREFIX = ".fylz-part-"
+
+/**
+ * Every file (or top-level folder) copy writes under this name first, regardless of conflict
+ * policy, and reaches [requestedName] only after verification (P0.6, defect 5): a process that
+ * dies mid-write leaves a `.fylz-part-*` orphan, never a half-written file under the name the user
+ * would actually see. [operationId] and [itemIndex] make the name unique across concurrent and
+ * historical operations without needing a provider round trip to check for collisions, and let
+ * [OperationRunner.recover] identify which operation and item an orphan belongs to purely from its
+ * name if the journal record itself is ever unreadable. Truncated to 255 UTF-8 bytes -- the limit
+ * most filesystems this app's providers sit on enforce -- without splitting a multi-byte character.
+ */
+internal fun stagingName(operationId: String, itemIndex: Int, requestedName: String): String {
+    val safeName = requestedName.replace('/', '_')
+    return "$STAGING_NAME_PREFIX$operationId-$itemIndex-$safeName".truncateUtf8Bytes(255)
+}
+
+/** True for any name [stagingName] could have produced -- a caller hiding staged writes from a
+ * listing or a search only needs to check this, not reconstruct the exact name. */
+internal fun isStagingName(name: String): Boolean = name.startsWith(STAGING_NAME_PREFIX)
+
+private fun String.truncateUtf8Bytes(maxBytes: Int): String {
+    val bytes = toByteArray(Charsets.UTF_8)
+    if (bytes.size <= maxBytes) return this
+    var end = maxBytes
+    // Back off until not mid-way through a multi-byte UTF-8 sequence: a continuation byte's two
+    // high bits are `10`, so anywhere else is a safe place to cut.
+    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+    return String(bytes, 0, end, Charsets.UTF_8)
 }

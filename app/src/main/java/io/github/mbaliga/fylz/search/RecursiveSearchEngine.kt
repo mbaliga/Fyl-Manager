@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -84,6 +85,9 @@ class RecursiveSearchEngine(context: Context) {
             val children = runCatching { listChildren(treeUri, folderUri) }.getOrDefault(emptyList())
             for (child in children) {
                 coroutineContext.ensureActive()
+                // A `.fylz-part-*` staged write (P0.6) is not a real file yet -- it may still be
+                // mid-write -- so it must never surface as a search hit, file or folder alike.
+                if (isStagingName(child.name)) continue
                 val childPath = if (folderPath.isEmpty()) child.name else "$folderPath/${child.name}"
 
                 if (child.isDirectory) {

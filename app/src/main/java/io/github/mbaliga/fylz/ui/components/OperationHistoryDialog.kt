@@ -201,6 +201,12 @@ private fun OperationHistoryCard(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                if (operation.state == OperationState.INTERRUPTED) {
+                    Text(
+                        "Fylz closed before this finished. Any partial copy was safely removed; retry starts it fresh.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 operation.items.mapNotNull { it.errorCode }.distinct().takeIf { it.isNotEmpty() }?.let { codes ->
                     Text(
                         codes.joinToString(),
@@ -236,6 +242,7 @@ private fun OperationState.presentation(): StatePresentation = when (this) {
     OperationState.FAILED -> StatePresentation("Failed", Icons.Outlined.ErrorOutline)
     OperationState.CANCELLED -> StatePresentation("Cancelled", Icons.Outlined.Cancel)
     OperationState.NEEDS_ATTENTION -> StatePresentation("Needs attention", Icons.Outlined.WarningAmber)
+    OperationState.INTERRUPTED -> StatePresentation("Interrupted", Icons.Outlined.WarningAmber)
 }
 
 private fun FileOperationType.label(): String = name
@@ -251,4 +258,5 @@ private val dismissibleStates = setOf(
     OperationState.FAILED,
     OperationState.CANCELLED,
     OperationState.NEEDS_ATTENTION,
+    OperationState.INTERRUPTED,
 )

@@ -92,7 +92,8 @@ class OperationJournal(context: Context) {
                         .put("expectedBytes", item.expectedBytes)
                         .put("completedBytes", item.completedBytes)
                         .put("state", item.state.name)
-                        .put("errorCode", item.errorCode),
+                        .put("errorCode", item.errorCode)
+                        .put("stagingUri", item.stagingUri?.toString()),
                 )
             }
             root.put(
@@ -135,6 +136,9 @@ class OperationJournal(context: Context) {
                                     completedBytes = item.optLong("completedBytes", 0L),
                                     state = OperationState.valueOf(item.getString("state")),
                                     errorCode = item.optString("errorCode").takeIf(String::isNotBlank),
+                                    stagingUri = item.optString("stagingUri")
+                                        .takeIf(String::isNotBlank)
+                                        ?.let(Uri::parse),
                                 ),
                             )
                         }

@@ -1,13 +1,16 @@
 package io.github.mbaliga.fylz.operations
 
+import android.content.ContentResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /** One operation's live state while [OperationRunner.run] is executing it. */
@@ -104,5 +107,46 @@ class OperationRunner(private val scope: CoroutineScope) {
      * finished (the id is no longer tracked by then). */
     fun cancel(id: String) {
         jobs[id]?.cancel()
+    }
+
+    companion object {
+        /**
+         * Call once at app start (P0.6), with a [journal] the caller just constructed -- its own
+         * constructor synchronously marks every operation a dead process left `RUNNING`,
+         * `PREFLIGHT` or `PAUSED` as `NEEDS_ATTENTION` with `errorCode = "PROCESS_INTERRUPTED"`
+         * (see [OperationRecoveryPolicy]), so that must already have happened by the time this
+         * runs.
+         *
+         * For every copy/move item that recovery touched, this deletes exactly the one
+         * `.fylz-part-*` staging document it recorded -- and only that document, never a broader
+         * sweep -- and marks it [OperationState.INTERRUPTED] so [OperationRetryPolicy] offers a
+         * safe retry. An item that reached `NEEDS_ATTENTION` any other way (for example
+         * `MOVE_SOURCE_DELETE_PENDING`) is untouched: that has its own recovery action
+         * (`FileOperationService.finishMoveCleanup`).
+         */
+        suspend fun recover(journal: OperationJournal, resolver: ContentResolver) = withContext(Dispatchers.IO) {
+            journal.list()
+                .filter { it.type == FileOperationType.COPY || it.type == FileOperationType.MOVE }
+                .forEach { operation ->
+                    var changed = false
+                    val items = operation.items.map { item ->
+                        if (item.errorCode != PROCESS_INTERRUPTED) return@map item
+                        changed = true
+                        item.stagingUri?.let { staging -> DocNode.load(resolver, staging)?.delete(resolver) }
+                        item.copy(state = OperationState.INTERRUPTED, stagingUri = null)
+                    }
+                    if (changed) {
+                        journal.put(
+                            operation.copy(
+                                items = items,
+                                state = OperationState.INTERRUPTED,
+                                updatedAtMillis = System.currentTimeMillis(),
+                            ),
+                        )
+                    }
+                }
+        }
+
+        private const val PROCESS_INTERRUPTED = "PROCESS_INTERRUPTED"
     }
 }

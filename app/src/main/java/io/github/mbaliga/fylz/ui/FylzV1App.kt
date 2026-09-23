@@ -139,6 +139,7 @@ import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.OperationProgress
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.RunningOperation
+import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
@@ -549,7 +550,11 @@ private fun FylzV1Workspace(
         }
         loading = true
         runCatching { repository.listChildren(activeTab.treeUri, activeTab.current.uri) }
-            .onSuccess { entries = it.filterNot { item -> item.name == ".fylz-trash" || item.name in legacyBinNames } }
+            .onSuccess {
+                entries = it.filterNot { item ->
+                    item.name == ".fylz-trash" || item.name in legacyBinNames || isStagingName(item.name)
+                }
+            }
             .onFailure { toast(it.message ?: "Unable to read folder") }
         loading = false
     }
