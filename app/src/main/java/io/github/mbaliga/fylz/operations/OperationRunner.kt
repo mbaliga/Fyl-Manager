@@ -145,11 +145,12 @@ class OperationRunner(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy,
+        nameOverrides: Map<Uri, String> = emptyMap(),
     ) {
         val appContext = requireNotNull(context) { "OperationRunner needs a context to enqueue durable transfers." }
         val workManager = WorkManager.getInstance(appContext)
         val request = OneTimeWorkRequestBuilder<TransferWorker>()
-            .setInputData(TransferWorker.inputData(type, sourceUris, destinationTreeUri, conflictPolicy))
+            .setInputData(TransferWorker.inputData(type, sourceUris, destinationTreeUri, conflictPolicy, nameOverrides))
             .build()
         val trackingId = request.id.toString()
         _operations.update { it + RunningOperation(trackingId, type, label, itemCount = sourceUris.size) }

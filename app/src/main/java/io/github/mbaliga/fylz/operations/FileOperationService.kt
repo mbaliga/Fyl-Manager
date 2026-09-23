@@ -38,15 +38,17 @@ class FileOperationService(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        nameOverrides: Map<Uri, String> = emptyMap(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, onProgress)
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, false, conflictPolicy, nameOverrides, onProgress)
 
     suspend fun move(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
         conflictPolicy: ConflictPolicy = ConflictPolicy.ASK,
+        nameOverrides: Map<Uri, String> = emptyMap(),
         onProgress: (Progress) -> Unit = {},
-    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, onProgress)
+    ): List<Uri> = transfer(sourceUris, destinationTreeUri, true, conflictPolicy, nameOverrides, onProgress)
 
     fun operations(): List<FileOperation> = journal.list()
 
@@ -111,6 +113,7 @@ class FileOperationService(
         destinationTreeUri: Uri,
         move: Boolean,
         conflictPolicy: ConflictPolicy,
+        nameOverrides: Map<Uri, String>,
         onProgress: (Progress) -> Unit,
     ): List<Uri> = withContext(Dispatchers.IO) {
         require(sourceUris.isNotEmpty()) { "Choose at least one item." }
@@ -137,7 +140,7 @@ class FileOperationService(
                 OperationItem(
                     source = uri,
                     destination = destinationTreeUri,
-                    displayName = source?.name ?: "untitled",
+                    displayName = nameOverrides[uri] ?: source?.name ?: "untitled",
                     expectedBytes = source?.size?.takeIf { source.isDirectory.not() },
                     state = OperationState.QUEUED,
                 )
@@ -159,7 +162,10 @@ class FileOperationService(
                     coroutineContext.ensureActive()
                     val source = DocNode.load(resolver, sourceUri)
                         ?: error("Unable to open a selected item.")
-                    val sourceName = source.name
+                    // P1.5: a Preflight sheet's own auto-rename choice, when the source's own name
+                    // has a problem at the destination -- the copy lands under this name, the
+                    // source itself is never touched.
+                    val sourceName = nameOverrides[sourceUri] ?: source.name
                     val plan = resolveTargetPlan(destination, sourceName, conflictPolicy)
                     if (plan == null) {
                         current = updateItem(current, index) {

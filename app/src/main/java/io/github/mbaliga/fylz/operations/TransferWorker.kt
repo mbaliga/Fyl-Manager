@@ -52,6 +52,7 @@ class TransferWorker(
         val conflictPolicy = inputData.getString(KEY_CONFLICT_POLICY)
             ?.let(ConflictPolicy::valueOf)
             ?: ConflictPolicy.ASK
+        val nameOverrides = readNameOverrides()
         val label = if (type == FileOperationType.COPY) "Copying" else "Moving"
 
         setForeground(foregroundInfo(label, 0, 0))
@@ -70,8 +71,8 @@ class TransferWorker(
                 setForegroundAsync(foregroundInfo(label, progress.itemIndex + 1, progress.itemCount))
             }
             when (type) {
-                FileOperationType.COPY -> fileOperations.copy(sources, destination, conflictPolicy, onProgress)
-                FileOperationType.MOVE -> fileOperations.move(sources, destination, conflictPolicy, onProgress)
+                FileOperationType.COPY -> fileOperations.copy(sources, destination, conflictPolicy, nameOverrides, onProgress)
+                FileOperationType.MOVE -> fileOperations.move(sources, destination, conflictPolicy, nameOverrides, onProgress)
                 else -> error("unreachable")
             }
             Result.success()
@@ -83,6 +84,8 @@ class TransferWorker(
     }
 
     private fun errorData(message: String) = Data.Builder().putString(KEY_ERROR_MESSAGE, message).build()
+
+    private fun readNameOverrides(): Map<Uri, String> = nameOverridesFrom(inputData)
 
     private fun foregroundInfo(label: String, itemIndex: Int, itemCount: Int): ForegroundInfo {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
@@ -114,6 +117,8 @@ class TransferWorker(
         internal const val KEY_SOURCES = "sources"
         internal const val KEY_DESTINATION = "destination"
         internal const val KEY_CONFLICT_POLICY = "conflict_policy"
+        internal const val KEY_NAME_OVERRIDE_URIS = "name_override_uris"
+        internal const val KEY_NAME_OVERRIDE_NAMES = "name_override_names"
         internal const val KEY_ERROR_MESSAGE = "error_message"
         internal const val KEY_PROGRESS_ITEM_INDEX = "progress_item_index"
         internal const val KEY_PROGRESS_ITEM_COUNT = "progress_item_count"
@@ -128,11 +133,31 @@ class TransferWorker(
             sourceUris: List<Uri>,
             destinationTreeUri: Uri,
             conflictPolicy: ConflictPolicy,
-        ): Data = Data.Builder()
-            .putString(KEY_TYPE, type.name)
-            .putStringArray(KEY_SOURCES, sourceUris.map(Uri::toString).toTypedArray())
-            .putString(KEY_DESTINATION, destinationTreeUri.toString())
-            .putString(KEY_CONFLICT_POLICY, conflictPolicy.name)
-            .build()
+            nameOverrides: Map<Uri, String> = emptyMap(),
+        ): Data {
+            // .entries walked once, so the two arrays stay paired by index regardless of which
+            // Map implementation the caller happens to pass -- keys/values iterated separately
+            // are only guaranteed to agree for a LinkedHashMap specifically.
+            val overrideEntries = nameOverrides.entries.toList()
+            return Data.Builder()
+                .putString(KEY_TYPE, type.name)
+                .putStringArray(KEY_SOURCES, sourceUris.map(Uri::toString).toTypedArray())
+                .putString(KEY_DESTINATION, destinationTreeUri.toString())
+                .putString(KEY_CONFLICT_POLICY, conflictPolicy.name)
+                .putStringArray(KEY_NAME_OVERRIDE_URIS, overrideEntries.map { it.key.toString() }.toTypedArray())
+                .putStringArray(KEY_NAME_OVERRIDE_NAMES, overrideEntries.map { it.value }.toTypedArray())
+                .build()
+        }
     }
+}
+
+/** The [TransferWorker.KEY_NAME_OVERRIDE_URIS]/[TransferWorker.KEY_NAME_OVERRIDE_NAMES] pair of
+ * parallel arrays [inputData] carries, rebuilt back into the map [FileOperationService.copy]/
+ * [FileOperationService.move] actually take -- `Data` has no map type of its own. A top-level
+ * function (not a private instance method) so it can be tested against a [Data] built by
+ * [TransferWorker.inputData] without needing a real [TransferWorker] instance. */
+internal fun nameOverridesFrom(inputData: Data): Map<Uri, String> {
+    val uris = inputData.getStringArray(TransferWorker.KEY_NAME_OVERRIDE_URIS) ?: return emptyMap()
+    val names = inputData.getStringArray(TransferWorker.KEY_NAME_OVERRIDE_NAMES) ?: return emptyMap()
+    return uris.map(Uri::parse).zip(names.toList()).toMap()
 }

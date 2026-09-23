@@ -96,6 +96,18 @@ class FileOperationServiceTest {
     }
 
     @Test
+    fun `a nameOverrides entry renames the copy without touching the source`() = runBlocking {
+        buildTree(sourceDir, listOf(TreeNode.FileNode("bad:name.txt", 100)))
+        val sourceUri = documentUri("source/bad:name.txt")
+
+        service.copy(listOf(sourceUri), treeUriFor("destination"), nameOverrides = mapOf(sourceUri to "bad_name.txt"))
+
+        assertTrue("the source keeps its own original name", File(sourceDir, "bad:name.txt").exists())
+        assertTrue("the copy lands under the override name", File(destinationDir, "bad_name.txt").exists())
+        assertFalse(File(destinationDir, "bad:name.txt").exists())
+    }
+
+    @Test
     fun `moves a three level folder leaving the source gone`() = runBlocking {
         buildTree(sourceDir, listOf(TreeNode.DirNode("photos", photoTreeChildren())))
         val snapshot = tempFolder.newFolder("snapshot")

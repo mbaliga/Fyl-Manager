@@ -2,10 +2,12 @@ package io.github.mbaliga.fylz.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -144,8 +146,11 @@ import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.OperationProgress
+import io.github.mbaliga.fylz.operations.PreflightPolicy
+import io.github.mbaliga.fylz.operations.PreflightResult
 import io.github.mbaliga.fylz.operations.RecycleBinService
 import io.github.mbaliga.fylz.operations.RunningOperation
+import io.github.mbaliga.fylz.operations.gatherPreflightItems
 import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.pdf.PdfPageRef
 import io.github.mbaliga.fylz.pdf.PdfToolService
@@ -156,18 +161,23 @@ import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
 import io.github.mbaliga.fylz.search.SearchProgress
 import io.github.mbaliga.fylz.search.SearchQuery
+import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
+import io.github.mbaliga.fylz.storage.VolumeInfoResolver
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
+import io.github.mbaliga.fylz.ui.components.PreflightSheet
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.components.totalKnownBytes
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -225,6 +235,38 @@ private data class PermanentDeleteRequest(
     val itemName: String? = null,
     val onConfirmed: () -> Unit,
 )
+
+/** A copy or move waiting on [io.github.mbaliga.fylz.ui.components.PreflightSheet] (P1.5) because
+ * [PreflightPolicy.evaluate] found a problem -- an illegal name, a collision, a file too large for
+ * the destination, or not enough free space -- before the transfer actually starts. [sources] and
+ * [destination] are exactly what would otherwise have gone straight to
+ * [io.github.mbaliga.fylz.operations.OperationRunner.enqueueTransfer]. */
+private data class PreflightRequest(
+    val result: PreflightResult,
+    val action: PendingDestinationAction,
+    val sources: List<Uri>,
+    val destination: Uri,
+)
+
+/**
+ * P1.5: resolves [destinationTreeUri]'s [io.github.mbaliga.fylz.storage.VolumeInfo] and gathers
+ * [sources] into [io.github.mbaliga.fylz.operations.PreflightItem]s, then runs the pure
+ * [PreflightPolicy] over both. A caller that can't afford to block on this (nothing here is fast:
+ * a real recursive size walk, a `/proc/self/mounts` read, a `StatFs` call) should run it off the
+ * main thread, which is why this itself already does -- see [android.content.Context] used only
+ * for provider/file resolution, never anything UI-scoped.
+ */
+private suspend fun runPreflight(context: Context, sources: List<Uri>, destinationTreeUri: Uri): PreflightResult =
+    withContext(Dispatchers.IO) {
+        val destinationDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+            destinationTreeUri,
+            DocumentsContract.getTreeDocumentId(destinationTreeUri),
+        )
+        val destinationPath = FylzFilesDocumentsProvider.fileFor(context, destinationDocumentUri)
+        val volumeInfo = VolumeInfoResolver.resolve(context, destinationTreeUri, destinationPath)
+        val items = gatherPreflightItems(context.contentResolver, sources)
+        PreflightPolicy.evaluate(items, volumeInfo)
+    }
 
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
@@ -318,6 +360,7 @@ private fun FylzV1Workspace(
     var batchRenameDialog by remember { mutableStateOf(false) }
     var recycleDialog by remember { mutableStateOf(false) }
     var permanentDeleteRequest by remember { mutableStateOf<PermanentDeleteRequest?>(null) }
+    var pendingPreflight by remember { mutableStateOf<PreflightRequest?>(null) }
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
@@ -427,6 +470,59 @@ private fun FylzV1Workspace(
         }
     }
 
+    // Copy and move (P1.2) run as durable WorkManager work instead of only on the app-scoped
+    // OperationRunner (P0.5, A3) directly; extract still runs there. Either way this only awaits
+    // the result to update UI state on completion, so rotating away mid-transfer never cancels
+    // it. Pulled out of destinationPicker's own callback (P1.5) so both the clean-preflight path
+    // and the PreflightSheet's own "Continue" can call it with adjusted sources/nameOverrides.
+    suspend fun runDestinationAction(
+        action: PendingDestinationAction,
+        sources: List<Uri>,
+        destination: Uri,
+        archiveUri: Uri?,
+        nameOverrides: Map<Uri, String>,
+    ) {
+        runCatching {
+            when (action) {
+                PendingDestinationAction.COPY -> operationRunner.enqueueTransfer(
+                    FileOperationType.COPY,
+                    "Copying",
+                    sources,
+                    destination,
+                    ConflictPolicy.KEEP_BOTH,
+                    nameOverrides,
+                )
+                PendingDestinationAction.MOVE -> operationRunner.enqueueTransfer(
+                    FileOperationType.MOVE,
+                    "Moving",
+                    sources,
+                    destination,
+                    ConflictPolicy.KEEP_BOTH,
+                    nameOverrides,
+                )
+                PendingDestinationAction.EXTRACT -> operationRunner.run(FileOperationType.EXTRACT, "Extracting") {
+                    archiveService.extractZip(
+                        archiveUri = archiveUri ?: error("Choose an archive."),
+                        destinationTreeUri = destination,
+                        password = extractPassword.takeIf { it.isNotEmpty() }?.toCharArray(),
+                    )
+                }.await()
+            }
+        }.onSuccess {
+            toast(
+                when (action) {
+                    PendingDestinationAction.COPY -> "Copied"
+                    PendingDestinationAction.MOVE -> "Moved"
+                    PendingDestinationAction.EXTRACT -> "Extracted"
+                },
+            )
+            selectedUris = emptySet()
+            pendingArchiveUri = null
+            extractPassword = ""
+            refresh()
+        }.onFailure { toast(it.message ?: "Operation failed") }
+    }
+
     val destinationPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { destination ->
         val action = pendingDestinationAction
         pendingDestinationAction = null
@@ -436,49 +532,21 @@ private fun FylzV1Workspace(
         val archiveUri = pendingArchiveUri
         if (action == PendingDestinationAction.COPY || action == PendingDestinationAction.MOVE) {
             ensureNotificationPermissionRequested()
-        }
-        // Copy and move (P1.2) run as durable WorkManager work instead of only on the app-scoped
-        // OperationRunner (P0.5, A3) directly; extract still runs there. Either way this launch
-        // only awaits the result to update UI state on completion, so rotating away mid-transfer
-        // never cancels it.
-        scope.launch {
-            runCatching {
-                when (action) {
-                    PendingDestinationAction.COPY -> operationRunner.enqueueTransfer(
-                        FileOperationType.COPY,
-                        "Copying",
-                        sources,
-                        destination,
-                        ConflictPolicy.KEEP_BOTH,
-                    )
-                    PendingDestinationAction.MOVE -> operationRunner.enqueueTransfer(
-                        FileOperationType.MOVE,
-                        "Moving",
-                        sources,
-                        destination,
-                        ConflictPolicy.KEEP_BOTH,
-                    )
-                    PendingDestinationAction.EXTRACT -> operationRunner.run(FileOperationType.EXTRACT, "Extracting") {
-                        archiveService.extractZip(
-                            archiveUri = archiveUri ?: error("Choose an archive."),
-                            destinationTreeUri = destination,
-                            password = extractPassword.takeIf { it.isNotEmpty() }?.toCharArray(),
-                        )
-                    }.await()
+            // P1.5: checked before the transfer ever starts -- a problem this catches would
+            // otherwise only surface mid-copy, one item at a time, as a bare provider exception,
+            // with no chance to fix the name or leave just that item out first. A failure in the
+            // check itself (never seen in practice, but this is advisory, not a safety gate) is
+            // not a reason to block an otherwise-normal copy or move.
+            scope.launch {
+                val result = runCatching { runPreflight(context, sources, destination) }.getOrNull()
+                if (result == null || result.isClean) {
+                    runDestinationAction(action, sources, destination, archiveUri, emptyMap())
+                } else {
+                    pendingPreflight = PreflightRequest(result, action, sources, destination)
                 }
-            }.onSuccess {
-                toast(
-                    when (action) {
-                        PendingDestinationAction.COPY -> "Copied"
-                        PendingDestinationAction.MOVE -> "Moved"
-                        PendingDestinationAction.EXTRACT -> "Extracted"
-                    },
-                )
-                selectedUris = emptySet()
-                pendingArchiveUri = null
-                extractPassword = ""
-                refresh()
-            }.onFailure { toast(it.message ?: "Operation failed") }
+            }
+        } else {
+            scope.launch { runDestinationAction(action, sources, destination, archiveUri, emptyMap()) }
         }
     }
 
@@ -1197,6 +1265,19 @@ private fun FylzV1Workspace(
             onConfirm = {
                 permanentDeleteRequest = null
                 request.onConfirmed()
+            },
+        )
+    }
+
+    pendingPreflight?.let { request ->
+        PreflightSheet(
+            result = request.result,
+            onCancel = { pendingPreflight = null },
+            onProceed = { skipped, renamed ->
+                pendingPreflight = null
+                val remainingSources = request.sources.filterNot { it in skipped }
+                val archiveUri = pendingArchiveUri
+                scope.launch { runDestinationAction(request.action, remainingSources, request.destination, archiveUri, renamed) }
             },
         )
     }

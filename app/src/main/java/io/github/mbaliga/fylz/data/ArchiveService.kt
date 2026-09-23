@@ -3,7 +3,6 @@ package io.github.mbaliga.fylz.data
 import android.content.Context
 import android.net.Uri
 import android.os.StatFs
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import io.github.mbaliga.fylz.operations.FileOperation
@@ -11,6 +10,7 @@ import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationItem
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.storage.queryRootAvailableBytes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -236,7 +236,7 @@ class ArchiveService(
             require(cacheDecision.allowed) { cacheDecision.reason ?: "Insufficient temporary storage." }
             val destinationDecision = ArchiveSpacePolicy.evaluate(
                 requirements.destinationBytes,
-                queryProviderAvailableBytes(destinationTreeUri),
+                queryRootAvailableBytes(context, destinationTreeUri),
                 "destination",
             )
             require(destinationDecision.allowed) { destinationDecision.reason ?: "Insufficient destination storage." }
@@ -416,28 +416,6 @@ class ArchiveService(
 
     private fun availableCacheBytes(): Long? = runCatching {
         StatFs(context.cacheDir.absolutePath).availableBytes
-    }.getOrNull()
-
-    private fun queryProviderAvailableBytes(treeUri: Uri): Long? = runCatching {
-        val authority = treeUri.authority ?: return@runCatching null
-        val documentId = DocumentsContract.getTreeDocumentId(treeUri)
-        val expectedRootId = documentId.substringBefore(':')
-        val rootsUri = DocumentsContract.buildRootsUri(authority)
-        val projection = arrayOf(
-            DocumentsContract.Root.COLUMN_ROOT_ID,
-            DocumentsContract.Root.COLUMN_AVAILABLE_BYTES,
-        )
-        context.contentResolver.query(rootsUri, projection, null, null, null)?.use { cursor ->
-            val rootIndex = cursor.getColumnIndex(DocumentsContract.Root.COLUMN_ROOT_ID)
-            val bytesIndex = cursor.getColumnIndex(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES)
-            while (cursor.moveToNext()) {
-                if (rootIndex < 0 || bytesIndex < 0 || cursor.isNull(bytesIndex)) continue
-                if (cursor.getString(rootIndex) == expectedRootId) {
-                    return@use cursor.getLong(bytesIndex).takeIf { it >= 0L }
-                }
-            }
-            null
-        }
     }.getOrNull()
 
     private fun FileOperation.running(): FileOperation = copy(
