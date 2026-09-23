@@ -83,6 +83,12 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         addDocumentRow(cursor, documentId, resolveFile(documentId))
+        // P1.11: so a caller (this app's own DocumentRepository included, once it registers a
+        // ContentObserver -- none does yet) can be told this ONE document changed without
+        // re-querying it speculatively. Mirrors queryChildDocuments' own notification below.
+        context?.contentResolver?.let { resolver ->
+            cursor.setNotificationUri(resolver, DocumentsContract.buildDocumentUri(AUTHORITY, documentId))
+        }
         return cursor
     }
 
@@ -100,6 +106,13 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         // an empty folder so the browser shows "This folder is empty" instead of crashing.
         parent.listFiles().orEmpty().forEach { child ->
             addDocumentRow(cursor, documentIdFor(rootId, rootDirectory(rootId), child), child)
+        }
+        // P1.11: pairs with notifyChildrenChanged, called from every method below that adds,
+        // removes or renames a child -- a caller (DocumentsUI, or this app once something
+        // registers a ContentObserver on it) can react to a live change instead of only ever
+        // seeing this folder's contents as of whenever it last queried.
+        context?.contentResolver?.let { resolver ->
+            cursor.setNotificationUri(resolver, DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId))
         }
         return cursor
     }
@@ -146,25 +159,32 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
             runCatching { candidate.createNewFile() }.getOrDefault(false)
         }
         if (!created) throw FileNotFoundException("Unable to create $displayName in $parentDocumentId")
-        return documentIdFor(rootIdOf(parentDocumentId), rootDirectory(rootIdOf(parentDocumentId)), candidate)
+        val childId = documentIdFor(rootIdOf(parentDocumentId), rootDirectory(rootIdOf(parentDocumentId)), candidate)
+        notifyChildrenChanged(parentDocumentId)
+        return childId
     }
 
     @Throws(FileNotFoundException::class)
     override fun deleteDocument(documentId: String) {
         val file = resolveFile(documentId)
+        val parentId = parentDocumentIdOf(documentId, file)
         if (!deleteRecursively(file)) {
             throw FileNotFoundException("Unable to delete $documentId")
         }
+        parentId?.let { notifyChildrenChanged(it) }
     }
 
     @Throws(FileNotFoundException::class)
     override fun renameDocument(documentId: String, displayName: String): String {
         val file = resolveFile(documentId)
+        val parentId = parentDocumentIdOf(documentId, file)
         val target = File(file.parentFile, sanitizeDisplayName(displayName))
         if (target.exists()) throw FileNotFoundException("${target.name} already exists")
         if (!file.renameTo(target)) throw FileNotFoundException("Unable to rename $documentId")
         val rootId = rootIdOf(documentId)
-        return documentIdFor(rootId, rootDirectory(rootId), target)
+        val newId = documentIdFor(rootId, rootDirectory(rootId), target)
+        parentId?.let { notifyChildrenChanged(it) }
+        return newId
     }
 
     @Throws(FileNotFoundException::class)
@@ -184,7 +204,33 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
             throw FileNotFoundException("Unable to move $sourceDocumentId across storage volumes")
         }
         val rootId = rootIdOf(targetParentDocumentId)
-        return documentIdFor(rootId, rootDirectory(rootId), target)
+        val newId = documentIdFor(rootId, rootDirectory(rootId), target)
+        notifyChildrenChanged(sourceParentDocumentId)
+        notifyChildrenChanged(targetParentDocumentId)
+        return newId
+    }
+
+    /** The [DocumentsContract.buildChildDocumentsUri] notification target
+     *  [queryChildDocuments] registers via `setNotificationUri` -- called after every mutation
+     *  above that adds, removes, renames or moves a child (P1.11), so anything watching a folder
+     *  (DocumentsUI, or this app's own [io.github.mbaliga.fylz.ui.FylzV1App] FileObserver for the
+     *  common in-app case) is told, rather than only ever seeing a stale listing until its next
+     *  unrelated re-query. */
+    private fun notifyChildrenChanged(parentDocumentId: String) {
+        context?.contentResolver?.notifyChange(
+            DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId),
+            null,
+        )
+    }
+
+    /** [documentId]'s own parent, as a document id -- [deleteDocument]/[renameDocument] are only
+     *  ever handed the document itself, unlike [createDocument]/[moveDocument], which already
+     *  receive a parent id as a parameter. Null only for a root document, which has no parent to
+     *  notify (its own root's listing is reached through [queryRoots], not a children query). */
+    private fun parentDocumentIdOf(documentId: String, file: File): String? {
+        val parentFile = file.parentFile ?: return null
+        val rootId = rootIdOf(documentId)
+        return documentIdFor(rootId, rootDirectory(rootId), parentFile)
     }
 
     override fun openDocumentThumbnail(

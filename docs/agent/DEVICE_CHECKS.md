@@ -170,3 +170,41 @@ real disk to measure, only `TransferBenchmarkTest`'s proof that the scenarios th
 correctly at a small scale. Also confirm the cross-volume and many-small-files numbers are
 directionally reasonable (cross-volume slower than same-volume; many small files bottlenecked by
 per-file overhead rather than raw throughput), and note all three numbers here once measured.
+
+## 10. Large-folder listing budget, external-change notifications and off-main-thread I/O (P1.11)
+
+**Steps:**
+1. On a real device, create (or copy in) a single folder containing 100,000 files on internal
+   storage, and open it as a Fylz tab.
+2. While that folder is open, use another app (or `adb shell` / a second device writing to the same
+   SD card) to create, delete, and rename a file inside it, without touching Fylz.
+3. Force a slow first paint honestly: cold-launch the app straight into that folder (a fresh tab,
+   not a warm one already cached in `entries`), and watch the wall-clock time to the first rows
+   appearing versus the whole folder finishing.
+4. With "Don't keep activities" still enabled (see check 1a), open the Storage & recovery room's
+   File history and Backup plans cards mid-way through some real work (a big copy running, a folder
+   still loading) and exercise their dialogs: change file-history settings, restore an old version,
+   delete a snapshot, add/edit/delete a backup plan, run a backup, restore a backup snapshot.
+
+**Expected:** the 100,000-entry folder shows its first rows within roughly 300 ms and finishes
+listing the rest within roughly 2 seconds — the master plan's own budget for `P1.11`'s paged
+listing (`DocumentRepository.listChildren`'s `INITIAL_BATCH_SIZE`/`SUBSEQUENT_BATCH_SIZE` streaming,
+`FylzV1App`'s `visibleEntries` sort moved off the main thread via `Dispatchers.Default`). The app
+stays responsive (scrolling, tapping other UI) while that folder is still streaming in, not frozen
+until the whole cursor walk finishes. The external create/delete/rename from step 2 shows up in the
+open tab's listing on its own, with no manual pull-to-refresh — `FylzFilesDocumentsProvider`'s new
+`notifyChange`/`setNotificationUri` calls plus `FylzV1App`'s new `FileObserver` on the visible
+File-backed folder. (A tab browsing a foreign SAF provider, or a `content://` root this app's own
+provider doesn't serve, has no real filesystem path to watch and won't pick up an external change
+this way — pull-to-refresh is still how those notice one, unchanged from before this task.) Step 4's
+dialogs never show a frozen/janky first frame and never block whatever else is running concurrently
+— File history's and Backup's own store reads/writes (`FileHistoryStore`/`BackupStore`, both plain
+SharedPreferences-plus-JSON-file I/O, never `suspend`-marked themselves) now only ever run from
+inside a launched coroutine dispatched to `Dispatchers.IO`, never directly on a composition or a
+click handler; `LibraryStore`'s seven SharedPreferences writes moved from blocking `.commit()` to
+async `.apply()` (all but `importJson`, which still needs the synchronous durability guarantee) —
+confirm a rapid sequence of favorite/tag toggles doesn't visibly stutter the UI thread the way it
+could before. `BackupScheduler.reconcile()` moving off `MainActivity.onCreate`'s pre-`setContent`
+path onto `lifecycleScope.launch(Dispatchers.IO)` should be invisible — scheduled backups still get
+(re)armed correctly after a cold launch; confirm by checking a plan's next scheduled run is still
+correct after a fresh install-and-launch.

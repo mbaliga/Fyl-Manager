@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.FileObserver
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -95,6 +96,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -183,6 +185,7 @@ import io.github.mbaliga.fylz.ui.components.totalKnownBytes
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -216,6 +219,13 @@ enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
  * (P0.10): it's a ZIP reader (zip4j), so offering Extract for `.7z`/`.rar`/`.tar`/... would fail
  * on every attempt despite [io.github.mbaliga.fylz.model.EntryKind.ARCHIVE] covering all of them. */
 private val ZIP_FAMILY_EXTENSIONS = setOf("zip", "zipx", "jar", "apk", "cbz")
+
+/** The `inotify` events worth a listing refresh for (P1.11) -- deliberately excludes
+ *  ACCESS/OPEN/CLOSE_NOWRITE, which fire on every read (this app's own thumbnail loads and
+ *  preview opens included) and would turn "watch the folder" into "refresh on every glance". */
+private const val WATCHED_FOLDER_EVENTS = FileObserver.CREATE or FileObserver.DELETE or
+    FileObserver.MOVED_FROM or FileObserver.MOVED_TO or FileObserver.MODIFY or
+    FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
 
 internal fun isZipFamilyArchive(name: String): Boolean =
     FileFormatRegistry.compoundExtension(name) in ZIP_FAMILY_EXTENSIONS
@@ -443,14 +453,21 @@ private fun FylzV1Workspace(
 
     // Sorting is applied after filtering so the two controls compose: the user's chosen order
     // holds for the current folder, a folder filter, and recursive search results alike.
-    val visibleEntries = remember(entries, query, searchRecursive, sortSpec) {
-        val filtered = if (query.isBlank() || searchRecursive) {
-            entries
-        } else {
-            val parsed = SearchQuery.parse(query)
-            entries.filter { parsed.matchesMetadata(it) && parsed.matchesName(it.name) }
+    // P1.11: computed in a LaunchedEffect rather than a synchronous remember{} block, so a
+    // 100,000-entry folder's filter+sort runs off the main thread instead of blocking whatever
+    // recomposition reads it -- "sort once, off the main thread" per the master plan. Dispatchers
+    // .Default, not .IO: this is pure in-memory computation, not blocking I/O.
+    var visibleEntries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
+    LaunchedEffect(entries, query, searchRecursive, sortSpec) {
+        visibleEntries = withContext(Dispatchers.Default) {
+            val filtered = if (query.isBlank() || searchRecursive) {
+                entries
+            } else {
+                val parsed = SearchQuery.parse(query)
+                entries.filter { parsed.matchesMetadata(it) && parsed.matchesName(it.name) }
+            }
+            sortEntries(filtered, sortSpec)
         }
-        sortEntries(filtered, sortSpec)
     }
 
     val searchHits = remember(searchProgress, sortSpec) {
@@ -808,14 +825,48 @@ private fun FylzV1Workspace(
             return@LaunchedEffect
         }
         loading = true
-        runCatching { repository.listChildren(activeTab.treeUri, activeTab.current.uri) }
-            .onSuccess {
-                entries = it.filterNot { item ->
+        val tab = activeTab
+        runCatching {
+            // P1.11: paged -- entries updates as soon as the first batch arrives (the browser
+            // paints long before a 100,000-entry folder's own cursor walk finishes), not only
+            // once the whole folder has been read.
+            repository.listChildren(tab.treeUri, tab.current.uri).collect { batch ->
+                entries = batch.entries.filterNot { item ->
                     item.name == ".fylz-trash" || item.name in legacyBinNames || isStagingName(item.name)
                 }
+                if (batch.complete) loading = false
             }
-            .onFailure { toast(it.message ?: "Unable to read folder") }
-        loading = false
+        }.onFailure {
+            loading = false
+            toast(it.message ?: "Unable to read folder")
+        }
+    }
+
+    // P1.11: watches the visible folder for changes made OUTSIDE this app (another app writing
+    // through FylzFilesDocumentsProvider, adb, a sync client) -- only possible for a File-backed
+    // tab (tab.treeUri.authority == FylzFilesDocumentsProvider.AUTHORITY), the same check
+    // operations/DestinationClassifier.kt already uses for "is this our own provider". A foreign
+    // SAF provider gives this app no real filesystem path to watch, so those tabs simply get no
+    // observer -- refresh() (the pull-to-refresh action, and the P1.9 root-level flag work) is
+    // still how they notice external changes.
+    DisposableEffect(activeTab?.treeUri, activeTab?.current?.uri) {
+        val tab = activeTab
+        val watchedFile = if (tab != null && tab.treeUri.authority == FylzFilesDocumentsProvider.AUTHORITY) {
+            FylzFilesDocumentsProvider.fileFor(context, tab.current.uri)
+        } else {
+            null
+        }
+        val observer = watchedFile?.let { file ->
+            object : FileObserver(file, WATCHED_FOLDER_EVENTS) {
+                override fun onEvent(event: Int, path: String?) {
+                    // Not the main thread (inotify delivers on its own thread) -- scope.launch
+                    // hands the actual refreshKey mutation back to Compose's own dispatcher.
+                    scope.launch { refresh() }
+                }
+            }
+        }
+        observer?.startWatching()
+        onDispose { observer?.stopWatching() }
     }
 
     LaunchedEffect(focusedEntry?.uri) {

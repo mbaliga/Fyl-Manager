@@ -21,6 +21,9 @@ import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 
@@ -49,6 +52,12 @@ sealed interface SaveResult {
     data class Failed(val message: String) : SaveResult
 }
 
+/** One emission of [DocumentRepository.listChildren]'s stream (P1.11): [entries] is everything
+ *  read SO FAR, in provider-cursor order (never sorted -- see [DocumentRepository.listChildren]'s
+ *  own doc for why sorting isn't this class's job), and [complete] is true only on the final
+ *  emission, once the whole folder has been read. */
+data class ListingBatch(val entries: List<FileEntry>, val complete: Boolean)
+
 class DocumentRepository(context: Context) {
     private val appContext: Context = context.applicationContext
     private val resolver: ContentResolver = appContext.contentResolver
@@ -71,58 +80,78 @@ class DocumentRepository(context: Context) {
         )
     }
 
-    suspend fun listChildren(treeUri: Uri, folderUri: Uri): List<FileEntry> =
-        withContext(Dispatchers.IO) {
-            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-                treeUri,
-                DocumentsContract.getDocumentId(folderUri),
-            )
-            val projection = arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_SIZE,
-                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-                DocumentsContract.Document.COLUMN_FLAGS,
-            )
+    /**
+     * Streams [folderUri]'s children rather than blocking until the whole folder is read (P1.11):
+     * the first emission carries the first [INITIAL_BATCH_SIZE] rows (or every row, if the folder
+     * has fewer), so the browser can paint something long before a 100,000-entry folder's own
+     * cursor walk finishes; further emissions follow every [SUBSEQUENT_BATCH_SIZE] rows, and the
+     * final one has [ListingBatch.complete] set.
+     *
+     * Deliberately returns entries UNSORTED (provider-cursor order) — sorting by the user's chosen
+     * [io.github.mbaliga.fylz.browse.SortSpec] is the caller's job, done once, off the main thread,
+     * against whatever this has emitted so far; baking a sort order in here would force a full
+     * provider re-query every time the user only changes how the SAME folder's contents are
+     * ordered, and would mean re-sorting a growing list on every batch instead of the final one.
+     */
+    fun listChildren(treeUri: Uri, folderUri: Uri): Flow<ListingBatch> = flow {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri,
+            DocumentsContract.getDocumentId(folderUri),
+        )
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_SIZE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_FLAGS,
+        )
 
-            val entries = mutableListOf<FileEntry>()
-            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-                val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                val sizeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
-                val modifiedIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                val flagsIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_FLAGS)
+        val entries = mutableListOf<FileEntry>()
+        var emittedCount = 0
+        // P1.11: the Bundle-based query overload, not the classic (selection, selectionArgs,
+        // sortOrder) one -- DocumentsProvider's base class throws UnsupportedOperationException
+        // from the classic overload; see DocNode.load's own KDoc, and this task's own new
+        // DocumentRepositoryListChildrenTest, which caught this call still using it.
+        resolver.query(childrenUri, projection, null as Bundle?, null)?.use { cursor ->
+            val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            val sizeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+            val modifiedIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+            val flagsIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_FLAGS)
 
-                while (cursor.moveToNext()) {
-                    val documentId = cursor.getString(idIndex)
-                    val name = cursor.getString(nameIndex) ?: "Untitled"
-                    val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
-                    val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
-                    val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
-                    entries += FileEntry(
-                        uri = documentUri,
-                        name = name,
-                        mimeType = mimeType,
-                        // COLUMN_SIZE is meaningless for a directory, but some OEM documents
-                        // providers report the raw filesystem entry size anyway (a few KiB of
-                        // junk — observed as "3.4 KiB" on every folder on a RedMagic). Our own
-                        // FylzFilesDocumentsProvider correctly reports null; normalize foreign
-                        // providers to the same contract so the UI never renders nonsense.
-                        sizeBytes = cursor.longOrNull(sizeIndex).takeUnless { isDirectory },
-                        lastModifiedMillis = cursor.longOrNull(modifiedIndex),
-                        flags = cursor.intOrZero(flagsIndex),
-                        kind = FileType.classify(name, mimeType),
-                    )
+            while (cursor.moveToNext()) {
+                coroutineContext.ensureActive()
+                val documentId = cursor.getString(idIndex)
+                val name = cursor.getString(nameIndex) ?: "Untitled"
+                val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
+                val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+                entries += FileEntry(
+                    uri = documentUri,
+                    name = name,
+                    mimeType = mimeType,
+                    // COLUMN_SIZE is meaningless for a directory, but some OEM documents
+                    // providers report the raw filesystem entry size anyway (a few KiB of
+                    // junk — observed as "3.4 KiB" on every folder on a RedMagic). Our own
+                    // FylzFilesDocumentsProvider correctly reports null; normalize foreign
+                    // providers to the same contract so the UI never renders nonsense.
+                    sizeBytes = cursor.longOrNull(sizeIndex).takeUnless { isDirectory },
+                    lastModifiedMillis = cursor.longOrNull(modifiedIndex),
+                    flags = cursor.intOrZero(flagsIndex),
+                    kind = FileType.classify(name, mimeType),
+                )
+                val sinceLastEmit = entries.size - emittedCount
+                val threshold = if (emittedCount == 0) INITIAL_BATCH_SIZE else SUBSEQUENT_BATCH_SIZE
+                if (sinceLastEmit >= threshold) {
+                    emit(ListingBatch(entries.toList(), complete = false))
+                    emittedCount = entries.size
                 }
             }
-
-            entries.sortedWith(
-                compareByDescending<FileEntry> { it.isDirectory }
-                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
-            )
         }
+        emit(ListingBatch(entries.toList(), complete = true))
+    }.flowOn(Dispatchers.IO)
 
     suspend fun createDirectory(parentUri: Uri, name: String): Uri = withContext(Dispatchers.IO) {
         require(name.isNotBlank()) { "Folder name is required." }
@@ -351,6 +380,18 @@ class DocumentRepository(context: Context) {
         if (index < 0 || isNull(index)) 0 else getInt(index)
 
     companion object {
+        /** How many rows [listChildren] reads before its first emission (P1.11) — small enough
+         *  that a 100,000-entry folder's budget (first rows within 300 ms) is met well before the
+         *  provider's own cursor is anywhere near exhausted. */
+        private const val INITIAL_BATCH_SIZE = 500
+
+        /** Rows between every emission after the first — larger than [INITIAL_BATCH_SIZE] since
+         *  the "get something on screen fast" need is already met by then; this just bounds how
+         *  stale the LAST rows of a huge folder can be before the browser sees them, without
+         *  emitting (and re-copying the whole growing list) so often that the emissions
+         *  themselves become the bottleneck. */
+        private const val SUBSEQUENT_BATCH_SIZE = 5_000
+
         private val UTF8_BOM = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
 
         // Derived from the byte form above rather than a string literal, so the source file

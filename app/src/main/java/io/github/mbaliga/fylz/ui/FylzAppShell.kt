@@ -31,7 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,7 +51,7 @@ import io.github.mbaliga.fylz.operations.OperationRetryPlan
 import io.github.mbaliga.fylz.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.operations.OperationState
 import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -63,36 +63,31 @@ import kotlinx.coroutines.launch
  * the reason the owner gave after the first test build: a bottom tab bar is not the fonebrew
  * pattern, and two permanent tabs for a screen most sessions never open is chrome charging rent.
  *
- * This function keeps only what Recovery *needs* — the journal, its polling, and the operation
- * history dialog — and hands the room down as content. That matters for more than tidiness: the
- * content is composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own
- * colours instead of the bare `MaterialTheme` default it used to sit in.
+ * This function keeps only what Recovery *needs* — the journal and the operation history dialog
+ * — and hands the room down as content. That matters for more than tidiness: the content is
+ * composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own colours
+ * instead of the bare `MaterialTheme` default it used to sit in.
  */
 @Composable
 fun FylzAppShell(viewUri: Uri? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
-    val fileOperations = remember { FileOperationService(context.applicationContext) }
+    // P1.11: this journal instance, not a second default-constructed one -- see OperationJournal's
+    // own KDoc for why retrying through a DIFFERENT instance would leave `operations` below stale.
+    val fileOperations = remember { FileOperationService(context.applicationContext, journal = journal) }
     var showHistory by remember { mutableStateOf(false) }
-    var operations by remember { mutableStateOf(journal.list()) }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            operations = journal.list()
-            delay(1_000)
-        }
-    }
+    // P1.11: journal.operations replaces the old 1-second poll (a plain SQLite read directly on
+    // Compose's own dispatcher, forever, for the app's whole lifetime) -- see OperationJournal's
+    // own KDoc.
+    val operations by journal.operations.collectAsState()
 
     FylzV1App(
         viewUri = viewUri,
         recoveryRoom = {
             RecoveryHome(
                 operations = operations,
-                onOpenOperations = {
-                    operations = journal.list()
-                    showHistory = true
-                },
+                onOpenOperations = { showHistory = true },
             )
         },
     ) {
@@ -101,12 +96,10 @@ fun FylzAppShell(viewUri: Uri? = null) {
                 operations = operations,
                 onDismiss = { showHistory = false },
                 onClearFinished = {
-                    journal.clearFinished()
-                    operations = journal.list()
+                    scope.launch(Dispatchers.IO) { journal.clearFinished() }
                 },
                 onDismissOperation = { id ->
-                    journal.remove(id)
-                    operations = journal.list()
+                    scope.launch(Dispatchers.IO) { journal.remove(id) }
                 },
                 onRetry = { operation ->
                     val plan = OperationRetryPolicy.plan(operation)
@@ -141,7 +134,6 @@ fun FylzAppShell(viewUri: Uri? = null) {
                                     Toast.LENGTH_LONG,
                                 ).show()
                             }
-                            operations = journal.list()
                         }
                     }
                 },

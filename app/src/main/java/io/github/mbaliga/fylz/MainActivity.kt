@@ -9,10 +9,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
 import dev.aarso.crashrecovery.CrashRecovery
 import dev.aarso.crashrecovery.CrashRecoveryStyle
 import io.github.mbaliga.fylz.backup.BackupScheduler
 import io.github.mbaliga.fylz.ui.FylzAppShell
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * P0.12 (defects 12/13): `singleTask`, so a second `ACTION_VIEW` launch (another app's "Open
@@ -26,7 +29,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (CrashRecovery.maybeShowRecovery(this, appLabel = "Fylz", style = CRASH_STYLE)) return
-        BackupScheduler(applicationContext).reconcile()
+        // P1.11: off the main thread -- reconcile() reads the backup-plans SharedPreferences blob
+        // and issues a WorkManager enqueue per plan, both of which do disk I/O that used to run
+        // synchronously here, before setContent, on every cold start.
+        lifecycleScope.launch(Dispatchers.IO) { BackupScheduler(applicationContext).reconcile() }
         enableEdgeToEdge()
         viewUri = viewUriFrom(intent)
         // No MaterialTheme wrapper here. FylzAppShell's content owns the theme (FylzTheme,
