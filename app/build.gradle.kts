@@ -89,6 +89,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // BrowserViewModel (P1.10) -- the app's first ViewModel; brings ViewModel/SavedStateHandle and
+    // the viewModel() composable factory, matching the lifecycle-runtime-compose version above.
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("androidx.media3:media3-exoplayer:$media3Version")

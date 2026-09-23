@@ -116,11 +116,11 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|density|uiMode">
-            <!-- P0.5 interim (A3): Compose handles these changes itself, so tabs and selection
-                 survive rotation, folding and resizing until P1.10 adds real saved state.
-                 P1.10 removes this line again. -->
+            android:windowSoftInputMode="adjustResize">
+            <!-- P0.5's interim android:configChanges line lived here, papering over rotation and
+                 fold/resize by preventing the Activity from ever being recreated for them. P1.10
+                 removed it: BrowserViewModel plus SavedStateHandle/SessionStore now survive a real
+                 recreation (config change or process death), so nothing needs to be suppressed. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

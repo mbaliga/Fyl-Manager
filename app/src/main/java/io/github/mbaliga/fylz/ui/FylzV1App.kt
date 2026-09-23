@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -98,7 +99,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -121,7 +121,6 @@ import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
 import io.github.mbaliga.fylz.scan.DocumentScanner
 import io.github.mbaliga.fylz.scan.GmsDocumentScannerAdapter
-import io.github.mbaliga.fylz.browse.OpenTabsStore
 import io.github.mbaliga.fylz.browse.SortDirection
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
@@ -306,9 +305,6 @@ private suspend fun runPreflight(context: Context, sources: List<Uri>, destinati
         PreflightPolicy.evaluate(items, volumeInfo)
     }
 
-/** How many previously granted SAF subtrees are restored as tabs on launch. */
-private const val MAX_RESTORED_TABS = 8
-
 /**
  * The app, and the owner of its theme.
  *
@@ -353,7 +349,6 @@ private fun FylzV1Workspace(
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
     val repository = remember { DocumentRepository(context.applicationContext) }
-    val openTabsStore = remember { OpenTabsStore(context.applicationContext) }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
     val archiveService = remember { ArchiveService(context.applicationContext) }
     val fileTools = remember { FileTools(context.applicationContext) }
@@ -370,17 +365,25 @@ private fun FylzV1Workspace(
     val runningOperations by operationRunner.operations.collectAsState()
     val recycleRecords by recycleBin.records.collectAsState()
 
-    val tabs = remember { mutableStateListOf<FolderTab>() }
-    var activeTabId by remember { mutableStateOf<String?>(null) }
+    // P1.10: tabs, activeTabId, selectedUris, query, viewMode, previewMode, sortSpec,
+    // searchRecursive and clipboard all live in BrowserViewModel now, not in this composable's own
+    // remember{} state -- delegated to local names via `by viewModel::x` (Kotlin's "delegate to
+    // another property" feature) so every existing read/write below is unchanged; only where the
+    // value actually lives changed. One BrowserViewModel per Activity survives exactly what
+    // remember{} state didn't: a config change, and a process death the platform chooses to
+    // restore -- see BrowserViewModel's own KDoc.
+    val viewModel: BrowserViewModel = viewModel()
+    val tabs = viewModel.tabs
+    var activeTabId by viewModel::activeTabId
     var entries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     var legacyBinNames by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var selectedUris by remember { mutableStateOf<Set<Uri>>(emptySet()) }
+    var selectedUris by viewModel::selectedUris
     var focusedEntry by remember { mutableStateOf<FileEntry?>(null) }
     var refreshKey by remember { mutableIntStateOf(0) }
     var loading by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
-    var viewMode by remember { mutableStateOf(ViewMode.LIST) }
-    var previewMode by remember { mutableStateOf(PreviewMode.DOCKED) }
+    var query by viewModel::query
+    var viewMode by viewModel::viewMode
+    var previewMode by viewModel::previewMode
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
     var previewEncodingOk by remember { mutableStateOf(true) }
@@ -402,8 +405,11 @@ private fun FylzV1Workspace(
     var pendingConflict by remember { mutableStateOf<ConflictRequest?>(null) }
     var pendingDestinationChooser by remember { mutableStateOf<DestinationChooserRequest?>(null) }
     // P1.8: survives folder/tab navigation on purpose -- unlike selectedUris, nothing here resets
-    // it, so Cut/Copy in one folder and Paste in another actually works.
-    var clipboard by remember { mutableStateOf<FylzClipboard?>(null) }
+    // it, so Cut/Copy in one folder and Paste in another actually works. Owned by BrowserViewModel
+    // (P1.10) like the rest of this block, but NOT part of its persisted session -- see
+    // BrowserViewModel's own KDoc for why a clipboard cut/copy is the one piece of this state that
+    // still doesn't survive a forced process kill.
+    var clipboard by viewModel::clipboard
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
@@ -414,10 +420,13 @@ private fun FylzV1Workspace(
     var pendingPdfOcr by remember { mutableStateOf(false) }
     var pendingPdfMerge by remember { mutableStateOf(false) }
     var duplicateResult by remember { mutableStateOf<String?>(null) }
-    var sortSpec by remember { mutableStateOf(SortSpec.Default) }
-    var searchRecursive by remember { mutableStateOf(false) }
+    var sortSpec by viewModel::sortSpec
+    var searchRecursive by viewModel::searchRecursive
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
+    // P1.10: guards the folder-change reset effect below against wiping out a just-restored
+    // selectedUris on its own first run -- see that effect's own comment.
+    var selectionResetArmed by remember { mutableStateOf(false) }
 
     // Three rooms: locations LEFT, tools and settings RIGHT, recovery BOTTOM. The top edge is
     // deliberately empty — it is reserved for the top room, and nothing else may claim the
@@ -469,10 +478,11 @@ private fun FylzV1Workspace(
         val tab = FolderTab(treeUri = treeUri, locations = listOf(location))
         tabs += tab
         activeTabId = tab.id
-        // P0.10: only a tab the user actually opened is remembered for restoration -- a
+        // P0.10/P1.10: only a tab the user actually opened is remembered for restoration -- a
         // copy/move/extract destination, backup folder or index folder persists its own grant
         // (repository.persistTreePermission) without ever calling openTabAt, so it stays out.
-        openTabsStore.record(treeUri)
+        // No explicit "record" call needed here any more (P1.10): tabs IS the BrowserViewModel's
+        // own state, so adding to it here already feeds the session BrowserViewModel persists.
     }
 
     /**
@@ -730,25 +740,12 @@ private fun FylzV1Workspace(
             .addOnFailureListener { toast(it.message ?: "Scanner is unavailable") }
     }
 
-    // Restore previously OPENED subtrees as tabs (P0.10) -- not every persisted grant, since a
-    // one-off copy/move/extract destination, backup folder or index folder also persists a grant
-    // without ever being something the user meant to browse. openTabsStore only ever gains an
-    // entry through openTabAt, so this is exactly the set of tabs the user actually opened; a
-    // grant the OS has since revoked is still filtered out here rather than restored broken.
-    LaunchedEffect(Unit) {
-        val livePermissions = context.contentResolver.persistedUriPermissions
-            .filter { it.isReadPermission }
-            .mapTo(mutableSetOf()) { it.uri }
-        openTabsStore.list()
-            .filter { it in livePermissions }
-            .take(MAX_RESTORED_TABS)
-            .forEach { uri ->
-                runCatching { repository.rootLocation(uri) }.getOrNull()?.let { root ->
-                    val tab = FolderTab(treeUri = uri, locations = listOf(root))
-                    tabs += tab
-                }
-            }
-    }
+    // P1.10: session restoration (tabs, each one's full navigation stack, the active tab, sort,
+    // view, preview mode and search) now happens once, synchronously, inside BrowserViewModel's
+    // own init -- before this composable's first frame -- rather than in a LaunchedEffect here.
+    // See BrowserViewModel.restoreSession for the equivalent of what this block used to do (it
+    // still filters out a tab whose grant the OS has since revoked), now working from the full
+    // persisted session rather than only each tab's bare root Uri.
 
     // P0.12: another app's "Open with Fylz" (ACTION_VIEW). Keyed on the incoming uri itself
     // (from MainActivity's own Compose state, via FylzAppShell), not Unit, so a *second*
@@ -794,9 +791,18 @@ private fun FylzV1Workspace(
     }
 
     LaunchedEffect(activeTab?.current?.uri, refreshKey, legacyBinNames) {
-        selectedUris = emptySet()
-        focusedEntry = null
-        previewText = null
+        // P1.10: this effect is brand new on every fresh composition -- including one just
+        // restored by BrowserViewModel after a rotation or an OS-restored process death, where
+        // selectedUris already carries what the user had selected before it happened. Its FIRST
+        // run in a composition must not wipe that out; only a SECOND run (a real folder change or
+        // an explicit refresh, both of which recompose this same effect within the same
+        // composition) means the old folder's selection/focus/preview is genuinely stale.
+        if (selectionResetArmed) {
+            selectedUris = emptySet()
+            focusedEntry = null
+            previewText = null
+        }
+        selectionResetArmed = true
         if (activeTab == null) {
             entries = emptyList()
             return@LaunchedEffect

@@ -22,9 +22,32 @@ Each entry: what to do, what should happen, and which task it verifies.
 app-scoped `CoroutineScope`, independent of the observing UI's lifecycle, not by the screen that
 started it. The progress bar (bytes and items) reattaches showing the operation's current true
 progress after each configuration change, not reset to zero and not stuck. Cancel still works
-after a rotation. This is the *interim* fix (`android:configChanges` on `MainActivity`) that P1.10
-replaces with real saved state and process-death survival — this check only needs configuration
-changes that don't kill the process.
+after a rotation. As of P1.10 the Activity genuinely recreates on rotation (the interim
+`android:configChanges` line on `MainActivity` is gone) — `OperationRunner`'s own progress
+reattaching was never dependent on that line, so this check now also exercises the real
+recreation path, not just a suppressed one.
+
+## 1a. Rotating and backgrounding mid-task, with "Don't keep activities" (P1.10)
+
+**Steps:**
+1. In Developer Options, enable "Don't keep activities" (forces the Activity's process to be
+   destroyed the moment it leaves the foreground — a stronger test than a plain rotation, which by
+   itself might not destroy the process at all on some devices/API levels).
+2. Open a few tabs across different storage roots, navigate a couple of folders deep in one of
+   them, select several files (don't start a transfer), switch the sort order and view mode away
+   from their defaults, and Cut or Copy a file.
+3. Rotate the device. Separately (a fresh run of steps 1-2), background the app (Home button) and
+   return to it.
+
+**Expected:** every tab reopens at the exact folder it was on, not its root — `BrowserViewModel`
+persisted each tab's full `locations` stack, not just its `treeUri`. The same tab that was active
+before is active again. The selected files are still selected (multi-select survives; a single
+open preview does not — see `BrowserViewModel`'s own KDoc on why `focusedEntry` is out of this
+task's scope). Sort order and view mode are unchanged. The clipboard chip is gone after this kind
+of recreation — see the same KDoc for why clipboard content specifically isn't part of the
+persisted session yet. Cold-launching the app fresh afterward (force-stop it, then reopen from the
+launcher) restores the same session too, via `SessionStore`'s SharedPreferences fallback, not just
+`SavedStateHandle`'s own platform-level restore.
 
 ## 2. Folder copy, move and recycle on internal storage, SD and USB (P0.1, P0.2)
 
