@@ -61,7 +61,8 @@ class RecycleBinStore(context: Context) {
                     .put("originalDisplayName", record.originalDisplayName)
                     .put("providerAuthority", record.providerAuthority)
                     .put("sizeBytes", record.sizeBytes)
-                    .put("recycledAtMillis", record.recycledAtMillis),
+                    .put("recycledAtMillis", record.recycledAtMillis)
+                    .put("containerUri", record.containerUri?.toString()),
             )
         }
         return array.toString()
@@ -89,6 +90,9 @@ class RecycleBinStore(context: Context) {
                             sizeBytes = item.optLong("sizeBytes", Long.MIN_VALUE)
                                 .takeUnless { it == Long.MIN_VALUE },
                             recycledAtMillis = item.getLong("recycledAtMillis"),
+                            containerUri = item.optString("containerUri")
+                                .takeIf(String::isNotBlank)
+                                ?.let(Uri::parse),
                         ),
                     )
                 }

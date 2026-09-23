@@ -52,12 +52,17 @@ private fun writeNode(parent: File, node: TreeNode) {
 }
 
 /**
- * Deep, byte-for-byte comparison of two directory trees. Returns a human-readable diff, one entry
- * per mismatch; empty means the trees are identical (same relative paths, same file bytes).
+ * Deep, byte-for-byte comparison of two directory trees -- or, if both [expected] and [actual]
+ * are plain files rather than directories, of the two files directly. Returns a human-readable
+ * diff, one entry per mismatch; empty means the trees (or files) are identical.
  */
 fun diffTrees(expected: File, actual: File): List<String> {
     val differences = mutableListOf<String>()
-    compareDir(expected, actual, "", differences)
+    when {
+        expected.isDirectory != actual.isDirectory -> differences += "type mismatch: "
+        expected.isDirectory -> compareDir(expected, actual, "", differences)
+        !filesEqual(expected, actual) -> differences += "content mismatch: "
+    }
     return differences
 }
 

@@ -331,8 +331,14 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     }
 
     private fun sanitizeDisplayName(displayName: String): String {
-        val trimmed = displayName.trim().trimStart('.')
+        val trimmed = displayName.trim()
         require(trimmed.isNotBlank()) { "A name is required." }
+        // "." and ".." are filesystem-reserved, not valid document names. A leading dot
+        // otherwise is a legitimate, ordinary (if hidden-by-convention) name -- this app grants
+        // full filesystem access, and this provider's own recycle bin (`.fylz-trash`) depends on
+        // being able to create one. Stripping it here previously broke that: the directory landed
+        // on disk without its dot, so every later name-based lookup for it silently failed.
+        require(trimmed != "." && trimmed != "..") { "\"$trimmed\" is not a valid name." }
         // Strip path separators and control characters only. Spaces, hyphens and unicode
         // are legitimate in file names and must survive untouched.
         val cleaned = trimmed.map { char ->

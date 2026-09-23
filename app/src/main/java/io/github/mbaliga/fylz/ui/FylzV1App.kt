@@ -100,7 +100,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
@@ -572,12 +571,7 @@ private fun FylzV1Workspace(
         scope.launch {
             loading = true
             runCatching {
-                val root = DocumentFile.fromTreeUri(context, tab.treeUri)
-                    ?: error("Unable to open the selected root.")
-                val recycleRoot = root.findFile(".fylz-trash")
-                    ?.takeIf(DocumentFile::isDirectory)
-                    ?: root.createDirectory(".fylz-trash")
-                    ?: error("This provider cannot create a recycle location.")
+                val recycleRoot = recycleBin.recycleRootFor(tab.treeUri)
                 selectedEntries.forEach { entry ->
                     recycleBin.recycle(entry.uri, tab.current.uri, recycleRoot.uri)
                 }

@@ -55,6 +55,17 @@ data class DocNode(
         return load(resolver, childUri) ?: error("Created $name but could not read it back.")
     }
 
+    /** The one child named [name], or null. One [children] query per call, same cost as the
+     * `DocumentFile.findFile` calls this replaces. */
+    fun findChild(resolver: ContentResolver, name: String): DocNode? =
+        children(resolver).firstOrNull { it.name == name }
+
+    /** Mirrors `DocumentFile.canWrite()`'s own flag check; [flags] is otherwise exposed raw. */
+    val canWrite: Boolean
+        get() = flags and DocumentsContract.Document.FLAG_SUPPORTS_DELETE != 0 ||
+            flags and DocumentsContract.Document.FLAG_SUPPORTS_WRITE != 0 ||
+            (isDirectory && flags and DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE != 0)
+
     /**
      * Renames this document and returns the resulting node. The document id -- and therefore the
      * uri -- may change as a result; the caller must use the returned node, not this one, for any

@@ -24,6 +24,17 @@ class FaultyDocumentsProvider : DocumentsProvider() {
     /** When true, [renameDocument] throws instead of delegating. */
     var refuseRename: Boolean = false
 
+    /**
+     * When set, [renameDocument] throws on exactly its Nth call (1-indexed) instead of
+     * delegating -- independent of [refuseRename], which refuses unconditionally from the start.
+     * Every other call, earlier or later, delegates normally. Lets a test prove recovery from a
+     * single failed rename in a sequence: "the second rename in a sequence fails, and the
+     * rollback rename that follows it must still succeed" (P0.2's Replace rollback) or "the 6th
+     * rename in a batch fails, and the rest of the batch still succeeds" (P0.4).
+     */
+    var refuseRenameAtCall: Int? = null
+    private var renameCallCount = 0
+
     /** When true, [deleteDocument] throws instead of delegating. */
     var refuseDelete: Boolean = false
 
@@ -117,7 +128,10 @@ class FaultyDocumentsProvider : DocumentsProvider() {
     }
 
     override fun renameDocument(documentId: String, displayName: String): String {
-        if (refuseRename) throw FileNotFoundException("simulated: rename refused for $documentId")
+        renameCallCount += 1
+        if (refuseRename || renameCallCount == refuseRenameAtCall) {
+            throw FileNotFoundException("simulated: rename refused for $documentId")
+        }
         return real.renameDocument(documentId, displayName)
     }
 

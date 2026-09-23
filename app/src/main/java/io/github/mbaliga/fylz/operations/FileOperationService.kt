@@ -15,6 +15,7 @@ import kotlin.coroutines.coroutineContext
 class FileOperationService(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
+    private val recycleBin: RecycleBinService = RecycleBinService(context),
 ) {
     private val resolver: ContentResolver get() = context.contentResolver
 
@@ -183,7 +184,7 @@ class FileOperationService(
                         journal.put(current)
                         onProgress(progress)
                     }
-                    val copied = finalizeTarget(plan, staged)
+                    val copied = finalizeTarget(destination, plan, staged)
 
                     if (move && !source.delete(resolver)) {
                         current = updateItem(current, index) { item ->
@@ -354,21 +355,22 @@ class FileOperationService(
         }
     }
 
-    private fun finalizeTarget(plan: TargetPlan, staged: DocNode): DocNode {
+    /**
+     * On a plain create (no conflict), [plan] carries no [TargetPlan.existing] and [staged] is
+     * already the final node. A Replace conflict goes through [RecycleBinService]'s shared policy
+     * (also used by its own restore): the existing item is renamed aside and recycled -- into
+     * [destination]'s `.fylz-trash` if it has one -- only after the replacement has actually
+     * landed under the requested name, never before.
+     */
+    private suspend fun finalizeTarget(destination: DocNode, plan: TargetPlan, staged: DocNode): DocNode {
         val existing = plan.existing ?: return staged
-        if (!existing.delete(resolver)) {
-            staged.delete(resolver)
-            error("Unable to replace ${plan.requestedName}; the original was left untouched.")
-        }
-        if (plan.stagingName == plan.requestedName) return staged
-        return try {
-            staged.rename(resolver, plan.requestedName)
-        } catch (failure: Exception) {
-            error(
-                "The replacement data is safe, but the provider could not restore the requested " +
-                    "name. It remains as ${staged.name}.",
-            )
-        }
+        return recycleBin.replaceWithRecycleFallback(
+            destinationRoot = destination,
+            existing = existing,
+            staged = staged,
+            requestedName = plan.requestedName,
+            originalParentUri = destination.uri,
+        )
     }
 
     private fun resolveTargetPlan(
@@ -419,14 +421,3 @@ class FileOperationService(
         const val MOVE_DESTINATION_UNVERIFIED = "MOVE_DESTINATION_UNVERIFIED"
     }
 }
-
-/** Mirrors `DocumentFile.canWrite()`'s own flag check; [DocNode] exposes raw flags only. */
-private val DocNode.canWrite: Boolean
-    get() = flags and DocumentsContract.Document.FLAG_SUPPORTS_DELETE != 0 ||
-        flags and DocumentsContract.Document.FLAG_SUPPORTS_WRITE != 0 ||
-        (isDirectory && flags and DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE != 0)
-
-/** The one child named [name], or null. One [DocNode.children] query per call, same cost as the
- * `DocumentFile.findFile` calls this replaces. */
-private fun DocNode.findChild(resolver: ContentResolver, name: String): DocNode? =
-    children(resolver).firstOrNull { it.name == name }
