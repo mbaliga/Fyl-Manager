@@ -962,15 +962,23 @@ private fun FylzV1Workspace(
 
     if (batchRenameDialog) {
         BatchRenameDialog(
-            count = selectedEntries.size,
+            selection = selectedEntries.map { it.uri to it.name },
+            planPreview = { prefix -> fileTools.planBatchRename(selectedEntries.map { it.uri to it.name }, prefix) },
             onDismiss = { batchRenameDialog = false },
             onConfirm = { prefix ->
                 batchRenameDialog = false
-                scope.launch {
-                    val plans = fileTools.planBatchRename(selectedEntries.map { it.uri to it.name }, prefix)
-                    runCatching { fileTools.executeBatchRename(plans) }
-                        .onSuccess { selectedUris = emptySet(); refresh() }
-                        .onFailure { toast(it.message ?: "Batch rename failed") }
+                val tab = activeTab
+                if (tab == null) {
+                    toast("No folder is open")
+                } else {
+                    scope.launch {
+                        runCatching {
+                            val plans = fileTools.planBatchRename(selectedEntries.map { it.uri to it.name }, prefix)
+                            fileTools.executeBatchRename(tab.current.uri, plans)
+                        }
+                            .onSuccess { selectedUris = emptySet(); refresh() }
+                            .onFailure { toast(it.message ?: "Batch rename failed") }
+                    }
                 }
             },
         )
@@ -1564,13 +1572,48 @@ private fun TagDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String
 }
 
 @Composable
-private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+private fun BatchRenameDialog(
+    selection: List<Pair<Uri, String>>,
+    planPreview: (String) -> List<io.github.mbaliga.fylz.operations.BatchRenamePlan>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
     var prefix by remember { mutableStateOf("File-") }
+    // planBatchRename is pure (no I/O) but throws on a prefix it can't turn into legal names
+    // (P0.4) -- runCatching turns that into an inline error instead of crashing the dialog.
+    val preview = remember(prefix, selection) { runCatching { planPreview(prefix) } }
+    val error = preview.exceptionOrNull()?.message
+    val plans = preview.getOrNull().orEmpty()
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Batch rename $count items") },
-        text = { OutlinedTextField(prefix, { prefix = it }, label = { Text("Prefix") }) },
-        confirmButton = { Button(onClick = { onConfirm(prefix) }, enabled = prefix.isNotBlank()) { Text("Rename") } },
+        title = { Text("Batch rename ${selection.size} items") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    prefix,
+                    { prefix = it },
+                    label = { Text("Prefix") },
+                    isError = error != null,
+                    supportingText = { if (error != null) Text(error) },
+                    singleLine = true,
+                )
+                if (plans.isNotEmpty()) {
+                    LazyColumn(Modifier.height(240.dp)) {
+                        items(plans, key = { it.source.toString() }) { plan ->
+                            Text(
+                                "${plan.oldName} → ${plan.newName}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(prefix) }, enabled = error == null && plans.isNotEmpty()) { Text("Rename") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

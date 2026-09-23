@@ -1,8 +1,8 @@
 package io.github.mbaliga.fylz.operations
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -54,9 +54,15 @@ class FileTools(
     private val context: Context,
     private val journal: OperationJournal = OperationJournal(context),
 ) {
+    private val resolver: ContentResolver get() = context.contentResolver
+
+    /** [current] is reassigned after every successful rename ([DocNode.rename] returns a new,
+     * immutable node, possibly with a changed uri) so rollback always operates on the item's
+     * actual, current location -- whichever of [BatchRenamePlan.oldName], [temporaryName] or
+     * [BatchRenamePlan.newName] that happens to be. */
     private data class RenameStep(
         val plan: BatchRenamePlan,
-        val document: DocumentFile,
+        var current: DocNode,
         val temporaryName: String,
         var staged: Boolean = false,
         var finalized: Boolean = false,
@@ -67,9 +73,9 @@ class FileTools(
         maxBytesPerFile: Long = 2L * 1024L * 1024L * 1024L,
     ): List<DuplicateGroup> = withContext(Dispatchers.IO) {
         val files = uris.mapNotNull { uri ->
-            DocumentFile.fromSingleUri(context, uri)
-                ?.takeIf { it.isFile && it.exists() && it.length() in 0..maxBytesPerFile }
-                ?.let { uri to it.length() }
+            DocNode.load(resolver, uri)
+                ?.takeIf { !it.isDirectory && (it.size ?: -1) in 0..maxBytesPerFile }
+                ?.let { uri to (it.size ?: 0) }
         }
         files.groupBy { it.second }
             .filterValues { it.size > 1 }
@@ -84,16 +90,22 @@ class FileTools(
             .sortedByDescending(DuplicateGroup::sizeBytes)
     }
 
+    /**
+     * Pure and non-destructive: never touches storage, so a caller can call this on every
+     * keystroke of a prefix field for a live preview. Still throws [IllegalArgumentException] on
+     * a plan the prefix can't legally produce (P0.4) -- the caller decides what a thrown message
+     * means to the user (an inline dialog error here), rather than this crashing them.
+     */
     fun planBatchRename(
         items: List<Pair<Uri, String>>,
         prefix: String,
         startAt: Int = 1,
         padding: Int = 2,
     ): List<BatchRenamePlan> {
-        require(items.isNotEmpty())
-        require(prefix.isNotBlank())
-        require(startAt >= 0)
-        require(padding in 1..8)
+        require(items.isNotEmpty()) { "Choose at least one item." }
+        require(prefix.isNotBlank()) { "Enter a prefix." }
+        require(startAt >= 0) { "Start must not be negative." }
+        require(padding in 1..8) { "Padding must be between 1 and 8." }
         return items.mapIndexed { index, (uri, oldName) ->
             val extension = oldName.substringAfterLast('.', "").takeIf {
                 oldName.contains('.') && !oldName.startsWith('.')
@@ -112,8 +124,12 @@ class FileTools(
      * This supports swaps and cycles without collisions. Any failure triggers a best-effort rollback
      * to the original names. If rollback itself is incomplete, the journal marks the operation as
      * NEEDS_ATTENTION instead of claiming a clean failure.
+     *
+     * [parentUri] is the folder every item in [plans] lives in, supplied by the caller (A2) rather
+     * than derived from `DocumentFile.fromSingleUri(...).parentFile`, which is always null and
+     * made every batch rename fail (P0.4, defect 2).
      */
-    suspend fun executeBatchRename(plans: List<BatchRenamePlan>): List<Uri> =
+    suspend fun executeBatchRename(parentUri: Uri, plans: List<BatchRenamePlan>): List<Uri> =
         withContext(Dispatchers.IO) {
             val validation = BatchRenamePolicy.validate(plans)
             require(validation.valid) { validation.message ?: "Invalid rename plan." }
@@ -136,38 +152,33 @@ class FileTools(
 
             val steps = mutableListOf<RenameStep>()
             try {
-                val documents = plans.map { plan ->
-                    val document = DocumentFile.fromSingleUri(context, plan.source)
-                        ?: error("Unable to open ${plan.oldName}.")
-                    require(document.exists()) { "${plan.oldName} no longer exists." }
-                    require(document.canWrite()) { "${plan.oldName} cannot be renamed by this provider." }
-                    plan to document
+                val parent = DocNode.load(resolver, parentUri) ?: error("Unable to open the containing folder.")
+                require(parent.isDirectory && parent.canWrite) { "The containing folder is not writable." }
+
+                val nodes = plans.map { plan ->
+                    val node = DocNode.load(resolver, plan.source) ?: error("${plan.oldName} no longer exists.")
+                    require(node.canWrite) { "${plan.oldName} cannot be renamed by this provider." }
+                    plan to node
                 }
 
-                val parents = documents.map { (_, document) ->
-                    document.parentFile ?: error("The provider does not expose a parent folder for rename preflight.")
-                }
-                val parentUris = parents.map { it.uri.toString() }.toSet()
-                require(parentUris.size == 1) { "Batch rename currently requires all items to share one folder." }
-                val parent = parents.first()
-                require(parent.canWrite()) { "The containing folder is not writable." }
-
-                val selectedUris = documents.map { it.second.uri.toString() }.toSet()
+                val selectedUris = nodes.map { it.second.uri.toString() }.toSet()
                 val targetNames = plans.map { it.newName.lowercase() }.toSet()
-                val externalCollision = parent.listFiles().firstOrNull { existing ->
-                    existing.uri.toString() !in selectedUris &&
-                        existing.name?.lowercase() in targetNames
+                val siblings = parent.children(resolver)
+                val externalCollision = siblings.firstOrNull { existing ->
+                    existing.uri.toString() !in selectedUris && existing.name.lowercase() in targetNames
                 }
                 require(externalCollision == null) {
                     "A different item named ${externalCollision?.name} already exists."
                 }
 
-                documents.forEach { (plan, document) ->
+                val siblingNames = siblings.mapTo(mutableSetOf()) { it.name }
+                nodes.forEach { (plan, node) ->
                     var temporaryName: String
                     do {
                         temporaryName = ".fylz-rename-${UUID.randomUUID()}"
-                    } while (parent.findFile(temporaryName) != null)
-                    steps += RenameStep(plan, document, temporaryName)
+                    } while (temporaryName in siblingNames)
+                    siblingNames += temporaryName
+                    steps += RenameStep(plan, node, temporaryName)
                 }
 
                 operation = operation.copy(
@@ -179,17 +190,13 @@ class FileTools(
 
                 steps.forEach { step ->
                     coroutineContext.ensureActive()
-                    check(step.document.renameTo(step.temporaryName)) {
-                        "Unable to stage ${step.plan.oldName} for batch rename."
-                    }
+                    step.current = step.current.rename(resolver, step.temporaryName)
                     step.staged = true
                 }
 
                 steps.forEach { step ->
                     coroutineContext.ensureActive()
-                    check(step.document.renameTo(step.plan.newName)) {
-                        "Unable to rename ${step.plan.oldName} to ${step.plan.newName}."
-                    }
+                    step.current = step.current.rename(resolver, step.plan.newName)
                     step.finalized = true
                 }
 
@@ -197,7 +204,7 @@ class FileTools(
                     state = OperationState.SUCCEEDED,
                     items = operation.items.mapIndexed { index, item ->
                         item.copy(
-                            destination = steps[index].document.uri,
+                            destination = steps[index].current.uri,
                             displayName = steps[index].plan.newName,
                             state = OperationState.SUCCEEDED,
                         )
@@ -205,7 +212,7 @@ class FileTools(
                     updatedAtMillis = System.currentTimeMillis(),
                 )
                 journal.put(completed)
-                steps.map { it.document.uri }
+                steps.map { it.current.uri }
             } catch (cancelled: CancellationException) {
                 val rollbackComplete = rollbackRenames(steps)
                 journal.put(
@@ -239,13 +246,16 @@ class FileTools(
             }
         }
 
+    /** Renames every already-[RenameStep.staged] item back to its original name, most recently
+     * staged first -- correct whether a step got as far as [RenameStep.finalized] (current name
+     * is the new name) or only as far as staged (current name is the temporary name): either way
+     * [RenameStep.current] tracks where the item actually is right now. */
     private fun rollbackRenames(steps: List<RenameStep>): Boolean {
         var complete = true
         steps.asReversed().forEach { step ->
             if (step.staged) {
-                val restored = runCatching { step.document.renameTo(step.plan.oldName) }
-                    .getOrDefault(false)
-                if (!restored) complete = false
+                val restored = runCatching { step.current.rename(resolver, step.plan.oldName) }.getOrNull()
+                if (restored != null) step.current = restored else complete = false
             }
         }
         return complete
