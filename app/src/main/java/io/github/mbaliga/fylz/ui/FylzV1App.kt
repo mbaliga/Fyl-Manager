@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.ui
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -698,6 +699,41 @@ private fun FylzV1Workspace(
                                 // burying them in a per-folder overflow was why the menu had
                                 // eleven items and no shape. What is left here is what genuinely
                                 // acts on the folder you are looking at.
+                                DropdownMenuItem(
+                                    text = { Text("Open workspace in Fonebrew") },
+                                    leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) },
+                                    enabled = activeTab != null,
+                                    onClick = {
+                                        moreExpanded = false
+                                        val tab = activeTab ?: return@DropdownMenuItem
+                                        val treeUri = tab.treeUri
+                                        val persisted = context.contentResolver.persistedUriPermissions
+                                            .firstOrNull { it.uri == treeUri }
+                                        val readOnly = persisted?.isWritePermission != true
+                                        val grantFlags =
+                                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                                                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION or
+                                                (if (readOnly) 0 else Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                                        val handoff = Intent("dev.aarso.action.OPEN_WORKSPACE")
+                                            .setPackage("dev.aarso")
+                                            .setData(treeUri)
+                                            .putExtra(
+                                                "dev.aarso.extra.WORKSPACE_DISPLAY_NAME",
+                                                tab.current.name,
+                                            )
+                                            .putExtra(
+                                                "dev.aarso.extra.WORKSPACE_READ_ONLY",
+                                                readOnly,
+                                            )
+                                            .addFlags(grantFlags)
+                                            .apply {
+                                                clipData = ClipData.newRawUri("Fylz workspace", treeUri)
+                                            }
+                                        runCatching { context.startActivity(handoff) }
+                                            .onFailure { toast("Fonebrew is not installed or cannot accept this workspace") }
+                                    },
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Find duplicates") },
                                     enabled = entries.count { !it.isDirectory } > 1,
