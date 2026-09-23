@@ -101,20 +101,41 @@ Operations crossing providers should degrade to streamed copy + verified destina
 
 ### Durable operation queue
 
-Copy, move, delete, restore, archive, extract, scan export, and AI-applied organize plans should become durable operations with:
+Copy and move (Phase 1's own stated scope; delete/restore/archive/extract/scan-export/AI-organize
+plans remain the "should" case below, not yet durable in this sense) are durable operations, backed
+by a plain `SQLiteOpenHelper` (`data.FylzDatabase`, `operations`/`operation_items` tables) rather
+than the SharedPreferences journal the foundation originally used:
 
-- operation and item IDs;
-- source/destination snapshots;
-- preflight capability and free-space checks;
-- collision policy per item;
-- progress bytes/items;
-- cancellation signal;
-- terminal and retryable error classes;
-- verification state;
-- undo record when feasible;
-- user-readable audit trail without file-content logging.
+- operation and item IDs, with per-item state (`operations.OperationState`, including a
+  `PARTIAL` state when some items in a batch succeeded and others failed);
+- source/destination snapshots per item;
+- preflight capability and free-space checks (`operations.PreflightPolicy`/`storage.VolumeInfo`) —
+  filesystem-specific filename limits, case-insensitive collisions, free space with a margin — shown
+  to the user as a per-item auto-rename/skip/cancel sheet before the durable work starts;
+- a per-item collision policy (`operations.ConflictPolicy`/`ConflictSheet`: replace, replace-if-newer,
+  keep both, skip), resolved the same way, before the transfer starts;
+- progress bytes/items, throttled to at most every 250 ms or 8 MiB of a transfer's own writes so the
+  journal isn't rewritten on every buffer read;
+- a cancellation signal, and a real `TransferWorker` running copy/move as WorkManager foreground work;
+- terminal (`FAILED`) vs. retryable (`PARTIAL`) error classes — `OperationRetryPolicy.plan()` replays
+  only a `PARTIAL` operation's own failed items, not the whole batch again;
+- optional SHA-256 verification state per file item (`operations.VerifySettings`'s three-way mode,
+  automatic for removable/network destinations), stored alongside the item so a mismatch can be
+  inspected rather than silently discarded;
+- a user-readable audit trail (the Recovery destination's operation history) without file-content
+  logging.
 
-Use WorkManager for deferrable long-running operations and foreground services only where Android requires them. Small direct edits can remain immediate but should still use atomic-write patterns when the provider supports them.
+One item's own failure no longer aborts the rest of the batch: `FileOperationService.transfer`
+records that item as `FAILED` and continues, only rethrowing (as itself, when exactly one item
+failed) once every item has had its turn. A `TransferEngine` abstraction (`operations.TransferEngine`,
+`LocalFileTransfer`/`DocumentsTransfer`) picks a fast path — direct `File.renameTo`/kernel-level copy
+when both ends are files this app's own provider serves, `DocumentsContract.moveDocument`/`copyDocument`
+when a foreign provider supports them — before falling back to a provider-neutral stream copy.
+
+`WorkManager` runs the deferrable transfer itself as foreground work; small direct edits (rename,
+create) remain immediate. Delete/restore/archive/extract/scan-export and AI-applied organize plans
+are the still-outstanding "should" case: they are not yet threaded through this same queue, and an
+undo record beyond recycle-bin restore remains future work.
 
 ## Preview safety
 
@@ -164,6 +185,20 @@ CameraX capture
 A “searchable PDF” claim is allowed only when selectable/searchable text is embedded in the PDF. OCR text in an app database or sidecar file is not equivalent.
 
 Keep OCR as a replaceable adapter. A fully open-source build may choose an open OCR engine; a convenience distribution may offer an optional platform/service adapter if its license and data behavior are disclosed.
+
+**A separate, already-implemented feature meets this bar today, for existing PDFs rather than a
+fresh camera scan:** `pdf.PdfPageTools` (P1.13; consolidated from an earlier, less capable
+`PdfToolService`) inspects, extracts a page range with per-page rotation, and merges PDFs, DPI-aware
+rather than a fixed render size, via platform `PdfRenderer`/`PdfDocument` only (no OCR engine is
+required for the non-OCR path). Its optional searchable pass runs ML Kit `TextRecognizer` on the
+same bitmap `PdfDocument`'s page draws, before rotation, and draws the recognized lines back as a
+near-transparent text layer through the identical rotation matrix — real embedded text, not a
+sidecar. `OcrEngine`/`OcrEngineFactory` (`pdf/OcrEngine.kt`) is exactly the replaceable-adapter seam
+this section calls for, already shared with `SearchablePdfService`; `MlKitOcrEngine` is its only
+implementation today, and swapping it is decision D1 in the instruction files, not yet made. The
+camera-capture pipeline above (`CameraX capture → … → searchable PDF export`) is the still-outstanding
+"recommended pipeline" — `scan.DocumentScanner` exists but does not yet route through
+`PdfPageTools`'s OCR pass.
 
 ## Local AI and BYOK boundary
 
@@ -216,6 +251,29 @@ Do not attempt to write arbitrary tags into every provider's files. Use a layere
 4. resilient relinking heuristics using parent identity, filename, size, modified time, and checksum where appropriate.
 
 Never hide that app-private tags may be lost or disconnected when files move outside Fylz.
+
+## Local index and search (P1.12)
+
+A background scan of a user-chosen scope (a folder tree opted into indexing) populates
+`index.IndexDao`'s SQLite tables (`index_files`, a name/path/text FTS4-or-FTS5 virtual table chosen
+at open time by a real create-and-drop capability probe, `index_scopes`, `index_smart_collections`,
+`index_state`) inside `data.FylzDatabase` — the same database P1.1's operation journal lives in, not
+a second store. This replaced four independent JSON files and consolidated what had grown into
+several separate candidate indexing/organize implementations into this one.
+
+`search.RecursiveSearchEngine` answers a query from the index instead of walking the provider live
+whenever the searched folder's scope is fully indexed; name/metadata matching reuses the exact same
+predicates the live walk uses, so an indexed and a live-walk search return identical results for
+those two kinds of query. Content search (`content:`/quoted-phrase) is FTS-tokenized rather than an
+exact substring match — a deliberately narrower, stated trade-off, and a capability that did not
+exist at all before the index. Every result still respects the same folder-scoping and
+trash/staged-write exclusion the live walk already enforced.
+
+For internal storage specifically, a rescan is skipped when `MediaStore.getGeneration` hasn't
+changed since the scope's last scan (`index.shouldRescan`); a removable or third-party volume, which
+carries no such generation, is always rescanned on demand. A genuine per-row `GENERATION_MODIFIED`
+delta sync — updating only the rows MediaStore says changed, rather than either walking everything
+or skipping everything — remains explicitly out of scope, not attempted.
 
 ## Theme architecture
 

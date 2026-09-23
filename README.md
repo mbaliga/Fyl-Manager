@@ -10,7 +10,10 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 
 - Full filesystem access on launch: storage volumes, removable media and standard folders, no picker required.
 - Storage Access Framework folder access with persisted user grants, for cloud, USB and third-party providers.
-- Multiple folder tabs, breadcrumbs, parent navigation, filtering and refresh.
+- Multiple folder tabs, breadcrumbs, parent navigation, filtering, streamed large-folder listing (results appear before a 100,000-entry folder finishes reading) and live external-change notifications.
+- Tabs, selection, sort/view/preview mode and search state survive rotation, foldable hinge changes and process death, not just a passing config-change workaround.
+- Cut/copy/paste with an in-app destination chooser (open tabs and storage roots), alongside the existing Copy to…/Move to… picker flow.
+- A local SQLite-backed index and search: name, path and (where captured) file-content search that answers instantly for an indexed folder instead of always walking the provider live, with automatic background rebuilds tied to MediaStore's own change generation for internal storage.
 - Adaptive list and grid views (a details view is planned).
 - Collapsible navigation and docked or floating preview panes.
 - Phone, landscape and larger-window layouts.
@@ -23,9 +26,11 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 - Create files and folders.
 - Rename, copy and move (a duplicate action is planned).
 - Recycle, restore and explicit permanent deletion.
-- Durable operation journal with progress, cancellation and process-death recovery states.
-- A conflict policy engine (skip, keep-both, guarded replacement) used by restore; copy and move
-  currently always keep both, a picker is planned.
+- Durable, SQLite-backed operation queue and journal with progress, cancellation and process-death recovery states; a failed item no longer aborts the rest of the batch, and failed/partial operations can be retried.
+- Preflight checks (free space, filesystem-specific filename limits, case-insensitive collisions) before a copy or move starts, with per-item auto-rename or skip when something would fail partway through.
+- Per-item conflict resolution (replace, replace-if-newer, keep both, skip) with a size/date/thumbnail compare card, used by copy, move and restore.
+- Optional SHA-256 verification of transferred content, automatic for removable/network destinations.
+- Faster local-to-local transfers (direct rename/kernel-level copy) with a provider-neutral streaming fallback for everything else.
 - Dedicated cleanup-only recovery when a move copied successfully but the provider refused to remove the original; finishing the move never copies again.
 
 ### Preview and editing
@@ -69,6 +74,9 @@ Fylz is an open-source, local-first Android file workspace for phones, tablets, 
 ### Additional foundations
 
 - Scan-to-PDF.
+- PDF page tools: inspect, extract a page range with per-page rotation, and merge, DPI-aware
+  rather than a fixed render size; an optional on-device OCR pass embeds real searchable/selectable
+  text into the rasterized output rather than storing it separately.
 - Duplicate detection, batch rename and saved-library metadata.
 - Optional WebDAV, local-model and BYOK adapter foundations kept separate from deterministic file operations.
 
