@@ -7,9 +7,11 @@ import android.graphics.Bitmap
 import android.graphics.Point
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Binder
 import android.os.CancellationSignal
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
@@ -60,18 +62,14 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DEFAULT_ROOT_PROJECTION)
+        val flags = rootFlagsFor(sameProcess = Binder.getCallingUid() == Process.myUid())
         volumeRoots().forEach { root ->
             cursor.newRow().apply {
                 add(DocumentsContract.Root.COLUMN_ROOT_ID, root.rootId)
                 add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, documentIdFor(root.rootId, root.directory, root.directory))
                 add(DocumentsContract.Root.COLUMN_TITLE, root.title)
                 add(DocumentsContract.Root.COLUMN_SUMMARY, root.directory.absolutePath)
-                add(
-                    DocumentsContract.Root.COLUMN_FLAGS,
-                    DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
-                        DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD or
-                        DocumentsContract.Root.FLAG_LOCAL_ONLY,
-                )
+                add(DocumentsContract.Root.COLUMN_FLAGS, flags)
                 add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, root.directory.usableSpace)
                 add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_save)
             }
@@ -379,6 +377,23 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
 
         /** Root id of the primary shared volume, mirroring `ExternalStorageProvider`. */
         const val PRIMARY_ROOT_ID: String = "primary"
+
+        /**
+         * The [DocumentsContract.Root.COLUMN_FLAGS] value [queryRoots] reports (P1.9).
+         *
+         * [DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD] is what lets the system's picker offer a
+         * *tree* grant (`ACTION_OPEN_DOCUMENT_TREE`) over one of these roots at all -- without it, a
+         * caller can still browse and open single documents here (unaffected: that only needs
+         * `queryChildDocuments`/`openDocument`, both already same-uid-gated by the manifest's
+         * `MANAGE_DOCUMENTS` permission the normal way), but the system never offers "Use this
+         * folder" for a whole volume or `Download` to it. Omitting the flag for every OTHER app
+         * (never for Fylz itself, [sameProcess]) closes that off without touching single-document
+         * access other apps already legitimately have through Fylz's own roots.
+         */
+        internal fun rootFlagsFor(sameProcess: Boolean): Int =
+            DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
+                DocumentsContract.Root.FLAG_LOCAL_ONLY or
+                (if (sameProcess) DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD else 0)
 
         private val DEFAULT_ROOT_PROJECTION = arrayOf(
             DocumentsContract.Root.COLUMN_ROOT_ID,

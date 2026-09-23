@@ -32,6 +32,28 @@ class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
     }
 
     @Test
+    fun `queryRoots called in-process (Fylz itself) still supports tree grants`() {
+        // provider.queryRoots(...) is called directly here, not through a real Binder IPC, so
+        // Binder.getCallingUid() falls back to this process's own uid -- exactly what a genuine
+        // in-process caller (there are none in production; this pins the same-uid branch) sees.
+        val cursor = provider.queryRoots(null)
+        assertTrue(cursor.moveToFirst())
+        val flags = cursor.getInt(cursor.getColumnIndexOrThrow(DocumentsContract.Root.COLUMN_FLAGS))
+        assertTrue(
+            "same-process caller must still be offered a tree grant",
+            flags and DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD != 0,
+        )
+    }
+
+    @Test
+    fun `an other-app caller's root omits FLAG_SUPPORTS_IS_CHILD but keeps create and local-only`() {
+        val flags = FylzFilesDocumentsProvider.rootFlagsFor(sameProcess = false)
+        assertEquals(0, flags and DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD)
+        assertTrue(flags and DocumentsContract.Root.FLAG_SUPPORTS_CREATE != 0)
+        assertTrue(flags and DocumentsContract.Root.FLAG_LOCAL_ONLY != 0)
+    }
+
+    @Test
     fun `an empty root lists zero children`() {
         val cursor = queryChildren(rootDocumentId())
         assertEquals(0, cursor.count)

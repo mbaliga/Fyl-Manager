@@ -271,6 +271,26 @@ those services need no second backend and no capability branching: they keep rec
 unchanged, and the recycle-bin contract in `docs/product/preview-and-recycle-bin-contract.md` holds
 on both backends for the same reason.
 
+### Root-level hardening for other apps (P1.9)
+
+`queryRoots` reports `DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD` only when the caller shares
+Fylz's own process uid (`Binder.getCallingUid() == Process.myUid()`, `rootFlagsFor(sameProcess)`).
+That flag is what lets the system's `ACTION_OPEN_DOCUMENT_TREE` picker offer a *tree* grant over
+one of these roots at all; omitting it for every other caller means another app can no longer walk
+away with a persisted tree grant over a whole volume or `Download` through Fylz's own provider.
+
+- **What is unaffected:** single-document access (`ACTION_OPEN_DOCUMENT`/`GET_CONTENT`, and any
+  document URI another app already legitimately holds) still works exactly as before -- that only
+  needs `queryChildDocuments`/`openDocument`, neither of which this touches.
+- **Why this matters:** Android 11+ deliberately blocks the system's own `ExternalStorageProvider`
+  from handing out whole-volume tree grants for exactly this reason (scoped storage's own intent);
+  this closes the same hole for Fylz's own broad-access provider now that P1.8 lets Fylz itself
+  reach every one of its roots (tabs and destinations alike) without ever needing the system picker
+  for them, so nothing in this app's own flow depends on `FLAG_SUPPORTS_IS_CHILD` being visible to
+  anyone else.
+- **Whether to let a user re-widen this** (a setting exposing tree grants to other apps again) is
+  decision D2 in the instruction files -- deliberately not decided here.
+
 ## Open-source hygiene
 
 - No production keys, signing material, user file samples, model API keys, or private Fonebrew/Studio content in the repository.
