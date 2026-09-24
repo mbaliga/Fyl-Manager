@@ -284,3 +284,31 @@ kernel behaviour no unit test or `assembleDebug` run touches.
 behaviour, not just an install smoke test, from M2.4 on, once `DecoderService` and later crates
 give the native library actual work to do -- add the specific behaviour to check for at that point
 rather than expanding this section speculatively now.
+
+## 14. Isolated decoder process: real crash and timeout behaviour (M2.4)
+
+`DecoderClientTest` covers `DecoderClient`'s own retry/timeout/crash-recovery state machine
+against a fake `IDecoderService.Stub`, entirely within one JVM. It cannot exercise what section
+4.4 is actually FOR: a real separate OS process, a real kill, a real crash that must not reach the
+UI process. Robolectric runs every "process" as one JVM, so none of that is provable there.
+
+**Steps:**
+1. With the app running, find `DecoderService`'s PID (`adb shell ps -A | grep decoders`, looking
+   for `io.github.mbaliga.fylz:decoders`) and confirm it is a distinct process from the main app.
+2. Kill it directly (`adb shell kill -9 <pid>`) while the app is idle, then trigger any action that
+   calls `DecoderClient` (nothing does yet -- this becomes exercisable once a real caller lands,
+   M2.5+). Confirm the app does not crash or ANR, and that the next `DecoderClient` call reconnects
+   (a fresh PID appears under `:decoders`).
+3. Confirm `DecoderService`'s process shows no permissions in `adb shell dumpsys package
+   io.github.mbaliga.fylz` beyond what an isolated process always has (none), and that
+   `MANAGE_EXTERNAL_STORAGE`/broad filesystem access, granted to the main process, is NOT usable
+   from `:decoders` -- an isolated process cannot inherit the app's own storage permission.
+4. Once a real slow/hostile-input path exists to exercise it, confirm a call that genuinely hangs
+   past its timeout is abandoned client-side without the UI freezing, and that the abandoned
+   `:decoders` process is eventually killed by the platform once nothing is bound to it.
+
+**Expected:** the app is never the process that shows a crash dialog or ANR for a `:decoders`
+failure; `:decoders` is free to die and come back, invisibly to the user beyond that one request
+failing softly (a file marked "can't preview" rather than a spinner that never resolves).
+Steps 2 and 4 are the "kill-and-restart" and "crash marks the file unsafe, never crashes the app"
+guarantees section 4.4 states in words; nothing before this milestone could observe either one.

@@ -275,6 +275,30 @@ carries no such generation, is always rescanned on demand. A genuine per-row `GE
 delta sync — updating only the rows MediaStore says changed, rather than either walking everything
 or skipping everything — remains explicitly out of scope, not attempted.
 
+## Isolated decoder process (M2.4)
+
+`decoder.DecoderService` is the isolation boundary the Preview safety section above calls for:
+`android:isolatedProcess="true"`, `android:process=":decoders"`, `android:exported="false"`. It
+has no permissions and cannot open a file by path — every input arrives as a
+`ParcelFileDescriptor` the caller already holds open, over the `IDecoderService` AIDL interface,
+so a crash while parsing a hostile file cannot take the host app down with it, only that one
+request. Today its two methods are trivial (`ping()`, and `sniff()` delegating straight to
+`core.FylzCore.sniffFile` — M2.2's uniffi stub, replaced for real by M2.5's `fylz-sniff`); future
+native parsers (archives, disk images, fonts, media) route through this same process rather than
+running in-process, closing the Preview safety section's own "isolated behind renderer interfaces"
+requirement one format at a time.
+
+`decoder.DecoderClient` owns the other half of the contract section 4.4 asks for: a per-call
+timeout (`DecoderClient`'s own default, distinct from section 4.4's stated 5 s/30 s per-purpose
+budgets, which a real caller should pass explicitly once one exists), and dropping the connection
+on either a timeout or a crash so the next call rebinds fresh rather than reusing a connection to
+a process that may already be gone. Losing every binding to an isolated process is what lets the
+platform actually kill it — `unbindService` is the "kill" half of "kill-and-restart," there is no
+separate `Process.killProcess` call to make from the client side. `DecoderClientTest` covers this
+retry/timeout state machine against a fake `IDecoderService.Stub` bound through a test-injected
+seam; genuine cross-process crash and timeout behaviour is real-device-only and is tracked in
+`docs/agent/DEVICE_CHECKS.md` instead, since Robolectric runs every "process" in one JVM.
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

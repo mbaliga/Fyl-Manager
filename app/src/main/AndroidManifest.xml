@@ -82,6 +82,21 @@
             tools:node="merge" />
 
         <!--
+            M2.4: the isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4). Native
+            code parsing untrusted file content runs here, never in the UI process:
+            isolatedProcess strips it down to no permissions of its own (it cannot open a file by
+            path; every input arrives as a ParcelFileDescriptor the caller already holds open),
+            and a separate process means a native crash while decoding a hostile file cannot take
+            the host app down with it. exported="false": only DecoderClient, in this same app,
+            ever binds to it.
+        -->
+        <service
+            android:name=".decoder.DecoderService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":decoders" />
+
+        <!--
             P0.12: exported="false" on this and its two siblings below (IndexManagerActivity,
             OperationHistoryActivity). None of the three has an intent-filter another app could
             target anyway; a launcher shortcut with an explicit targetClass (res/xml/shortcuts.xml)

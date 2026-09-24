@@ -49,6 +49,8 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // M2.4: DecoderService's client/service boundary is an AIDL interface.
+        aidl = true
     }
 
     packaging {
