@@ -47,6 +47,19 @@ jobs:
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
 
+      # From M2 on (docs/agent/MASTER_PLAN.md section 3.1's own preflight): the NDK, cargo-ndk
+      # and the three Android Rust targets, needed by :app:buildCoreDebug (M2.3's Exec task,
+      # wired into preDebugBuild) even for a plain testDebugUnitTest/lintDebug/assembleDebug run.
+      # Runner images ship a Rust toolchain already; rust-toolchain.toml pins the exact version
+      # and re-provisions it (plus rustfmt/clippy) automatically on first use.
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;28.2.13676358'
+
+      - name: Install cargo-ndk and Rust Android targets
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk --locked
+
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4
         with:
