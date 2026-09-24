@@ -110,6 +110,13 @@ dependencies {
     implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
     implementation("com.squareup.okhttp3:okhttp:5.3.0")
 
+    // fylz-core (M2.2): the generated uniffi bindings in core/ need JNA for the native calls
+    // and kotlinx-coroutines for the suspend-fun bridge uniffi generates for async Rust fns.
+    // JNA is dual-licensed Apache-2.0/LGPL-2.1; the Apache-2.0 option is the one that applies
+    // here, per docs/agent/MASTER_PLAN.md section 2.2.
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
     // Hyle Design System, via the hyle-design-system submodule + includeBuild (see
     // settings.gradle.kts). Gradle's composite-build dependency substitution resolves
     // these to the :hyle and :crash-recovery projects, not a remote registry.

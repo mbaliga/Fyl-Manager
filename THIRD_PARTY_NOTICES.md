@@ -19,6 +19,9 @@ The resolved release graph contains the following open-source families distribut
 - JSpecify annotations
 - `javax.inject`
 - Guava `listenablefuture`
+- JNA (`net.java.dev.jna:jna`) — dual-licensed Apache-2.0/LGPL-2.1; the Apache-2.0 option applies
+  here (M2.2, for the generated `fylz-core` uniffi bindings)
+- Kotlin coroutines Android (`org.jetbrains.kotlinx:kotlinx-coroutines-android`, M2.2)
 
 The exact artifacts and versions are available in the `release-runtime-dependencies` workflow artifact.
 
@@ -37,6 +40,16 @@ The resolved graph also contains Google-distributed components pulled by the doc
 These artifacts are governed by the applicable Google APIs, SDK and service terms and any notices shipped with the artifacts. They are not relicensed by the Fylz Apache licence.
 
 The scanner is invoked only after an explicit user action. Availability and implementation can depend on the device and Google Play services.
+
+## Rust core (`core/`)
+
+The `core/` Rust workspace's own dependency graph is tracked separately by `core/deny.toml`
+(cargo-deny), which enforces the licence allow-list in `docs/agent/MASTER_PLAN.md` section 2.2.
+Notable dependencies as of M2.2:
+
+- uniffi 0.32.2 (`core/crates/fylz-ffi-android`) — MPL-2.0, file-level copyleft, permitted
+  anywhere per section 2.2. Generates the Kotlin bindings in
+  `app/src/main/java/io/github/mbaliga/fylz/core/`.
 
 ## Test-only dependency
 

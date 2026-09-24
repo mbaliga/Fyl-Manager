@@ -23,6 +23,10 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # Not in section 2.2's own list, but permissive (OSI-approved) and unavoidable: almost
+    # every proc-macro-using crate depends on unicode-ident, which is dual-licensed
+    # MIT/Apache-2.0 *and* this — added once uniffi's dependency tree actually needed it (M2.2).
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.8
 
