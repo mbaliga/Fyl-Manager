@@ -18,7 +18,7 @@ jobs:
   build:
     name: Test, lint, and build debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Check out source
@@ -59,6 +59,36 @@ jobs:
         run: |
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
           cargo install cargo-ndk --locked
+
+      # M2.6 (docs/agent/MASTER_PLAN.md section 5): cargo test, clippy, cargo deny and a fuzz
+      # smoke run, added to this workflow specifically (release-readiness.yml stays as it was --
+      # the plan names "the Android workflow" singular, and duplicating a 60s fuzz run into both
+      # would cost real minutes for no new signal). --all-features matters for clippy/deny here
+      # the same way it does locally: fylz-ffi-android's uniffi-cli-gated bin target and its
+      # dependency tree are otherwise invisible to both.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo test, clippy, fmt and deny check
+        working-directory: core
+        run: |
+          cargo test --workspace
+          cargo clippy --all-features --all-targets --workspace -- -D warnings
+          cargo fmt --check
+          cargo deny check
+
+      # cargo-fuzz needs nightly's -Z sanitizer flags; core/rust-toolchain.toml deliberately pins
+      # only the stable channel everything else in this workspace builds with, so nightly is
+      # fetched here rather than added to that file. See core/fuzz/README.md for what "sniff"
+      # fuzzes and why 60s here is a smoke test, not the real fuzzing run.
+      - name: Install nightly Rust and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      - name: Fuzz smoke test (60s)
+        working-directory: core
+        run: cargo +nightly fuzz run sniff -- -max_total_time=60
 
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4
