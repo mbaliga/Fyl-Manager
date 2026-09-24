@@ -20,3 +20,13 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/mbaliga/Fyl-Manager"
 publish = false
+
+# M2.3: the Android debug build uses this profile for a fast cargo-ndk turnaround.
+[profile.dev-android]
+inherits = "dev"
+opt-level = 1
+
+# M2.3: the Android release build strips symbols and enables LTO for size.
+[profile.release]
+lto = true
+strip = true

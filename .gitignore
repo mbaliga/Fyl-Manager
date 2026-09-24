@@ -30,5 +30,10 @@ Thumbs.db
 core/target/
 core/**/target/
 
+# fylz-core native build outputs (M2.3): buildCoreDebug/buildCoreRelease regenerate both of
+# these from core/ on every build (preBuild depends on them), so neither is checked-in source.
+app/src/main/jniLibs/
+app/src/main/java/io/github/mbaliga/fylz/core/fylz_ffi_android.kt
+
 # Temporary bootstrap payloads
 .bootstrap/

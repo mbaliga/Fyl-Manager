@@ -1,0 +1,15 @@
+# 16 KB native page alignment (docs/agent/MASTER_PLAN.md section 2.3) is only the NDK linker's
+# DEFAULT for some build configurations, not a guarantee: a `--profile dev-android` build
+# (opt-level 1, no LTO) measurably linked its .so at the classic 4 KB (0x1000) page size in
+# testing here, while a `--release` build (LTO, strip) of the identical crate linked at 16 KB
+# (0x4000) with no other flag changed. Passing the linker flag explicitly, for every Android
+# target and every profile, is what actually guarantees the alignment `check16KbPageAlignment`
+# (app/build.gradle.kts) verifies, rather than depending on an optimization-dependent default.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

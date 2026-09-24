@@ -12,9 +12,17 @@ crate-type = ["cdylib", "lib"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+# uniffi's "cli" feature pulls in uniffi_bindgen's own large dependency tree (askama, clap,
+# goblin, ...), needed only by this bin. Cargo unifies features across every target built in
+# the same invocation, so without gating it behind its own package feature, `cargo build --lib`
+# would compile that entire tree for the shipped Android .so too, for nothing it ever calls.
+required-features = ["uniffi-cli"]
+
+[features]
+uniffi-cli = ["uniffi/cli"]
 
 [dependencies]
-uniffi = { version = "0.32.2", features = ["cli"] }
+uniffi = "0.32.2"
 
 [dev-dependencies]
 pollster = "1.0.1"

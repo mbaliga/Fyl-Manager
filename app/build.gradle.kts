@@ -7,6 +7,9 @@ plugins {
 android {
     namespace = "io.github.mbaliga.fylz"
     compileSdk = 36
+    // M2.3: pinned to the NDK r28+ release installed for fylz-core's cargo-ndk build below,
+    // per docs/agent/MASTER_PLAN.md section 2.3 (16 KB page alignment by default).
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "io.github.mbaliga.fylz"
@@ -150,3 +153,99 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// M2.3: fylz-core native build (docs/agent/MASTER_PLAN.md sections 4.2 and 5, task M2.3).
+// buildCoreDebug/buildCoreRelease cross-compile core/crates/fylz-ffi-android for arm64-v8a,
+// armeabi-v7a and x86_64 via cargo-ndk, copy the resulting .so files into src/main/jniLibs, then
+// regenerate the Kotlin bindings in src/main/java/io/github/mbaliga/fylz/core/ from one of the
+// just-built libraries -- uniffi's --library bindgen mode statically parses ELF metadata (via
+// `goblin`), so any one of the just-built target .so files works; no separate host-arch build
+// is needed just for bindgen, confirmed by running it against a cross-compiled arm64-v8a .so
+// from this x86_64 host.
+val fylzCoreDir = rootProject.file("core")
+val fylzCoreJniLibsDir = layout.projectDirectory.dir("src/main/jniLibs").asFile
+val fylzCoreBindingsOutDir = layout.projectDirectory.dir("src/main/java").asFile
+
+fun registerBuildCoreTask(taskName: String, cargoProfileArgs: List<String>) =
+    tasks.register<Exec>(taskName) {
+        group = "fylz-core"
+        description = "Cross-compiles fylz-ffi-android and regenerates its Kotlin bindings."
+        workingDir = fylzCoreDir
+        environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+        commandLine(
+            listOf(
+                "cargo", "ndk",
+                "-t", "arm64-v8a", "-t", "armeabi-v7a", "-t", "x86_64",
+                "-P", "31",
+                "-o", fylzCoreJniLibsDir.absolutePath,
+                "build", "--lib", "-p", "fylz-ffi-android",
+            ) + cargoProfileArgs,
+        )
+        doLast {
+            // uniffi-bindgen's --library mode needs the crate's (non-dynamic) symbol table to
+            // find its embedded interface metadata -- confirmed by a real "No UniFFI metadata
+            // found" failure bindgen-ing buildCoreRelease's own just-built arm64-v8a .so, which
+            // `[profile.release] strip = true` (core/Cargo.toml) strips clean. The Kotlin
+            // interface is identical across profiles and targets, so a cheap, ordinary
+            // dev-profile HOST build -- entirely separate from whatever this task just
+            // cross-compiled and possibly stripped above -- is what bindgen actually
+            // introspects, exactly how M2.2 first proved this out by hand.
+            exec {
+                workingDir = fylzCoreDir
+                commandLine("cargo", "build", "--lib", "-p", "fylz-ffi-android")
+            }
+            exec {
+                workingDir = fylzCoreDir
+                commandLine(
+                    "cargo", "run", "--quiet", "-p", "fylz-ffi-android",
+                    "--features", "uniffi-cli", "--bin", "uniffi-bindgen", "--",
+                    "generate",
+                    "--library", fylzCoreDir.resolve("target/debug/libfylz_ffi_android.so").absolutePath,
+                    "--language", "kotlin",
+                    "--out-dir", fylzCoreBindingsOutDir.absolutePath,
+                    "--no-format",
+                )
+            }
+        }
+    }
+
+val buildCoreDebug = registerBuildCoreTask("buildCoreDebug", listOf("--profile", "dev-android"))
+val buildCoreRelease = registerBuildCoreTask("buildCoreRelease", listOf("--release"))
+
+// 16 KB native page alignment (MASTER_PLAN.md section 2.3): the NDK r28+ toolchain already
+// defaults to a 16 KB-aligned linker layout, but this task is the CI-checkable guard against a
+// future regression (a dependency's build script forcing a different `-z max-page-size`, an NDK
+// downgrade, and so on) rather than a check that should ever legitimately fail today.
+val check16KbPageAlignment = tasks.register("check16KbPageAlignment") {
+    group = "fylz-core"
+    description = "Fails if any fylz-core .so's ELF LOAD segments aren't 16 KB (0x4000) aligned."
+    doLast {
+        val readelf = android.ndkDirectory.resolve("toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf")
+        val soFiles = fileTree(fylzCoreJniLibsDir) { include("**/*.so") }.files
+        val misaligned = mutableListOf<String>()
+        soFiles.forEach { so ->
+            val output = providers.exec {
+                commandLine(readelf.absolutePath, "-l", so.absolutePath)
+            }.standardOutput.asText.get()
+            output.lineSequence()
+                .filter { it.trim().startsWith("LOAD") }
+                .forEach { line ->
+                    val align = line.trim().split(Regex("\\s+")).last().removePrefix("0x")
+                    if (align.toLong(16) < 0x4000L) {
+                        misaligned += "${so.name}: $line"
+                    }
+                }
+        }
+        if (misaligned.isNotEmpty()) {
+            throw GradleException(
+                "fylz-core native libraries are not 16 KB page-aligned:\n" + misaligned.joinToString("\n"),
+            )
+        }
+    }
+}
+
+buildCoreDebug.configure { finalizedBy(check16KbPageAlignment) }
+buildCoreRelease.configure { finalizedBy(check16KbPageAlignment) }
+
+tasks.matching { it.name == "preDebugBuild" }.configureEach { dependsOn(buildCoreDebug) }
+tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(buildCoreRelease) }

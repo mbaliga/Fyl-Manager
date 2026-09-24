@@ -9,6 +9,11 @@
 
 [graph]
 targets = []
+# fylz-ffi-android's "uniffi-cli" feature (gating the uniffi-bindgen binary's own large
+# dependency tree, kept off the default feature set so it never bloats the shipped library
+# build) isn't active in a default-features check -- without this, cargo-deny would silently
+# stop covering that tree's licences the moment it moved behind a non-default feature.
+all-features = true
 
 [advisories]
 ignore = []

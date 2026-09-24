@@ -260,3 +260,27 @@ selects/searches at roughly the same on-screen position as the visible (rasteriz
 it, for every rotation, not just 0° -- this is the one thing `PageDrawMatrixTest` cannot itself
 prove, since it never draws a real bitmap or invisible text layer, only the matrix each of those
 draws through.
+
+## 13. fylz-core native library: 16 KB page-size device install (M2.3)
+
+Nothing in the app calls into `fylz-core` yet (M2.2's `FylzCore.version()`/`sniffFile()` have no
+call site until M2.4+), so there is no *behaviour* to check here today -- only whether the APK
+itself installs and runs at all on a device whose page size the emulator/JVM gate cannot represent.
+`check16KbPageAlignment` (this task) confirms the `.so` files' own ELF layout is 16 KB-aligned via
+`llvm-readelf`, a static check; it cannot confirm the *loader* actually accepts them, since that is
+kernel behaviour no unit test or `assembleDebug` run touches.
+
+**Steps:**
+1. Install a debug build on a real 16 KB page-size device or the equivalent AVD image (Android
+   15+, e.g. a Pixel 8/9 with the 16 KB developer option enabled, or a "believed" 16 KB emulator
+   target).
+2. Launch the app and confirm it starts normally -- a page-size mismatch fails at
+   `System.loadLibrary`/process start with `dlopen failed`, not at any later, harder-to-attribute
+   point.
+3. Repeat on an ordinary 4 KB-page-size device, to confirm nothing about the 16 KB alignment
+   itself broke the (much more common, today) 4 KB case.
+
+**Expected:** the app launches cleanly on both. This check becomes meaningful earnest device
+behaviour, not just an install smoke test, from M2.4 on, once `DecoderService` and later crates
+give the native library actual work to do -- add the specific behaviour to check for at that point
+rather than expanding this section speculatively now.
