@@ -26,5 +26,9 @@ Thumbs.db
 *.apk
 *.aab
 
+# Rust (core/)
+core/target/
+core/**/target/
+
 # Temporary bootstrap payloads
 .bootstrap/
