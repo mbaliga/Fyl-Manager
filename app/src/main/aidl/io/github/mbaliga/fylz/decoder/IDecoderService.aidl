@@ -1,8 +1,8 @@
 package io.github.mbaliga.fylz.decoder;
 
-// M2.4 trivial skeleton: a liveness check and a content-sniff stub. Real format decoding lands
-// on this interface in later milestones (M6+); the isolation/timeout/crash-recovery contract
-// (docs/agent/MASTER_PLAN.md section 4.4) is what this milestone actually proves out.
+// A liveness check and content-type sniffing (M2.5's fylz-sniff crate, over the isolation/
+// timeout/crash-recovery contract M2.4 built -- docs/agent/MASTER_PLAN.md section 4.4). Real
+// format DECODING (structure, thumbnails) lands on this interface in later milestones (M6+).
 interface IDecoderService {
     boolean ping();
 

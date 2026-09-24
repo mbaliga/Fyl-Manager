@@ -23,6 +23,7 @@ uniffi-cli = ["uniffi/cli"]
 
 [dependencies]
 uniffi = "0.32.2"
+fylz-sniff = { path = "../fylz-sniff", version = "0.1.0" }
 
 [dev-dependencies]
 pollster = "1.0.1"

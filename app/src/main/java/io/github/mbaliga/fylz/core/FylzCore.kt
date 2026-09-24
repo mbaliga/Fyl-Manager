@@ -8,6 +8,6 @@ package io.github.mbaliga.fylz.core
 object FylzCore {
     fun version(): String = fylzVersion()
 
-    /** Stub until M2.5's `fylz-sniff` lands; see `sniff`'s own KDoc in the generated file. */
+    /** Content-type detection (`fylz-sniff`, M2.5); see `sniff`'s own KDoc in the generated file. */
     suspend fun sniffFile(pathFd: Int): String = sniff(pathFd)
 }

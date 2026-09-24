@@ -14,10 +14,11 @@ import kotlinx.coroutines.runBlocking
  * host app down. [DecoderClient] is the only caller and owns the timeout/kill/restart contract
  * this process is designed to be disposable under.
  *
- * `sniff` delegates to [FylzCore.sniffFile] -- the M2.5 `fylz-sniff` crate replaces its stub body
- * without this service needing to change. `runBlocking` is deliberate: AIDL calls run on a Binder
- * thread-pool thread with no caller waiting on anything else, so blocking it for the length of one
- * native call costs nothing a coroutine would save.
+ * `sniff` delegates to [FylzCore.sniffFile], backed by the `fylz-sniff` crate's real content
+ * detection (M2.5) -- this service needed no change when that crate's stub body was replaced.
+ * `runBlocking` is deliberate: AIDL calls run on a Binder thread-pool thread with no caller
+ * waiting on anything else, so blocking it for the length of one native call costs nothing a
+ * coroutine would save.
  */
 class DecoderService : Service() {
 
