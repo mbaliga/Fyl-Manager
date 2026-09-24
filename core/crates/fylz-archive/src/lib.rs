@@ -1,1 +1,386 @@
-//! Archive and disk-image engine (libarchive, 7-Zip .so, libyal .so); implementation lands in M3.
+//! Archive read engine over libarchive (BSD-licensed C library, vendored as a git submodule at
+//! `core/third_party/libarchive`, cross-compiled by this crate's own `build.rs` -- never a Cargo
+//! dependency, so nothing about it appears in `cargo tree`/`cargo deny check`'s own dependency
+//! graph; see `build.rs`'s own doc comment for why). M3.1's own first cut: [entries]/[read_entry],
+//! single-pass over a raw fd, no compression backends compiled in yet (a follow-up task adds
+//! zlib/bzip2/xz/zstd/lz4 one at a time, each verified before the next) and no random access
+//! (M3.2's own stated scope). `extract` and the ported `ArchiveExtractionPolicy` land in a
+//! follow-up task too.
+
+use std::ffi::CStr;
+use std::os::raw::c_int;
+use std::os::raw::c_void;
+use std::os::unix::io::RawFd;
+
+mod sys {
+    //! Hand-written declarations for the small slice of libarchive's C API this crate calls --
+    //! not machine-generated (no bindgen dependency pulled in for ten stable, decades-old
+    //! functions), and not exhaustive: extend this module rather than reaching for a `-sys` crate
+    //! or bindgen wholesale, so this file stays the one place documenting exactly what is used and
+    //! why.
+    //!
+    //! `LaSsizeT`/`LaInt64T` are libarchive's own portable typedefs (`archive.h`'s `la_ssize_t`/
+    //! `la_int64_t`), guaranteed 64-bit on every platform including 32-bit ones, for large-file
+    //! support. `Mode` (`archive_entry_filetype`'s return type, `archive_entry.h`'s `__LA_MODE_T`)
+    //! is `mode_t`, confirmed `unsigned int` (`c_uint`, 32-bit) on every target this crate builds
+    //! for: the Android NDK sysroot's `asm-generic/posix_types.h` defines
+    //! `__kernel_mode_t` as `unsigned int` for aarch64/armv7/x86_64 alike, and glibc matches on
+    //! the host. Getting this width wrong on the 32-bit `armv7-linux-androideabi` target would be
+    //! a silent ABI mismatch, not a compile error -- confirmed against the real header rather than
+    //! assumed.
+    use std::os::raw::c_char;
+    use std::os::raw::c_int;
+    use std::os::raw::c_void;
+
+    #[repr(C)]
+    pub struct Archive {
+        _private: [u8; 0],
+    }
+    #[repr(C)]
+    pub struct ArchiveEntry {
+        _private: [u8; 0],
+    }
+
+    pub type LaSsizeT = isize;
+    pub type LaInt64T = i64;
+    pub type Mode = u32;
+
+    unsafe extern "C" {
+        pub fn archive_read_new() -> *mut Archive;
+        pub fn archive_read_support_filter_all(a: *mut Archive) -> c_int;
+        pub fn archive_read_support_format_all(a: *mut Archive) -> c_int;
+        pub fn archive_read_open_fd(a: *mut Archive, fd: c_int, block_size: usize) -> c_int;
+        pub fn archive_read_next_header(a: *mut Archive, entry: *mut *mut ArchiveEntry) -> c_int;
+        pub fn archive_read_data(a: *mut Archive, buf: *mut c_void, len: usize) -> LaSsizeT;
+        pub fn archive_read_free(a: *mut Archive) -> c_int;
+        pub fn archive_error_string(a: *mut Archive) -> *const c_char;
+
+        pub fn archive_entry_pathname(e: *mut ArchiveEntry) -> *const c_char;
+        pub fn archive_entry_size(e: *mut ArchiveEntry) -> LaInt64T;
+        pub fn archive_entry_filetype(e: *mut ArchiveEntry) -> Mode;
+    }
+}
+
+const ARCHIVE_EOF: c_int = 1;
+const ARCHIVE_OK: c_int = 0;
+const ARCHIVE_WARN: c_int = -20;
+
+/// `archive_entry.h`'s `AE_IFMT`/`AE_IFDIR` (`S_IFMT`/`S_IFDIR`) -- the only file-type bit this
+/// first cut inspects; every other type (regular, symlink, device, ...) is simply "not a
+/// directory".
+const AE_IFMT: u32 = 0o170000;
+const AE_IFDIR: u32 = 0o040000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveEntry {
+    pub path: String,
+    pub size: i64,
+    pub is_directory: bool,
+}
+
+#[derive(Debug)]
+pub enum ArchiveError {
+    /// libarchive itself reported a fatal error; the message is `archive_error_string`'s own text.
+    Fatal(String),
+    /// An entry's pathname was not valid UTF-8. `archive_entry_pathname_w` (wide-char) would avoid
+    /// this but is out of scope for this first cut, so this fails the whole read rather than
+    /// silently mangling a name a later step (extraction, display) would then act on wrongly.
+    NonUtf8Path,
+}
+
+impl std::fmt::Display for ArchiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArchiveError::Fatal(message) => write!(f, "{message}"),
+            ArchiveError::NonUtf8Path => write!(f, "entry pathname is not valid UTF-8"),
+        }
+    }
+}
+
+impl std::error::Error for ArchiveError {}
+
+/// Owns a libarchive read handle for exactly one, single, forward-only pass over an fd -- opening
+/// it twice (e.g. once for [entries] and again for [read_entry]) needs two separate, freshly
+/// positioned file descriptors, since this struct's `Drop` calls `archive_read_free`
+/// (`archive_read_close` included) and libarchive never seeks backwards on a plain fd stream.
+/// Real random access lands in M3.2.
+struct Reader {
+    raw: *mut sys::Archive,
+}
+
+impl Reader {
+    fn open_fd(fd: RawFd) -> Result<Self, ArchiveError> {
+        // SAFETY: `archive_read_new` returns either a valid, freshly allocated `*mut Archive` or
+        // null on allocation failure -- the null check below is this call's own safety contract.
+        let raw = unsafe { sys::archive_read_new() };
+        if raw.is_null() {
+            return Err(ArchiveError::Fatal("archive_read_new returned null".into()));
+        }
+        let reader = Reader { raw };
+        // SAFETY: `raw` is a valid, just-allocated archive handle; `support_filter_all`/
+        // `support_format_all` never fail in a way libarchive treats as fatal here (registering a
+        // codec that is not actually compiled in is documented as harmless -- it simply cannot be
+        // used later), so their return values are intentionally not checked.
+        unsafe {
+            sys::archive_read_support_filter_all(reader.raw);
+            sys::archive_read_support_format_all(reader.raw);
+        }
+        // 64 KiB matches this crate's own streaming read-data buffer below and libarchive's own
+        // commonly recommended default; it only affects the size of internal read()s against
+        // `fd`, never correctness.
+        let status = unsafe { sys::archive_read_open_fd(reader.raw, fd, 64 * 1024) };
+        reader.check(status)?;
+        Ok(reader)
+    }
+
+    /// Turns a non-OK, non-EOF, non-warning libarchive status into this crate's own error type,
+    /// reading the message while `self.raw` is still valid -- a caller must never call this after
+    /// the reader has already been freed.
+    fn check(&self, status: c_int) -> Result<(), ArchiveError> {
+        if status == ARCHIVE_OK || status == ARCHIVE_EOF || status == ARCHIVE_WARN {
+            return Ok(());
+        }
+        // SAFETY: `self.raw` is non-null and owned by this `Reader` for its whole lifetime.
+        let message = unsafe {
+            let ptr = sys::archive_error_string(self.raw);
+            if ptr.is_null() {
+                format!("libarchive error {status}")
+            } else {
+                CStr::from_ptr(ptr).to_string_lossy().into_owned()
+            }
+        };
+        Err(ArchiveError::Fatal(message))
+    }
+
+    /// Advances to the next entry's header, returning `None` at end of archive. Per libarchive's
+    /// own documented contract, calling this again before draining a prior entry's data with
+    /// [Reader::read_current_entry_data] silently skips whatever of that entry's body was never
+    /// read -- exactly what [entries] relies on to list every entry without reading any data.
+    fn next_entry(&mut self) -> Result<Option<ArchiveEntry>, ArchiveError> {
+        let mut entry_ptr: *mut sys::ArchiveEntry = std::ptr::null_mut();
+        // SAFETY: `self.raw` is a valid, open archive handle; `entry_ptr` is an out-parameter
+        // libarchive sets to point at internally-owned storage that stays valid until the next
+        // `archive_read_next_header`/`archive_read_free` call on this same `self.raw`.
+        let status = unsafe { sys::archive_read_next_header(self.raw, &mut entry_ptr) };
+        if status == ARCHIVE_EOF {
+            return Ok(None);
+        }
+        self.check(status)?;
+        if entry_ptr.is_null() {
+            return Err(ArchiveError::Fatal(
+                "archive_read_next_header reported success with a null entry".into(),
+            ));
+        }
+        // SAFETY: `entry_ptr` was just confirmed non-null and is owned by `self.raw` per the call
+        // above's own contract.
+        let path_cstr = unsafe {
+            let ptr = sys::archive_entry_pathname(entry_ptr);
+            if ptr.is_null() {
+                return Err(ArchiveError::Fatal("archive entry has no pathname".into()));
+            }
+            CStr::from_ptr(ptr)
+        };
+        let path = path_cstr
+            .to_str()
+            .map_err(|_| ArchiveError::NonUtf8Path)?
+            .to_string();
+        // SAFETY: same `entry_ptr` validity as above.
+        let (size, filetype) = unsafe {
+            (
+                sys::archive_entry_size(entry_ptr),
+                sys::archive_entry_filetype(entry_ptr),
+            )
+        };
+        Ok(Some(ArchiveEntry {
+            path,
+            size,
+            is_directory: filetype & AE_IFMT == AE_IFDIR,
+        }))
+    }
+
+    /// Reads the CURRENT entry's (the one [Reader::next_entry] most recently returned) full body.
+    /// Must be called at most once per entry, before the next [Reader::next_entry] call.
+    fn read_current_entry_data(&mut self) -> Result<Vec<u8>, ArchiveError> {
+        let mut data = Vec::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            // SAFETY: `self.raw` is valid and open; `buf` is a plain stack array and
+            // `archive_read_data` writes at most `buf.len()` bytes into it, matching the `len`
+            // argument passed.
+            let read = unsafe {
+                sys::archive_read_data(self.raw, buf.as_mut_ptr() as *mut c_void, buf.len())
+            };
+            if read < 0 {
+                self.check(read as c_int)?;
+                // `check` only returns `Ok(())` for OK/EOF/WARN, none of which a negative `read`
+                // is, so this is unreachable in practice; kept as a safety net over `unreachable!()`.
+                return Err(ArchiveError::Fatal(format!(
+                    "archive_read_data returned {read} without a matching error status"
+                )));
+            }
+            if read == 0 {
+                return Ok(data);
+            }
+            data.extend_from_slice(&buf[..read as usize]);
+        }
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        // SAFETY: `self.raw` was allocated by `archive_read_new` in `Reader::open_fd` and is
+        // never freed anywhere else; `Reader` has no `Clone`, so this runs at most once per handle.
+        unsafe {
+            sys::archive_read_free(self.raw);
+        }
+    }
+}
+
+/// Lists every entry in the archive at `fd`, without reading any entry's data. `fd` is read from
+/// its current position forward and is left exhausted afterward -- a caller that also wants
+/// [read_entry] on the same archive needs a second, freshly positioned file descriptor (reopen it,
+/// or `dup` beforehand and only pass the dup here).
+pub fn entries(fd: RawFd) -> Result<Vec<ArchiveEntry>, ArchiveError> {
+    let mut reader = Reader::open_fd(fd)?;
+    let mut result = Vec::new();
+    while let Some(entry) = reader.next_entry()? {
+        result.push(entry);
+    }
+    Ok(result)
+}
+
+/// Reads one entry's full data by path, scanning forward from `fd`'s current position. Returns
+/// `Ok(None)` if no entry with exactly this path exists -- a normal, expected outcome, not an
+/// error. Callers that only need "does this path exist" without its data should use [entries]
+/// instead: this function pays for a full read of every entry's body up to and including the
+/// match.
+pub fn read_entry(fd: RawFd, path: &str) -> Result<Option<Vec<u8>>, ArchiveError> {
+    let mut reader = Reader::open_fd(fd)?;
+    while let Some(entry) = reader.next_entry()? {
+        if entry.path == path {
+            return Ok(Some(reader.read_current_entry_data()?));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::unix::io::AsRawFd;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Builds a real, byte-correct `ar` archive via the system `ar` tool (part of binutils,
+    /// present on every Ubuntu CI runner and this workspace's own toolchain) rather than
+    /// hand-encoding `ar`'s binary header format: a hand-rolled header that happened to be
+    /// internally consistent but subtly wrong against the real format would make this test
+    /// validate nothing. `ar` needs no compression codec, matching this task's own zero-codec
+    /// scope (see this file's own module doc comment).
+    fn build_ar_fixture(dir: &Path, entries: &[(&str, &[u8])]) -> PathBuf {
+        for (name, contents) in entries {
+            File::create(dir.join(name))
+                .unwrap()
+                .write_all(contents)
+                .unwrap();
+        }
+        let archive_path = dir.join("fixture.a");
+        let status = Command::new("ar")
+            .arg("rc")
+            .arg(&archive_path)
+            .args(entries.iter().map(|(name, _)| *name))
+            .current_dir(dir)
+            .status()
+            .expect("the `ar` tool must be available to build this test's fixture");
+        assert!(status.success(), "ar rc failed building the test fixture");
+        archive_path
+    }
+
+    #[test]
+    fn entries_lists_every_member_without_reading_data() {
+        let dir = tempdir();
+        let archive_path = build_ar_fixture(
+            dir.path(),
+            &[
+                ("hello.txt", b"hello world"),
+                ("second.txt", b"more data, a bit longer"),
+            ],
+        );
+        let file = File::open(&archive_path).unwrap();
+        let listed = entries(file.as_raw_fd()).unwrap();
+        let names: Vec<&str> = listed.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["hello.txt", "second.txt"]);
+        assert_eq!(listed[0].size, 11);
+        assert_eq!(listed[1].size, 23);
+        assert!(!listed[0].is_directory);
+    }
+
+    #[test]
+    fn read_entry_returns_the_exact_original_bytes() {
+        let dir = tempdir();
+        let archive_path = build_ar_fixture(dir.path(), &[("hello.txt", b"hello world")]);
+        let file = File::open(&archive_path).unwrap();
+        let data = read_entry(file.as_raw_fd(), "hello.txt").unwrap();
+        assert_eq!(data, Some(b"hello world".to_vec()));
+    }
+
+    #[test]
+    fn read_entry_returns_none_for_a_missing_path() {
+        let dir = tempdir();
+        let archive_path = build_ar_fixture(dir.path(), &[("hello.txt", b"hello world")]);
+        let file = File::open(&archive_path).unwrap();
+        let data = read_entry(file.as_raw_fd(), "does-not-exist.txt").unwrap();
+        assert_eq!(data, None);
+    }
+
+    #[test]
+    fn a_corrupt_file_is_a_fatal_error_not_a_panic() {
+        let dir = tempdir();
+        let path = dir.path().join("not-an-archive");
+        File::create(&path)
+            .unwrap()
+            .write_all(b"this is not an archive of any kind")
+            .unwrap();
+        let file = File::open(&path).unwrap();
+        let result = entries(file.as_raw_fd());
+        assert!(matches!(result, Err(ArchiveError::Fatal(_))));
+    }
+
+    /// A tiny, dependency-free stand-in for a `tempfile`-style crate: this crate deliberately adds
+    /// no dev-dependency for four tests, matching the project's own "smallest working thing first"
+    /// convention. A directory under `std::env::temp_dir()` named with the process id, an
+    /// incrementing counter and the current time is unique enough for tests that never run the
+    /// same process twice concurrently under the same name, and is removed on drop.
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn tempdir() -> TempDir {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::Ordering;
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "fylz-archive-test-{}-{}-{}",
+            std::process::id(),
+            n,
+            nanos
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        TempDir(path)
+    }
+}

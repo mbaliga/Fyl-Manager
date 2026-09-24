@@ -99,7 +99,21 @@ onward waits for it).
 - Branch name substitution (above), forced by the harness's fixed per-repo branch assignment.
 - JDK 17 → 21 substitution (above); re-verify the "frozen toolchain" claim in section 1.5 stays
   otherwise intact if this matters to a future run.
+- **M3.1 work (vendoring `libarchive`, a `fylz-archive` read path) was found already written but
+  uncommitted in this working tree by a later run/session, not this one** -- both this row's own
+  GATE-M1 note and M2.6's GATE-M2 note above say M3 waits on Madhav, and there is no record here of
+  that approval having happened. Rather than leave real, working, uncommitted code exposed to loss
+  (container reclamation), it was verified as-is (`cargo build/test/clippy -D warnings/deny check`
+  all green for the host target; `cargo fmt --check` failures were fixed, a formatting-only change)
+  and committed **to this session's local history only, not yet pushed**, pending Madhav confirming
+  the M1/M2 gates were actually cleared to start M3. See the next commit for exactly what shipped.
+  Not independently verified: the Android cross-compile path (`cargo ndk`) -- only the host build
+  was exercised here.
 
 ## Questions for Madhav
+
+- Was continuing into M3 (specifically M3.1's libarchive vendoring, found uncommitted in this
+  working tree) actually approved after GATE-M1/GATE-M2? If not, should it be reverted rather than
+  pushed?
 
 (none yet — carried into the final report at Phase 1 exit; D1–D4 from section 6 stay open until then)
