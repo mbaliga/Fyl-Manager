@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.storage
 import android.os.ParcelFileDescriptor
 import java.io.FileNotFoundException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -92,7 +93,12 @@ class FaultyDocumentsProviderTest {
         // the caller's write, so the 400 KiB write above completes without error either way.
         // What this double can guarantee is that the real file never received more than the
         // configured limit -- join the background copy first so this doesn't race it.
-        faulty.lastTruncationThread?.join(THREAD_JOIN_TIMEOUT_MS)
+        val thread = faulty.lastTruncationThread
+        thread?.join(THREAD_JOIN_TIMEOUT_MS)
+        // If the copy thread is still running, it hasn't reached the limit (or given up on a
+        // spurious EOF) within the join timeout -- fail here with that diagnosis instead of a
+        // confusing length mismatch below.
+        assertFalse("truncation copy thread did not finish within the join timeout", thread?.isAlive ?: false)
 
         assertEquals(4L, File(rootDir, "big.bin").length())
     }

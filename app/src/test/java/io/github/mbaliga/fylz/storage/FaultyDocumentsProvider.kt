@@ -170,6 +170,15 @@ class FaultyDocumentsProvider : DocumentsProvider() {
      * ends -- so [target] ends up truncated at exactly [limit] bytes regardless of how much the
      * caller goes on to write into the pipe. See [throwAfterBytes] for what this can and can't
      * signal back to the caller under Robolectric.
+     *
+     * On a real OS pipe, `read()` blocks until there's data or the write end has closed, so
+     * `read() < 0` reliably means end-of-stream. Robolectric's [ParcelFileDescriptor.createPipe]
+     * is backed by a temp file rather than an OS pipe, so a `read()` scheduled before the
+     * caller's first `write()` returns EOF immediately instead of blocking -- a false "the
+     * caller wrote nothing" that would otherwise truncate the file to 0 bytes regardless of
+     * [limit]. This copy treats that as "nothing written *yet*" and retries after a short sleep
+     * until [limit] bytes have been copied or [EOF_RETRY_DEADLINE_MS] passes, so the real pipe's
+     * blocking behaviour is only ever simulated, never short-circuited.
      */
     private fun truncatingPipe(target: ParcelFileDescriptor, limit: Long): ParcelFileDescriptor {
         val pipe = ParcelFileDescriptor.createPipe()
@@ -180,10 +189,15 @@ class FaultyDocumentsProvider : DocumentsProvider() {
                 ParcelFileDescriptor.AutoCloseOutputStream(target).use { output ->
                     val buffer = ByteArray(8 * 1024)
                     var written = 0L
+                    val deadline = System.nanoTime() + EOF_RETRY_DEADLINE_MS * 1_000_000L
                     while (written < limit) {
                         val toRead = minOf(buffer.size.toLong(), limit - written).toInt()
                         val n = input.read(buffer, 0, toRead)
-                        if (n < 0) return@thread
+                        if (n < 0) {
+                            if (System.nanoTime() >= deadline) return@thread
+                            Thread.sleep(EOF_RETRY_SLEEP_MS)
+                            continue
+                        }
                         output.write(buffer, 0, n)
                         written += n
                     }
@@ -195,6 +209,13 @@ class FaultyDocumentsProvider : DocumentsProvider() {
 
     companion object {
         const val AUTHORITY: String = FylzFilesDocumentsProvider.AUTHORITY
+
+        /** How long to sleep between retries after a spurious EOF -- see [truncatingPipe]. */
+        private const val EOF_RETRY_SLEEP_MS = 5L
+
+        /** How long [truncatingPipe] retries a spurious EOF before giving up. Generous because
+         * it only ever matters under Robolectric's file-backed pipe; a real pipe never hits it. */
+        private const val EOF_RETRY_DEADLINE_MS = 10_000L
 
         /**
          * Registers a fresh [FaultyDocumentsProvider], attached the way Robolectric would from a
