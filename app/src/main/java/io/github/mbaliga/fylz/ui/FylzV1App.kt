@@ -43,25 +43,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.ArrowDownward
-import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.ContentCut
-import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.List
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PictureAsPdf
-import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
@@ -72,14 +60,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.InputChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -117,7 +102,6 @@ import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
 import io.github.mbaliga.fylz.scan.DocumentScanner
 import io.github.mbaliga.fylz.scan.GmsDocumentScannerAdapter
-import io.github.mbaliga.fylz.browse.SortDirection
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.browse.sortEntries
@@ -211,7 +195,12 @@ import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.actions.BuiltInActions
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
+import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
+import io.github.mbaliga.fylz.ui.actions.NavigateUpButton
+import io.github.mbaliga.fylz.ui.actions.SelectAllButton
 import io.github.mbaliga.fylz.ui.actions.SelectionActionBar
+import io.github.mbaliga.fylz.ui.actions.SortMenuButton
+import io.github.mbaliga.fylz.ui.actions.TopAppBarActions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -431,7 +420,7 @@ private fun FylzV1Workspace(
     // still doesn't survive a forced process kill.
     var clipboard by viewModel::clipboard
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
-    var moreExpanded by remember { mutableStateOf(false) }
+    var commandPaletteOpen by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
@@ -1102,6 +1091,8 @@ private fun FylzV1Workspace(
                 RoomId.LIBRARY_RAIL -> Unit
             }
         }
+
+        override fun openCommandPalette() { commandPaletteOpen = true }
     }
 
     // Static across the app's lifetime -- BuiltInActions.all()'s `run` lambdas take
@@ -1211,100 +1202,7 @@ private fun FylzV1Workspace(
             topBar = {
                 TopAppBar(
                     title = { Text(activeTab?.current?.name ?: "Fylz") },
-                    actions = {
-                        // P1.8: the Fylz clipboard chip -- tapping the chip body pastes into the
-                        // active tab's current folder; the trailing close icon clears it without
-                        // pasting. Disabled (but still visible, so it isn't clearing itself the
-                        // moment the last tab closes) when there is no active tab to paste into.
-                        clipboard?.let { cb ->
-                            InputChip(
-                                selected = false,
-                                enabled = LegacyAvailability.clipboardChipEnabled(activeTab != null),
-                                onClick = ::pasteClipboard,
-                                label = { Text(clipboardChipLabel(cb)) },
-                                leadingIcon = {
-                                    Icon(
-                                        if (cb.mode == ClipboardMode.CUT) Icons.Outlined.ContentCut else Icons.Outlined.ContentCopy,
-                                        contentDescription = null,
-                                    )
-                                },
-                                trailingIcon = {
-                                    Icon(
-                                        Icons.Outlined.Close,
-                                        contentDescription = "Clear clipboard",
-                                        modifier = Modifier.size(16.dp).clickable { clipboard = null },
-                                    )
-                                },
-                            )
-                        }
-                        IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
-                            Icon(
-                                if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
-                                contentDescription = "Change view",
-                            )
-                        }
-                        IconButton(onClick = { refresh() }) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
-                        }
-                        Box {
-                            IconButton(onClick = { moreExpanded = true }) {
-                                Icon(Icons.Outlined.MoreVert, contentDescription = "More actions")
-                            }
-                            DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
-                                DropdownMenuItem(
-                                    text = { Text("New folder") },
-                                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
-                                    enabled = LegacyAvailability.newFolderEnabled(activeTab != null),
-                                    onClick = { moreExpanded = false; createDialog = "folder" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("New text file") },
-                                    leadingIcon = { Icon(Icons.Outlined.TextSnippet, null) },
-                                    enabled = LegacyAvailability.newFileEnabled(activeTab != null),
-                                    onClick = { moreExpanded = false; createDialog = "file" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Scan to PDF") },
-                                    leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, null) },
-                                    enabled = LegacyAvailability.scanToPdfEnabled(activeTab != null),
-                                    onClick = { moreExpanded = false; startScan() },
-                                )
-                                // Recycle Bin, Remotes, WebDAV, Tools, the index manager and
-                                // the theme toggle all moved to the right room. They are not
-                                // actions on *this folder* — they are the app's own tools, and
-                                // burying them in a per-folder overflow was why the menu had
-                                // eleven items and no shape. What is left here is what genuinely
-                                // acts on the folder you are looking at.
-                                DropdownMenuItem(
-                                    text = { Text("Find duplicates") },
-                                    enabled = LegacyAvailability.findDuplicatesEnabled(entries),
-                                    onClick = {
-                                        moreExpanded = false
-                                        scope.launch {
-                                            loading = true
-                                            runCatching { fileTools.findDuplicates(entries.filterNot { it.isDirectory }.map { it.uri }) }
-                                                .onSuccess { groups ->
-                                                    duplicateResult = if (groups.isEmpty()) {
-                                                        "No duplicate files found in this folder."
-                                                    } else {
-                                                        groups.joinToString("\n\n") { group ->
-                                                            "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n${group.items.joinToString("\n")}" 
-                                                        }
-                                                    }
-                                                }
-                                                .onFailure { toast(it.message ?: "Duplicate scan failed") }
-                                            loading = false
-                                        }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("AI organize proposal") },
-                                    enabled = LegacyAvailability.aiOrganizeEnabled(focusedEntry),
-                                    onClick = { moreExpanded = false; aiDialog = true },
-                                )
-                            }
-                        }
-                    },
+                    actions = { TopAppBarActions(actionResolver, actionDispatcher, browserState, actionContext) },
                 )
             },
             bottomBar = {
@@ -1342,8 +1240,10 @@ private fun FylzV1Workspace(
                         searchProgress = searchProgress,
                         searchRecursive = searchRecursive,
                         onSearchRecursiveChange = { searchRecursive = it },
-                        sortSpec = sortSpec,
-                        onSortSpecChange = { sortSpec = it },
+                        resolver = actionResolver,
+                        dispatcher = actionDispatcher,
+                        state = browserState,
+                        ctx = actionContext,
                         selectedUris = selectedUris,
                         focusedEntry = focusedEntry,
                         query = query,
@@ -1357,20 +1257,12 @@ private fun FylzV1Workspace(
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
                         onQueryChange = { query = it },
-                        onNavigateUp = {
-                            val tab = activeTab ?: return@FileBrowser
-                            val index = tabs.indexOfFirst { it.id == tab.id }
-                            if (index >= 0 && tab.locations.size > 1) {
-                                tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
-                            }
-                        },
                         onOpen = ::openEntry,
                         onOpenExternal = ::openExternal,
                         onToggleSelection = { entry ->
                             selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
                             focusedEntry = entry.takeUnless(FileEntry::isDirectory)
                         },
-                        onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
                         listState = listState,
                         gridState = gridState,
                         modifier = Modifier.weight(1f),
@@ -1768,6 +1660,16 @@ private fun FylzV1Workspace(
             },
         )
     }
+
+    if (commandPaletteOpen) {
+        CommandPaletteDialog(
+            resolver = actionResolver,
+            dispatcher = actionDispatcher,
+            state = browserState,
+            ctx = actionContext,
+            onDismiss = { commandPaletteOpen = false },
+        )
+    }
 }
 
 @Composable
@@ -1814,8 +1716,10 @@ private fun FileBrowser(
     searchProgress: SearchProgress?,
     searchRecursive: Boolean,
     onSearchRecursiveChange: (Boolean) -> Unit,
-    sortSpec: SortSpec,
-    onSortSpecChange: (SortSpec) -> Unit,
+    resolver: ActionResolver,
+    dispatcher: ActionDispatcher,
+    state: BrowserState,
+    ctx: ActionContext,
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
     query: String,
@@ -1829,11 +1733,9 @@ private fun FileBrowser(
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
     onQueryChange: (String) -> Unit,
-    onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
-    onSelectAll: () -> Unit,
     listState: LazyListState,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
@@ -1853,13 +1755,7 @@ private fun FileBrowser(
 
     Column(modifier) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = onNavigateUp,
-                enabled = LegacyAvailability.canNavigateUp(activeTab.locations),
-                modifier = Modifier.size(48.dp),
-            ) {
-                Icon(Icons.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
-            }
+            NavigateUpButton(resolver, dispatcher, state, ctx)
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
@@ -1868,14 +1764,8 @@ private fun FileBrowser(
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
-            SortMenu(sortSpec, onSortSpecChange)
-            IconButton(
-                onClick = onSelectAll,
-                enabled = LegacyAvailability.selectAllEnabled(entries),
-                modifier = Modifier.size(48.dp),
-            ) {
-                Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
-            }
+            SortMenuButton(resolver, dispatcher, state, ctx)
+            SelectAllButton(resolver, dispatcher, state, ctx)
         }
 
         if (query.isNotBlank()) {
@@ -1972,55 +1862,6 @@ private fun FileBrowser(
                     FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
                 }
             }
-        }
-    }
-}
-
-/** Sort controls. Previously the order was hardcoded in DocumentRepository with no UI at all. */
-@Composable
-private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
-            Icon(Icons.Outlined.Sort, stringResource(R.string.browser_sort))
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SortField.entries.forEach { field ->
-                val active = spec.field == field
-                DropdownMenuItem(
-                    text = {
-                        // Direction is spelled out, not only implied by an arrow: DESIGN.md
-                        // forbids colour or a lone glyph carrying state.
-                        Text(
-                            if (active) "${field.label} · ${spec.direction.label}" else field.label,
-                        )
-                    },
-                    trailingIcon = {
-                        if (active) {
-                            Icon(
-                                if (spec.direction == SortDirection.ASCENDING) {
-                                    Icons.Outlined.ArrowUpward
-                                } else {
-                                    Icons.Outlined.ArrowDownward
-                                },
-                                contentDescription = null,
-                            )
-                        }
-                    },
-                    onClick = { onChange(spec.withField(field)) },
-                )
-            }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.browser_sort_folders_first)) },
-                trailingIcon = {
-                    Checkbox(
-                        checked = spec.foldersFirst,
-                        onCheckedChange = { onChange(spec.copy(foldersFirst = it)) },
-                    )
-                },
-                onClick = { onChange(spec.copy(foldersFirst = !spec.foldersFirst)) },
-            )
         }
     }
 }

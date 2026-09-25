@@ -36,6 +36,29 @@ class ActionResolver(private val registry: ActionRegistry) {
                 )
             }
 
+    /**
+     * Design §2.6: every resolved, enabled, targetless, palette-visible built-in across all
+     * placements, sorted by label -- the command palette's own candidate list. `requiresTarget`
+     * actions are excluded here (a palette invocation supplies no target); the four self-contained
+     * Recovery-room overlay cards are excluded via [BuiltInBinding.paletteVisible] instead, since
+     * they have no imperative "open" to dispatch to.
+     */
+    fun paletteCandidates(state: BrowserState): List<ResolvedAction> = registry.bindings
+        .asSequence()
+        .filter { it.def.requiresTarget == null && it.paletteVisible }
+        .filter { it.visibleWhen(state) && it.enabledWhen(state) }
+        .map { binding ->
+            ResolvedAction(
+                id = binding.def.id,
+                enabled = true,
+                label = binding.label(state),
+                iconName = iconName(binding.def.icon),
+                checked = binding.checked(state),
+            )
+        }
+        .sortedBy { it.label }
+        .toList()
+
     private fun orderFor(query: PlacementQuery, placements: List<Placement>): Int? {
         for (placement in placements) {
             val order = when (query) {

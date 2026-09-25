@@ -33,12 +33,13 @@ private fun def(
  * The complete built-in table (design §2.5), transcribed literally: every id, placement, order,
  * `visibleWhen`/`enabledWhen`, label, `checked` and shortcut. Handler bodies are **not** moved in
  * MC.0a (design §2.8 item 1) -- each `run` calls the matching [ActionContext] method for the
- * handful of actions that already have one named/externally-callable today. Several built-ins have
- * no such thing to delegate to yet (the self-contained Recovery-room overlays and Archive Tools
- * menu, each still triggered by its own embedded FAB with no external "open" hook; the
- * not-yet-built command palette and customisation-problems surfaces; search-field focus, which has
- * no keyboard wiring anywhere in the app today) -- those `run` bodies are documented no-ops rather
- * than invented behaviour, and are wired for real once their surface exists (MC.0d/e).
+ * actions that already have one named/externally-callable today; `fylz.commands` gained one in
+ * MC.0c, once the command palette it opens existed. Several built-ins still have no such thing to
+ * delegate to yet (the self-contained Recovery-room overlays and Archive Tools menu, each still
+ * triggered by its own embedded FAB with no external "open" hook; the customisation-problems
+ * surface; search-field focus, which has no keyboard wiring anywhere in the app today) -- those
+ * `run` bodies are documented no-ops rather than invented behaviour, and are wired for real once
+ * their surface exists (MC.0d/e).
  */
 object BuiltInActions {
     fun all(): List<BuiltInBinding> = selectionBar() + topAppBar() + browserRow() + rowsAndCards() +
@@ -198,8 +199,7 @@ object BuiltInActions {
             def = def("fylz.commands", "Commands", "Search", listOf(Placement.Menu(MenuId.OVERFLOW, 90), Placement.CommandPalette, Placement.Shortcut(KeyChord(Key.K, ctrl = true)))),
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
-            // No command palette exists yet (MC.0e); nothing to delegate to today.
-            run = { _, _, _ -> },
+            run = { ctx, _, _ -> ctx.openCommandPalette() },
         ),
     )
 
@@ -412,25 +412,29 @@ object BuiltInActions {
             // FileHistoryOverlay is a self-contained composable with its own FAB and dialog state;
             // it has no external "open" trigger to delegate to today (design §2.8 item 1 -- handler
             // bodies move only when they retire their last old caller; that overlay isn't retired
-            // in MC.0a).
+            // in MC.0a). Excluded from the command palette (design §2.6) for the same reason.
+            paletteVisible = false,
             run = { _, _, _ -> },
         ),
         BuiltInBinding(
             def = def("fylz.backup.plans", "Backup plans", "Backup", listOf(Placement.Room(RoomId.RECOVERY, 30))),
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
+            paletteVisible = false,
             run = { _, _, _ -> },
         ),
         BuiltInBinding(
             def = def("fylz.backup.import", "Import existing backups", "RestorePage", listOf(Placement.Room(RoomId.RECOVERY, 40))),
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
+            paletteVisible = false,
             run = { _, _, _ -> },
         ),
         BuiltInBinding(
             def = def("fylz.archive.tools", "Archive tools", "Archive", listOf(Placement.Room(RoomId.RECOVERY, 50))),
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
+            paletteVisible = false,
             run = { _, _, _ -> },
         ),
     )
