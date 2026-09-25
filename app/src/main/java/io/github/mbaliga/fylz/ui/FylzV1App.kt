@@ -49,10 +49,6 @@ import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.CreateNewFolder
-import androidx.compose.material.icons.outlined.FolderCopy
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
@@ -65,11 +61,9 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
-import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.TextSnippet
@@ -210,11 +204,14 @@ import dev.aarso.cellshell.WheelItem
 import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
 import io.github.mbaliga.fylz.actions.ActionContext
+import io.github.mbaliga.fylz.actions.ActionDispatcher
 import io.github.mbaliga.fylz.actions.ActionRegistry
+import io.github.mbaliga.fylz.actions.ActionResolver
 import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.actions.BuiltInActions
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
+import io.github.mbaliga.fylz.ui.actions.SelectionActionBar
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -1111,6 +1108,8 @@ private fun FylzV1Workspace(
     // (ActionContext, BrowserState, ActionTarget?) as parameters; nothing here closes over this
     // composable's own local state, so remembering it once is always correct, not just cheap.
     val actionRegistry = remember { ActionRegistry(BuiltInActions.all()) }
+    val actionResolver = remember(actionRegistry) { ActionResolver(actionRegistry) }
+    val actionDispatcher = remember(actionRegistry) { ActionDispatcher(actionRegistry) }
 
     val browserState = remember(
         activeTab, entries, visibleEntries, selectedEntries, selectedUris, focusedEntry, clipboard,
@@ -1310,63 +1309,7 @@ private fun FylzV1Workspace(
             },
             bottomBar = {
                 if (selectedEntries.isNotEmpty()) {
-                    SelectionActionBar(
-                        count = selectedEntries.size,
-                        canRename = LegacyAvailability.canRename(selectedEntries),
-                        canExtract = LegacyAvailability.canExtract(selectedEntries),
-                        canPdfTools = LegacyAvailability.canPdfTools(selectedEntries),
-                        onPdfTools = { pdfDialog = true },
-                        onCut = { clipboard = FylzClipboard(ClipboardMode.CUT, selectedEntries) },
-                        onCopyToClipboard = { clipboard = FylzClipboard(ClipboardMode.COPY, selectedEntries) },
-                        onCopyTo = {
-                            pendingDestinationChooser = DestinationChooserRequest(
-                                PendingDestinationAction.COPY,
-                                selectedEntries.map { it.uri },
-                                null,
-                            )
-                        },
-                        onMoveTo = {
-                            pendingDestinationChooser = DestinationChooserRequest(
-                                PendingDestinationAction.MOVE,
-                                selectedEntries.map { it.uri },
-                                null,
-                            )
-                        },
-                        onRecycle = ::recycleSelection,
-                        onRename = { renameDialog = true },
-                        onTags = { tagDialog = true },
-                        onArchive = { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") },
-                        onExtract = {
-                            val archiveUri = selectedEntries.first().uri
-                            pendingArchiveUri = archiveUri
-                            extractPassword = ""
-                            scope.launch {
-                                val encrypted = runCatching { archiveService.inspectZip(archiveUri).encrypted }
-                                    .getOrDefault(false)
-                                if (encrypted) {
-                                    extractPasswordDialog = true
-                                } else {
-                                    pendingDestinationAction = PendingDestinationAction.EXTRACT
-                                    destinationPicker.launch(null)
-                                }
-                            }
-                        },
-                        onBatchRename = { batchRenameDialog = true },
-                        onShare = {
-                            val uris = ArrayList(selectedEntries.map { it.uri })
-                            val intent = if (uris.size == 1) {
-                                Intent(Intent.ACTION_SEND)
-                                    .setType(selectedEntries.first().mimeType)
-                                    .putExtra(Intent.EXTRA_STREAM, uris.first())
-                            } else {
-                                Intent(Intent.ACTION_SEND_MULTIPLE)
-                                    .setType("*/*")
-                                    .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                            }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
-                        },
-                        onClear = { selectedUris = emptySet() },
-                    )
+                    SelectionActionBar(actionResolver, actionDispatcher, browserState, actionContext)
                 }
             },
         ) { padding ->
@@ -2267,58 +2210,6 @@ private fun FileCard(
             }
             Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
-    }
-}
-
-@Composable
-private fun SelectionActionBar(
-    count: Int,
-    canRename: Boolean,
-    canExtract: Boolean,
-    canPdfTools: Boolean,
-    onPdfTools: () -> Unit,
-    onCut: () -> Unit,
-    onCopyToClipboard: () -> Unit,
-    onCopyTo: () -> Unit,
-    onMoveTo: () -> Unit,
-    onRecycle: () -> Unit,
-    onRename: () -> Unit,
-    onTags: () -> Unit,
-    onArchive: () -> Unit,
-    onExtract: () -> Unit,
-    onBatchRename: () -> Unit,
-    onShare: () -> Unit,
-    onClear: () -> Unit,
-) {
-    Surface(tonalElevation = 8.dp) {
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text("$count selected", modifier = Modifier.padding(horizontal = 10.dp))
-            ActionButton(Icons.Outlined.ContentCut, "Cut", onCut)
-            ActionButton(Icons.Outlined.ContentCopy, "Copy", onCopyToClipboard)
-            ActionButton(Icons.Outlined.FolderCopy, "Copy to…", onCopyTo)
-            ActionButton(Icons.Outlined.DriveFileMove, "Move to…", onMoveTo)
-            ActionButton(Icons.Outlined.Delete, "Recycle", onRecycle)
-            ActionButton(Icons.Outlined.Edit, "Rename", onRename, canRename)
-            ActionButton(Icons.Outlined.Tag, "Tags", onTags)
-            ActionButton(Icons.Outlined.Archive, "Archive", onArchive)
-            ActionButton(Icons.Outlined.FolderOpen, "Extract", onExtract, canExtract)
-            ActionButton(Icons.Outlined.TextSnippet, "Batch rename", onBatchRename)
-            ActionButton(Icons.Outlined.PictureAsPdf, "PDF tools", onPdfTools, canPdfTools)
-            ActionButton(Icons.Outlined.Share, "Share", onShare)
-            TextButton(onClick = onClear) { Text("Clear") }
-        }
-    }
-}
-
-@Composable
-private fun ActionButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, enabled: Boolean = true) {
-    TextButton(onClick = onClick, enabled = enabled) {
-        Icon(icon, null, Modifier.size(18.dp))
-        Text(label, Modifier.padding(start = 5.dp))
     }
 }
 
