@@ -270,13 +270,14 @@ private val HISTORY_OPERATIONS_ID = ActionId.parse("fylz.history.operations")
 /** id -> the self-contained overlay composable that today's card places in its action slot
  * (design §2.6's MC.0a clarification): each owns its own FAB and dialog state, with no
  * imperative "open" the registry could call, so the renderer places the composable itself rather
- * than dispatching. `ArchiveToolsOverlay` alone needs the resolver/state to render its own
- * registry-backed menu (MC.0d's `ArchiveToolsMenuRenderer`); the other three take neither. */
-private val RECOVERY_OVERLAYS: Map<ActionId, @Composable (ActionResolver, BrowserState) -> Unit> = mapOf(
-    ActionId.parse("fylz.history.files") to { _, _ -> FileHistoryOverlay() },
-    ActionId.parse("fylz.backup.plans") to { _, _ -> BackupOverlay() },
-    ActionId.parse("fylz.backup.import") to { _, _ -> BackupImportOverlay() },
-    ActionId.parse("fylz.archive.tools") to { resolver, state -> ArchiveToolsOverlay(resolver, state) },
+ * than dispatching. `ArchiveToolsOverlay` alone needs the resolver/state/[ActionContext] to
+ * render its own registry-backed menu (MC.0d's `ArchiveToolsMenuRenderer`) and, since M3.4c, to
+ * hand its own "Extract" button to [ActionContext.openExtractMenu]; the other three take none. */
+private val RECOVERY_OVERLAYS: Map<ActionId, @Composable (ActionResolver, BrowserState, ActionContext) -> Unit> = mapOf(
+    ActionId.parse("fylz.history.files") to { _, _, _ -> FileHistoryOverlay() },
+    ActionId.parse("fylz.backup.plans") to { _, _, _ -> BackupOverlay() },
+    ActionId.parse("fylz.backup.import") to { _, _, _ -> BackupImportOverlay() },
+    ActionId.parse("fylz.archive.tools") to { resolver, state, ctx -> ArchiveToolsOverlay(resolver, state, ctx) },
 )
 
 /**
@@ -312,7 +313,7 @@ fun RecoveryRoom(resolver: ActionResolver, dispatcher: ActionDispatcher, state: 
                             Icon(BuiltinIcons.icon(item.iconName), contentDescription = "Open operation history")
                         }
                     } else {
-                        RECOVERY_OVERLAYS[item.id]?.invoke(resolver, state)
+                        RECOVERY_OVERLAYS[item.id]?.invoke(resolver, state, ctx)
                     }
                 },
             )

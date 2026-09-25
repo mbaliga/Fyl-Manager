@@ -6,8 +6,6 @@ import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FylzClipboard
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -19,16 +17,6 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class FylzV1AppLogicTest {
-
-    @Test
-    fun `zip family extensions are recognized, everything else is not`() {
-        listOf("photos.zip", "app.zipx", "lib.jar", "game.apk", "comic.cbz").forEach { name ->
-            assertTrue(name, isZipFamilyArchive(name))
-        }
-        listOf("archive.7z", "backup.rar", "data.tar", "notes.txt").forEach { name ->
-            assertFalse(name, isZipFamilyArchive(name))
-        }
-    }
 
     @Test
     fun `pdf output names actually interpolate the timestamp`() {

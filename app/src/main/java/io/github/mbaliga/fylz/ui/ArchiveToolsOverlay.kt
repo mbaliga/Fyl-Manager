@@ -1,7 +1,9 @@
 package io.github.mbaliga.fylz.ui
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,11 +36,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.FylzApplication
+import io.github.mbaliga.fylz.actions.ActionContext
 import io.github.mbaliga.fylz.actions.ActionResolver
 import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.archive.ArchiveFormatFamily
 import io.github.mbaliga.fylz.archive.ArchiveInspectionResult
 import io.github.mbaliga.fylz.data.ArchiveService
+import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.ui.actions.ArchiveToolsMenuDialog
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -51,10 +55,12 @@ private enum class ArchivePasswordPurpose {
 }
 
 @Composable
-fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier: Modifier = Modifier) {
+fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: ActionContext, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val service = remember { ArchiveService(context.applicationContext) }
+    val service = remember {
+        ArchiveService(context.applicationContext, (context.applicationContext as FylzApplication).decoderClient)
+    }
     // M3.2: inspection runs in the isolated decoder process over a seekable descriptor, through
     // the application-scoped inspector (its decoder binding must outlive this composition).
     val inspector = remember { (context.applicationContext as FylzApplication).archiveInspector }
@@ -62,6 +68,9 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var selectedArchive by remember { mutableStateOf<Uri?>(null) }
+    // M3.4c: the archive's own display name, so the inspection dialog can gate Extract on
+    // `BrowsableArchiveFormats` (every format the queue reads) rather than ZIP alone.
+    var selectedArchiveName by remember { mutableStateOf("") }
     var inspection by remember { mutableStateOf<ArchiveInspectionResult.Ready?>(null) }
     var pendingCreatePassword by remember { mutableStateOf<CharArray?>(null) }
     var pendingExtractPassword by remember { mutableStateOf<CharArray?>(null) }
@@ -146,6 +155,7 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
         if (uri == null) return@rememberLauncherForActivityResult
         persistRead(uri)
         selectedArchive = uri
+        selectedArchiveName = queryDisplayName(context, uri).orEmpty()
         scope.launch {
             busy = true
             when (val result = inspector.inspect(uri)) {
@@ -206,6 +216,7 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
     inspection?.let { value ->
         ArchiveInspectionDialog(
             result = value,
+            archiveName = selectedArchiveName,
             busy = busy,
             onDismiss = {
                 inspection = null
@@ -215,13 +226,22 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
                 if (value.summary.hasEncryptedEntries) {
                     passwordPurpose = ArchivePasswordPurpose.EXTRACT
                 } else {
-                    pendingExtractPassword = null
-                    extractDestination.launch(null)
+                    // M3.4c: a plain archive extracts through the same Extract sheet/flow
+                    // `fylz.extract` opens, not the zip4j `extractDestination` picker any more --
+                    // that path is now reserved for encrypted ZIPs (design §2.7).
+                    val archive = selectedArchive
+                    inspection = null
+                    selectedArchive = null
+                    if (archive != null) ctx.openExtractMenu(archive)
                 }
             },
         )
     }
 }
+
+private fun queryDisplayName(context: Context, uri: Uri): String? =
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
 @Composable
 private fun ArchivePasswordDialog(
@@ -311,15 +331,17 @@ private fun ArchivePasswordDialog(
 @Composable
 private fun ArchiveInspectionDialog(
     result: ArchiveInspectionResult.Ready,
+    archiveName: String,
     busy: Boolean,
     onDismiss: () -> Unit,
     onExtract: () -> Unit,
 ) {
     val summary = result.summary
     val allowed = summary.policyAllowed
-    // Extraction is still zip4j until M3.4, so only a ZIP gets the button; the verdict shown is the
-    // Rust policy's, which extractZip's Kotlin copy re-checks -- the two can disagree until then.
-    val extractable = ArchiveFormatFamily.isZip(summary.formatCode)
+    // M3.4c: every format the queue can extract, not ZIP alone -- extraction now goes through the
+    // same `ExtractFlow` `fylz.extract` opens (encrypted ZIP still detours to the password path,
+    // then `ArchiveService.extractZip`, since only ZIP supports a password in this app at all).
+    val extractable = BrowsableArchiveFormats.matches(archiveName)
     val family = ArchiveFormatFamily.label(summary.formatCode, summary.filters)
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
@@ -365,7 +387,7 @@ private fun ArchiveInspectionDialog(
                     )
                 } else if (extractable) {
                     Text(
-                        "Extraction creates a new folder and rolls it back if copying fails.",
+                        "Extraction runs through the transfer queue, with progress and cancel.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -381,7 +403,7 @@ private fun ArchiveInspectionDialog(
         confirmButton = {
             if (extractable) {
                 Button(onClick = onExtract, enabled = allowed && !busy) {
-                    Text(if (summary.hasEncryptedEntries) "Enter password" else "Choose destination")
+                    Text(if (summary.hasEncryptedEntries) "Enter password" else "Extract")
                 }
             }
         },
@@ -399,8 +421,8 @@ private fun formatArchiveBytes(bytes: Long): String = when {
 /**
  * What Inspect offers to open (M3.2): the ZIP family the picker always offered, plus every family
  * the decoder process reads through a seekable descriptor -- this is what makes "7z and ISO are
- * read with seeks" reachable from the UI. Extract is still ZIP-only (`fylz.extract`'s own
- * `enabledWhen` is unchanged).
+ * read with seeks" reachable from the UI. Since M3.4c, Extract here widens to every
+ * `BrowsableArchiveFormats` member too, the same set `fylz.extract`'s own `enabledWhen` accepts.
  */
 private val INSPECTABLE_ARCHIVE_MIME_TYPES = arrayOf(
     "application/zip",

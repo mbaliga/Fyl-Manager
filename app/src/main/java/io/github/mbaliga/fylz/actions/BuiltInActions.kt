@@ -2,15 +2,24 @@ package io.github.mbaliga.fylz.actions
 
 import androidx.compose.ui.input.key.Key
 import io.github.mbaliga.fylz.browse.SortField
+import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.model.isBrowsableArchive
 import io.github.mbaliga.fylz.ui.clipboardChipLabel
-import io.github.mbaliga.fylz.ui.isZipFamilyArchive
 
 private val ALWAYS: (BrowserState) -> Boolean = { true }
 private val HAS_SELECTION: (BrowserState) -> Boolean = { it.selectionCount > 0 }
+
+/** M3.4 (design §2.1): `fylz.extract`/its Extract-sheet children are visible from a FOLDER
+ * location with the selection's own extractability; `fylz.extract.selected` takes over inside an
+ * ARCHIVE location, where the selection is already entries of the browsed archive, not a file to
+ * open. Mutually exclusive by [LocationKind]: exactly one `SelectionBar(90)` action ever renders. */
+private val CAN_EXTRACT: (BrowserState) -> Boolean = { state ->
+    state.selection.size == 1 && BrowsableArchiveFormats.matches(state.selection.first().name)
+}
+private val EXTRACT_VISIBLE: (BrowserState) -> Boolean = { HAS_SELECTION(it) && it.locationKind != LocationKind.ARCHIVE }
 
 /** M3.3 (DESIGN-M33 §2.6): an archive location is read-only until M3.6 -- every action that writes
  * the selection's source or the current location is disabled there. `ActionResolverGoldenTest`'s
@@ -49,7 +58,7 @@ private fun def(
  */
 object BuiltInActions {
     fun all(): List<BuiltInBinding> = selectionBar() + topAppBar() + browserRow() + rowsAndCards() +
-        locationsRoom() + libraryRail() + toolsRoom() + recoveryRoom() + archiveToolsMenu() + roomOpenGestures()
+        locationsRoom() + libraryRail() + toolsRoom() + recoveryRoom() + archiveToolsMenu() + extractMenu() + roomOpenGestures()
 
     private fun selectionBar(): List<BuiltInBinding> = listOf(
         BuiltInBinding(
@@ -106,13 +115,15 @@ object BuiltInActions {
         ),
         BuiltInBinding(
             def = def("fylz.extract", "Extract", "FolderOpen", listOf(Placement.SelectionBar(90))),
-            visibleWhen = HAS_SELECTION,
-            enabledWhen = { state ->
-                state.selection.size == 1 &&
-                    state.selection.first().kind == EntryKind.ARCHIVE &&
-                    isZipFamilyArchive(state.selection.first().name)
-            },
+            visibleWhen = EXTRACT_VISIBLE,
+            enabledWhen = CAN_EXTRACT,
             run = { ctx, _, _ -> ctx.extract() },
+        ),
+        BuiltInBinding(
+            def = def("fylz.extract.selected", "Extract selected entries", "FolderOpen", listOf(Placement.SelectionBar(90))),
+            visibleWhen = { HAS_SELECTION(it) && it.locationKind == LocationKind.ARCHIVE },
+            enabledWhen = { it.selection.isNotEmpty() },
+            run = { ctx, _, _ -> ctx.extractSelected() },
         ),
         BuiltInBinding(
             def = def("fylz.rename.batch", "Batch rename", "TextSnippet", listOf(Placement.SelectionBar(100))),
@@ -468,6 +479,32 @@ object BuiltInActions {
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
             run = { _, _, _ -> },
+        ),
+    )
+
+    /** The Extract sheet's three choices (design §2.1), only ever shown from `fylz.extract`
+     * (a FOLDER location) -- same visibility/enablement as `fylz.extract` itself, since the sheet
+     * that hosts them is `fylz.extract`'s own destination. `ExtractSheet` resolves this menu and
+     * maps a click straight to the matching `ActionContext` method, the same pattern
+     * `ArchiveToolsMenuDialog` uses for `MenuId.ARCHIVE_TOOLS`. */
+    private fun extractMenu(): List<BuiltInBinding> = listOf(
+        BuiltInBinding(
+            def = def("fylz.extract.here", "Extract here", "FolderOpen", listOf(Placement.Menu(MenuId.EXTRACT, 10))),
+            visibleWhen = EXTRACT_VISIBLE,
+            enabledWhen = CAN_EXTRACT,
+            run = { ctx, _, _ -> ctx.extractHere() },
+        ),
+        BuiltInBinding(
+            def = def("fylz.extract.folder", "Extract to folder", "FolderOpen", listOf(Placement.Menu(MenuId.EXTRACT, 20))),
+            visibleWhen = EXTRACT_VISIBLE,
+            enabledWhen = CAN_EXTRACT,
+            run = { ctx, _, _ -> ctx.extractIntoFolder() },
+        ),
+        BuiltInBinding(
+            def = def("fylz.extract.to", "Extract to…", "FolderOpen", listOf(Placement.Menu(MenuId.EXTRACT, 30))),
+            visibleWhen = EXTRACT_VISIBLE,
+            enabledWhen = CAN_EXTRACT,
+            run = { ctx, _, _ -> ctx.extractTo() },
         ),
     )
 

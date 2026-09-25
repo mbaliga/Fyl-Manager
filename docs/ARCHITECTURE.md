@@ -101,10 +101,13 @@ Operations crossing providers should degrade to streamed copy + verified destina
 
 ### Durable operation queue
 
-Copy and move (Phase 1's own stated scope; delete/restore/archive/extract/scan-export/AI-organize
-plans remain the "should" case below, not yet durable in this sense) are durable operations, backed
-by a plain `SQLiteOpenHelper` (`data.FylzDatabase`, `operations`/`operation_items` tables) rather
-than the SharedPreferences journal the foundation originally used:
+Copy and move (Phase 1's own stated scope) and, since M3.4, a plain archive's selective extract are
+durable operations, backed by a plain `SQLiteOpenHelper` (`data.FylzDatabase`, `operations`/
+`operation_items` tables, `v3` adding `extract_plans`/`extract_plan_items`/`extract_entry_digests`)
+rather than the SharedPreferences journal the foundation originally used. Delete/restore/scan-export/
+AI-organize plans remain the "should" case below, not yet durable in this sense; an encrypted ZIP's
+extraction stays on `data.ArchiveService.extractZip` (zip4j, `FileOperationType.EXTRACT` with no
+plan row) until M3.9/M3.10:
 
 - operation and item IDs, with per-item state (`operations.OperationState`, including a
   `PARTIAL` state when some items in a batch succeeded and others failed);
@@ -133,9 +136,41 @@ when both ends are files this app's own provider serves, `DocumentsContract.move
 when a foreign provider supports them — before falling back to a provider-neutral stream copy.
 
 `WorkManager` runs the deferrable transfer itself as foreground work; small direct edits (rename,
-create) remain immediate. Delete/restore/archive/extract/scan-export and AI-applied organize plans
-are the still-outstanding "should" case: they are not yet threaded through this same queue, and an
-undo record beyond recycle-bin restore remains future work.
+create) remain immediate. Delete/restore/scan-export and AI-applied organize plans are the still-
+outstanding "should" case: they are not yet threaded through this same queue, and an undo record
+beyond recycle-bin restore remains future work.
+
+**EXTRACT's lifecycle** (M3.4, `operations.ArchiveExtractor` run by `TransferWorker`) differs from
+copy/move's in three ways the code depends on:
+
+- **Planned, not just enqueued.** `operations.ExtractPlanner.plan` runs entirely in the UI process
+  before anything is queued — the structural verdict (fail closed from the archive's persisted
+  listing summary), the selection expanded to a bitmap of header ordinals, top-level preflight and
+  conflicts, and the consent-aware confirm — and writes an `ExtractPlan` beside the `FileOperation`
+  in one transaction (`OperationsDao.putWithExtractPlan`) before `OperationRunner.enqueueExtract`
+  ever calls `WorkManager`. A `FileOperation(EXTRACT)` with no plan row is the legacy encrypted-ZIP
+  path (`ArchiveService.extractZip`) and is excluded from every rule below.
+- **Cancel is a flag, never `WorkManager.cancelWorkById`.** `OperationRunner.cancel` sets
+  `extract_plans.cancel_requested` (also reachable from the extraction notification's own
+  `PendingIntent`, `operations.ExtractCancelReceiver`); the running `ArchiveExtractor` polls it
+  between frames and on a liveness timer, stops the pass, deletes staged documents and writes
+  `CANCELLED`. **Why this matters:** WorkManager 2.11.2 cancels or fails *every dependent* of a
+  cancelled or `Result.failure`-ing request in an `APPEND_OR_REPLACE` unique chain
+  (`fylz-transfers`) — calling `cancelWorkById` on one queued extraction would silently kill every
+  transfer queued behind it. This is a real, **pre-existing** hazard for copy/move too (recorded in
+  `docs/agent/REVIEW_QUEUE.md` under M3.4, not fixed there); EXTRACT is simply the first type built
+  to avoid it from day one.
+- **Every journaled outcome is `Result.success()`.** `TransferWorker`'s EXTRACT branch returns
+  `Result.success()` for SUCCEEDED, PARTIAL, FAILED, CANCELLED and "not claimed" alike — the
+  journal, not WorkManager's own terminal state, is the record of what happened — so a queued
+  transfer behind a failed or cancelled extraction is never poisoned by it. Only a genuine **system
+  stop** (`isStopped` with a reason other than `STOP_REASON_CANCELLED_BY_APP`) returns
+  `Result.retry()`, after the extractor has left every unfinished item `PAUSED_BY_SYSTEM` with its
+  staging kept, for the re-run to resume; `OperationRunner.recover` reconciles a planned row whose
+  tagged work has vanished into `INTERRUPTED` (staging deleted) and a `QUEUED` row older than 60 s
+  with no tagged work into `FAILED / NEVER_RAN`. `OperationRetryPolicy.ReclaimExtract` retries by
+  moving the **same** operation's unfinished items back to `QUEUED` and re-enqueuing (a copy/move
+  retry, by contrast, replays as a brand-new operation).
 
 ## Preview safety
 
@@ -152,7 +187,18 @@ Previewing a file is active processing and should be treated as untrusted input.
 
 ## Archive boundary
 
-The foundation contains a provider-neutral Zip4j service for ordinary or AES-256 ZIP creation and password-protected ZIP extraction. It stages data only in app-private cache and validates canonical extraction paths before writing. Since M3.2, *inspecting* an archive no longer stages anything: `archive.ArchiveSource` resolves the `Uri` to a seekable descriptor (the provider's own, whenever `statSize >= 0`) and only a provider that can merely stream is copied to app-private cache first, after a space check, with the copy released as soon as the summary is in hand; the listing itself is done by `fylz-archive` in the isolated decoder process (see below). Extraction still stages the whole archive until M3.4 moves it onto the same engine. Since M3.3 an archive also *browses* as a folder through `storage.ArchiveDocumentsProvider`, with its listing and each opened entry streamed out of the decoder process through pipes (see "Archives as documents" below).
+The foundation contains a provider-neutral Zip4j service for ordinary ZIP creation and, since M3.4c,
+**only password-protected ZIP extraction** — a plain archive's extraction moved onto the Rust engine
+through the transfer queue (see "Selective extract" below); `ArchiveService.extractZip` stages the
+whole archive to app-private cache only for that narrowed case, and its structural decision now comes
+from the same engine call (`client.inspectArchive` over the staged copy) rather than a Kotlin policy
+copy. Since M3.2, *inspecting* an archive no longer stages anything: `archive.ArchiveSource` resolves
+the `Uri` to a seekable descriptor (the provider's own, whenever `statSize >= 0`) and only a provider
+that can merely stream is copied to app-private cache first, after a space check, with the copy
+released as soon as the summary is in hand; the listing itself is done by `fylz-archive` in the
+isolated decoder process (see below). Since M3.3 an archive also *browses* as a folder through
+`storage.ArchiveDocumentsProvider`, with its listing and each opened entry streamed out of the
+decoder process through pipes (see "Archives as documents" below).
 
 Before exposing it as a finished feature:
 
@@ -424,6 +470,77 @@ flight**: the timer arms when the in-flight count reaches zero, every call start
 its drop carries the binding generation it was armed for, so a call that began in between (and
 bumped the generation) is never cut. This closes M3.2's open question; the M3.2 measurements that
 motivated it are in `docs/agent/REVIEW_QUEUE.md` under M3.3.
+
+## Selective extract (M3.4)
+
+Extract is four registry actions over one flow, one framed pass in a second isolated decoder
+instance, and destination-aware limits with explicit consent. `docs/agent/DESIGN-M34-SELECTIVE-
+EXTRACT.md` is the design; this section is the contract.
+
+**The actions and the flow.** `fylz.extract` (a FOLDER location, one selected archive matching
+`model.BrowsableArchiveFormats` — every format the queue reads, not the old zip4j-only set) opens
+`ui/actions/ExtractSheet.kt`'s three choices (`fylz.extract.here`/`.folder`/`.to`); inside a browsed
+archive `fylz.extract.selected` takes the slot instead and goes straight to the destination chooser.
+Exactly one of the two selection-bar actions ever renders, gated by `actions.LocationKind`. All five
+hand off to `ui/actions/ExtractFlow.kt`, which owns the whole back-and-forth: a "Reading archive…"
+dialog with Cancel while `operations.ExtractPlanner.plan` runs, its own `PreflightSheet`/
+`ConflictSheet` instances (conflicted archive entries reach `ConflictSheet` through
+`operations.DocNode.descriptor` — a synthetic node with no hash-on-demand, since there is nothing a
+`ContentResolver` can open at an entry's own "Uri" until it is written), and the consent-aware
+confirm sheet. `ArchiveToolsOverlay`'s own "Inspect and extract" button calls the same flow
+(`ActionContext.openExtractMenu`) once its own picked archive matches the same browsable set.
+
+**Planning is entirely in the UI process, before anything is queued.** `ExtractPlanner.plan` opens
+the archive through the same `archive.ArchiveCatalog` browsing uses (single-flight, disk-first),
+reads the persisted listing summary's structural verdict **fail closed** (no verdict, or a refusal,
+refuses the whole extraction), expands the selection over the `archive.ArchiveTree` into a bitmap of
+header ordinals (a hardlink pulls in its target's ordinal, written only under the link's own path;
+symlinks and special files are skipped and counted), lays out top-level items, runs the existing
+preflight/conflict machinery over them, and — when the numbers cross 4 GiB expanded or 10,000
+entries — requires an explicit consent tick before the caps relax. The result and its `ExtractPlan`
+(archive root Uri, catalog key, layout, the ordinal bitmap, limits, consent, per-item conflict
+resolutions) are written to `data.FylzDatabase`'s `extract_plans`/`extract_plan_items` tables
+alongside the `FileOperation`, atomically, before `OperationRunner.enqueueExtract` ever calls
+WorkManager — see "Durable operation queue" above for what happens after that. An archive with
+protected entries takes the legacy `ArchiveService.extractZip` path when the whole archive is
+selected and it is a ZIP (until M3.9 gives every format a password prompt through this same queue);
+any other encrypted selection is refused.
+
+**One pass, one isolated instance, frames.** `operations.ArchiveExtractor` re-opens the archive
+through the catalog (never a descriptor shared with browsing — a `ParcelFileDescriptor` dup shares
+its file offset, and two concurrent engine calls on one would interleave) and runs **one**
+`extractRanges` call on a **second, dedicated** isolated decoder instance
+(`decoder.DecoderClient.forExtraction`, `bindIsolatedService(..., "extract", ...)` → process
+`:decoders:extract`), so a browse call's own 30 s inactivity timeout never reaps a running extraction
+and vice versa; the instance is unbound when the run ends (no idle policy). The engine streams a
+little-endian frame protocol (`archive.ExtractFrameReader`/`fylz-ffi-android`'s `frames.rs`: `MAGIC
+BEGIN DATA END FAIL DONE ABORT`) through the same kind of pipe the listing uses, demultiplexed
+straight into staged destination documents by `ArchiveExtractor` itself (the `ExtractFrameSink`):
+a raw-path check against the plan on every `BEGIN`, directories created on demand, a SHA-256 fed as
+bytes arrive, an app-side write failure (`ENOSPC`, `EFBIG`, a provider exception) failing only that
+entry while the pass continues. A header- or data-level `FAILED` fails the entry and the pass
+continues; `FATAL` aborts the whole call, and the extractor **re-issues once** for the ordinals after
+the last completed one, with the limits reduced by what already landed (cheap for a seekable ZIP/7z/
+ISO; a stream format re-reads from the start, the only way to resume it). Verification
+(`operations.VerifySettings`) re-reads the **staged** file and fills `extract_entry_digests` per
+entry when it runs; `TargetPlanning.kt`'s `TargetPlanner`/`NameIndex` (shared with copy/move) finalise
+each item exactly like a copy does (replace-with-recycle).
+
+**Limits and consent** (`decoder.ArchiveLimits.forExtraction(volume, consent)`): without consent the
+old caps hold (4 GiB total, 1 GiB per file except vfat's 4 GiB − 1 rule, 10,000 entries, ratio 200);
+with consent a ratio-≤200 archive may write into the destination's free-space margin (`free −
+max(5 %, 100 MiB)`, recomputed again at claim against current free space); with the destination's
+free space unknown, the old 4 GiB cap holds regardless. The ratio rule can never be consented past.
+The Kotlin planner is the gate for **structural** rules (paths, duplicate keys, links, unknown
+sizes); the Rust engine is the gate for **size** rules over the selection, re-checked at the start of
+`archive_extract_ranges` and again per entry as it is written (defence in depth against a plan gone
+stale between planning and the run).
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 19 (the
+isolated instance appearing and being reaped, SELinux on the pipe, the 5 GB acceptance case, cancel
+leaving a queued transfer behind it to run, `kill -9` mid-extract resuming); `docs/agent/
+REVIEW_QUEUE.md`'s M3.4 entry (limits and consent's exact exposure, the WorkManager chain-poisoning
+hazard COPY/MOVE still has, mtimes not preserved, and every other logged deviation from the design).
 
 ## Theme architecture
 

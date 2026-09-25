@@ -16,8 +16,11 @@ class FylzV1AppSizeTest {
     // The MC.0 ratchet: FylzV1App.kt's line count right after MC.0f (LegacyAvailability.kt deleted,
     // the dead shortcut policies gone). Was 2529 lines pre-MC.0, 2287 after MC.0f; lowered to
     // 2271 in M3.3c (the BrowserState construction moved to actions/BrowserStateBuilder.kt and
-    // the dead `fileIcon` went, paying for archive-location lines in openEntry/refresh/search).
-    private val fylzV1AppMaxLines = 2271
+    // the dead `fileIcon` went, paying for archive-location lines in openEntry/refresh/search);
+    // lowered again to 2270 in M3.4c (the Extract sheet, the planner's own dialogue and the
+    // in-app destination chooser all moved to ui/actions/ExtractFlow.kt -- six new ActionContext
+    // methods and the dead `isZipFamilyArchive`/`ZIP_FAMILY_EXTENSIONS` paid for it).
+    private val fylzV1AppMaxLines = 2270
 
     // FylzAppShell.kt must not grow past its MC.0e size (112); lowered to 101 in M3.4b, when the
     // retry dispatch moved to operations/RetryDispatcher.kt.

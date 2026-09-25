@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.actions
 
+import android.net.Uri
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.ThemeMode
@@ -24,7 +25,28 @@ interface ActionContext {
     fun rename()
     fun tags()
     fun compress()
+
+    /** `fylz.extract` (design M3.4 §2.1): opens the Extract sheet for the single selected archive. */
     fun extract()
+
+    /** `fylz.extract.here`: destination is the current tab's own folder, `Selection.All`. */
+    fun extractHere()
+
+    /** `fylz.extract.folder`: destination is the current tab's own folder, into a new folder. */
+    fun extractIntoFolder()
+
+    /** `fylz.extract.to`: the destination chooser, then as [extractIntoFolder]. */
+    fun extractTo()
+
+    /** `fylz.extract.selected` (a browsed archive's own selection bar): the destination chooser,
+     * then the selected entries, `Selection.Entries`. */
+    fun extractSelected()
+
+    /** `ArchiveToolsOverlay`'s own "Extract" button (design §2.1: "the overlay's extract calls
+     * the same flow"): opens the same Extract sheet [extract] does, for the archive its own
+     * picker chose rather than the current selection. */
+    fun openExtractMenu(archive: Uri)
+
     fun batchRename()
     fun pdfTools()
     fun share()

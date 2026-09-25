@@ -5,10 +5,13 @@ import android.net.Uri
 
 /** One top-level source item that already has a same-named sibling at the destination -- what a
  * P1.6 `ConflictSheet` needs to show its compare card (size, modified date, thumbnail, hash on
- * demand) and let the user resolve. */
+ * demand) and let the user resolve. [hashable] is `false` for a [source] built by
+ * [DocNode.descriptor] (M3.4, an archive entry with no real document to open): the sheet's own
+ * "Show hash" button is never offered for a side that has nothing a `ContentResolver` can stream. */
 data class ConflictedItem(
     val source: DocNode,
     val existing: DocNode,
+    val hashable: Boolean = true,
 )
 
 /**

@@ -91,6 +91,8 @@ import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.ai.ApiKeyVault
 import io.github.mbaliga.fylz.scan.DocumentScanner
 import io.github.mbaliga.fylz.scan.GmsDocumentScannerAdapter
+import io.github.mbaliga.fylz.archive.ArchiveDocumentId
+import io.github.mbaliga.fylz.archive.ArchiveRef
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.browse.sortEntries
@@ -130,7 +132,6 @@ import io.github.mbaliga.fylz.operations.gatherPreflightItems
 import io.github.mbaliga.fylz.operations.isStagingName
 import io.github.mbaliga.fylz.pdf.PdfPageReference
 import io.github.mbaliga.fylz.pdf.PdfPageTools
-import io.github.mbaliga.fylz.preview.FileFormatRegistry
 import io.github.mbaliga.fylz.preview.resolvePreviewKind
 import io.github.mbaliga.fylz.search.RecursiveSearchEngine
 import io.github.mbaliga.fylz.search.SearchHit
@@ -190,7 +191,9 @@ import io.github.mbaliga.fylz.actions.KeyRouter
 import io.github.mbaliga.fylz.actions.Routed
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
+import io.github.mbaliga.fylz.ui.actions.ExtractFlowHost
 import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
+import io.github.mbaliga.fylz.ui.actions.rememberExtractFlow
 import io.github.mbaliga.fylz.ui.actions.LocationsRoom
 import io.github.mbaliga.fylz.ui.actions.NavigateUpButton
 import io.github.mbaliga.fylz.ui.actions.RecoveryRoom
@@ -230,20 +233,12 @@ private val ROOM_LOCATIONS_ID = ActionId.parse("fylz.room.locations")
 private val ROOM_TOOLS_ID = ActionId.parse("fylz.room.tools")
 private val ROOM_RECOVERY_ID = ActionId.parse("fylz.room.recovery")
 
-/** Extensions [io.github.mbaliga.fylz.data.ArchiveService.extractZip] can actually extract
- * (P0.10): it's a ZIP reader (zip4j), so offering Extract for `.7z`/`.rar`/`.tar`/... would fail
- * on every attempt despite [io.github.mbaliga.fylz.model.EntryKind.ARCHIVE] covering all of them. */
-private val ZIP_FAMILY_EXTENSIONS = setOf("zip", "zipx", "jar", "apk", "cbz")
-
 /** The `inotify` events worth a listing refresh for (P1.11) -- deliberately excludes
  *  ACCESS/OPEN/CLOSE_NOWRITE, which fire on every read (this app's own thumbnail loads and
  *  preview opens included) and would turn "watch the folder" into "refresh on every glance". */
 private const val WATCHED_FOLDER_EVENTS = FileObserver.CREATE or FileObserver.DELETE or
     FileObserver.MOVED_FROM or FileObserver.MOVED_TO or FileObserver.MODIFY or
     FileObserver.DELETE_SELF or FileObserver.MOVE_SELF
-
-internal fun isZipFamilyArchive(name: String): Boolean =
-    FileFormatRegistry.compoundExtension(name) in ZIP_FAMILY_EXTENSIONS
 
 /** Selected entries in the order the user actually selected them (P0.10) -- [selectedUris]
  * preserves insertion order at runtime (every mutation site builds it via `Set.plus`/`.minus`,
@@ -379,7 +374,7 @@ private fun FylzV1Workspace(
     val scope = rememberCoroutineScope()
     val repository = remember { DocumentRepository(context.applicationContext) }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
-    val archiveService = remember { ArchiveService(context.applicationContext) }
+    val archiveService = remember { ArchiveService(context.applicationContext, (context.applicationContext as FylzApplication).decoderClient) }
     val fileTools = remember { FileTools(context.applicationContext) }
     val library = remember { LibraryStore(context.applicationContext) }
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
@@ -508,6 +503,12 @@ private fun FylzV1Workspace(
         refreshKey += 1
         (context.applicationContext as FylzApplication).archiveCatalog.forgetFailures()
     }
+
+    // M3.4c (design §2.1-2.2): the whole selective-extract flow; a legacy encrypted ZIP still uses the pre-M3.4 password + destination-picker path below (ArchiveService.extractZip, zip4j).
+    val extractFlow = rememberExtractFlow(
+        context, scope, operationRunner, currentFolder = { activeTab?.current?.uri }, persistTreePermission = repository::persistTreePermission,
+        onLegacyEncryptedZip = { archive -> pendingArchiveUri = archive.source; extractPassword = ""; extractPasswordDialog = true }, onToast = ::toast, onExtracted = { toast("Extracted"); refresh() },
+    )
 
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
         val existing = tabs.indexOfFirst { it.treeUri == treeUri }
@@ -1007,20 +1008,16 @@ private fun FylzV1Workspace(
         override fun rename() { renameDialog = true }
         override fun tags() { tagDialog = true }
         override fun compress() { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") }
-        override fun extract() {
-            val archiveUri = selectedEntries.firstOrNull()?.uri ?: return
-            pendingArchiveUri = archiveUri
-            extractPassword = ""
-            scope.launch {
-                val encrypted = (context.applicationContext as FylzApplication).archiveInspector.inspect(archiveUri).summaryOrNull?.hasEncryptedEntries ?: false
-                if (encrypted) {
-                    extractPasswordDialog = true
-                } else {
-                    pendingDestinationAction = PendingDestinationAction.EXTRACT
-                    destinationPicker.launch(null)
-                }
-            }
+        override fun extract() { val entry = selectedEntries.singleOrNull() ?: return; extractFlow.openMenu(ArchiveRef(entry.uri, emptyList())) }
+        override fun extractHere() { ensureNotificationPermissionRequested(); extractFlow.extractHere() }
+        override fun extractIntoFolder() { ensureNotificationPermissionRequested(); extractFlow.extractIntoFolder() }
+        override fun extractTo() { ensureNotificationPermissionRequested(); extractFlow.extractTo() }
+        override fun extractSelected() {
+            val archive = activeTab?.let { tab -> runCatching { ArchiveDocumentId.parse(tab.current.uri).archive }.getOrNull() } ?: return
+            val ids = selectedEntries.mapNotNull { entry -> runCatching { ArchiveDocumentId.parse(entry.uri) }.getOrNull() }
+            ensureNotificationPermissionRequested(); extractFlow.extractSelected(archive, ids)
         }
+        override fun openExtractMenu(archive: Uri) { ensureNotificationPermissionRequested(); extractFlow.openMenu(ArchiveRef(archive, emptyList())) }
         override fun batchRename() { batchRenameDialog = true }
         override fun pdfTools() { pdfDialog = true }
         override fun share() {
@@ -1563,6 +1560,8 @@ private fun FylzV1Workspace(
             onCancel = { pendingDestinationChooser = null },
         )
     }
+
+    ExtractFlowHost(flow = extractFlow, tabs = tabs, resolver = actionResolver, dispatcher = actionDispatcher, state = browserState, ctx = actionContext)
 
     externalDocument?.let { entry ->
         ExternalDocumentDialog(

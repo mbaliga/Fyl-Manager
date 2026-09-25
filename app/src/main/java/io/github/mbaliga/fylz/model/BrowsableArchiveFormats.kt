@@ -7,9 +7,10 @@ import io.github.mbaliga.fylz.preview.FileFormatRegistry
  * **explicit, tested set** matched on `FileFormatRegistry.compoundExtension`, with no `kind`
  * precondition -- many of these classify as `EntryKind.OTHER` today (`iso`, `zst`, `lz4`, `cab`,
  * `deb`, `rpm`) and would otherwise never open. It is what `openEntry`, the double-tap split and
- * the preview gate agree on; `FileFormatRegistry.archives` (what gets an "Archive" label) and
- * `isZipFamilyArchive` (what the zip4j Extract action accepts until M3.4) stay separate sets with
- * separate jobs.
+ * the preview gate agree on -- and, since M3.4, what `fylz.extract`'s own `enabledWhen` accepts
+ * too (`BuiltInActions`'s `CAN_EXTRACT`), once selective extraction stopped being ZIP-only. Only
+ * `FileFormatRegistry.archives` (what gets an "Archive" label) stays a separate set with its own
+ * job.
  *
  * Excluded, with the reason:
  * - `rar`, `cbr`: libarchive reads them, but the RAR fixture corpus is pending (logged).

@@ -126,6 +126,24 @@ data class DocNode(
          * other code in this app, e.g. `DocumentRepository`, still uses it) is untested; this
          * method uses the one overload confirmed to work everywhere.
          */
+        /**
+         * A synthetic node for something that is not a real destination document at all -- an
+         * archive entry `ExtractConflict` (M3.4) offers to [io.github.mbaliga.fylz.ui.components.ConflictSheet]'s
+         * compare card, which has no [uri] of its own worth opening. [uri] here is only ever a
+         * lookup key (the [ConflictedItem.hashable] flag on the item this feeds keeps the sheet's
+         * own hash-on-demand button from ever calling [ContentResolver.openInputStream] on it).
+         */
+        fun descriptor(uri: Uri, name: String, size: Long?, isDirectory: Boolean, lastModified: Long? = null): DocNode = DocNode(
+            uri = uri,
+            documentId = "",
+            name = name,
+            mimeType = if (isDirectory) DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream",
+            size = size,
+            lastModified = lastModified,
+            flags = 0,
+            isDirectory = isDirectory,
+        )
+
         fun load(resolver: ContentResolver, uri: Uri): DocNode? =
             resolver.query(uri, PROJECTION, null as android.os.Bundle?, null)?.use { cursor ->
                 if (cursor.moveToFirst()) fromCursor(uri, cursor) else null

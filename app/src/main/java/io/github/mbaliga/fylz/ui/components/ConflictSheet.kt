@@ -130,7 +130,7 @@ private fun ConflictItemRow(
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(conflict.source.name, style = MaterialTheme.typography.titleSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CompareCard(label = "Yours", node = conflict.source, modifier = Modifier.weight(1f))
+            CompareCard(label = "Yours", node = conflict.source, hashable = conflict.hashable, modifier = Modifier.weight(1f))
             CompareCard(label = "Existing", node = conflict.existing, modifier = Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -162,9 +162,11 @@ private fun ConflictItemRow(
 
 /** [label]ed size/modified-date/thumbnail card for one side of a conflict, plus a hash computed
  * only when asked for -- SHA-256 over a whole file is not something to spend on every row by
- * default, especially for a large batch of conflicts. */
+ * default, especially for a large batch of conflicts. [hashable] `false` (M3.4: [node] is a
+ * synthetic [DocNode.descriptor], never a real document) leaves the hash row out entirely, since
+ * there is nothing a `ContentResolver` can open at [DocNode.uri] to hash. */
 @Composable
-private fun CompareCard(label: String, node: DocNode, modifier: Modifier = Modifier) {
+private fun CompareCard(label: String, node: DocNode, hashable: Boolean = true, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var hash by remember(node.uri) { mutableStateOf<String?>(null) }
     var hashLoading by remember(node.uri) { mutableStateOf(false) }
@@ -187,6 +189,7 @@ private fun CompareCard(label: String, node: DocNode, modifier: Modifier = Modif
                 Text(formatConflictDate(it), style = MaterialTheme.typography.bodySmall)
             }
             when {
+                !hashable -> Unit
                 hash != null -> Text(hash!!.take(12) + "…", style = MaterialTheme.typography.bodySmall)
                 node.isDirectory -> Unit
                 hashLoading -> Text("Computing…", style = MaterialTheme.typography.bodySmall)
@@ -197,7 +200,7 @@ private fun CompareCard(label: String, node: DocNode, modifier: Modifier = Modif
 
     // Only runs once the button above has actually been tapped (hashLoading flips true), not on
     // every recomposition or on first display.
-    if (hashLoading && hash == null) {
+    if (hashable && hashLoading && hash == null) {
         LaunchedEffect(node.uri) {
             hash = withContext(Dispatchers.IO) { sha256Hex(context.contentResolver, node.uri) }
             hashLoading = false

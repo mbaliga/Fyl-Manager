@@ -495,10 +495,10 @@ implementation added):
 ## M3.4 — selective extract through the transfer queue
 
 **Milestone:** M3.4 (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` rev 3; per-commit detail in
-`docs/agent/PROGRESS.md`'s `M3.4` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 19 once
-M3.4c lands). Not a gate: log-and-continue. Commits: M3.4a (engine and FFI: `Selection::Ranges`,
-`BlockSink`/`extract_blocks`, the failure kinds, the framer and its golden `.fzx`, the fixtures), then
-b (the queue) and c (UI, legacy path, docs); each extends this entry.
+`docs/agent/PROGRESS.md`'s `M3.4` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 19,
+sandbox-verified only). Not a gate: log-and-continue. Commits: M3.4a (engine and FFI:
+`Selection::Ranges`, `BlockSink`/`extract_blocks`, the failure kinds, the framer and its golden
+`.fzx`, the fixtures), b (the queue), then c (UI, legacy path, docs; this entry's last extension).
 
 **What was decided, and needs a second read** (the design's section 3 list first, then what
 implementation added):
@@ -693,8 +693,82 @@ implementation added):
     item rows are written per entry end on `ProgressWriteThrottle` (250 ms / 8 MiB) with
     `refreshOperations()` on the same throttle, never per write.
 
+56. **(c) `fylz.extract`'s `enabledWhen` drops the `EntryKind.ARCHIVE` precondition entirely, not
+    only the ZIP-family extension set** (design §2.1's literal wording:
+    `selection.size == 1 && BrowsableArchiveFormats.matches(name)`, no `kind` check at all). A
+    `.zip`-named file classified `EntryKind.OTHER` (the golden test's existing
+    `zipNamedButNotArchiveKindSelected` fixture) is therefore now extractable too, where the old
+    zip4j-only rule refused it on `kind` alone. `isZipFamilyArchive`/`ZIP_FAMILY_EXTENSIONS`
+    (`FylzV1App.kt`) and the one test exercising them (`FylzV1AppLogicTest.kt`) are dead and deleted.
+57. **(c) `ArchiveToolsOverlay`'s own Extract gate needed the archive's display name**, which its
+    `ArchiveInspectionResult.Ready` never carried: a new `selectedArchiveName` state, queried once
+    from the picked `Uri` (`OpenableColumns.DISPLAY_NAME`) alongside `selectedArchive`, feeds
+    `BrowsableArchiveFormats.matches` the same way `fylz.extract`'s own rule does. Its own "Extract"
+    button now calls `ActionContext.openExtractMenu(archive)` — a new `ActionContext` method opening
+    the same `ExtractFlow` sheet `fylz.extract` does — instead of launching the zip4j
+    `extractDestination` picker directly; that picker (and `ArchiveService.extractZip`) is reached
+    only for an encrypted ZIP now, through the unchanged password dialog.
+58. **(c) `ArchiveService.extractZip` now refuses a plain (non-encrypted) ZIP outright**
+    (`require(zipFile.isEncrypted)`), and its structural decision comes from a second
+    `client.inspectArchive` call over the already-staged copy (`ArchiveLimits.forInspection()`,
+    `summary.policyAllowed`/`policyReason`) rather than the deleted Kotlin `ArchiveExtractionPolicy`
+    — the same numbers (`ArchiveLimits()`'s defaults equal the old `ArchiveExtractionLimits()`'s),
+    now enforced by the Rust engine instead of a second, divergent Kotlin copy of it.
+    `ArchiveExtractionPolicy.kt` and its two tests (`ArchiveExtractionPolicyTest`,
+    `ArchiveExtractionPolicyFuzzTest`, 12 test methods) are deleted; `ArchiveService`'s constructor
+    gained a required `DecoderClient` parameter (both construction sites pass
+    `FylzApplication.decoderClient`), since inspection now needs one.
+59. **(c) The descriptor-only `ConflictedItem` (design §2.1) is `DocNode.descriptor(uri, name,
+    size, isDirectory, lastModified)` plus a `ConflictedItem.hashable: Boolean = true` field**
+    (default preserves every existing copy/move call site): `ExtractFlow` builds one per
+    `ExtractConflict` with a synthetic, never-opened `Uri` (`fylz-extract-conflict:<itemIndex>`,
+    round-tripped only as `ConflictSheet`'s own per-row key) and `hashable = false`; `ConflictSheet`'s
+    "Yours" `CompareCard` skips its hash-on-demand button entirely when `hashable` is false, since
+    there is nothing a `ContentResolver` can stream at that `Uri`.
+60. **(c) `ExtractPlanner`'s private `defaultFolderName` is now a thin wrapper over a new public
+    companion function, `folderNameFor(resolver, archive)`** — `.folder`/`.to` need the same "archive
+    name without its compound extension" computation *before* `plan()` runs (an `IntoFolder` request
+    needs the name up front), so the one existing implementation is exposed rather than duplicated;
+    `plan()`'s own `Here`-over-threshold behaviour is unchanged.
+61. **(c) `PreflightSheet`'s `renamed` map is provably always empty for extract's own top-level
+    preflight, so `ExtractFlow` discards it** (`onProceed = { skipped, _ -> ... }`): every name
+    `PreflightPolicy.sanitizedName` could fix was already sanitised, for a FAT-family destination,
+    before `ExtractPlanner.plan` ever builds the top-level `PreflightItem`s (design §2.2 step 5), and
+    `sanitizedName` is idempotent, so `IllegalCharacters`/`TrailingSpaceOrDot` can never recur there
+    — only `FileTooLargeForVfat`/`NameTooLong`/`NameCollision` reach the sheet, none of them
+    auto-rename-fixable. `PreflightDecision` (M3.4b) has no rename field for exactly this reason.
+62. **(c) `ExtractFlow`'s own recomposition-safety rule:** two of its collaborators
+    (`currentFolder`, `systemPicker`) are **settable `var`s reassigned on every `rememberExtractFlow`
+    recomposition**, not frozen constructor closures, because `activeTab` (what `currentFolder`
+    reads) is a plain recomposed `val` in `FylzV1Workspace`, not a stable-backed state read — a
+    closure over it captured once inside a keyless `remember { ExtractFlow(...) }` would go stale
+    the moment the active tab changed without the whole flow being rebuilt. The other callbacks
+    (`onLegacyEncryptedZip`, `onToast`, `onExtracted`) stay frozen constructor parameters: each closes
+    only over `Context`/state-object writes that are themselves stable across ordinary recomposition
+    (a genuine `Context` change comes only with a full composition restart, which also re-runs
+    `remember`).
+63. **(c) `FylzV1App.kt`'s ratchet lowers from 2271 to 2270** — a smaller drop than the design's "net
+    negative" language might suggest, because the bulk of the flow (the Extract sheet, the planner's
+    own dialogue, the confirm sheet, the in-app destination chooser) landed in a **new** file
+    (`ui/actions/ExtractFlow.kt`, 453 lines) rather than shrinking `FylzV1App.kt` by that same amount;
+    what actually left `FylzV1App.kt` is the old `extract()`'s inline encryption pre-check (now the
+    planner's own `LegacyEncryptedZip` result) and the dead `isZipFamilyArchive`/
+    `ZIP_FAMILY_EXTENSIONS`, weighed against six new one-line-per-action `ActionContext` methods and
+    the flow's own construction. `FylzAppShell.kt` is untouched at 101 (nothing in c touches it).
+64. **(c) `ArchiveFormatFamily.isZip` is now dead code** (nothing calls it once
+    `ArchiveToolsOverlay`'s own gate moved to `BrowsableArchiveFormats.matches`); left in place since
+    removing it was not asked for and no test exercises it directly, so deleting it here would be an
+    unreviewed, unrelated change.
+65. **(c) `MenuId.EXTRACT`'s three items (`fylz.extract.here`/`.folder`/`.to`) dispatch through the
+    ordinary `ActionDispatcher`**, not a documented-no-op-plus-hand-rolled-switch the way
+    `MenuId.ARCHIVE_TOOLS`'s two items do (`ArchiveToolsMenuDialog`'s own `onSelect`): each of the
+    three has a real one-line `ActionContext` handler now, so `ui/actions/ExtractSheet.kt` resolves
+    the menu and calls `dispatcher.run(item.id, state, null, ctx)` on a click, the same path every
+    other registry surface uses.
+
 **Relevant commits:** the M3.4a commit (this entry's items 25–36 and the design's 6–9, 23 as landed);
-the M3.4b commit (items 37–55 and the design's 1, 2, 4, 5, 9–14, 17–22, 24 as landed).
+the M3.4b commit (items 37–55 and the design's 1, 2, 4, 5, 9–14, 17–22, 24 as landed); the M3.4c
+commit (items 56–65 and the design's 3, 15, 16 as landed; `ArchiveExtractionPolicy.kt` deleted).
 
 **Risk if it turns out wrong:**
 - LZMA2 fatality (26): if a later libarchive makes the decode error `FAILED`, the re-issue rule
@@ -716,3 +790,16 @@ the M3.4b commit (items 37–55 and the design's 1, 2, 4, 5, 9–14, 17–22, 24
   second run deletes and redoes the first's staging rather than corrupting it.
 - The cancel hook returning `Failed` (43): a genuine dropped connection during a cancel is read as
   the cancel; both end in `CANCELLED`, which is what the user asked for.
+- Dropping the `EntryKind` precondition (56): a file misclassified `EntryKind.OTHER` whose name
+  merely *looks* like a browsable archive (a renamed `.zip` that is not one) now shows Extract; the
+  planner's own listing call (`ArchiveCatalog.open`) is what actually refuses it, with a clear
+  message, the moment the sheet's first choice is made — not a silent wrong result.
+- `extractZip` requiring `isEncrypted` (58): a plain ZIP reaching this method by a path other than
+  the two known callers (both gated on encryption already) would now refuse outright rather than
+  extract via zip4j — the intended new boundary, not a regression, since that ZIP has its own,
+  better-tested path through the queue.
+- The settable-var recomposition fix (62): if a future change reintroduces a frozen closure over
+  `activeTab` (or anything else recomposed-not-stable) inside `rememberExtractFlow`'s `remember{}`
+  block, the failure mode is quiet and specific — `.here`/`.folder` would extract into whatever
+  folder was open the first time the flow was built, not the one currently open — worth a second
+  look if `.here` ever seems to target the wrong tab.

@@ -496,13 +496,7 @@ class ExtractPlanner(
         ArchiveDocumentId(archive.source, archive.chain, entry.ordinal, entry.path).toUri()
 
     /** `photos` for `photos.tar.gz`: the archive's name without its (compound) extension. */
-    private fun defaultFolderName(archive: ArchiveRef): String {
-        val name = archive.chain.lastOrNull()?.substringAfterLast('/')
-            ?: DocNode.load(resolver, archive.source)?.name
-            ?: archive.source.lastPathSegment
-            ?: "archive"
-        return extractionFolderBaseName(name)
-    }
+    private fun defaultFolderName(archive: ArchiveRef): String = folderNameFor(resolver, archive)
 
     companion object {
         /** Above this many roots, "Extract here" asks whether to use a folder instead (design section 2.2 step 4). */
@@ -515,6 +509,20 @@ class ExtractPlanner(
         const val CONSENT_REFUSED = "This extraction needs explicit confirmation."
 
         private val FAT_FAMILY = setOf("vfat", "exfat")
+
+        /**
+         * `photos` for `photos.tar.gz` (design §2.1's "Extract to `<name>/`"/"Extract to…"): the
+         * chain's own last entry name for a nested archive, else the source document's display
+         * name, without its compound extension. A plain (not `suspend`) [ContentResolver] read, so
+         * `ExtractFlow`'s own callers run it off Compose the same way they run [plan] itself.
+         */
+        fun folderNameFor(resolver: ContentResolver, archive: ArchiveRef): String {
+            val name = archive.chain.lastOrNull()?.substringAfterLast('/')
+                ?: DocNode.load(resolver, archive.source)?.name
+                ?: archive.source.lastPathSegment
+                ?: "archive"
+            return extractionFolderBaseName(name)
+        }
 
         /** The archive's name without its compound extension (`FileFormatRegistry.compoundExtension`), never empty. */
         fun extractionFolderBaseName(archiveName: String): String {

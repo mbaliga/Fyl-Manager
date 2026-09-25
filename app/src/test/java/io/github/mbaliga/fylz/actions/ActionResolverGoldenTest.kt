@@ -1,10 +1,10 @@
 package io.github.mbaliga.fylz.actions
 
 import io.github.mbaliga.fylz.browse.SortField
+import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.ThemeMode
-import io.github.mbaliga.fylz.ui.isZipFamilyArchive
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,9 +31,15 @@ private object LegacyOracle {
     /** `FylzV1App.kt:1133` at `6e3ab3f`. */
     fun canRename(selection: List<FileEntry>): Boolean = selection.size == 1
 
-    /** `FylzV1App.kt:1134-1136` at `6e3ab3f`. */
+    /** M3.4c (design §2.1): `selection.size == 1 && BrowsableArchiveFormats.matches(name)` -- no
+     * `EntryKind` precondition any more, a deliberate widening from the pre-M3.4 zip4j-only rule
+     * (`FylzV1App.kt:1134-1136` at `6e3ab3f`) now that every browsable format extracts through the
+     * queue, not only the ones classified `EntryKind.ARCHIVE`. */
     fun canExtract(selection: List<FileEntry>): Boolean =
-        selection.size == 1 && selection.first().kind == EntryKind.ARCHIVE && isZipFamilyArchive(selection.first().name)
+        selection.size == 1 && BrowsableArchiveFormats.matches(selection.first().name)
+
+    /** `fylz.extract.selected` (design §2.1): any non-empty selection inside a browsed archive. */
+    fun canExtractSelected(selection: List<FileEntry>): Boolean = selection.isNotEmpty()
 
     /** `FylzV1App.kt:1137-1138` at `6e3ab3f`. */
     fun canPdfTools(selection: List<FileEntry>): Boolean =
@@ -84,6 +90,12 @@ class ActionResolverGoldenTest {
     private fun expectedSelectionBar(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
         if (state.selectionCount == 0) return emptyList()
         val writable = LegacyOracle.writableLocation(state)
+        // M3.4c (design §2.1): exactly one slot-90 action renders, by locationKind.
+        val extractSlot = if (state.locationKind == LocationKind.ARCHIVE) {
+            Triple(id("fylz.extract.selected"), LegacyOracle.canExtractSelected(state.selection), null)
+        } else {
+            Triple(id("fylz.extract"), LegacyOracle.canExtract(state.selection), null)
+        }
         return listOf(
             Triple(id("fylz.cut"), writable, null),
             Triple(id("fylz.copy"), true, null),
@@ -93,11 +105,23 @@ class ActionResolverGoldenTest {
             Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection) && writable, null),
             Triple(id("fylz.tags"), writable, null),
             Triple(id("fylz.compress"), true, null),
-            Triple(id("fylz.extract"), LegacyOracle.canExtract(state.selection), null),
+            extractSlot,
             Triple(id("fylz.rename.batch"), writable, null),
             Triple(id("fylz.pdf.tools"), LegacyOracle.canPdfTools(state.selection), null),
             Triple(id("fylz.share"), true, null),
             Triple(id("fylz.select.clear"), true, null),
+        )
+    }
+
+    /** `Menu(MenuId.EXTRACT)`, the Extract sheet's own three choices (design §2.1): as visible
+     * and enabled as `fylz.extract` itself, so never shown inside an archive location. */
+    private fun expectedExtractMenu(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
+        if (state.selectionCount == 0 || state.locationKind == LocationKind.ARCHIVE) return emptyList()
+        val enabled = LegacyOracle.canExtract(state.selection)
+        return listOf(
+            Triple(id("fylz.extract.here"), enabled, null),
+            Triple(id("fylz.extract.folder"), enabled, null),
+            Triple(id("fylz.extract.to"), enabled, null),
         )
     }
 
@@ -210,6 +234,11 @@ class ActionResolverGoldenTest {
                 "archiveTools/$name",
                 expectedArchiveTools(),
                 resolved(PlacementQuery.Menu(MenuId.ARCHIVE_TOOLS), state),
+            )
+            assertEquals(
+                "extractMenu/$name",
+                expectedExtractMenu(state),
+                resolved(PlacementQuery.Menu(MenuId.EXTRACT), state),
             )
         }
     }

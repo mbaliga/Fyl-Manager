@@ -1,5 +1,6 @@
 package io.github.mbaliga.fylz.actions
 
+import android.net.Uri
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.ThemeMode
@@ -126,6 +127,11 @@ private class RecordingActionContext : ActionContext {
     override fun tags() {}
     override fun compress() {}
     override fun extract() {}
+    override fun extractHere() {}
+    override fun extractIntoFolder() {}
+    override fun extractTo() {}
+    override fun extractSelected() {}
+    override fun openExtractMenu(archive: Uri) {}
     override fun batchRename() {}
     override fun pdfTools() {}
     override fun share() {}

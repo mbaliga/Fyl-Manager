@@ -559,3 +559,87 @@ need a device. **None of this ran on a device.**
 **What this verifies:** M3.3 (`05c3531`, `9b1bceb`, `c7f6a86` and the M3.3d commit) -- the
 design's section 2.11 list, item for item, MASTER_PLAN's "archives open as folders", section 4.4's
 kill-and-restart under the streaming client, and the idle unbind that closes M3.2's open question.
+
+## 19. M3.4 — selective extract through the transfer queue
+
+`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` moves extraction of a plain archive onto the Rust
+engine, through the same durable queue copy and move use: four registry actions
+(`fylz.extract`/`.here`/`.folder`/`.to`, `fylz.extract.selected` inside a browsed archive) hand off
+to `ui/actions/ExtractFlow.kt`, `operations.ExtractPlanner` plans entirely in the UI process, and
+`operations.ArchiveExtractor` runs the one pass on a **second isolated decoder instance**
+(`:decoders:extract`) with the frame protocol demultiplexed straight into staged destination
+documents. Everything below was verified only in this sandbox: Rust tests on the fixtures (including
+the golden `.fzx` bytes), Robolectric tests with a fake `IDecoderService.Stub` writing real frames,
+and a simulated system stop (cancelling the run's coroutine with a stop reason). Real `bindIsolatedService`
+binding of a second instance, `:decoders:extract` actually appearing in `ps` and being reaped, SELinux
+for the pipe and the isolated process, a real WorkManager stop mid-extraction, and every wall-clock/
+memory number below need a device. **None of this ran on a device.**
+
+**Steps and expected results:**
+
+1. Extract here / to `<name>/` / to… for a ZIP, a 7z, a `tar.xz` and an ISO (any archive with a
+   folder in it). Expected: a progress notification with a bar and a byte line ("Reading archive…"
+   until the first entry, then bytes-of-total); the result is byte-identical to `unzip`/`7z x`/`tar
+   xf`/mounting the ISO on a desktop (`sha256sum` each extracted file and compare); `adb shell run-as
+   io.github.mbaliga.fylz ls cache/archive-work cache/archive-entries` shows nothing left over
+   (extraction stages through the destination provider's own `.fylz-part-*` names, not these
+   caches); `adb shell ps -A | grep decoders` shows **both** `io.github.mbaliga.fylz:decoders` (if a
+   browse is open) and `io.github.mbaliga.fylz:decoders:extract` while the extraction runs, and only
+   the first once it finishes.
+2. **Acceptance, "Extract here":** build a 5 GB 7z with one 5 GB member at the root and a thousand
+   small ones (`7z a -mx=1 big.7z bigfile.bin small*.bin`), extract it to internal storage with
+   Settings → (wherever `operations.VerifySettings` is exposed) → Always verify, ticking the consent
+   checkbox on the confirm sheet. Record: wall time, peak RSS of `io.github.mbaliga.fylz:decoders:extract`
+   (`adb shell dumpsys meminfo io.github.mbaliga.fylz:decoders:extract` sampled during the run), and
+   the big file's `sha256` from the operation history against a desktop `sha256sum`. Repeat onto an
+   exFAT card. Repeat onto a vfat card: the 5 GB member is a preflight problem (`FileTooLargeForVfat`);
+   Skip extracts everything else. While the 5 GB extraction runs, browse into a *different* archive
+   in another tab: expected both finish byte-exact and the browse never blocks on the extraction's own
+   `:decoders:extract` instance (they are different processes).
+3. Start a large extraction, cancel it mid-way from the notification's Cancel action. Expected: the
+   staged folder/files disappear (nothing partial left under the destination), the operation history
+   shows CANCELLED, `adb shell ps -A | grep decoders` shows `:decoders:extract` gone within a couple
+   of seconds (the demuxer joins, then unbinds) while a `:decoders` browse elsewhere stays alive; a
+   copy or move queued behind the cancelled extraction (paste something while the extraction is
+   running) still runs to completion once the extraction's slot in the unique queue clears.
+4. Start a large extraction, `adb shell am kill io.github.mbaliga.fylz` mid-way (not `:decoders`,
+   the whole app). Expected: on relaunch the operation shows `PAUSED_BY_SYSTEM`/`NEEDS_ATTENTION`
+   briefly then resumes (WorkManager re-runs the worker, which claims the row and continues items not
+   yet `SUCCEEDED`); exactly **one** operation appears in history for the whole run, not two.
+5. Push `crc-bad.zip` (`tools/fixtures/make_archive_fixtures.py`) and extract it: the one file with
+   the flipped byte fails with a CRC-mismatch error, everything else extracts, the operation ends
+   PARTIAL. `inflate-bad.zip`: the pass aborts on the corrupted member; watch `adb logcat` for one
+   re-issue call to `extractRanges` for the ordinals after it (time the gap -- the re-issue re-reads
+   the compressed stream from the start for a `tar.*`, cheaply reopens for a ZIP/7z). `solid-bad.7z`:
+   both members of the corrupted LZMA2 folder fail, the *next* folder still extracts (no hang).
+   Build a `tar.xz` with a corrupted member partway through a large tarball and extract it: the
+   re-issue re-decompresses from byte 0, so time how long a bad member near the end takes relative to
+   one near the start.
+6. Browse into an archive with a folder and a hardlink whose target sits *outside* the folder, select
+   the folder plus the hardlink, choose "Extract selected entries", pick a destination. Expected: the
+   folder's contents and the hardlink (as a real, independent copy, not a link) all land correctly;
+   focus a symlink entry inside the same archive and confirm the inspection/preview side says it is
+   skipped, not silently dropped with no explanation.
+7. Open an AES-encrypted ZIP (Archive tools → Inspect, or tap it directly): Extract still asks for a
+   password and runs the old zip4j path (`ArchiveService.extractZip`) -- confirm the result is
+   byte-identical to `unzip -P`. Browse into that same archive (once M3.6 or the read path allows it)
+   and try "Extract selected entries" on one of its entries: expected the M3.9 message ("Extracting
+   protected entries arrives with the password prompt"), not a silent failure or wrong bytes.
+8. Repeat steps 1-6 while running `adb logcat | grep avc` continuously. Expected: **no denial** for
+   `isolated_app` writing the sink pipe, reading the archive descriptor, or anything about the second
+   isolated instance specifically (a denial here would surface as every extraction ending
+   FAILED/ARCHIVE_UNAVAILABLE with no other symptom).
+9. Build a `tar.zst` with exactly 10,000 files and one with 10,001 (`many-entries.tar.zst`'s fixture
+   shape). Expected: the 10,001-file archive is refused ("needs explicit confirmation") without the
+   consent tick and extracts once it is given; record the wall time for the 10,000-file case (one
+   pass; `tar.*` still costs a header pass plus the extraction pass -- REVIEW_QUEUE item 4).
+10. Queue two extractions back to back (start one, immediately start a second from another archive
+    before the first finishes). Expected: the second sits queued (visible in the running-operations
+    list) and starts only once the first's WorkManager slot frees up; cancel the *first* via its
+    notification and confirm the second is untouched (still queued, then runs); make the first end
+    PARTIAL (a fixture with a mid-archive CRC failure) and confirm the second still runs to completion
+    (the `Result.success()` rule, "Durable operation queue" in `docs/ARCHITECTURE.md`).
+
+**What this verifies:** M3.4 (`5fdc515` (a), `075ecab` (b) and the M3.4c commit) -- the design's
+section 2.9 list, item for item, and the acceptance line MASTER_PLAN's own M3.4 entry states ("a 5 GB
+7z extracts through the queue with verification").
