@@ -1,0 +1,95 @@
+package io.github.mbaliga.fylz.decoder
+
+import io.github.mbaliga.fylz.core.ArchiveEngineException
+import io.github.mbaliga.fylz.core.ArchiveEntryKindRecord
+import io.github.mbaliga.fylz.core.ArchiveEntryRecord
+import io.github.mbaliga.fylz.core.ArchiveInspectionRecord
+import io.github.mbaliga.fylz.core.ArchiveLimitsRecord
+
+/**
+ * The two-way copy between the uniffi records `fylz-ffi-android` generates into
+ * `io.github.mbaliga.fylz.core` (`*Record`, unsigned fields, `Option`s as nullables) and the
+ * `decoder.*` Parcelables that cross Binder. Pure functions with no native dependency -- the
+ * generated record classes are plain Kotlin -- so `DecoderServiceMappingTest` proves every field
+ * on the JVM without loading `libfylz_ffi_android.so`. Every `when` is exhaustive over a sealed
+ * or enum type, so a new engine variant fails to compile here rather than mapping silently.
+ */
+
+internal fun ArchiveLimits.toRecord(): ArchiveLimitsRecord = ArchiveLimitsRecord(
+    maxEntries = maxEntries.toUnsigned(),
+    maxArchiveBytes = maxArchiveBytes.toUnsigned(),
+    maxFileBytes = maxFileBytes.toUnsigned(),
+    maxTotalUncompressedBytes = maxTotalUncompressedBytes.toUnsigned(),
+    maxCompressionRatio = maxCompressionRatio,
+    maxPathDepth = maxPathDepth.toUnsigned(),
+    maxNameLength = maxNameLength.toUnsigned(),
+    maxListingEntries = maxListingEntries.toUnsigned(),
+)
+
+internal fun ArchiveInspectionRecord.toInspection(): ArchiveInspection = ArchiveInspection(
+    outcome = ArchiveInspection.OUTCOME_OK,
+    message = null,
+    formatCode = formatCode.toClampedInt(),
+    formatName = formatName,
+    filters = filters,
+    archiveBytes = archiveBytes.toClampedLong(),
+    entryCount = entryCount.toClampedInt(),
+    fileCount = fileCount.toClampedInt(),
+    directoryCount = directoryCount.toClampedInt(),
+    linkCount = linkCount.toClampedInt(),
+    totalUncompressedBytes = totalUncompressed?.toClampedLong() ?: ArchiveInspection.UNKNOWN_SIZE,
+    hasEncryptedEntries = hasEncryptedEntries,
+    hasEncryptedMetadata = hasEncryptedMetadata,
+    hasLossyNames = hasLossyNames,
+    policyAllowed = policyAllowed,
+    policyReason = policyReason,
+    rows = rows.map(ArchiveEntryRecord::toEntryInfo),
+    rowsTruncated = rowsTruncated,
+)
+
+internal fun ArchiveEntryRecord.toEntryInfo(): ArchiveEntryInfo = ArchiveEntryInfo(
+    path = path,
+    kind = when (kind) {
+        ArchiveEntryKindRecord.FILE -> ArchiveEntryInfo.KIND_FILE
+        ArchiveEntryKindRecord.DIRECTORY -> ArchiveEntryInfo.KIND_DIRECTORY
+        ArchiveEntryKindRecord.SYMLINK -> ArchiveEntryInfo.KIND_SYMLINK
+        ArchiveEntryKindRecord.HARDLINK -> ArchiveEntryInfo.KIND_HARDLINK
+        ArchiveEntryKindRecord.OTHER -> ArchiveEntryInfo.KIND_OTHER
+    },
+    linkTarget = linkTarget,
+    uncompressedBytes = uncompressed?.toClampedLong() ?: ArchiveEntryInfo.UNKNOWN_SIZE,
+    mtimeEpochSeconds = mtime ?: ArchiveEntryInfo.UNKNOWN_MTIME,
+    mode = mode.toClampedInt(),
+    encryptedData = encryptedData,
+    encryptedMetadata = encryptedMetadata,
+    nameLossy = nameLossy,
+)
+
+/**
+ * The outcome table of `DESIGN-M32-SEEKABLE-PFD.md` section 2.4: each engine exception to its
+ * outcome with the engine's own text, and anything else in the decoder process -- a Rust panic
+ * surfacing as uniffi's `InternalException`, an `OutOfMemoryError`, a bug -- to
+ * [ArchiveInspection.OUTCOME_INTERNAL] with the exception's class name and never a stack trace.
+ */
+internal fun Throwable.toFailedInspection(): ArchiveInspection = when (this) {
+    is ArchiveEngineException -> when (this) {
+        is ArchiveEngineException.NotSeekable -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_NOT_SEEKABLE, detail)
+        is ArchiveEngineException.Unsupported -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_UNSUPPORTED, detail)
+        is ArchiveEngineException.Corrupt -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_CORRUPT, detail)
+        is ArchiveEngineException.LimitExceeded ->
+            ArchiveInspection.failed(ArchiveInspection.OUTCOME_LIMIT_EXCEEDED, "limit exceeded ($rule) at entry $entry")
+        is ArchiveEngineException.Internal -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_INTERNAL, detail)
+    }
+    else -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_INTERNAL, javaClass.simpleName)
+}
+
+/** A negative limit is meaningless; the engine gets zero, which refuses everything, rather than
+ * a wrapped-around huge value that would refuse nothing. */
+private fun Int.toUnsigned(): UInt = coerceAtLeast(0).toUInt()
+
+private fun Long.toUnsigned(): ULong = coerceAtLeast(0L).toULong()
+
+/** Engine counts and codes are far below `Int.MAX_VALUE`; clamp rather than wrap if one ever is not. */
+private fun UInt.toClampedInt(): Int = if (this > Int.MAX_VALUE.toUInt()) Int.MAX_VALUE else toInt()
+
+private fun ULong.toClampedLong(): Long = if (this > Long.MAX_VALUE.toULong()) Long.MAX_VALUE else toLong()

@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    // M3.2b: the decoder-process AIDL interface returns @Parcelize data classes (decoder/).
+    id("org.jetbrains.kotlin.plugin.parcelize")
 }
 
 android {

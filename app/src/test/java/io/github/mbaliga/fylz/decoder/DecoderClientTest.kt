@@ -8,7 +8,11 @@ import android.util.Log
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -16,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
 
 /**
@@ -32,15 +37,47 @@ import org.robolectric.shadows.ShadowLog
  * [System.nanoTime]; the only wall-clock assertion here), because a timeout that merely waits for
  * the blocking call to finish never unbinds while the process is actually hung. Everything else
  * that needs ordering between the test and an abandoned call uses a [CountDownLatch].
+ *
+ * The M3.2b cases: [DecoderClient.inspectArchive]'s [DecoderCall] results, and the two GATE-M2
+ * review points -- a connection dropped from under an in-flight bind is a failure value, never a
+ * `CancellationException` to the caller, while the caller's own cancellation still propagates.
+ * `sdk = [35]` as the rest of the suite pins it: without it Robolectric ran this class on an
+ * SDK old enough to lack `ServiceConnection.onBindingDied` (API 26), which the dropped-bind
+ * cases drive.
  */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class DecoderClientTest {
 
     private val componentName = ComponentName("io.github.mbaliga.fylz", "io.github.mbaliga.fylz.decoder.DecoderService")
 
-    private fun instantBinder(): IDecoderService.Stub = object : IDecoderService.Stub() {
+    private val limits = ArchiveLimits()
+
+    private val okInspection = ArchiveInspection(
+        outcome = ArchiveInspection.OUTCOME_OK,
+        message = null,
+        formatCode = 0x50000,
+        formatName = "ZIP 2.0 (deflation)",
+        filters = emptyList(),
+        archiveBytes = 1_514L,
+        entryCount = 8,
+        fileCount = 5,
+        directoryCount = 3,
+        linkCount = 0,
+        totalUncompressedBytes = 1_626L,
+        hasEncryptedEntries = false,
+        hasEncryptedMetadata = false,
+        hasLossyNames = false,
+        policyAllowed = true,
+        policyReason = null,
+        rows = listOf(ArchiveEntryInfo("hello.txt", ArchiveEntryInfo.KIND_FILE, null, 11L, 1_577_836_800L, 0x1a4, false, false, false)),
+        rowsTruncated = true,
+    )
+
+    private fun instantBinder(inspection: ArchiveInspection = okInspection): IDecoderService.Stub = object : IDecoderService.Stub() {
         override fun ping() = true
         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
+        override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = inspection
     }
 
     /** Never returns within any test's configured timeout, but does eventually return, so a
@@ -54,6 +91,11 @@ class DecoderClientTest {
         override fun sniff(pfd: ParcelFileDescriptor): String {
             Thread.sleep(hangMillis)
             return "too-late"
+        }
+
+        override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
+            Thread.sleep(hangMillis)
+            return okInspection
         }
     }
 
@@ -168,6 +210,7 @@ class DecoderClientTest {
         val diesMidCall = object : IDecoderService.Stub() {
             override fun ping() = true
             override fun sniff(pfd: ParcelFileDescriptor): String = throw DeadObjectException()
+            override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
         }
         val client = DecoderClient(
             bind = { connection -> connection.onServiceConnected(componentName, diesMidCall); true },
@@ -186,6 +229,7 @@ class DecoderClientTest {
                     object : IDecoderService.Stub() {
                         override fun ping(): Boolean = throw DeadObjectException()
                         override fun sniff(pfd: ParcelFileDescriptor) = "unreached"
+                        override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
                     }
                 } else {
                     instantBinder()
@@ -270,6 +314,7 @@ class DecoderClientTest {
                     thrown.countDown()
                 }
             }
+            override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
         }
         var bindCalls = 0
         val uncaught = AtomicReference<Throwable?>()
@@ -300,6 +345,178 @@ class DecoderClientTest {
         } finally {
             Thread.setDefaultUncaughtExceptionHandler(previousHandler)
         }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // M3.2b: inspectArchive and DecoderCall.
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    fun `inspectArchive returns Ok with the service's summary, passing limits and maxRows through`() = runBlocking {
+        var seen: Triple<Int, ArchiveLimits, Int>? = null
+        val recording = object : IDecoderService.Stub() {
+            override fun ping() = true
+            override fun sniff(pfd: ParcelFileDescriptor) = "ok"
+            override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
+                seen = Triple(archive.fd, limits, maxRows)
+                return okInspection
+            }
+        }
+        val client = DecoderClient(
+            bind = { connection -> connection.onServiceConnected(componentName, recording); true },
+            unbind = {},
+        )
+        val pfd = readEndOfAPipe()
+        val customLimits = ArchiveLimits(maxEntries = 7, maxListingEntries = 9)
+        val result = client.inspectArchive(pfd, customLimits, maxRows = 3)
+        assertEquals(DecoderCall.Ok(okInspection), result)
+        assertEquals(Triple(pfd.fd, customLimits, 3), seen)
+        // The client never closes the caller's descriptor.
+        assertTrue(pfd.fileDescriptor.valid())
+        assertEquals(500, DecoderClient.DEFAULT_MAX_ROWS)
+        assertEquals(30_000L, DecoderClient.STRUCTURE_TIMEOUT_MILLIS)
+    }
+
+    @Test
+    fun `a stub answering with outcome CORRUPT is Ok(summary) -- the engine's verdict, not a client failure`() = runBlocking {
+        val corrupt = ArchiveInspection.failed(ArchiveInspection.OUTCOME_CORRUPT, "Truncated input file")
+        val client = DecoderClient(
+            bind = { connection -> connection.onServiceConnected(componentName, instantBinder(corrupt)); true },
+            unbind = {},
+        )
+        val result = client.inspectArchive(readEndOfAPipe(), limits)
+        assertTrue(result is DecoderCall.Ok)
+        val summary = (result as DecoderCall.Ok).value
+        assertEquals(ArchiveInspection.OUTCOME_CORRUPT, summary.outcome)
+        assertEquals("Truncated input file", summary.message)
+        assertFalse(summary.isOk)
+    }
+
+    @Test
+    fun `inspectArchive against a stub hung for 1500 ms is TimedOut well before the hang ends, and unbinds`() = runBlocking {
+        var unbindCalls = 0
+        val client = DecoderClient(
+            bind = { connection -> connection.onServiceConnected(componentName, hangingBinder(1_500)); true },
+            unbind = { unbindCalls++ },
+        )
+        val start = System.nanoTime()
+        val result = client.inspectArchive(readEndOfAPipe(), limits, timeoutMillis = 100)
+        val elapsed = elapsedMillisSince(start)
+        assertEquals(DecoderCall.TimedOut, result)
+        assertReturnedBeforeTheHangEnded("inspectArchive", elapsed)
+        assertEquals(1, unbindCalls)
+    }
+
+    @Test
+    fun `inspectArchive surfacing DeadObjectException is Failed, and the next call rebinds`() = runBlocking {
+        var bindCalls = 0
+        val client = DecoderClient(
+            bind = { connection ->
+                bindCalls++
+                val binder = if (bindCalls == 1) {
+                    object : IDecoderService.Stub() {
+                        override fun ping() = true
+                        override fun sniff(pfd: ParcelFileDescriptor) = "ok"
+                        override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection =
+                            throw DeadObjectException()
+                    }
+                } else {
+                    instantBinder()
+                }
+                connection.onServiceConnected(componentName, binder)
+                true
+            },
+            unbind = {},
+        )
+        assertEquals(DecoderCall.Failed, client.inspectArchive(readEndOfAPipe(), limits))
+        assertEquals(DecoderCall.Ok(okInspection), client.inspectArchive(readEndOfAPipe(), limits))
+        assertEquals(2, bindCalls)
+    }
+
+    @Test
+    fun `a bind that returns false is Failed, never a thrown exception`() = runBlocking {
+        var unbindCalls = 0
+        val client = DecoderClient(bind = { false }, unbind = { unbindCalls++ })
+        assertEquals(DecoderCall.Failed, client.inspectArchive(readEndOfAPipe(), limits))
+        assertFalse(client.ping())
+        assertNull(client.sniff(readEndOfAPipe()))
+        // A `bindService` that returned false still needs `unbindService`: exactly one per failure.
+        assertEquals(3, unbindCalls)
+    }
+
+    @Test
+    fun `a bind that throws is Failed, never a thrown exception`() = runBlocking {
+        val client = DecoderClient(bind = { throw SecurityException("simulated: bindService refused") }, unbind = {})
+        assertEquals(DecoderCall.Failed, client.inspectArchive(readEndOfAPipe(), limits))
+        assertFalse(client.ping())
+    }
+
+    /**
+     * GATE-M2 review point: a `dropConnection()` racing an in-flight `ensureConnected()`. The bind
+     * here never connects on its own; while the call is parked waiting for `onServiceConnected`,
+     * the binding dies. The caller must get the documented failure value, not the internal
+     * deferred's `CancellationException`.
+     */
+    @Test
+    fun `a connection dropped from under an in-flight bind is Failed, not a CancellationException`() = runBlocking {
+        var saved: ServiceConnection? = null
+        var unbindCalls = 0
+        val client = DecoderClient(bind = { connection -> saved = connection; true }, unbind = { unbindCalls++ })
+        val inFlight = async { client.inspectArchive(readEndOfAPipe(), limits) }
+        while (saved == null) yield()
+        yield() // let the call reach its await on the pending connection
+        saved!!.onBindingDied(componentName)
+        assertEquals(DecoderCall.Failed, inFlight.await())
+        assertEquals("the death's own drop unbinds once; the failing call does not unbind again", 1, unbindCalls)
+        // And the same through the nullable API.
+        saved = null
+        val pingInFlight = async { client.ping() }
+        while (saved == null) yield()
+        yield()
+        saved!!.onServiceDisconnected(componentName)
+        assertFalse(pingInFlight.await())
+    }
+
+    /** The caller's own cancellation keeps its meaning: it propagates, it is not swallowed into `Failed`. */
+    @Test
+    fun `the caller's own cancellation of an in-flight call still propagates`() = runBlocking {
+        var saved: ServiceConnection? = null
+        val client = DecoderClient(bind = { connection -> saved = connection; true }, unbind = {})
+        var outcome: Any? = null
+        val job = launch {
+            try {
+                outcome = client.inspectArchive(readEndOfAPipe(), limits)
+            } catch (e: CancellationException) {
+                outcome = e
+            }
+        }
+        while (saved == null) yield()
+        yield()
+        job.cancel()
+        job.join()
+        assertTrue("expected the caller's CancellationException, got $outcome", outcome is CancellationException)
+    }
+
+    @Test
+    fun `after a dropped bind the next call binds afresh and succeeds`() = runBlocking {
+        var saved: ServiceConnection? = null
+        var bindCalls = 0
+        val client = DecoderClient(
+            bind = { connection ->
+                bindCalls++
+                saved = connection
+                if (bindCalls == 2) connection.onServiceConnected(componentName, instantBinder())
+                true
+            },
+            unbind = {},
+        )
+        val inFlight = async { client.ping() }
+        while (saved == null) yield()
+        yield()
+        saved!!.onBindingDied(componentName)
+        assertFalse(inFlight.await())
+        assertTrue(client.ping())
+        assertEquals(2, bindCalls)
     }
 
     private companion object {

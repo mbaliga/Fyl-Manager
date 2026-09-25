@@ -24,6 +24,10 @@ uniffi-cli = ["uniffi/cli"]
 [dependencies]
 uniffi = "0.32.2"
 fylz-sniff = { path = "../fylz-sniff", version = "0.1.0" }
+# M3.2b: archive inspection over uniffi. Pulls libarchive and its five compression companions
+# (fylz-archive's build.rs) into this crate's build for every target, the host included -- the
+# Gradle bindgen step's plain `cargo build --lib -p fylz-ffi-android` now compiles them too.
+fylz-archive = { path = "../fylz-archive", version = "0.1.0" }
 
 [dev-dependencies]
 pollster = "1.0.1"

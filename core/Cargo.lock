@@ -248,6 +248,7 @@ version = "0.1.0"
 name = "fylz-ffi-android"
 version = "0.1.0"
 dependencies = [
+ "fylz-archive",
  "fylz-sniff",
  "pollster",
  "uniffi",
