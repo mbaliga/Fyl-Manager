@@ -154,6 +154,9 @@ data class BrowserState(
     val currentFolderIsFavourite: Boolean,
     val legacyBinCount: Int,
     val operationsNeedingAttention: Int, // FylzAppShell's attentionCount, for the Operation history card's label
+    val registryProblemCount: Int,       // registry.problems.size, supplied when the state is assembled (the registry exists first);
+                                         // a (BrowserState) -> Boolean predicate cannot see the registry it belongs to. Added in MC.0e;
+                                         // MC.0a's fylz.customisation.problems is unconditionally hidden until then.
 ) {
     val selectionCount get() = selection.size
     val selectionKinds: Set<EntryKind> get() = selection.mapTo(HashSet()) { it.kind }
@@ -171,7 +174,10 @@ arrive with MC.2's predicate table.
   `edgeRooms(): Map<GestureId, ActionId>`, `problems: List<RegistryProblem>`. Problems computed at
   construction: `ShortcutConflict(chord, ids)` — the chord then binds to **none** of them —,
   `DuplicateId(id)`, `TargetRequiredOnTargetlessPlacement(id, placement)` (a `requiresTarget`
-  action on `CommandPalette`, `Shortcut`, `Toolbar`, `Menu`, `Room` or `SelectionBar`).
+  action on `CommandPalette`, `Toolbar`, `Menu` or `SelectionBar` — placements with no item under
+  them). `Shortcut` and `Room` may carry target-requiring actions because each has a documented
+  target convention: Enter → `focused`, Ctrl+W → the active tab, `fylz.tab.close` in the Locations
+  room → the row's own tab. (MC.0a clarification.)
 - `ActionResolver.resolve(placement: PlacementQuery, state): List<ResolvedAction>` where
   `ResolvedAction(id, enabled, label, iconName, checked)`; `visible` items in placement `order`.
   This is the only function renderers call to decide what to draw, and what the golden tests
@@ -239,7 +245,7 @@ always) · `fylz.favourite.toggle` (`Room(LIBRARY_RAIL, 20)`, `E: hasActiveTab`,
 **Tools room** (`:2444–2493`): `fylz.recycle-bin` (`Room(TOOLS, 10)`, always) · `fylz.remotes`(20) ·
 `fylz.webdav.quick`(30) · `fylz.tools`(40) · `fylz.index`(50) · `fylz.theme.system`(60) ·
 `fylz.theme.light`(61) · `fylz.theme.dark`(62) (each `checked = themeMode == …`) ·
-`fylz.customisation.problems` (`Room(TOOLS, 90)`, `V: registry.problems.isNotEmpty()`; deviation (c)).
+`fylz.customisation.problems` (`Room(TOOLS, 90)`, `V: registryProblemCount > 0`; deviation (c)).
 An action may carry two `Room` placements (Recycle Bin: rail and Tools) — the per-surface gate is
 the renderer's.
 
@@ -293,6 +299,15 @@ gates that are properties of a surface, not of an action, live here:
   stays where it is, `:1023/:1200`); `TOOLS`, `RECOVERY` (as `RecoveryActionCard`s, keeping each
   card's description text), `LOCATIONS` (the two affordances around the unchanged `WordWheelRail`).
   `ArchiveToolsMenuRenderer` — the overlay's dialog over `Menu(ARCHIVE_TOOLS)`.
+  **Recovery cards whose "action" is a composable** (MC.0a finding): four cards today put a
+  self-contained overlay in their action slot — `FileHistoryOverlay()`, `BackupOverlay()`,
+  `BackupImportOverlay()`, `ArchiveToolsOverlay()` — each owning its own FAB and dialog state, with
+  no imperative "open" the registry could call. For these ids the registry supplies order, label,
+  description and visibility, and the renderer maps id → overlay composable (a table inside
+  `RoomActionsRenderer`, the Compose analogue of §C9's handler-ID table); their `run` stays a
+  documented no-op and they are excluded from the palette (`requiresTarget` is not the right flag;
+  use a `paletteVisible = false` on the binding). `fylz.history.operations` is the one card with an
+  imperative hook (`ctx.showOperationHistory()`) and stays palette-visible.
 - `CommandPaletteDialog` — a text field filtering every resolved, enabled, **targetless** action by
   label; Enter dispatches. Minimal, per §D.
 - `ContextMenu` placements are registered (so MC.3's editors have ids and groups) but MC.0 draws no
