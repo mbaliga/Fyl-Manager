@@ -463,3 +463,99 @@ process death and real transaction sizes all need a device. **None of this ran o
 "Kotlin passes a seekable `ParcelFileDescriptor` into the decoder process. ZIP, 7z and ISO are read
 with seeks. Only non-seekable remote streams stage to cache, with a space check", section 4.4's
 structure budget and kill-and-restart, and the design's section 2.9 list, item for item.
+
+## 18. M3.3 — archive browsing
+
+`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` made every archive a folder: `ArchiveDocumentsProvider`
+(authority `io.github.mbaliga.fylz.archives`, `MANAGE_DOCUMENTS`-protected, no picker root) serves
+entries as documents, the listing streams out of `:decoders` through a pipe in the `FZL1` codec into
+`cache/archive-listings`, entries open by materialising into `cache/archive-entries`, and the
+registry disables every writing action inside an archive. Everything below was verified only in
+this sandbox: Rust tests on the committed fixtures (including the golden `.fzl` bytes), Robolectric
+tests with a fake decoder behind the `bind`/`unbind` seam, and the provider hosted with the
+manifest's own `<provider>` attributes. Robolectric's pipes are file-backed, its `StatFs` reports 0
+free, one JVM is every "process", and there is no Compose harness, so real pipe EOF and
+backpressure, the `Os.lseek` liveness probe on a Binder dup, SELinux for `isolated_app`, Uri grants
+to another app, process death, the AndroidRuntime SIGPIPE disposition, and every tap-and-look step
+need a device. **None of this ran on a device.**
+
+**Steps and expected results:**
+
+1. Copy `photos.zip` (any ZIP with a folder in it) into `Downloads` and tap it. Expected: it opens
+   like a folder -- entries list in archive order, the breadcrumb reads `Downloads / photos.zip`,
+   entering a folder inside reads `Downloads / photos.zip / 2024`, Up twice is back in
+   `Downloads`. Repeat with a `.7z`, an `.iso`, a `.tar.gz` and a `.deb`: each opens as a folder
+   (a `.deb` shows `debian-binary`, `control.tar.*`, `data.tar.*`). A double-tap on the archive
+   browses it too; the external "Open with" chooser appears only for a non-archive file.
+   `adb shell run-as io.github.mbaliga.fylz ls cache/archive-listings` shows one `<key>.fzl` and
+   one `<key>.summary.json` per archive opened and **no** `.part` once a listing is up.
+2. Inside the zip, focus a PDF entry and a font entry (`sample-entries.zip` from
+   `tools/fixtures/make_archive_fixtures.py` has the layout, but its TTF is a stub -- use a real
+   font for this step); play a short video entry; view a PNG. Expected: the PDF pages, the font
+   renders its specimen, the video plays *and scrubs* (the descriptor is a seekable file, not a
+   pipe), the PNG shows; `cache/archive-entries/<key>/` holds one `<ordinal>` file per entry
+   opened, never a lingering `.part`. The grid shows no thumbnails for entries inside the archive
+   (by design, REVIEW_QUEUE M3.3 item 11).
+3. Share a text entry to another app (Messages, Keep, Files); "Open with…" a PDF entry into an
+   external viewer. Expected: the other app receives the content; `adb logcat` shows no
+   `SecurityException` on the grant -- the provider is `MANAGE_DOCUMENTS`-protected, so the grant
+   must ride on `grantUriPermissions`, which `dumpsys package io.github.mbaliga.fylz` lists for the
+   `io.github.mbaliga.fylz.archives` provider together with `exported=true` and no
+   `DOCUMENTS_PROVIDER` filter. The system file picker (Files → Browse) does **not** list an
+   "archives" root.
+4. Select a folder inside the archive, Copy, go to `Downloads`, Paste. Expected: the folder arrives
+   with every file; `sha256sum` of each copied file equals `sha256sum` of the same member extracted
+   with `unzip`/`tar` on the desktop. Cut, Move to, Recycle, Rename, Tags, Batch rename, Paste,
+   New folder, New text file, Scan to PDF, Favourite, AI organize and Find duplicates are
+   **disabled** (grey, not hidden where they were visible) while inside the archive; Copy, Copy to,
+   Share, Compress, Select all/none/invert, sort and view mode work.
+5. Push `nested-depth-4.zip` and `nested-depth-5.zip` (from the fixtures script). Expected:
+   `nested-depth-4.zip` opens through all four archives to the innermost file, which previews;
+   in `nested-depth-5.zip` the fifth archive does not open and the toast reads "Archives nested
+   deeper than 4 levels cannot be browsed". The nested listings re-open from disk after a process
+   restart (`am force-stop`, reopen, enter the same path: no new `:decoders` listing pass beyond
+   the first, visible as unchanged `.fzl` mtimes).
+6. Build a `tar.gz` with a 1,000-file folder (`mkdir big; for i in $(seq 1000); do head -c 4096
+   /dev/urandom > big/f$i.bin; done; tar czf big.tar.gz big`), copy the folder out. Expected: it
+   completes; record the wall time -- the per-entry cost model (design §2.4) predicts about N/2
+   full decompressions, so a 1,000-file `tar.gz` of ~4 MB should still be well under a minute.
+   Build a tarball with 80,000 entries (`python3 -c "import tarfile,io; t=tarfile.open('many.tar',
+   'w'); [t.addfile(tarfile.TarInfo(f'd{i//1000}/f{i}'), io.BytesIO()) for i in range(80000)];
+   t.close()"`), open it. Expected: the folder lists (record the time from tap to rows), the tab
+   stays responsive while it lists, `dumpsys meminfo io.github.mbaliga.fylz:decoders` peaks well
+   under 100 MB (the engine keeps a `Vec` of about 30 MB at the 200,000 bound), and the app
+   process holds at most two trees (`dumpsys meminfo io.github.mbaliga.fylz` before and after
+   opening a third large archive differs by about one tree, not three).
+7. SELinux: while running steps 1-6, `adb logcat | grep avc` shows **no denial** for
+   `isolated_app` writing the passed pipe (the listing and entry streams) **or** reading the staged
+   and materialised cache files (a nested archive's inner listing reads a file the app process
+   materialised). A denial here surfaces as every archive "could not be read safely" or as a nested
+   archive that refuses to open while its outer lists fine.
+8. Kill `:decoders` during a listing (`adb shell am kill io.github.mbaliga.fylz:decoders` right
+   after tapping the 80,000-entry tarball). Expected: the toast names the failure ("The archive
+   could not be read safely" / "Unable to read the archive ..."), the location stays and Up
+   works; pull to refresh (or leave and re-enter): it lists (a fresh `:decoders` PID). Then leave
+   the app idle for 60 s with nothing in flight: `adb shell ps -A | grep decoders` shows **no**
+   `:decoders`; the next archive open brings it back. Interrupting a video entry mid-play by
+   killing `:decoders` must not crash the app (the entry is already a local file).
+9. With Developer options → "Don't keep activities" on, browse into `photos.zip / 2024`, rotate,
+   then background and return. Expected: the location restores and lists (the catalog re-lists
+   from disk, blocking on the first query), the breadcrumb is intact, Up works. Delete
+   `photos.zip` from another file manager while backgrounded, return: the toast names the
+   vanished source, the location stays, Up returns to `Downloads`.
+10. Open twenty different archives and thirty different entries, then `adb shell run-as
+    io.github.mbaliga.fylz du -sk cache/archive-listings cache/archive-entries`. Expected:
+    `archive-listings` under 64 MB, `archive-entries` under 512 MiB, no `*.part` anywhere under
+    either (cancel a large entry open mid-fill by leaving the folder to provoke one, wait, and
+    check again: the `.part` is gone within the hour's grace or on the next process start's sweep).
+11. Push `messy-paths.tar` (fixtures script). Expected: it browses without a crash; the entries
+    with `..`, absolute and drive-qualified paths are **absent** from the folder view; give the
+    archive file preview focus in `Downloads`: the archive preview shows "N entries with unsafe
+    paths are hidden." (Archive tools → Inspect shows the M3.2 summary and verdict only); the
+    `dot-rooted.tar` fixture lists its members at the top level (no `.` folder). Push
+    `damaged-after-3.tar`: it lists three entries and the inspection view says "Damaged after 3
+    entries; showing what could be read".
+
+**What this verifies:** M3.3 (`05c3531`, `9b1bceb`, `c7f6a86` and the M3.3d commit) -- the
+design's section 2.11 list, item for item, MASTER_PLAN's "archives open as folders", section 4.4's
+kill-and-restart under the streaming client, and the idle unbind that closes M3.2's open question.

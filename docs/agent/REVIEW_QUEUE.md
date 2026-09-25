@@ -296,9 +296,11 @@ implementation added):
    types in the picker); Extract is not (ZIP-only button, `fylz.extract`'s `enabledWhen` unchanged).
 10. **Extraction still stages whole archives** until M3.4.
 11. **Full-listing transport deferred to M3.3**; M3.2 carries the first 500 rows in the Parcelable
-    (measured under 256 KB for 500 long-ish paths).
+    (measured under 256 KB for 500 long-ish paths). Closed by M3.3: the listing streams through a
+    pipe in the `FZL1` codec (M3.3 entry below).
 12. **No idle-unbind policy** for the application-scoped `DecoderClient`: once used, `:decoders`
-    lives as long as the app process; M3.3 measures and decides.
+    lives as long as the app process; M3.3 measures and decides. Closed by M3.3: idle unbind after
+    60 s with nothing in flight (M3.3 item 15).
 13. **`inspect`/`extract` drop libarchive's synthesized root entry** (`is_archive_root`, M3.2a): an
     ISO image's root is listed as a directory named `.`, which the Kotlin-parity `.`-segment rule
     refused, so every ISO would have shown "unsafe path segment". Entries *under* such a root
@@ -466,8 +468,8 @@ implementation added):
     registry rows, the builder, the format set, the destination filter and the restore path do.
     Section 18 covers them on a device.
 
-**Relevant commits:** `05c3531` (a); `9b1bceb` (b); the M3.3c commit that extends this entry; d
-extends it.
+**Relevant commits:** `05c3531` (a); `9b1bceb` (b); `c7f6a86` (c); the M3.3d commit (docs:
+`ARCHITECTURE.md` "Archives as documents", `DEVICE_CHECKS.md` section 18, this entry).
 
 **Risk if it turns out wrong:**
 - Ordinals (22): a listing and an `extract_entry_at` that count headers differently would fetch

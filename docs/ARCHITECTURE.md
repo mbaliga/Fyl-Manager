@@ -152,7 +152,7 @@ Previewing a file is active processing and should be treated as untrusted input.
 
 ## Archive boundary
 
-The foundation contains a provider-neutral Zip4j service for ordinary or AES-256 ZIP creation and password-protected ZIP extraction. It stages data only in app-private cache and validates canonical extraction paths before writing. Since M3.2, *inspecting* an archive no longer stages anything: `archive.ArchiveSource` resolves the `Uri` to a seekable descriptor (the provider's own, whenever `statSize >= 0`) and only a provider that can merely stream is copied to app-private cache first, after a space check, with the copy released as soon as the summary is in hand; the listing itself is done by `fylz-archive` in the isolated decoder process (see below). Extraction still stages the whole archive until M3.4 moves it onto the same engine.
+The foundation contains a provider-neutral Zip4j service for ordinary or AES-256 ZIP creation and password-protected ZIP extraction. It stages data only in app-private cache and validates canonical extraction paths before writing. Since M3.2, *inspecting* an archive no longer stages anything: `archive.ArchiveSource` resolves the `Uri` to a seekable descriptor (the provider's own, whenever `statSize >= 0`) and only a provider that can merely stream is copied to app-private cache first, after a space check, with the copy released as soon as the summary is in hand; the listing itself is done by `fylz-archive` in the isolated decoder process (see below). Extraction still stages the whole archive until M3.4 moves it onto the same engine. Since M3.3 an archive also *browses* as a folder through `storage.ArchiveDocumentsProvider`, with its listing and each opened entry streamed out of the decoder process through pipes (see "Archives as documents" below).
 
 Before exposing it as a finished feature:
 
@@ -292,8 +292,8 @@ The first real format landed in M3.2: `inspectArchive(archive, limits, maxRows)`
 a `ParcelFileDescriptor` and gets back an `ArchiveInspection` Parcelable -- the archive's format
 family, counts, sizes, encryption flags, the Rust extraction policy's verdict and at most `maxRows`
 listing rows (500 by default, about 50 KB, because the Binder transaction buffer is 1 MB per
-process and a full listing would overflow it around ten thousand entries; M3.3 designs the
-full-listing transport). The engine (`fylz-archive`, over libarchive) reads through that
+process and a full listing would overflow it around ten thousand entries; since M3.3 the full
+listing streams through a pipe instead -- see "Archives as documents" below). The engine (`fylz-archive`, over libarchive) reads through that
 descriptor with seeks -- the ZIP central directory, a 7z's trailing header and pack streams, an
 ISO's directory extents -- so **the descriptor must refer to a regular file**: the engine `fstat`s
 it, refuses anything else as `NOT_SEEKABLE`, and rewinds it to byte 0 first (libarchive seeks
@@ -306,8 +306,8 @@ engine under section 4.4's 30 s "structure" budget (`DecoderClient.STRUCTURE_TIM
 distinct from the 5 s the two quick calls get, and the client's `DecoderCall { Ok, TimedOut,
 Failed }` lets the UI say "took too long to read" for a multi-GB compressed tarball rather than
 "could not be read safely" for a dead process. The client and the `archive.ArchiveInspector` that
-drives it are application-scoped (`FylzApplication.archiveInspector`): the binding lives for the
-app process, with no idle unbind yet (M3.3 measures and decides).
+drives it are application-scoped (`FylzApplication.archiveInspector`); since M3.3 the binding is
+dropped after 60 s with nothing in flight (see "Archives as documents" below).
 
 `decoder.DecoderClient` owns the other half of the contract section 4.4 asks for: a per-call
 timeout (5 s for `ping`/`sniff`, the 30 s structure budget for `inspectArchive`), and dropping the
@@ -324,6 +324,106 @@ side. `DecoderClientTest` covers this retry/timeout state machine against a fake
 `IDecoderService.Stub` bound through a test-injected seam; genuine cross-process crash and timeout
 behaviour is real-device-only and is tracked in `docs/agent/DEVICE_CHECKS.md` instead, since
 Robolectric runs every "process" in one JVM.
+
+## Archives as documents (M3.3)
+
+Since M3.3 an archive opens as a folder: tapping `photos.zip` pushes a location whose Uri belongs
+to `storage.ArchiveDocumentsProvider` (authority `io.github.mbaliga.fylz.archives`), and every
+entry inside is a document of that provider -- listed, previewed, shared, opened with another app
+and copied out through exactly the code paths a file in any other provider takes. Nothing in the
+browser knows what an archive is beyond `model.BrowsableArchiveFormats` (the explicit set of
+formats `fylz-archive` reads: `zip zipx jar apk cbz 7z cb7 tar tgz tbz tbz2 txz tzst tar.gz tar.bz2
+tar.xz tar.zst tar.lz4 iso cpio ar deb rpm cab lha lzh warc`; `rar`/`cbr`, `arj img dmg wim xar`
+and single-file `gz bz2 xz zst lz4` streams are excluded with their reasons in the file) and
+`actions.LocationKind` (`FOLDER`/`ARCHIVE`, derived from the current location's authority).
+`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` is the design; this section is the contract.
+
+**The provider.** Modelled on the File provider's manifest entry: `exported`, `grantUriPermissions`,
+protected by `MANAGE_DOCUMENTS`, and **without** a `DOCUMENTS_PROVIDER` intent filter -- it is not a
+picker root (`queryRoots` is empty) but a document authority, so the system picker never shows it
+while share and "Open with" grants pass through it like any other document Uri. Its Uris are the
+non-tree form `content://io.github.mbaliga.fylz.archives/document/<id>`; `data.DocumentRepository
+.listChildren` and `operations.DocNode.children` take the non-tree branch whenever
+`!DocumentsContract.isTreeUri(folderUri)` (`buildChildDocumentsUri`/`buildDocumentUri` on the
+document's own authority), which is what lets the browser, directory copy-out and the preflight
+size walk work unchanged. A listing failure travels as `EXTRA_ERROR` on a rowless cursor and both
+callers throw it as an `IOException` with the message. `openDocument` is `"r"` only; every write
+method throws `UnsupportedOperationException` (the registry disables the writing actions inside an
+archive: cut, move, recycle, rename, tags, batch rename, paste, new folder/file, scan to PDF,
+favourite, AI organise, find duplicates -- until M3.6). `getDocumentType` answers from the same
+extension table the rows use.
+
+**Ids** (`archive.ArchiveDocumentId`) are base64url of `{v, src, n, o, p}`: the source document Uri,
+the chain of nested-archive paths (depth at most 4; the fifth level is refused with a toast), the
+entry's **ordinal** and its normalised path. The ordinal is the 0-based index of the raw
+`archive_read_next_header` call that produced the entry, counting every header (the ISO/tar `.` root
+the engine drops, links, special files), from the one counter every engine pass shares; opening an
+entry asks the engine for that ordinal *and* the byte-exact path it carried, so an id that no longer
+matches the archive (a replaced file behind the same Uri) is "not found", never a different member.
+Implicit directories -- parents the archive never stored -- have ordinal `-1` and cannot be opened.
+
+**The listing transport.** A Binder transaction is capped at 1 MB per process, so listings never
+travel as Parcelables. `archive_list_into(fd, limits, sink_fd)` writes the `FZL1` codec (one record
+per header: ordinal, path, kind, flags, uncompressed size, mtime, mode, link target; a trailer with
+the count and a `partial` flag) into a pipe *during* the header pass, and `decoder.DecoderClient
+.callStreaming` drains the read end on its own 4-thread pool into `cache/archive-listings/<key>.
+<nonce>.part`, renamed into place only when the call returned success and the trailer decoded.
+The drain always runs to EOF before the call is judged, so Robolectric's file-backed pipes and a
+device's real pipes behave alike. A streaming call has no flat deadline: it is abandoned after
+**30 s of inactivity** (`STREAM_INACTIVITY_MILLIS`), where activity is bytes arriving *or* the
+engine's read offset moving -- probed once a second through `Os.lseek(SEEK_CUR)` on the caller's
+descriptor, which shares the file offset with the Binder dup the engine reads through. A damaged
+archive lists partially (`partial` set, "Damaged after N entries") rather than not at all; one over
+`ArchiveLimits.maxListingEntries` (200,000) is refused. The Rust `fylz-ffi-android` crate ignores
+`SIGPIPE` once per process, since a cdylib gets no `SIG_IGN` from Rust's runtime and a cancelled
+drain would otherwise kill `:decoders` instead of failing the write.
+
+**The catalog** (`archive.ArchiveCatalog`) owns one listing per archive, on disk and in memory.
+The key is `sha256(src | size | mtime)` from a `queryDocument` of the source, chained for nested
+archives (`sha256(outerKey | path | uncompressed | mtime)`) so a changed outer file invalidates
+every inner key. `open` is single-flight (one `Deferred` per key) and blocking: memory LRU of two
+`ArchiveTree`s, then the `.fzl` plus its `<key>.summary.json` sidecar on disk (format, counts, the
+policy verdict, `partial`, `structuralRefusal`; a listing without a readable sidecar fails closed and
+is re-listed, because entry opening must never guess the verdict), then `:decoders`. Every provider
+method blocks on it -- there is no `EXTRA_LOADING`/`notifyChange` protocol -- so a cold process (a
+worker resuming, another app opening a granted Uri, session restore) gets the full listing, never
+an empty folder. Failures are memoised per key until `fylz.refresh` (`forgetFailures`) so the
+provider never loops against `:decoders`. A handle pins the **source**, never a descriptor:
+`PinnedSource` re-opens the document (or the staged/materialised file) for every engine call,
+because a Binder dup shares its file offset and two concurrent calls through one descriptor would
+interleave. Handles are reference counted, so LRU eviction never cuts off an in-flight fill.
+
+**The tree** (`archive.ArchiveTree`) normalises paths the way the engine's `normalized_path_key`
+does (a `./` prefix and `.` segments dropped, ZIP backslashes to `/`, trailing `/` removed), keeps
+the last member of a duplicate path in the first one's position, lets a directory beat a file at
+the same path, synthesises implicit parents, and quarantines entries the policy refused (`..`,
+absolute and drive-qualified paths) -- the folder view hides them and the inspection view shows the
+count. `partial` and `structuralRefusal` come from the summary; a policy-refused archive still
+browses, but its entries do not open.
+
+**Opening an entry** (`archive.ArchiveEntryCache`) materialises it once: `archive_extract_entry_at
+(fd, ordinal, path, limits, sink_fd)` streams the member into a pipe, drained into
+`cache/archive-entries/<key>/<ordinal>.part` and renamed, and the caller gets a read-only, seekable
+descriptor on that file -- so a video entry scrubs and a PDF entry pages like any local file. Two
+fills run concurrently (`MAX_CONCURRENT_FILLS`), the rest wait; a second request for a filling entry
+awaits the same fill. Refused, with a message the preview shows: directories and implicit
+entries, links and special files (hardlinks resolve to their target first), encrypted entries
+(until the password path lands), entries over `min(maxFileBytes, 512 MiB)` or without room in cache
+("Extract it instead"). A nested archive is materialised the same way and pinned as the inner
+handle's source for as long as the handle lives.
+
+**Budgets and sweeping** (`archive.ArchiveCacheSweeper`, once per process from the first catalog
+open or inspection): listings 64 MB LRU by mtime, entries 512 MiB LRU with pinned files exempt,
+`.part` files older than an hour removed, `archive-work` staging older than 24 h removed. The
+thumbnail pipeline skips archive Uris (a thumbnail would be a fill per visible image), recursive
+search is off inside an archive until M8's engine can walk it, and the destination chooser does
+not offer an archive location.
+
+**Decoder lifetime.** `DecoderClient` idle-unbinds `:decoders` after **60 s with nothing in
+flight**: the timer arms when the in-flight count reaches zero, every call start cancels it, and
+its drop carries the binding generation it was armed for, so a call that began in between (and
+bumped the generation) is never cut. This closes M3.2's open question; the M3.2 measurements that
+motivated it are in `docs/agent/REVIEW_QUEUE.md` under M3.3.
 
 ## Theme architecture
 
