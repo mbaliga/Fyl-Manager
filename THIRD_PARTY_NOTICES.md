@@ -50,6 +50,15 @@ Notable dependencies as of M2.2:
 - uniffi 0.32.2 (`core/crates/fylz-ffi-android`) — MPL-2.0, file-level copyleft, permitted
   anywhere per section 2.2. Generates the Kotlin bindings in
   `app/src/main/java/io/github/mbaliga/fylz/core/`.
+- libarchive 3.8.9 (`core/third_party/libarchive`, a git submodule pinned to release tag `v3.8.9`,
+  M3.1) — statically linked into `fylz-archive`, never a Cargo dependency. Licensed per its own
+  `COPYING`: the library proper is 2-clause BSD (Copyright Tim Kientzle); `archive_read_support_
+  filter_compress.c`, `archive_write_add_filter_compress.c` and `mtree.5` also carry a 3-clause UC
+  Regents copyright; `archive_parse_date.c` is public domain; the BLAKE2 sources
+  (`archive_blake2*.{h,c}`) are triple-licensed CC0-1.0/OpenSSL/Apache-2.0; the build scripts carry
+  varying terms of their own. See `docs/agent/REPORT-M2.md` section 6 for the full breakdown.
+- `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
+  M3.1) are covered by `cargo deny` and never linked into the APK.
 
 ## Test-only dependency
 

@@ -68,11 +68,15 @@ Full per-task detail: `docs/agent/PROGRESS.md`'s task table and `docs/agent/REPO
 Full per-task detail: `docs/agent/PROGRESS.md`'s task table and `docs/agent/REPORT-M2.md`.
 
 **What needs reviewing or testing:**
-- The APK size delta per ABI once measured (`docs/agent/REPORT-M2.md` §5 carries a
-  `TODO(numbers)` placeholder pending another agent's concurrent measurement) — Madhav's own
-  approval of whether the three new `.so` files' added weight (`fylz-ffi-android`'s cdylib,
-  arm64-v8a/armeabi-v7a/x86_64) is acceptable for what M2 delivers (a version stub and content
-  sniffing) before more native code lands in M3 onward.
+- The APK size delta per ABI, now measured and reported in full in `docs/agent/REPORT-M2.md` §5:
+  +2,213,079 B (+4.14%) total, 568,464/394,108/546,704 B per ABI (arm64-v8a/armeabi-v7a/x86_64) for
+  the new `fylz-ffi-android` cdylib plus JNA's `libjnidispatch.so`, well inside the master plan's
+  own +12 MB-per-ABI core budget (section 4.2) — Madhav's own approval that this is acceptable
+  before more native code lands in M3 onward. **New finding to review alongside it:** JNA also
+  ships `libjnidispatch.so` for `armeabi`/`mips`/`mips64`/`x86`, ABIs the app builds no core for and
+  no target device needs — 524,052 B of dead weight in the universal APK, recorded but not fixed
+  (candidate follow-up: `packaging { jniLibs { excludes += ... } }` or ABI splits; see
+  `docs/agent/REPORT-M2.md` §5 and §7).
 - The cold-start delta, logged as **device-needed** (`docs/agent/DEVICE_CHECKS.md`'s new M2 entry)
   — confirm on a real device that the architectural expectation (the native library loads only
   inside the isolated `:decoders` process, which nothing calls yet from the main app's own startup
