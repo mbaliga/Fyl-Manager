@@ -14,6 +14,7 @@ import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.util.FileType
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
@@ -94,10 +95,14 @@ class DocumentRepository(context: Context) {
      * ordered, and would mean re-sorting a growing list on every batch instead of the final one.
      */
     fun listChildren(treeUri: Uri, folderUri: Uri): Flow<ListingBatch> = flow {
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-            treeUri,
-            DocumentsContract.getDocumentId(folderUri),
-        )
+        // M3.3: an archive location is a non-tree document Uri (`content://…archives/document/<id>`);
+        // the tree-form helpers throw on it, so its children and rows take the plain document form.
+        val isTree = DocumentsContract.isTreeUri(folderUri)
+        val childrenUri = if (isTree) {
+            DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getDocumentId(folderUri))
+        } else {
+            DocumentsContract.buildChildDocumentsUri(folderUri.authority, DocumentsContract.getDocumentId(folderUri))
+        }
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -114,6 +119,9 @@ class DocumentRepository(context: Context) {
         // from the classic overload; see DocNode.load's own KDoc, and this task's own new
         // DocumentRepositoryListChildrenTest, which caught this call still using it.
         resolver.query(childrenUri, projection, null as Bundle?, null)?.use { cursor ->
+            // M3.3: the archive provider reports a listing failure as a message on a rowless cursor
+            // rather than an empty folder; the listing effect toasts the exception this becomes.
+            cursor.extras?.getString(DocumentsContract.EXTRA_ERROR)?.let { message -> throw IOException(message) }
             val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -126,7 +134,11 @@ class DocumentRepository(context: Context) {
                 val documentId = cursor.getString(idIndex)
                 val name = cursor.getString(nameIndex) ?: "Untitled"
                 val mimeType = cursor.getString(mimeIndex) ?: "application/octet-stream"
-                val documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                val documentUri = if (isTree) {
+                    DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+                } else {
+                    DocumentsContract.buildDocumentUri(folderUri.authority, documentId)
+                }
                 val isDirectory = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
                 entries += FileEntry(
                     uri = documentUri,

@@ -429,8 +429,18 @@ implementation added):
 34. The once-per-process cache sweep runs from `ArchiveCatalog.open` and `ArchiveInspector.inspect`
     (first wins); the design only said it moves out of `ArchiveSource.resolve()`.
 35. `ArchiveExtractResult` is the minimal `outcome/message/bytesWritten`; M3.4 adds its counts.
+36. **(b)** The provider's attach test uses the manifest's `<provider>` attributes read from the
+    XML when Robolectric's package manager does not know the manifest (this project runs without
+    `includeAndroidResources`); `attachInfo` still enforces the contract, and the test asserts
+    there is no `DOCUMENTS_PROVIDER` intent filter. A device resolves the same info through the
+    package manager -- worth one look at `dumpsys package io.github.mbaliga.fylz` (section 18).
+37. **(b)** `DocNode.children` turns the archive provider's `EXTRA_ERROR` into an `IOException`
+    too, so a directory copy-out of an archive that failed to list fails the operation rather than
+    copying an empty folder; the design named only `DocumentRepository.listChildren`.
+38. **(b)** `openDocument` honours a `CancellationSignal` by cancelling its fill; callers that pass
+    none (`openInputStream`, Coil, the transfer engine) run to completion or failure, as designed.
 
-**Relevant commits:** the M3.3a commit that adds this entry; b, c and d extend it.
+**Relevant commits:** `05c3531` (a); the M3.3b commit that extends this entry; c and d extend it.
 
 **Risk if it turns out wrong:**
 - Ordinals (22): a listing and an `extract_entry_at` that count headers differently would fetch

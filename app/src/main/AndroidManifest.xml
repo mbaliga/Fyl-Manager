@@ -76,6 +76,22 @@
             </intent-filter>
         </provider>
 
+        <!--
+            M3.3: archives as documents (docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md section 2.1).
+            Every archive location and entry the browser shows is a document of this provider, so
+            previews, share, "Open with…", copy-out and the session codec work on entries unchanged.
+            Declared like the File provider above: a DocumentsProvider cannot be non-exported
+            (attachInfo throws) and the signature-level MANAGE_DOCUMENTS keeps other apps out, while
+            a Uri handed out with FLAG_GRANT_READ_URI_PERMISSION still works. Unlike it, there is NO
+            DOCUMENTS_PROVIDER intent filter, so DocumentsUI never lists it. Read-only.
+        -->
+        <provider
+            android:name="io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider"
+            android:authorities="io.github.mbaliga.fylz.archives"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS" />
+
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

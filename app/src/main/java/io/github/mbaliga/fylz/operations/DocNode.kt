@@ -30,17 +30,30 @@ data class DocNode(
     val isDirectory: Boolean,
 ) {
     /** Lists every child in one cursor pass. Child URIs are built from this node's own [uri], so
-     * they carry the same tree as this node -- never a bare document URI. */
+     * they carry the same tree as this node -- never a bare document URI -- except for a node that
+     * is itself a non-tree document (an archive folder, M3.3), whose children are non-tree
+     * documents of the same authority: the tree-form helpers throw on such a Uri. */
     fun children(resolver: ContentResolver): List<DocNode> {
         require(isDirectory) { "$name is not a directory" }
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+        val isTree = DocumentsContract.isTreeUri(uri)
+        val childrenUri = if (isTree) {
+            DocumentsContract.buildChildDocumentsUriUsingTree(uri, documentId)
+        } else {
+            DocumentsContract.buildChildDocumentsUri(uri.authority, documentId)
+        }
         val result = mutableListOf<DocNode>()
         // See the note on load(): the classic (selection, selectionArgs, sortOrder) query
         // overload throws from DocumentsProvider's base class; this goes through the modern one.
         resolver.query(childrenUri, PROJECTION, null as android.os.Bundle?, null)?.use { cursor ->
+            // M3.3: the archive provider's listing failure travels as a message on a rowless cursor.
+            cursor.extras?.getString(DocumentsContract.EXTRA_ERROR)?.let { message -> throw java.io.IOException(message) }
             while (cursor.moveToNext()) {
                 val childId = cursor.getString(cursor.columnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID))
-                val childUri = DocumentsContract.buildDocumentUriUsingTree(uri, childId)
+                val childUri = if (isTree) {
+                    DocumentsContract.buildDocumentUriUsingTree(uri, childId)
+                } else {
+                    DocumentsContract.buildDocumentUri(uri.authority, childId)
+                }
                 result += fromCursor(childUri, cursor)
             }
         }
