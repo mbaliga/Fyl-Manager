@@ -9,7 +9,14 @@
 //! streaming [extract] with runtime limits (part 3b), all over one seekable file descriptor.
 //! M3.3 adds the browsing pair: [inspect_into] (the same header pass, writing the [listing] codec
 //! into a caller-owned sink as each header is read) and [extract_entry_at] (one entry by header
-//! ordinal, streamed, the pass stopping as soon as it is written).
+//! ordinal, streamed, the pass stopping as soon as it is written). M3.4 adds the bulk path
+//! (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.5): [extract_blocks] streams every
+//! selected entry -- by header ordinal ([Selection::Ranges]), path or all -- through a
+//! [BlockSink] in one pass, telling a per-entry failure (a CRC or size mismatch, a decode error,
+//! a header libarchive could not parse: the entry is lost, the pass goes on) from a fatal one (the
+//! archive is dead: the pass aborts); [extract] and [extract_entry_at] are adapters over it, and
+//! [inspect_for_extraction] is the header pass that gathers the selection's metadata for
+//! [policy::evaluate_selection] first.
 //!
 //! **Input contract** (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.1): every public function
 //! takes a raw fd that must refer to a regular file. The shared open path `fstat`s it and refuses
@@ -23,6 +30,8 @@
 pub mod listing;
 pub mod policy;
 
+#[cfg(test)]
+mod blocks_tests;
 #[cfg(test)]
 mod extract_tests;
 #[cfg(test)]
@@ -128,6 +137,9 @@ mod sys {
 const ARCHIVE_EOF: c_int = 1;
 const ARCHIVE_OK: c_int = 0;
 const ARCHIVE_WARN: c_int = -20;
+/// `archive.h`'s "current operation cannot complete" (M3.4): for a header, "this header could not
+/// be parsed, skip it"; for a data block, "this entry's data is wrong". The archive stays usable.
+const ARCHIVE_FAILED: c_int = -25;
 
 /// `archive.h`'s format-family mask and the one family code this crate needs to name (7-Zip,
 /// whose encrypted-header failure is reported as [ArchiveError::Unsupported]).
@@ -199,6 +211,15 @@ pub enum ArchiveError {
     /// caller asked for): the archive changed under a listing, or the id was forged. Carries both
     /// so the caller can say which entry.
     NotFound { ordinal: usize, path: String },
+    /// libarchive reported `ARCHIVE_FAILED` for one entry -- a ZIP CRC or size mismatch at the end
+    /// of its data, a header it could not parse -- so that entry is lost while the archive stays
+    /// readable (M3.4). [extract_blocks] reports it through [BlockSink::failed] and continues;
+    /// only the adapters that want part 3's all-or-nothing semantics ([extract], the single-entry
+    /// [extract_entry_at]) return it, and the listing keeps mapping it to [ArchiveError::Fatal].
+    Failed(String),
+    /// The caller's cancel hook said stop (the sink's reader went away, or a write into the sink
+    /// found the pipe closed): nothing is wrong with the archive.
+    Cancelled,
 }
 
 impl std::fmt::Display for ArchiveError {
@@ -214,6 +235,8 @@ impl std::fmt::Display for ArchiveError {
             ArchiveError::NotFound { ordinal, path } => {
                 write!(f, "no entry {path:?} at header {ordinal}")
             }
+            ArchiveError::Failed(message) => write!(f, "{message}"),
+            ArchiveError::Cancelled => write!(f, "cancelled"),
         }
     }
 }
@@ -267,6 +290,12 @@ pub enum Selection {
     /// from an [Inspection] always matches its own entry. A requested path with no entry is
     /// reported in [ExtractReport::missing], never an error.
     Paths(Vec<String>),
+    /// Inclusive ranges of header ordinals ([EntryMetadata::ordinal]), `(first, last)` -- what a
+    /// browsing plan selects by (M3.4). Sorted and merged before use, so overlapping or unordered
+    /// ranges are fine; a range whose `first` exceeds its `last` selects nothing. The pass stops
+    /// reading as soon as the highest selected ordinal has been handled, so a `tar.*` is not
+    /// decompressed to its end for a member near its start.
+    Ranges(Vec<(u32, u32)>),
 }
 
 /// The limits [extract] enforces while it runs -- against the bytes actually produced, not the
@@ -276,6 +305,10 @@ pub struct ExtractLimits {
     pub max_file_bytes: u64,
     pub max_total_uncompressed_bytes: u64,
     pub max_entries: usize,
+    /// [Limits::max_path_depth]/[Limits::max_name_length], for the per-entry structural re-check
+    /// [extract_blocks] runs as it reaches each selected entry (M3.4).
+    pub max_path_depth: usize,
+    pub max_name_length: usize,
 }
 
 impl From<&Limits> for ExtractLimits {
@@ -284,6 +317,8 @@ impl From<&Limits> for ExtractLimits {
             max_file_bytes: limits.max_file_bytes,
             max_total_uncompressed_bytes: limits.max_total_uncompressed_bytes,
             max_entries: limits.max_entries,
+            max_path_depth: limits.max_path_depth,
+            max_name_length: limits.max_name_length,
         }
     }
 }
@@ -307,6 +342,54 @@ pub trait DestinationProvider {
     fn done(&mut self, entry: &ArchiveEntry, bytes_written: u64) -> Result<(), ArchiveError>;
 }
 
+/// A non-fatal condition libarchive attached to an entry's data (M3.4): the entry is complete
+/// and its bytes are what the archive holds, but `archive_read_data_block` returned
+/// `ARCHIVE_WARN` for a block with a message that is not a CRC mismatch (a CRC mismatch is a
+/// [FailKind::Crc] failure, never a warning). Logged by the caller, never fatal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Warning {
+    Other(String),
+}
+
+/// Why one entry is lost while the pass goes on ([BlockSink::failed]). Classified from
+/// libarchive's own message: ZIP's "bad CRC" and 7-Zip's "bad CRC" are [FailKind::Crc]; ZIP's
+/// "compressed/uncompressed data is wrong size" is [FailKind::Size]; any other per-entry
+/// `ARCHIVE_FAILED` -- a data or header decode error -- is [FailKind::Decode]; an entry whose path
+/// or link target fails the structural re-check at extraction time is [FailKind::Other].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailKind {
+    Crc,
+    Size,
+    Decode,
+    Other,
+}
+
+/// Where [extract_blocks] streams (M3.4): the caller owns every destination. One entry at a time,
+/// in archive order: [BlockSink::begin], then for a file zero or more [BlockSink::write]s, then
+/// exactly one of [BlockSink::end] or [BlockSink::failed]; a header libarchive could not parse is a
+/// stand-alone [BlockSink::failed] with no `begin`. Any `Err` a method returns aborts the pass
+/// with that error (an `EPIPE` on a pipe sink is [ArchiveError::Cancelled] by convention).
+pub trait BlockSink {
+    /// A selected entry starts. Called for every kind -- directories, links and special files
+    /// included, so the sink decides what to make of them; only a file has data. `Ok(true)` to
+    /// receive the entry (its `end` follows), `Ok(false)` to pass it over unread (counted in
+    /// [ExtractReport::skipped]/[ExtractReport::skipped_links]).
+    fn begin(&mut self, entry: &EntryMetadata) -> Result<bool, ArchiveError>;
+    /// One block of the current file's data, in order; the zeros of a sparse hole come through
+    /// here too, so the concatenation of the blocks is the file, byte for byte.
+    fn write(&mut self, ordinal: u32, block: &[u8]) -> Result<(), ArchiveError>;
+    /// The current entry is complete with `bytes` written (0 for every non-file kind).
+    fn end(
+        &mut self,
+        ordinal: u32,
+        bytes: u64,
+        warning: Option<Warning>,
+    ) -> Result<(), ArchiveError>;
+    /// The entry at `ordinal` is lost (see [FailKind]); whatever `write`s preceded this are not to
+    /// be trusted. The pass continues with the next header.
+    fn failed(&mut self, ordinal: u32, kind: FailKind, message: &str) -> Result<(), ArchiveError>;
+}
+
 /// What [extract] did. On an `Err` there is no report: whatever was written before the failure
 /// stays where it is, and the caller (staging, journal, recycle) owns cleanup, exactly as the
 /// Kotlin `extractBounded` did -- `extract` never deletes.
@@ -322,6 +405,46 @@ pub struct ExtractReport {
     pub skipped_links: usize,
     /// `Selection::Paths` entries no archive entry matched, in the order requested.
     pub missing: Vec<String>,
+    /// Selected entries lost to a per-entry failure ([BlockSink::failed]); always 0 from [extract],
+    /// whose sink turns the first failure into an `Err`.
+    pub entries_failed: usize,
+}
+
+/// What [extract_blocks_cancellable] hands back: the counts so far whatever happened, the error
+/// if the pass did not run to the end, and the ordinal the engine blames for it.
+#[derive(Debug)]
+pub struct BlocksOutcome {
+    pub report: ExtractReport,
+    /// `Some` exactly when `result` is an `Err`: for a failure while reading an entry's data, that
+    /// entry's ordinal; for a header libarchive could not read at all, or a cancel noticed between
+    /// headers, the ordinal that header would have had (the count of headers read before it). A
+    /// caller resuming the pass starts **after** it.
+    pub stop_ordinal: Option<u32>,
+    pub result: Result<(), ArchiveError>,
+}
+
+/// What [inspect_for_extraction] gathered: the archive's length and the metadata of every
+/// selected entry, in archive order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedEntries {
+    pub archive_bytes: u64,
+    pub entries: Vec<EntryMetadata>,
+}
+
+/// How many headers a pass reads between two calls of its cancel hook (M3.4 section 2.3 step 8):
+/// a `tar.xz` header walk decompresses the whole stream, so a cancel must be noticed inside it.
+pub const CANCEL_POLL_HEADERS: u32 = 64;
+
+/// How an entry's data ended inside [Reader::stream_current_entry_data].
+enum DataEnd {
+    Complete {
+        written: u64,
+        warning: Option<Warning>,
+    },
+    Failed {
+        kind: FailKind,
+        message: String,
+    },
 }
 
 /// Wraps a caller-owned raw fd as a `File` that is never closed: `ManuallyDrop` suppresses the
@@ -472,12 +595,32 @@ impl Reader {
 
     /// Turns a non-OK, non-EOF, non-warning libarchive status into this crate's own error type,
     /// reading the message while `self.raw` is still valid -- a caller must never call this after
-    /// the reader has already been freed.
+    /// the reader has already been freed. Everything is [ArchiveError::Fatal] here, `ARCHIVE_FAILED`
+    /// included: the open path, the simple lookups and the listing keep M3.2's mapping.
     fn check(&self, status: c_int) -> Result<(), ArchiveError> {
+        match self.check_header(status) {
+            Err(ArchiveError::Failed(message)) => Err(ArchiveError::Fatal(message)),
+            other => other,
+        }
+    }
+
+    /// [Reader::check] with `ARCHIVE_FAILED` told apart as [ArchiveError::Failed] (M3.4): for a
+    /// header status, "this header could not be parsed; the reader can still skip past it".
+    /// `ARCHIVE_RETRY` (a tar header with a bad checksum) and `ARCHIVE_FATAL` stay fatal.
+    fn check_header(&self, status: c_int) -> Result<(), ArchiveError> {
         if status == ARCHIVE_OK || status == ARCHIVE_EOF || status == ARCHIVE_WARN {
             return Ok(());
         }
+        if status == ARCHIVE_FAILED {
+            return Err(ArchiveError::Failed(self.error_message(status)));
+        }
         Err(ArchiveError::Fatal(self.error_message(status)))
+    }
+
+    /// The data-status twin of [Reader::check_header]: for a data block, `ARCHIVE_FAILED` is "this
+    /// entry's data is wrong (a CRC or size mismatch at its end); the archive goes on".
+    fn check_data(&self, status: c_int) -> Result<(), ArchiveError> {
+        self.check_header(status)
     }
 
     fn error_message(&self, status: c_int) -> String {
@@ -554,6 +697,18 @@ impl Reader {
     /// [inspect] rely on to list every entry without reading any data, and what [extract] relies
     /// on to pass over unselected entries.
     fn next_header(&mut self) -> Result<Option<*mut sys::ArchiveEntry>, ArchiveError> {
+        match self.next_header_raw() {
+            Err(ArchiveError::Failed(message)) => Err(ArchiveError::Fatal(message)),
+            other => other,
+        }
+    }
+
+    /// [Reader::next_header] with a header libarchive could not parse reported as
+    /// [ArchiveError::Failed] instead of fatal (M3.4). Such a header **counts**: libarchive has
+    /// consumed it (`ARCHIVE_STATE_DATA_RECOVERY`, its body is skipped on the next call), so it
+    /// occupies an ordinal exactly as it does in a listing that reached it, and
+    /// [Reader::current_ordinal] names it after this returns. Its data must never be read.
+    fn next_header_raw(&mut self) -> Result<Option<*mut sys::ArchiveEntry>, ArchiveError> {
         let mut entry_ptr: *mut sys::ArchiveEntry = std::ptr::null_mut();
         // SAFETY: `self.raw` is a valid, open archive handle; `entry_ptr` is an out-parameter
         // libarchive sets to point at internally-owned storage that stays valid until the next
@@ -562,18 +717,28 @@ impl Reader {
         if status == ARCHIVE_EOF {
             return Ok(None);
         }
-        if let Err(error) = self.check(status) {
-            return Err(self.classify_header_error(error));
+        match self.check_header(status) {
+            Ok(()) => {}
+            Err(ArchiveError::Failed(message)) => {
+                self.count_header()?;
+                return Err(ArchiveError::Failed(message));
+            }
+            Err(error) => return Err(self.classify_header_error(error)),
         }
         if entry_ptr.is_null() {
             return Err(ArchiveError::Fatal(
                 "archive_read_next_header reported success with a null entry".into(),
             ));
         }
+        self.count_header()?;
+        Ok(Some(entry_ptr))
+    }
+
+    fn count_header(&mut self) -> Result<(), ArchiveError> {
         self.headers_read = self.headers_read.checked_add(1).ok_or_else(|| {
             ArchiveError::Fatal("more than u32::MAX headers in one archive".into())
         })?;
-        Ok(Some(entry_ptr))
+        Ok(())
     }
 
     /// The ordinal of the header [Reader::next_header] most recently returned: its 0-based index
@@ -738,25 +903,33 @@ impl Reader {
         }
     }
 
-    /// Streams the CURRENT entry's body into `out` block by block (`archive_read_data_block`, zero
+    /// Streams the CURRENT entry's body to `out` block by block (`archive_read_data_block`, zero
     /// copy out of libarchive's own buffers), enforcing `limits` against the bytes actually
-    /// produced *before* each block is written, so nothing past a cap ever reaches `out`. Holes
+    /// produced *before* each block is handed over, so nothing past a cap ever reaches `out`. Holes
     /// in a sparse entry (a block whose offset is past what has been written, or a final EOF
-    /// offset past it) are written as zeros, so the output is byte-exact and sized as the entry
-    /// declares. Returns the bytes written for this entry; `running_total` accumulates across
-    /// entries for the total cap.
+    /// offset past it) are handed over as zeros, so the output is byte-exact and sized as the entry
+    /// declares. `running_total` accumulates across entries for the total cap.
+    ///
+    /// The entry's own failures come back as [DataEnd::Failed], never an `Err` (M3.4): libarchive
+    /// returns `ARCHIVE_FAILED` for a ZIP CRC or size mismatch **after** the data, and
+    /// `ARCHIVE_WARN` with the final block for a 7-Zip CRC mismatch (the block is withheld) -- the
+    /// entry is lost, the archive is fine. An `ARCHIVE_WARN` that is not a CRC mismatch keeps the
+    /// block and is reported as [Warning::Other]. Everything else negative (a decode error, a
+    /// truncated body: the archive is dead) is `Err(Fatal)`; a cap is `Err(LimitExceeded)`; an
+    /// error from `out` is returned as `out` made it.
     fn stream_current_entry_data(
         &mut self,
-        out: &mut File,
+        out: &mut dyn FnMut(&[u8]) -> Result<(), ArchiveError>,
         entry: &EntryMetadata,
         limits: &ExtractLimits,
         running_total: &mut u64,
-    ) -> Result<u64, ArchiveError> {
+    ) -> Result<DataEnd, ArchiveError> {
         // The per-entry cap: the limit, or the entry's own declared size if that is smaller --
         // data past what the header declared is a header that lied.
         let declared = entry.uncompressed;
         let cap = declared.map_or(limits.max_file_bytes, |d| d.min(limits.max_file_bytes));
         let mut written: u64 = 0;
+        let mut warning: Option<Warning> = None;
 
         // Accounts `more` bytes about to be produced for this entry against every cap, naming
         // the rule that stops it.
@@ -791,7 +964,7 @@ impl Reader {
             // SAFETY: `self.raw` is valid, open and positioned in an entry's data; the three
             // out-parameters are plain locals libarchive fills in, and `buff` then points into
             // storage libarchive owns until the next read call on this same handle -- the slice
-            // built from it below is consumed (written out) before any such call.
+            // built from it below is consumed (handed to `out`) before any such call.
             let status = unsafe {
                 sys::archive_read_data_block(self.raw, &mut buff, &mut size, &mut offset)
             };
@@ -806,12 +979,31 @@ impl Reader {
                 // size (tar reports `disk_size`), so extend with zeros up to it.
                 if offset > written {
                     account(written, offset - written)?;
-                    write_zeros(out, offset - written, &entry.path)?;
+                    write_zeros(out, offset - written)?;
                     written = offset;
                 }
                 break;
             }
-            self.check(status)?;
+            if status == ARCHIVE_FAILED {
+                let message = self.error_message(status);
+                return Ok(DataEnd::Failed {
+                    kind: classify_data_failure(&message),
+                    message,
+                });
+            }
+            let block_warning = if status == ARCHIVE_WARN {
+                let message = self.error_message(status);
+                if is_crc_message(&message) {
+                    return Ok(DataEnd::Failed {
+                        kind: FailKind::Crc,
+                        message,
+                    });
+                }
+                Some(message)
+            } else {
+                None
+            };
+            self.check_data(status)?;
             if offset < written {
                 return Err(ArchiveError::Fatal(format!(
                     "data blocks out of order in entry {:?} (offset {offset} after {written} bytes)",
@@ -820,36 +1012,56 @@ impl Reader {
             }
             if offset > written {
                 account(written, offset - written)?;
-                write_zeros(out, offset - written, &entry.path)?;
+                write_zeros(out, offset - written)?;
                 written = offset;
             }
-            if size == 0 {
-                continue;
+            if size > 0 {
+                account(written, size as u64)?;
+                // SAFETY: `archive_read_data_block` returned OK/WARN with `size > 0`, so `buff`
+                // points at `size` readable bytes libarchive owns until the next read call.
+                let block = unsafe { std::slice::from_raw_parts(buff as *const u8, size) };
+                out(block)?;
+                written += size as u64;
             }
-            account(written, size as u64)?;
-            // SAFETY: `archive_read_data_block` returned OK/WARN with `size > 0`, so `buff`
-            // points at `size` readable bytes libarchive owns until the next read call.
-            let block = unsafe { std::slice::from_raw_parts(buff as *const u8, size) };
-            out.write_all(block)
-                .map_err(|e| write_error(&entry.path, e))?;
-            written += size as u64;
+            if let Some(message) = block_warning {
+                warning = Some(Warning::Other(message));
+            }
         }
-        out.flush().map_err(|e| write_error(&entry.path, e))?;
-        Ok(written)
+        Ok(DataEnd::Complete { written, warning })
     }
+}
+
+/// libarchive's message for a data-level `ARCHIVE_FAILED`, classified: ZIP's "ZIP bad CRC" (and
+/// 7-Zip's "7-Zip bad CRC", which arrives as a warning) name a CRC mismatch; ZIP's "compressed
+/// data is wrong size"/"uncompressed data is wrong size" a size mismatch; anything else is a
+/// decode failure of that entry.
+fn classify_data_failure(message: &str) -> FailKind {
+    if is_crc_message(message) {
+        FailKind::Crc
+    } else if message.contains("wrong size") {
+        FailKind::Size
+    } else {
+        FailKind::Decode
+    }
+}
+
+fn is_crc_message(message: &str) -> bool {
+    message.contains("CRC")
 }
 
 fn write_error(path: &str, error: std::io::Error) -> ArchiveError {
     ArchiveError::Fatal(format!("writing the destination for {path:?}: {error}"))
 }
 
-/// Writes `count` zero bytes to `out` in bounded chunks (a sparse hole made explicit).
-fn write_zeros(out: &mut File, mut count: u64, path: &str) -> Result<(), ArchiveError> {
+/// Hands `count` zero bytes to `out` in bounded chunks (a sparse hole made explicit).
+fn write_zeros(
+    out: &mut dyn FnMut(&[u8]) -> Result<(), ArchiveError>,
+    mut count: u64,
+) -> Result<(), ArchiveError> {
     static ZEROS: [u8; 64 * 1024] = [0u8; 64 * 1024];
     while count > 0 {
         let chunk = usize::try_from(count.min(ZEROS.len() as u64)).unwrap_or(ZEROS.len());
-        out.write_all(&ZEROS[..chunk])
-            .map_err(|e| write_error(path, e))?;
+        out(&ZEROS[..chunk])?;
         count -= chunk as u64;
     }
     Ok(())
@@ -1054,6 +1266,10 @@ pub fn inspect_with_policy(
 /// passed over without reading their data. Names that are not UTF-8 are decoded lossily, the same
 /// way [inspect] reports them, so a path taken from an [Inspection] matches its entry here; the
 /// archive's own root directory ([is_archive_root]) is passed over uncounted, as [inspect] omits it.
+///
+/// Since M3.4 an adapter over [extract_blocks] with part 3's all-or-nothing semantics kept: a
+/// per-entry failure (a CRC or size mismatch, a header libarchive could not parse) is
+/// `Err(`[ArchiveError::Failed]`)` here, where [extract_blocks] would report it and go on.
 pub fn extract(
     fd: RawFd,
     selection: &Selection,
@@ -1061,76 +1277,69 @@ pub fn extract(
     dest: &mut dyn DestinationProvider,
 ) -> Result<ExtractReport, ArchiveError> {
     let mut reader = Reader::open_fd(fd)?;
-    let wanted: Option<HashSet<String>> = match selection {
-        Selection::All => None,
-        Selection::Paths(paths) => Some(
-            paths
-                .iter()
-                .map(|path| policy::normalized_path_key(path))
-                .collect(),
-        ),
-    };
-    let mut matched: HashSet<String> = HashSet::new();
-    let mut report = ExtractReport::default();
-    let mut selected: usize = 0;
-    let mut running_total: u64 = 0;
+    let mut sink = ProviderSink { dest, open: None };
+    let outcome = run_blocks(&mut reader, selection, limits, &mut sink, &mut || false);
+    outcome.result?;
+    Ok(outcome.report)
+}
 
-    while let Some(entry) = reader.next_header()? {
-        // SAFETY: `entry` was just returned by `next_header` on this reader.
-        let metadata = unsafe { reader.metadata(entry) }?;
-        if is_archive_root(&metadata) {
-            continue;
-        }
-        if let Some(wanted) = &wanted {
-            let key = policy::normalized_path_key(&metadata.path);
-            if !wanted.contains(&key) {
-                continue;
-            }
-            matched.insert(key);
-        }
-        selected += 1;
-        if selected > limits.max_entries {
-            return Err(ArchiveError::LimitExceeded {
-                entry: metadata.path,
-                rule: "entries",
-            });
-        }
-        match metadata.kind {
-            EntryKind::Symlink | EntryKind::Hardlink => {
-                report.skipped_links += 1;
-                continue;
-            }
-            EntryKind::Other => {
-                report.skipped += 1;
-                continue;
-            }
+/// [extract]'s [BlockSink]: offers files and directories to the [DestinationProvider], declines
+/// links and special files on its behalf, writes into the descriptor the provider returned, and
+/// turns the first per-entry failure into an error.
+struct ProviderSink<'a> {
+    dest: &'a mut dyn DestinationProvider,
+    /// The entry being written and the provider's descriptor for it (never closed here).
+    open: Option<(ArchiveEntry, ManuallyDrop<File>)>,
+}
+
+impl BlockSink for ProviderSink<'_> {
+    fn begin(&mut self, entry: &EntryMetadata) -> Result<bool, ArchiveError> {
+        match entry.kind {
+            EntryKind::Symlink | EntryKind::Hardlink | EntryKind::Other => return Ok(false),
             EntryKind::File | EntryKind::Directory => {}
         }
-        let listing = ArchiveEntry::from_metadata(&metadata);
-        let written = match dest.open(&listing)? {
-            None => {
-                report.skipped += 1;
-                continue;
-            }
-            Some(out_fd) => {
-                // The provider owns this descriptor: written to and flushed, never closed.
-                let mut out = borrow_fd(out_fd.as_raw_fd());
-                reader.stream_current_entry_data(&mut out, &metadata, limits, &mut running_total)?
-            }
+        let listing = ArchiveEntry::from_metadata(entry);
+        let fd = match self.dest.open(&listing)? {
+            None => return Ok(false),
+            // The provider owns this descriptor: written to and flushed, never closed.
+            Some(out_fd) => out_fd.as_raw_fd(),
         };
-        dest.done(&listing, written)?;
-        report.entries_written += 1;
-        report.bytes_written += written;
+        self.open = Some((listing, borrow_fd(fd)));
+        Ok(true)
     }
 
-    if let Selection::Paths(paths) = selection {
-        report.missing = paths
-            .iter()
-            .filter(|path| !matched.contains(&policy::normalized_path_key(path)))
-            .cloned()
-            .collect();
+    fn write(&mut self, _ordinal: u32, block: &[u8]) -> Result<(), ArchiveError> {
+        let (listing, out) = self
+            .open
+            .as_mut()
+            .ok_or_else(|| ArchiveError::Fatal("data block outside an entry".into()))?;
+        out.write_all(block)
+            .map_err(|e| write_error(&listing.path, e))
     }
-    Ok(report)
+
+    fn end(
+        &mut self,
+        _ordinal: u32,
+        bytes: u64,
+        _warning: Option<Warning>,
+    ) -> Result<(), ArchiveError> {
+        let (listing, mut out) = self
+            .open
+            .take()
+            .ok_or_else(|| ArchiveError::Fatal("entry end outside an entry".into()))?;
+        out.flush().map_err(|e| write_error(&listing.path, e))?;
+        self.dest.done(&listing, bytes)
+    }
+
+    fn failed(
+        &mut self,
+        _ordinal: u32,
+        _kind: FailKind,
+        message: &str,
+    ) -> Result<(), ArchiveError> {
+        self.open = None;
+        Err(ArchiveError::Failed(message.to_string()))
+    }
 }
 
 /// Streams the data of the one entry at header `ordinal` of the archive at `fd` (a regular file,
@@ -1143,8 +1352,9 @@ pub fn extract(
 /// tarball is not walked to its end for its first member. No header at `ordinal`, or a different
 /// path there, is [ArchiveError::NotFound]. Whatever kind the header has is streamed as its data
 /// (a directory or link has none, so zero bytes come out); refusing links and directories is the
-/// caller's decision, made before any byte moves. Deliberately a thin walk-to-ordinal over the
-/// existing streaming code: M3.4's `Selection::Ordinals` bulk path is a separate function.
+/// caller's decision, made before any byte moves. Since M3.4 the one-range case of
+/// [extract_blocks]; a per-entry failure of that one entry (a CRC mismatch) is
+/// `Err(`[ArchiveError::Failed]`)`.
 pub fn extract_entry_at(
     fd: RawFd,
     ordinal: usize,
@@ -1152,26 +1362,434 @@ pub fn extract_entry_at(
     limits: &ExtractLimits,
     dest_fd: RawFd,
 ) -> Result<u64, ArchiveError> {
-    let mut reader = Reader::open_fd(fd)?;
     let not_found = || ArchiveError::NotFound {
         ordinal,
         path: expected_path.to_string(),
     };
-    while let Some(entry) = reader.next_header()? {
-        if usize::try_from(reader.current_ordinal()).unwrap_or(usize::MAX) != ordinal {
+    let Ok(wanted) = u32::try_from(ordinal) else {
+        return Err(not_found());
+    };
+    let mut reader = Reader::open_fd(fd)?;
+    let mut sink = EntrySink {
+        expected_path,
+        ordinal,
+        // The caller owns this descriptor: written to and flushed, never closed.
+        out: borrow_fd(dest_fd),
+        written: None,
+    };
+    // The single-entry cap: the whole budget is this one entry's.
+    let outcome = run_blocks(
+        &mut reader,
+        &Selection::Ranges(vec![(wanted, wanted)]),
+        limits,
+        &mut sink,
+        &mut || false,
+    );
+    outcome.result?;
+    sink.written.ok_or_else(not_found)
+}
+
+/// [extract_entry_at]'s [BlockSink]: the path check, one destination, every kind accepted.
+struct EntrySink<'a> {
+    expected_path: &'a str,
+    ordinal: usize,
+    out: ManuallyDrop<File>,
+    written: Option<u64>,
+}
+
+impl BlockSink for EntrySink<'_> {
+    fn begin(&mut self, entry: &EntryMetadata) -> Result<bool, ArchiveError> {
+        if entry.path != self.expected_path {
+            return Err(ArchiveError::NotFound {
+                ordinal: self.ordinal,
+                path: self.expected_path.to_string(),
+            });
+        }
+        Ok(true)
+    }
+
+    fn write(&mut self, _ordinal: u32, block: &[u8]) -> Result<(), ArchiveError> {
+        self.out
+            .write_all(block)
+            .map_err(|e| write_error(self.expected_path, e))
+    }
+
+    fn end(
+        &mut self,
+        _ordinal: u32,
+        bytes: u64,
+        _warning: Option<Warning>,
+    ) -> Result<(), ArchiveError> {
+        self.out
+            .flush()
+            .map_err(|e| write_error(self.expected_path, e))?;
+        self.written = Some(bytes);
+        Ok(())
+    }
+
+    fn failed(
+        &mut self,
+        _ordinal: u32,
+        _kind: FailKind,
+        message: &str,
+    ) -> Result<(), ArchiveError> {
+        Err(ArchiveError::Failed(message.to_string()))
+    }
+}
+
+/// The M3.4 bulk path: one forward pass over the archive at `fd` (a regular file, see the crate
+/// doc) streaming every selected entry through `sink` (design section 2.5). Per selected entry:
+/// [BlockSink::begin], then -- for an entry the sink accepted -- the structural rules re-checked
+/// ([policy::structural_check]; a failing entry is [BlockSink::failed] with [FailKind::Other] and
+/// its data is never read), the data for a file under
+/// `limits` (a cap aborts the pass with [ArchiveError::LimitExceeded], as [extract] does), then
+/// [BlockSink::end] -- or [BlockSink::failed] when libarchive reports the entry's data wrong (a
+/// CRC or size mismatch, a decode error: `ARCHIVE_FAILED`/a CRC `ARCHIVE_WARN`), after which the
+/// pass **continues** with the next header. A header libarchive cannot parse (`ARCHIVE_FAILED`
+/// from `archive_read_next_header`) counts its ordinal, is [BlockSink::failed] with
+/// [FailKind::Decode] when selected, has no data read (reading it would turn the archive fatal),
+/// and the pass continues; the collateral loss libarchive causes on a solid 7-Zip boundary is
+/// accepted. `ARCHIVE_FATAL` (a decode error inside a solid folder, a truncated body, a bad tar
+/// checksum) ends the pass with `Err(Fatal)`. The pass stops reading once the highest ordinal a
+/// [Selection::Ranges] names has been handled. Whatever the sink wrote stays: the caller owns
+/// cleanup.
+pub fn extract_blocks(
+    fd: RawFd,
+    selection: &Selection,
+    limits: &ExtractLimits,
+    sink: &mut dyn BlockSink,
+) -> Result<ExtractReport, ArchiveError> {
+    let outcome = extract_blocks_cancellable(fd, selection, limits, sink, &mut || false);
+    outcome.result?;
+    Ok(outcome.report)
+}
+
+/// [extract_blocks] with a cancel hook, called every [CANCEL_POLL_HEADERS] headers (the sink's
+/// reader hanging up, in the decoder process), and the counts kept on failure: the report so far,
+/// the error, and the ordinal to resume after ([BlocksOutcome::stop_ordinal]). `cancel` returning
+/// `true` ends the pass with [ArchiveError::Cancelled].
+pub fn extract_blocks_cancellable(
+    fd: RawFd,
+    selection: &Selection,
+    limits: &ExtractLimits,
+    sink: &mut dyn BlockSink,
+    cancel: &mut dyn FnMut() -> bool,
+) -> BlocksOutcome {
+    let mut reader = match Reader::open_fd(fd) {
+        Ok(reader) => reader,
+        Err(error) => {
+            return BlocksOutcome {
+                report: ExtractReport::default(),
+                stop_ordinal: None,
+                result: Err(error),
+            }
+        }
+    };
+    run_blocks(&mut reader, selection, limits, sink, cancel)
+}
+
+/// The loop behind [extract], [extract_entry_at] and [extract_blocks].
+fn run_blocks(
+    reader: &mut Reader,
+    selection: &Selection,
+    limits: &ExtractLimits,
+    sink: &mut dyn BlockSink,
+    cancel: &mut dyn FnMut() -> bool,
+) -> BlocksOutcome {
+    let mut matcher = Matcher::new(selection);
+    let mut report = ExtractReport::default();
+    // The ordinal the engine is at: the header just read, or the one about to be read.
+    let mut at: u32 = 0;
+    let result = run_blocks_loop(
+        reader,
+        &mut matcher,
+        limits,
+        sink,
+        cancel,
+        &mut report,
+        &mut at,
+    );
+    if let Selection::Paths(paths) = selection {
+        report.missing = matcher.missing(paths);
+    }
+    BlocksOutcome {
+        stop_ordinal: result.is_err().then_some(at),
+        report,
+        result,
+    }
+}
+
+fn run_blocks_loop(
+    reader: &mut Reader,
+    matcher: &mut Matcher,
+    limits: &ExtractLimits,
+    sink: &mut dyn BlockSink,
+    cancel: &mut dyn FnMut() -> bool,
+    report: &mut ExtractReport,
+    at: &mut u32,
+) -> Result<(), ArchiveError> {
+    let mut selected: usize = 0;
+    let mut running_total: u64 = 0;
+    let mut since_poll: u32 = 0;
+    let count_selected = |selected: &mut usize, entry: String| -> Result<(), ArchiveError> {
+        *selected += 1;
+        if *selected > limits.max_entries {
+            return Err(ArchiveError::LimitExceeded {
+                entry,
+                rule: "entries",
+            });
+        }
+        Ok(())
+    };
+    if matcher.selects_nothing() {
+        return Ok(());
+    }
+    loop {
+        // After every CANCEL_POLL_HEADERS headers read, before the next.
+        if since_poll >= CANCEL_POLL_HEADERS {
+            since_poll = 0;
+            *at = reader.headers_read;
+            if cancel() {
+                return Err(ArchiveError::Cancelled);
+            }
+        }
+        *at = reader.headers_read;
+        let entry = match reader.next_header_raw() {
+            Ok(Some(entry)) => {
+                since_poll += 1;
+                entry
+            }
+            Ok(None) => break,
+            Err(ArchiveError::Failed(message)) => {
+                // Counted (libarchive consumed it), reported when selected, never read.
+                since_poll += 1;
+                let ordinal = reader.current_ordinal();
+                *at = ordinal;
+                if matcher.selected_by_ordinal(ordinal) {
+                    count_selected(&mut selected, format!("header {ordinal}"))?;
+                    sink.failed(ordinal, FailKind::Decode, &message)?;
+                    report.entries_failed += 1;
+                }
+                if matcher.past_end(ordinal) {
+                    break;
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        // SAFETY: `entry` was just returned by `next_header_raw` on this reader.
+        let metadata = unsafe { reader.metadata(entry) }?;
+        let ordinal = metadata.ordinal;
+        *at = ordinal;
+        if is_archive_root(&metadata) || !matcher.matches(&metadata) {
+            if matcher.past_end(ordinal) {
+                break;
+            }
             continue;
         }
-        // SAFETY: `entry` was just returned by `next_header` on this reader.
-        let metadata = unsafe { reader.metadata(entry) }?;
-        if metadata.path != expected_path {
-            return Err(not_found());
+        count_selected(&mut selected, metadata.path.clone())?;
+        if !sink.begin(&metadata)? {
+            match metadata.kind {
+                EntryKind::Symlink | EntryKind::Hardlink => report.skipped_links += 1,
+                _ => report.skipped += 1,
+            }
+        } else if let Some(reason) =
+            policy::structural_check(&metadata, limits.max_path_depth, limits.max_name_length)
+        {
+            // After `begin`, so a sink that declines a kind (links, for the provider adapter) is
+            // never told about an entry it would not have written; a stale plan's unsafe path is
+            // a FAIL right after its BEGIN, and no data is read.
+            sink.failed(ordinal, FailKind::Other, reason)?;
+            report.entries_failed += 1;
+        } else if metadata.kind == EntryKind::File {
+            let end = reader.stream_current_entry_data(
+                &mut |block| sink.write(ordinal, block),
+                &metadata,
+                limits,
+                &mut running_total,
+            )?;
+            match end {
+                DataEnd::Complete { written, warning } => {
+                    sink.end(ordinal, written, warning)?;
+                    report.entries_written += 1;
+                    report.bytes_written += written;
+                }
+                DataEnd::Failed { kind, message } => {
+                    sink.failed(ordinal, kind, &message)?;
+                    report.entries_failed += 1;
+                }
+            }
+        } else {
+            sink.end(ordinal, 0, None)?;
+            report.entries_written += 1;
         }
-        // The caller owns this descriptor: written to and flushed, never closed.
-        let mut out = borrow_fd(dest_fd);
-        let mut running_total: u64 = 0;
-        return reader.stream_current_entry_data(&mut out, &metadata, limits, &mut running_total);
+        if matcher.past_end(ordinal) {
+            break;
+        }
     }
-    Err(not_found())
+    Ok(())
+}
+
+/// A [Selection] made cheap to ask: normalised ranges, or the policy-keyed path set with what has
+/// matched so far.
+enum Matcher {
+    All,
+    Paths {
+        wanted: HashSet<String>,
+        matched: HashSet<String>,
+    },
+    Ranges {
+        /// Sorted, merged, non-empty ranges.
+        ranges: Vec<(u32, u32)>,
+        /// The highest selected ordinal; `None` when the selection is empty.
+        last: Option<u32>,
+    },
+}
+
+impl Matcher {
+    fn new(selection: &Selection) -> Self {
+        match selection {
+            Selection::All => Matcher::All,
+            Selection::Paths(paths) => Matcher::Paths {
+                wanted: paths
+                    .iter()
+                    .map(|path| policy::normalized_path_key(path))
+                    .collect(),
+                matched: HashSet::new(),
+            },
+            Selection::Ranges(ranges) => {
+                let mut sorted: Vec<(u32, u32)> = ranges
+                    .iter()
+                    .copied()
+                    .filter(|(first, last)| first <= last)
+                    .collect();
+                sorted.sort_unstable();
+                let mut merged: Vec<(u32, u32)> = Vec::with_capacity(sorted.len());
+                for (first, last) in sorted {
+                    match merged.last_mut() {
+                        Some((_, end)) if first <= end.saturating_add(1) => *end = (*end).max(last),
+                        _ => merged.push((first, last)),
+                    }
+                }
+                let last = merged.last().map(|(_, last)| *last);
+                Matcher::Ranges {
+                    ranges: merged,
+                    last,
+                }
+            }
+        }
+    }
+
+    fn selects_nothing(&self) -> bool {
+        matches!(self, Matcher::Ranges { last: None, .. })
+    }
+
+    /// Whether `ordinal` is selected without knowing its path: always for `All`, by lookup for
+    /// `Ranges`, never for `Paths` (a header without a readable path cannot match one).
+    fn selected_by_ordinal(&self, ordinal: u32) -> bool {
+        match self {
+            Matcher::All => true,
+            Matcher::Paths { .. } => false,
+            Matcher::Ranges { ranges, .. } => ranges
+                .binary_search_by(|(first, last)| {
+                    if *last < ordinal {
+                        std::cmp::Ordering::Less
+                    } else if *first > ordinal {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .is_ok(),
+        }
+    }
+
+    fn matches(&mut self, entry: &EntryMetadata) -> bool {
+        match self {
+            Matcher::Paths { wanted, matched } => {
+                let key = policy::normalized_path_key(&entry.path);
+                if !wanted.contains(&key) {
+                    return false;
+                }
+                matched.insert(key);
+                true
+            }
+            other => other.selected_by_ordinal(entry.ordinal),
+        }
+    }
+
+    /// Whether nothing after `ordinal` can be selected (`Ranges` only).
+    fn past_end(&self, ordinal: u32) -> bool {
+        match self {
+            Matcher::Ranges { last, .. } => last.is_none_or(|last| ordinal >= last),
+            _ => false,
+        }
+    }
+
+    fn missing(&self, paths: &[String]) -> Vec<String> {
+        match self {
+            Matcher::Paths { matched, .. } => paths
+                .iter()
+                .filter(|path| !matched.contains(&policy::normalized_path_key(path)))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// The header pass that precedes an [extract_blocks] pass (M3.4 section 2.4): the archive's
+/// length and the [EntryMetadata] of every selected entry, in archive order, for
+/// [policy::evaluate_selection]. Reads no data; stops after the highest ordinal a
+/// [Selection::Ranges] names; polls `cancel` every [CANCEL_POLL_HEADERS] headers. A header
+/// libarchive cannot parse is passed over (it occupies its ordinal, the extraction pass reports it
+/// failed); a fatal header error is `Err`. Cheap on ZIP/7-Zip/ISO (a table walk), a decompression
+/// pass on `tar.*`.
+pub fn inspect_for_extraction(
+    fd: RawFd,
+    selection: &Selection,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<SelectedEntries, ArchiveError> {
+    let mut reader = Reader::open_fd(fd)?;
+    let mut matcher = Matcher::new(selection);
+    let mut entries = Vec::new();
+    let mut since_poll: u32 = 0;
+    while !matcher.selects_nothing() {
+        if since_poll >= CANCEL_POLL_HEADERS {
+            since_poll = 0;
+            if cancel() {
+                return Err(ArchiveError::Cancelled);
+            }
+        }
+        let entry = match reader.next_header_raw() {
+            Ok(Some(entry)) => {
+                since_poll += 1;
+                entry
+            }
+            Ok(None) => break,
+            Err(ArchiveError::Failed(_)) => {
+                since_poll += 1;
+                if matcher.past_end(reader.current_ordinal()) {
+                    break;
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        // SAFETY: `entry` was just returned by `next_header_raw` on this reader.
+        let metadata = unsafe { reader.metadata(entry) }?;
+        let ordinal = metadata.ordinal;
+        if !is_archive_root(&metadata) && matcher.matches(&metadata) {
+            entries.push(metadata);
+        }
+        if matcher.past_end(ordinal) {
+            break;
+        }
+    }
+    Ok(SelectedEntries {
+        archive_bytes: reader.archive_bytes,
+        entries,
+    })
 }
 
 #[cfg(test)]

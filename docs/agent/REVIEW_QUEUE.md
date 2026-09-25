@@ -486,3 +486,133 @@ implementation added):
   the failure mode is a wrong message, not a crash of the app.
 - The sidecar (25): a stale sidecar with a fresh `.fzl` cannot happen (the sidecar is written
   after the rename and deleted with it), and a missing one re-lists -- the cost is one extra pass.
+
+## M3.4 — selective extract through the transfer queue
+
+**Milestone:** M3.4 (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` rev 3; per-commit detail in
+`docs/agent/PROGRESS.md`'s `M3.4` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 19 once
+M3.4c lands). Not a gate: log-and-continue. Commits: M3.4a (engine and FFI: `Selection::Ranges`,
+`BlockSink`/`extract_blocks`, the failure kinds, the framer and its golden `.fzx`, the fixtures), then
+b (the queue) and c (UI, legacy path, docs); each extends this entry.
+
+**What was decided, and needs a second read** (the design's section 3 list first, then what
+implementation added):
+
+1. Limits and consent, with the exact exposure (design section 2.4): without consent the old caps
+   hold (4 GiB total, 1 GiB per file except vfat's 4 GiB − 1 rule, 10,000 entries, ratio 200); with
+   consent a ratio-≤200 archive may write to the destination's free-space margin
+   (`free − max(5 %, LOW_STORAGE_THRESHOLD)`, recomputed at claim); with least knowledge (free space
+   unknown) the old cap holds. The ratio rule can never be consented past.
+2. Entry cap 10,000 → 200,000 with consent.
+3. Encrypted ZIPs stay on zip4j until M3.9/M3.10; selective extraction from an encrypted archive is
+   refused with the M3.9 message.
+4. `tar.*` costs two passes plus the listing: the header pass that gathers the selection's metadata
+   for the size policy decompresses the stream, then the extraction pass decompresses it again.
+5. Conflicts are top-level only; FAT component sanitisation; picker destinations have no filesystem
+   type, so the vfat rule cannot apply there and `EFBIG` fails the entry at write time.
+6. Per-entry CRC only where the format carries one (ZIP, 7-Zip); tar, cpio, ar and ISO have none.
+7. 7-Zip CRC mismatches were swallowed before M3.4a: `Reader::check` accepted `ARCHIVE_WARN` and
+   never read the message. `crc-bad.7z` pins the new answer (`FailKind::Crc`, block withheld).
+8. Isolation scope: a header or data `FAILED` fails the entry and the pass continues; `FATAL`
+   aborts; one re-issue for every format with a stream re-read for `tar.*`.
+9. Section 4.4's read-only descriptor contract: `:decoders` receives a writable sink pipe and
+   structure in frames; a second isolated instance (`:decoders:extract`) runs extraction.
+10. Hardlinks are copies made after the pass; symlinks and special files are skipped by the planner.
+11. mtimes are not preserved (SAF has no setter).
+12. An EXTRACT retry re-claims the operation (copy retries as a new operation).
+13. `androidx.work:work-testing:2.11.2` as a test dependency.
+14. Notification bar and byte line for EXTRACT only.
+15. Planning may decompress an unbrowsed `tar.*` in the UI process ("Reading archive…" with Cancel).
+16. The overlay's "Inspect and extract ZIP" widens to every browsable format.
+17. Nested archives extract via the materialised inner file (512 MiB cap, outer decision).
+18. The structural verdict is persisted with the listing and read fail-closed; duplicate keys stay a
+    whole-archive refusal (`tar -r` browses, does not extract) — owner question open.
+19. `.` segments are no-ops (M3.3a; Kotlin-parity deviation).
+20. Headless planner mode (`allowLarge`, `largeHereAsFolder`).
+21. `Here` above 200 roots prompts, `<name>/` preselected.
+22. **WorkManager chain poisoning is pre-existing for COPY/MOVE** (a cancelled or `Result.failure`
+    copy cancels or fails every transfer queued behind it under `APPEND_OR_REPLACE`); EXTRACT avoids
+    it with flag-cancel and `Result.success()` for every journaled outcome; the COPY/MOVE follow-up
+    is recorded, not fixed here.
+23. CRC surfacing is M3.8's groundwork.
+24. The extraction instance is unbound after each operation (no idle policy).
+25. **(a) M3.3 contract verified in code, no gap:** (i) `EntryMetadata.ordinal` comes from the one
+    counter `Reader.headers_read`, incremented in `next_header` before the root `continue`, read by
+    listing, `extract`, `extract_entry_at` and now `extract_blocks`; (ii) `ignore_sigpipe()` (a
+    `Once`) opens every exported archive function; (iii) `PinnedSource.open()` re-opens a descriptor
+    per `:decoders` call and the entry cache uses it per fill; (iv) `<key>.summary.json` carries
+    `structuralRefusal`, `readCached` fails closed, Rust computes it under `Limits::structural_only()`;
+    (v) `validate_path`/`normalized_path_key` drop `.` segments and a leading `./`, `..` stays refused.
+26. **(a) A corrupted LZMA2 stream is `ARCHIVE_FATAL`, not `ARCHIVE_FAILED`** as the survey and the
+    design's step 7 say (`solid-bad.7z`, probed against the vendored libarchive: "Decompression failed
+    (9)" at the first data read, and the archive is dead). Consequences: a solid-7z folder with a
+    corrupted member is lost whole in that pass; the collateral "valid following header returns
+    FAILED" never happens (the archive is already fatal); the re-issue must **leave out the failed
+    item's remaining ordinals**, because reading any later member of that folder decodes it from its
+    start and dies again, while an unread folder is skipped for free — so `folder2/third.txt`
+    extracts on the re-issue only when `folder1/` is excluded. M3.4b's re-issue rule: ordinals after
+    the engine's `stop_ordinal`, minus the ordinals of items already failed (an item is failed by its
+    first failed entry, so extracting its other entries is wasted work).
+27. **(a) No constructible input makes `archive_read_next_header` return `ARCHIVE_FAILED`** in the
+    vendored libarchive: the tar reader escalates a failed pax attribute to `FATAL` (probed with an
+    over-limit `GNU.sparse.map`), the ZIP reader's header-level `FAILED`s are codec-initialisation
+    failures, and the LHA symlink case needs a hand-built level-2 LZH. The header-level rule (count
+    the ordinal, `failed(Decode)` when selected, read no data, continue) is implemented as designed
+    and covered by no fixture; the data-level `FAILED` classification is covered three ways
+    (`crc-bad.zip` → `Crc`, `ppmd-bad.zip` → `Decode`, ZIP's "wrong size" → `Size` by message).
+28. **(a) The early exit is proven on an uncompressed tar built at test time, not on
+    `big-stream.tar.zst`:** on a compressed stream, finishing member 0 consumes its 512-byte padding
+    and the zstd filter's 128 KiB read-ahead for that swallows the remaining ~100 KiB of compressed
+    input, so the descriptor offset reaches the end whatever the pass did. `big-stream.tar.zst`
+    proves selection and byte-exactness; a 128 KiB fixture cap makes no compressed fixture able to
+    show the offset signal.
+29. **(a) `extract_blocks` re-validates an entry's path and link *after* the sink accepted it**
+    (`begin` → `true`), not before: the legacy `extract()` adapter declines links on the provider's
+    behalf and must never be told about a link it would not have written (the existing symlink-escape
+    test); a stale plan's unsafe path is therefore a `FAIL` right after its `BEGIN`, with no data read.
+    Links, special files and directories are all offered to the sink with their kind (the frame
+    protocol's kinds 2–5); the sink decides. `extract_entry_at` on a link still yields zero bytes.
+30. **(a) `extract()` and `extract_entry_at` now return `ArchiveError::Failed`** for a per-entry
+    failure (a CRC or size mismatch, a decode error) where they returned `Fatal` before (ZIP) or
+    swallowed it (7-Zip); the FFI maps it to `ArchiveEngineError.Failed` and Kotlin's
+    `toOutcome` to `OUTCOME_CORRUPT` for the single-entry fill — the entry cache reads it as damage.
+    `extract()` also refuses an unsafe path or link at extraction time now (it wrote it before; the
+    policy was the only guard).
+31. **(a) The frame stream's magic is written with the first frame, not at construction:** a
+    refusal by the size policy leaves an empty stream (the reader accepts that with a non-OK result);
+    a fatal before the first entry writes `MAGIC ABORT` (the reader requires the magic with a
+    `Corrupt` result). `Cancelled` before the first frame leaves the stream empty too.
+32. **(a) The result record carries `stop_ordinal`** (`BlocksOutcome::stop_ordinal`: the entry being
+    read on a data fatal, the header attempted on a header fatal or a cancel) so the re-issue knows
+    where to resume; `ArchiveExtractResult` (M3.4b) gains it beside the three counts. The engine's
+    `ExtractReport` gains `entries_failed`, `ExtractLimits` gains `max_path_depth`/`max_name_length`
+    for the re-check.
+33. **(a) `ArchiveError::Cancelled` and `ArchiveEngineError.Cancelled`, `ArchiveExtractResult
+    .OUTCOME_CANCELLED = 7` and `OUTCOME_REFUSED = 8`** exist from M3.4a (the regenerated bindings
+    make Kotlin's exhaustive `when` need them at once); `archive_extract_ranges` returns an outcome
+    record rather than throwing, so counts survive a fatal.
+34. **(a) The cancel hook fires after every 64 headers read, before the 65th**, in both the header
+    pass and the extraction pass; the FFI's hook is `poll(2)` with a zero timeout on the sink for
+    `POLLERR|POLLHUP`, and a `BrokenPipe` on a frame write is `Cancelled` too.
+35. **(a) `evaluate_selection` also applies `max_archive_bytes` and the unknown-size rule** (both are
+    size rules), and the per-entry ratio rule when a compressed size is known — the design named
+    only the file, total, entry and duplicate rules plus the archive ratio.
+36. **(a) Fixture bodies come from a 32-bit LCG** (`prng_bytes`), reproducible in Rust and Kotlin,
+    because the first affine pattern compressed `big-stream.tar.zst` to 573 bytes; `solid-bad.7z`'s
+    bodies stay compressible on purpose (LZMA2 stores incompressible input raw, where a flipped byte is
+    a CRC mismatch rather than a decode failure). `ppmd-bad.zip` was added (design section 2.8 has no
+    decode-kind fixture). `tree.zip`/`tree.tar.zst` have 8 explicit directory rows (the tar adds
+    `late/` after `late/x.txt`), one implicit directory, a relative symlink and a cross-folder hardlink.
+
+**Relevant commits:** the M3.4a commit (this entry's items 25–36 and the design's 6–9, 23 as landed).
+
+**Risk if it turns out wrong:**
+- LZMA2 fatality (26): if a later libarchive makes the decode error `FAILED`, the re-issue rule
+  merely excludes an item it could have finished; nothing extracts wrongly.
+- The header-level rule (27): untested by fixture; a header `FAILED` from a format not probed would
+  count its ordinal and fail the selected entry — the same outcome the design specifies, but with no
+  test proving the count agrees with a listing that reached it (a listing stops there as partial, so
+  such an archive is refused for extraction by the planner anyway).
+- Re-check after `begin` (29): a frame reader that creates the document on `BEGIN` pays one
+  create-and-delete for a hostile entry a stale plan selected; the planner refuses such archives whole
+  from the persisted summary, so this only fires when the archive changed under the plan.

@@ -59,6 +59,34 @@ The same script adds the archives `src/listing_tests.rs` and the Kotlin `archive
 | `dot-rooted.tar` | `tarfile`: `./`, `./first.txt`, `./sub/`, `./sub/second.txt` -- `tar -C dir -cf x.tar .`'s shape | header 0 is the root the engine drops; the first real member has **ordinal 1** and `extract_entry_at` fetches it under that ordinal |
 | `damaged-after-3.tar` | three good members, then a 1 KiB non-zero block where the fourth header would be | `inspect` fails; `inspect_into` lists three entries and flags the listing partial |
 
+### Selective-extraction fixtures (M3.4a)
+
+The same script adds the archives `src/blocks_tests.rs`, `fylz-ffi-android`'s tests and the Kotlin
+`ExtractFrameReader`/`ArchiveExtractor` tests extract (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md`
+section 2.8). File bodies come from `prng_bytes(seed, size)` -- the classic 32-bit LCG
+`x = x * 1103515245 + 12345 mod 2^32`, bits 16..23 of each state -- so a test recomputes any
+member without carrying it; the tree's file `i` (0-based, archive order) is
+`prng_bytes(i + 1, (i * 37) % 1500 + 100)` (`empty.txt` is 0 bytes).
+
+| File | Made how | Proves |
+|---|---|---|
+| `tree.zip` | `zipfile`, deflate, 8 explicit directory rows then 40 files over three levels (`photos/2024/…`, `docs/notes/deep/…`), `implicit/child.txt` with no directory row | `Selection::Ranges` exact match and byte-exactness; the `Here`/`IntoFolder`/`Entries` layouts in Kotlin |
+| `tree.tar.zst` | `tarfile` + zstd level 19: the same tree, plus `late/x.txt` stored **before** its `late/` directory row, a relative symlink `docs/link-to-readme -> ../readme.txt` and a hardlink `bin/hard-to-guide -> docs/guide.md` (target in another top-level folder) | links offered with their kind and no data; the golden `tree.fzx`; hardlink mapping in the Kotlin planner |
+| `crc-bad.zip` | three stored members, one data byte of `bad.txt` flipped after writing | libarchive returns the data then `ARCHIVE_FAILED` "ZIP bad CRC": `FailKind::Crc`, the pass continues |
+| `inflate-bad.zip` | three deflated members, `bad.bin`'s first deflate byte given block type 3 (reserved) | `ARCHIVE_FATAL` "ZIP decompression failed (-3)": the pass aborts blaming ordinal 1; a resume after it extracts `good-after.txt` |
+| `ppmd-bad.zip` | three stored members, `ppmd.bin` re-labelled method 98 (ZIPX PPMd) with parameter word `0xF000` (model order 1) | `ARCHIVE_FAILED` "Invalid parameter set in PPMd8 stream" on the first data read: `FailKind::Decode`, the pass continues |
+| `crc-bad.7z` | `py7zr`, `FILTER_COPY`, plain header, one body byte of `bad.txt` flipped | `ARCHIVE_WARN` "7-Zip bad CRC" **with the final block**: `FailKind::Crc`, the block withheld (swallowed before M3.4a) |
+| `solid-bad.7z` | `py7zr`: `folder1/first.bin` + `folder1/second.bin` in one LZMA2 folder (compressible bodies), `folder2/third.txt` appended in a second folder (append mode); 32 bytes of the first pack stream corrupted | a corrupted LZMA2 stream is `ARCHIVE_FATAL` "Decompression failed" (not `FAILED` as the survey said): the pass aborts at ordinal 0; a resume naming `second.bin` dies the same way; a resume past the whole folder extracts `third.txt` |
+| `big-stream.tar.zst` | `zeros.bin` (2 MiB of zeros) then `small-00..09.bin` (10 KiB `prng_bytes(1000 + i, 10240)` each), zstd level 19 | ranges select exactly the named members byte-exact; the header pass reads only what it needs |
+| `hostile/many-small-10000.tar.zst` | `tarfile`, exactly 10,000 zero-length members, zstd level 19 | the entry cap compares with `>`: 10,000 allowed where `many-entries.tar.zst`'s 10,001 is refused without consent |
+
+Generated at test time, never committed: the ratio bomb (300 MiB of zeros through `tar -z`, refused by
+the ratio rule in every mode), the oversized-header tar (a 300-character GNU long name and a 70-deep
+path, hand-written: no filesystem holds a 300-byte name), the early-exit tar (a 4 MiB middle member;
+on a compressed stream the zstd filter's 128 KiB read-ahead makes the descriptor offset useless as
+the signal), and the pax tar whose `GNU.sparse.map` attribute exceeds libarchive's 8 MiB limit (the
+one way found to make `archive_read_next_header` return `ARCHIVE_FAILED`, for the header-level rule).
+
 Regenerate with `python3 tools/fixtures/make_archive_fixtures.py` (needs `pip install py7zr==1.1.3
 pycdlib==1.20.0 zstandard`, versions pinned because a different version may lay the bytes out
 differently). The script prints each output's SHA-256; the committed values are recorded in
@@ -79,6 +107,15 @@ FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-archive golden
 ```
 
 from `core/`, and update the Kotlin tests in the same commit.
+
+### Golden extraction stream -- `app/src/test/resources/fixtures/archives/tree.fzx` (M3.4a)
+
+The extraction frame codec (`fylz-ffi-android/src/frames.rs`, writer; `app/.../archive/
+ExtractFrameReader.kt`, reader) is pinned the same way: `tree.tar.zst` extracted whole through the
+writer, committed as `tree.fzx`. `cargo test -p fylz-ffi-android golden` asserts the writer
+reproduces it; the Kotlin reader test decodes it. Regenerate, after a deliberate codec change only,
+with `FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-ffi-android golden` from `core/`, and update the Kotlin
+test in the same commit.
 
 Both directories also seed the `archive_entries` fuzz target (`core/fuzz/README.md`): libFuzzer
 reads a seed directory recursively, so passing `fixtures` covers `archives/` and

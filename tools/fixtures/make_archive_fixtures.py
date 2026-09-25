@@ -6,7 +6,14 @@ over a pipe, plus the hostile files the extraction policy must refuse end to end
 (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.10) adds the browsing fixtures: nested
 archives at the depth bound and one past it, implicit directories, a mixed bag of entry types,
 links and special files, every messy path shape a real archive carries, a backslash-separated
-ZIP name, and a tar damaged after its third header.
+ZIP name, and a tar damaged after its third header. M3.4
+(`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.8) adds the selective-extraction fixtures: a
+three-level, 40-file tree as a ZIP and a `tar.zst` (the tar also carries an implicit directory, a
+file stored before its own directory row, a relative symlink and a hardlink whose target sits in
+another top-level folder), four damaged archives that pin libarchive's own CRC/decode answers
+(`crc-bad.zip`, `inflate-bad.zip`, `crc-bad.7z`, `solid-bad.7z`), a stream archive with a 2 MiB
+member first (`big-stream.tar.zst`, for the early-exit test) and a tar of exactly 10,000 members
+(`many-small-10000.tar.zst`, the entry cap's allowed twin of `many-entries.tar.zst`'s 10,001).
 
 Every fixture is **deterministic** -- running this script twice must produce byte-identical files,
 and the script checks that itself (it builds everything twice in memory and compares before
@@ -603,7 +610,256 @@ def build_damaged_after_3_tar() -> bytes:
     return data[:end] + garbage
 
 
+
 # --------------------------------------------------------------------------------------------
+# M3.4 selective-extraction fixtures
+# --------------------------------------------------------------------------------------------
+
+
+def prng_bytes(seed: int, size: int) -> bytes:
+    """`size` bytes from the classic 32-bit LCG (`x = x * 1103515245 + 12345 mod 2^32`, taking bits
+    16..23 of each state), seeded with `seed`: reproducible in a few lines of Rust or Kotlin and
+    incompressible enough that zstd and deflate genuinely store the bytes -- a pattern zstd could
+    fold away made `big-stream.tar.zst` smaller than one 64 KiB read block, which defeats the
+    early-exit test it exists for."""
+    out = bytearray(size)
+    x = seed & 0xFFFFFFFF
+    for k in range(size):
+        x = (x * 1103515245 + 12345) & 0xFFFFFFFF
+        out[k] = (x >> 16) & 0xFF
+    return bytes(out)
+
+
+def tree_file_body(index: int) -> bytes:
+    """The bytes of the `index`-th file of the M3.4 tree (0-based, in `TREE_FILES` order):
+    `prng_bytes(seed = index + 1, size = tree_file_size(index))`, so a Rust or Kotlin test can
+    recompute any member's content without carrying it."""
+    return prng_bytes(index + 1, tree_file_size(index))
+
+
+def tree_file_size(index: int) -> int:
+    """`(index * 37) % 1500 + 100`, except `empty.txt` (index 39), which is 0 bytes."""
+    if index == TREE_EMPTY_INDEX:
+        return 0
+    return (index * 37) % 1500 + 100
+
+
+# The 40 files of `tree.zip`/`tree.tar.zst`, in archive order. Three levels (`photos/2024/…`,
+# `docs/notes/deep/…`), `implicit/child.txt` whose directory has no row of its own in either
+# archive, and (tar only) `late/x.txt` stored *before* the `late/` directory row that follows it.
+TREE_FILES: list[str] = (
+    ["readme.txt"]
+    + [f"photos/2024/img-{i:02d}.bin" for i in range(1, 11)]
+    + [f"photos/2025/img-{i:02d}.bin" for i in range(1, 8)]
+    + ["photos/index.txt", "docs/guide.md"]
+    + [f"docs/notes/note-{i}.txt" for i in range(1, 9)]
+    + [f"docs/notes/deep/deep-{i}.txt" for i in range(1, 6)]
+    + ["bin/tool.sh", "bin/data/a.dat", "bin/data/b.dat", "bin/data/c.dat", "implicit/child.txt", "late/x.txt", "empty.txt"]
+)
+TREE_EMPTY_INDEX = TREE_FILES.index("empty.txt")
+assert len(TREE_FILES) == 40, len(TREE_FILES)
+# Directory rows, in the order they are written: every directory but `implicit/` and `late/`
+# (the latter is written *after* `late/x.txt` in the tar, see `build_tree_tar_zst`).
+TREE_DIRECTORIES: list[str] = [
+    "photos/", "photos/2024/", "photos/2025/", "docs/", "docs/notes/", "docs/notes/deep/", "bin/", "bin/data/",
+]
+
+
+def build_tree_zip() -> bytes:
+    """The tree as a deflated ZIP with explicit directory rows (no links: `zipfile` has none)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for directory in TREE_DIRECTORIES:
+            zf.writestr(zip_entry(directory, directory=True), b"")
+        for index, name in enumerate(TREE_FILES):
+            zf.writestr(zip_entry(name), tree_file_body(index))
+    data = buf.getvalue()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert len([i for i in zf.infolist() if not i.is_dir()]) == 40
+    return data
+
+
+def zstd_compress(payload: bytes) -> bytes:
+    try:
+        import zstandard
+    except ImportError as exc:
+        raise SystemExit(
+            "make_archive_fixtures.py needs the Python `zstandard` package for the `.tar.zst` "
+            "fixtures -- install it with `pip install zstandard`."
+        ) from exc
+    return zstandard.ZstdCompressor(level=19).compress(payload)
+
+
+def build_tree_tar_zst() -> bytes:
+    """The same tree as a `tar.zst`, plus what only a tar can carry: `late/x.txt` before its
+    `late/` directory row, a relative symlink `docs/link-to-readme -> ../readme.txt`, and a
+    hardlink `bin/hard-to-guide -> docs/guide.md` whose target is in another top-level folder."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for directory in TREE_DIRECTORIES:
+            member = tar_member(directory.rstrip("/"), mode=0o755)
+            member.type = tarfile.DIRTYPE
+            tar.addfile(member)
+        for index, name in enumerate(TREE_FILES):
+            body = tree_file_body(index)
+            tar.addfile(tar_member(name, size=len(body)), io.BytesIO(body))
+            if name == "late/x.txt":
+                late = tar_member("late", mode=0o755)
+                late.type = tarfile.DIRTYPE
+                tar.addfile(late)
+        symlink = tar_member("docs/link-to-readme", mode=0o777)
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = "../readme.txt"
+        tar.addfile(symlink)
+        hardlink = tar_member("bin/hard-to-guide")
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "docs/guide.md"
+        tar.addfile(hardlink)
+    return zstd_compress(buf.getvalue())
+
+
+def local_data_offset(data: bytes, name: str) -> int:
+    """Where a ZIP member's stored/compressed bytes start: after its 30-byte local header, name
+    and extra field."""
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        info = zf.getinfo(name)
+        return info.header_offset + 30 + len(info.filename) + len(info.extra)
+
+
+def build_crc_bad_zip() -> bytes:
+    """Three stored members; one data byte of the middle one is flipped after writing, so its
+    local and central CRCs still agree with each other and disagree with the bytes. libarchive
+    returns the member's data whole, then `ARCHIVE_FAILED` "ZIP bad CRC" -- the entry fails, the
+    archive goes on (`good-after.txt` extracts)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, body in [
+            ("good-before.txt", b"before\n"),
+            ("bad.txt", b"this member's stored bytes are altered after writing\n"),
+            ("good-after.txt", b"after\n"),
+        ]:
+            info = zip_entry(name)
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, body)
+    data = bytearray(buf.getvalue())
+    data[local_data_offset(bytes(data), "bad.txt")] ^= 0x01
+    return bytes(data)
+
+
+def build_inflate_bad_zip() -> bytes:
+    """Three deflated members; the middle one's first deflate byte gets block type 3 (reserved),
+    which zlib refuses outright: libarchive answers `ARCHIVE_FATAL` "ZIP decompression failed
+    (-3)" and the archive is dead from there -- the abort case, unlike `crc-bad.zip`."""
+    payload = prng_bytes(7, 20000) + b"x" * 20000
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(zip_entry("good-before.txt"), b"before\n" * 10)
+        zf.writestr(zip_entry("bad.bin"), payload)
+        zf.writestr(zip_entry("good-after.txt"), b"after\n" * 10)
+    data = bytearray(buf.getvalue())
+    offset = local_data_offset(bytes(data), "bad.bin")
+    data[offset] = (data[offset] & 0xF8) | 0x06  # BFINAL = 0, BTYPE = 3 (reserved)
+    return bytes(data)
+
+
+def build_ppmd_bad_zip() -> bytes:
+    """Three stored members; the middle one is re-labelled method 98 (ZIPX PPMd) in both its local
+    and central headers, with a two-byte parameter word whose model order is 1 (libarchive requires
+    2 or more): `zipx_ppmd8_init` answers `ARCHIVE_FAILED` "Invalid parameter set in PPMd8 stream"
+    on the first data read -- a per-entry **decode** failure (neither CRC nor size) that leaves the
+    archive readable, so `good-after.txt` still extracts."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, body in [
+            ("good-before.txt", b"before\n"),
+            ("ppmd.bin", b"\x00\xf0"),
+            ("good-after.txt", b"after\n"),
+        ]:
+            info = zip_entry(name)
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, body)
+    data = bytearray(buf.getvalue())
+    with zipfile.ZipFile(io.BytesIO(bytes(data))) as zf:
+        local = zf.getinfo("ppmd.bin").header_offset
+    struct.pack_into("<H", data, local + 8, 98)
+    central = data.rfind(b"ppmd.bin") - 46
+    assert data[central : central + 4] == b"PK\x01\x02", "central directory entry not where expected"
+    struct.pack_into("<H", data, central + 10, 98)
+    return bytes(data)
+
+
+def build_crc_bad_7z() -> bytes:
+    """COPY-filtered 7z with a plain header (as `sample-copy.7z`); one byte of the middle member's
+    body is flipped. libarchive's 7z reader returns the final data block with `ARCHIVE_WARN`
+    "7-Zip bad CRC" -- the mismatch M3.4 turns into a failed entry (it was swallowed before)."""
+    py7zr = import_py7zr()
+    buf = io.BytesIO()
+    with py7zr.SevenZipFile(buf, "w", filters=[{"id": py7zr.FILTER_COPY}]) as archive:
+        archive.set_encoded_header_mode(False)
+        archive.writestr(b"before\n", "good-before.txt")
+        archive.writestr(b"this stored 7z member is altered after writing\n", "bad.txt")
+        archive.writestr(b"after\n", "good-after.txt")
+    data = bytearray(buf.getvalue())
+    header_id = data[32 + struct.unpack_from("<Q", data, 12)[0]]
+    assert header_id == 0x01, f"expected a plain kHeader (0x01), got 0x{header_id:02x}"
+    # The pack stream starts at byte 32 and the COPY bodies are concatenated: `before\n` (7 bytes)
+    # then `bad.txt`; flip a byte inside the second.
+    data[32 + 7 + 5] ^= 0x01
+    return bytes(data)
+
+
+def build_solid_bad_7z() -> bytes:
+    """Two LZMA2 folders: `folder1/first.bin` and `folder1/second.bin` share the first (solid), and
+    `folder2/third.txt` sits alone in the second (py7zr's append mode opens a new folder). 32 bytes
+    in the middle of the first pack stream are corrupted, so decoding the first folder fails with
+    `ARCHIVE_FATAL` "Decompression failed" -- libarchive never reaches `second.bin` in that pass,
+    and a fresh pass that selects only `third.txt` skips the first folder without decoding it."""
+    py7zr = import_py7zr()
+    # Compressible on purpose: LZMA2 stores incompressible input in raw chunks, where a flipped
+    # byte is merely a CRC mismatch; a coded chunk is what turns the corruption into a decode
+    # failure.
+    first = bytes((i * 31 + 7) % 256 for i in range(6000))
+    second = bytes((i * 17 + 3) % 256 for i in range(6000))
+    buf = io.BytesIO()
+    with py7zr.SevenZipFile(buf, "w") as archive:
+        archive.writestr(first, "folder1/first.bin")
+        archive.writestr(second, "folder1/second.bin")
+    buf.seek(0)
+    with py7zr.SevenZipFile(buf, "a") as archive:
+        archive.writestr(b"third member in its own folder\n" * 20, "folder2/third.txt")
+    data = bytearray(buf.getvalue())
+    with py7zr.SevenZipFile(io.BytesIO(bytes(data))) as archive:
+        header = archive.header
+        assert header.main_streams.unpackinfo.numfolders == 2, header.main_streams.unpackinfo.numfolders
+        pack_position = header.main_streams.packinfo.packpos
+        first_pack_size = header.main_streams.packinfo.packsizes[0]
+    for k in range(first_pack_size // 3, first_pack_size // 3 + 32):
+        data[32 + pack_position + k] ^= 0x5A
+    return bytes(data)
+
+
+def build_big_stream_tar_zst() -> bytes:
+    """A 2 MiB zero-filled member first (far larger than libarchive's 64 KiB read block, tiny once
+    compressed), then ten 10 KiB incompressible members, so a pass that selects only the first
+    member and stops early leaves the descriptor well before the end of the compressed file."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        zeros = bytes(2 * 1024 * 1024)
+        tar.addfile(tar_member("zeros.bin", size=len(zeros)), io.BytesIO(zeros))
+        for index in range(10):
+            body = prng_bytes(1000 + index, 10 * 1024)
+            tar.addfile(tar_member(f"small-{index:02d}.bin", size=len(body)), io.BytesIO(body))
+    return zstd_compress(buf.getvalue())
+
+
+def build_many_small_10000_tar_zst() -> bytes:
+    """Exactly 10,000 zero-length members -- the policy's `max_entries` default, which the rule
+    compares with `>`, so this one is allowed where `many-entries.tar.zst` (10,001) is refused."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for index in range(10_000):
+            tar.addfile(tar_member(f"s{index:05d}"))
+    return zstd_compress(buf.getvalue())
 
 
 FIXTURES: dict[Path, Callable[[], bytes]] = {
@@ -627,6 +883,16 @@ FIXTURES: dict[Path, Callable[[], bytes]] = {
     FIXTURES_DIR / "backslash.zip": build_backslash_zip,
     FIXTURES_DIR / "dot-rooted.tar": build_dot_rooted_tar,
     FIXTURES_DIR / "damaged-after-3.tar": build_damaged_after_3_tar,
+    # M3.4 selective-extraction fixtures.
+    FIXTURES_DIR / "tree.zip": build_tree_zip,
+    FIXTURES_DIR / "tree.tar.zst": build_tree_tar_zst,
+    FIXTURES_DIR / "crc-bad.zip": build_crc_bad_zip,
+    FIXTURES_DIR / "inflate-bad.zip": build_inflate_bad_zip,
+    FIXTURES_DIR / "ppmd-bad.zip": build_ppmd_bad_zip,
+    FIXTURES_DIR / "crc-bad.7z": build_crc_bad_7z,
+    FIXTURES_DIR / "solid-bad.7z": build_solid_bad_7z,
+    FIXTURES_DIR / "big-stream.tar.zst": build_big_stream_tar_zst,
+    HOSTILE_DIR / "many-small-10000.tar.zst": build_many_small_10000_tar_zst,
 }
 
 

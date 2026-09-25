@@ -182,6 +182,7 @@ fn extract_all_writes_every_member_byte_exact() {
             skipped: 0,
             skipped_links: 0,
             missing: vec![],
+            entries_failed: 0,
         }
     );
     assert_eq!(provider.read("hello.txt"), b"hello world");
@@ -258,6 +259,7 @@ fn selection_paths_writes_only_the_named_entries_and_reports_the_missing() {
             skipped: 0,
             skipped_links: 0,
             missing: vec!["missing.txt".to_string()],
+            entries_failed: 0,
         }
     );
     // Archive order, not selection order.
@@ -307,6 +309,7 @@ fn directories_are_offered_and_the_provider_skips_them() {
             skipped: 1,
             skipped_links: 0,
             missing: vec![],
+            entries_failed: 0,
         }
     );
     assert_eq!(
@@ -480,6 +483,7 @@ fn links_are_never_materialised_and_other_kinds_are_never_offered() {
             skipped: 1,
             skipped_links: 2,
             missing: vec![],
+            entries_failed: 0,
         }
     );
     assert_eq!(provider.offered_paths(), vec!["a.txt"]);
@@ -569,6 +573,8 @@ fn extract_limits_derive_from_the_policy_limits() {
             max_file_bytes: 1,
             max_total_uncompressed_bytes: 2,
             max_entries: 3,
+            max_path_depth: 64,
+            max_name_length: 255,
         }
     );
     assert_eq!(

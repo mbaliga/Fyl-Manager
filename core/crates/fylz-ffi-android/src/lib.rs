@@ -7,7 +7,11 @@
 //! Binder (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.4). `archive_list_into` and
 //! `archive_extract_entry_at` (M3.3a) are the browsing pair: the same header pass writing the
 //! full listing into a caller-owned pipe as it goes, and one entry by header ordinal streamed
-//! into another (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.2).
+//! into another (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.2). `archive_extract_ranges`
+//! (M3.4a) is the bulk path: every selected header ordinal of an archive streamed in one pass
+//! through a single framed pipe ([frames]), after a header pass and the selection-scoped size
+//! policy (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` sections 2.3-2.5); it polls the sink for
+//! a hang-up every 64 headers so a cancel during a long `tar.xz` header walk ends the call.
 //!
 //! SIGPIPE: the sinks those two write into are pipes the UI process owns, and a cancelled call
 //! closes the read end first, so the engine's `write_all` gets `EPIPE`. Rust installs `SIG_IGN`
@@ -38,8 +42,51 @@ use fylz_archive::EntryMetadata;
 use fylz_archive::ExtractLimits;
 use fylz_archive::Inspection;
 use fylz_archive::Limits;
+use fylz_archive::Selection;
+
+pub mod frames;
 
 uniffi::setup_scaffolding!();
+
+mod poll_sys {
+    //! The one `poll(2)` declaration behind [super::sink_hung_up], hand-written like `signal_sys`.
+    //! `struct pollfd { int fd; short events; short revents; }` and `nfds_t` (`unsigned long`) are
+    //! the same on every Linux ABI this crate builds for (bionic aarch64/armv7/x86_64 and the glibc
+    //! host); `POLLERR`/`POLLHUP` are `0x008`/`0x010` in the kernel's `asm-generic/poll.h`.
+    use std::os::raw::c_int;
+    use std::os::raw::c_short;
+    use std::os::raw::c_ulong;
+
+    #[repr(C)]
+    pub struct PollFd {
+        pub fd: c_int,
+        pub events: c_short,
+        pub revents: c_short,
+    }
+
+    pub const POLLERR: c_short = 0x008;
+    pub const POLLHUP: c_short = 0x010;
+
+    unsafe extern "C" {
+        pub fn poll(fds: *mut PollFd, nfds: c_ulong, timeout: c_int) -> c_int;
+    }
+}
+
+/// Whether the reader of the pipe whose write end is `fd` has gone away: `poll` with a zero
+/// timeout reports `POLLERR` on a pipe's write end once every read end is closed (and `POLLHUP`
+/// for other descriptor kinds). The extraction pass asks this every 64 headers, so a cancel from
+/// the UI process (which closes its read end) is noticed inside a header walk that writes nothing.
+fn sink_hung_up(fd: RawFd) -> bool {
+    let mut pollfd = poll_sys::PollFd {
+        fd,
+        events: 0,
+        revents: 0,
+    };
+    // SAFETY: one initialised `pollfd` in a local array of one, a zero timeout; `poll` writes
+    // only `revents`.
+    let ready = unsafe { poll_sys::poll(&mut pollfd, 1, 0) };
+    ready > 0 && (pollfd.revents & (poll_sys::POLLERR | poll_sys::POLLHUP)) != 0
+}
 
 mod signal_sys {
     //! The one `signal(2)` declaration behind [super::ignore_sigpipe], hand-written for the same
@@ -332,6 +379,12 @@ pub enum ArchiveEngineError {
     /// the caller expected: the archive changed under its listing, or the id was forged. Carries
     /// its fields (so it is not a `flat_error`, which would drop them).
     NotFound { ordinal: u32, path: String },
+    /// libarchive reported one entry's data or header wrong (a CRC or size mismatch, a header it
+    /// could not parse) while the archive stays readable (M3.4): from `archive_extract_entry_at`,
+    /// whose one entry is then lost. The bulk path reports these per entry in its frames instead.
+    Failed { detail: String },
+    /// The caller cancelled (the sink's reader went away); nothing is wrong with the archive.
+    Cancelled,
 }
 
 impl std::fmt::Display for ArchiveEngineError {
@@ -349,6 +402,8 @@ impl std::fmt::Display for ArchiveEngineError {
             ArchiveEngineError::NotFound { ordinal, path } => {
                 write!(f, "no entry {path:?} at header {ordinal}")
             }
+            ArchiveEngineError::Failed { detail } => write!(f, "{detail}"),
+            ArchiveEngineError::Cancelled => write!(f, "cancelled"),
         }
     }
 }
@@ -372,7 +427,183 @@ impl From<ArchiveError> for ArchiveEngineError {
                 ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
                 path,
             },
+            ArchiveError::Failed(detail) => ArchiveEngineError::Failed { detail },
+            ArchiveError::Cancelled => ArchiveEngineError::Cancelled,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Selective extraction (M3.4a).
+// ---------------------------------------------------------------------------------------------
+
+/// An inclusive range of header ordinals (`EntryMetadata::ordinal`), a plan's bitmap run.
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveOrdinalRangeRecord {
+    pub first: u32,
+    pub last: u32,
+}
+
+/// How one `archive_extract_ranges` call ended -- the authority for the outcome; the frames in the
+/// sink are data. `decoder.ArchiveExtractResult`'s `OUTCOME_*` codes are this enum's twin.
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveExtractOutcomeRecord {
+    /// The pass ran to the end: every selected entry ended or failed and `DONE` was written.
+    Ok,
+    /// `policy::evaluate_selection` refused the selection before any frame (the message is the
+    /// rule's reason).
+    Refused,
+    NotSeekable,
+    Unsupported,
+    /// libarchive went fatal mid-way; the stream ends with `ABORT` and `stop_ordinal` says where.
+    Corrupt,
+    /// A runtime cap stopped the pass (`ABORT` written; not worth re-issuing).
+    LimitExceeded,
+    /// The sink's reader went away (a cancel from the UI process).
+    Cancelled,
+    /// A bug: an invalid descriptor, or an engine error this call is documented never to see.
+    Internal,
+}
+
+/// What `archive_extract_ranges` hands back: the outcome, libarchive's message when there is one,
+/// the counts `DONE` carried (or what was counted before an abort), and the ordinal the engine
+/// blames for an abort (`fylz_archive::BlocksOutcome::stop_ordinal`), which a re-issue resumes
+/// **after**.
+#[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveExtractRecord {
+    pub outcome: ArchiveExtractOutcomeRecord,
+    pub message: Option<String>,
+    pub entries_written: u32,
+    pub bytes_written: u64,
+    pub entries_failed: u32,
+    pub stop_ordinal: Option<u32>,
+}
+
+impl ArchiveExtractRecord {
+    fn before_frames(outcome: ArchiveExtractOutcomeRecord, message: String) -> Self {
+        ArchiveExtractRecord {
+            outcome,
+            message: Some(message),
+            entries_written: 0,
+            bytes_written: 0,
+            entries_failed: 0,
+            stop_ordinal: None,
+        }
+    }
+}
+
+/// The outcome and message for an engine error of the extraction pass. `Failed` cannot reach here
+/// (the frame writer reports per-entry failures as frames and never returns it), `NonUtf8Path`
+/// and `NotFound` are other entry points' errors: all three are `Internal`, as a bug would be.
+fn extract_outcome(error: &ArchiveError) -> (ArchiveExtractOutcomeRecord, String) {
+    let outcome = match error {
+        ArchiveError::NotSeekable(_) => ArchiveExtractOutcomeRecord::NotSeekable,
+        ArchiveError::Unsupported(_) => ArchiveExtractOutcomeRecord::Unsupported,
+        ArchiveError::Fatal(_) => ArchiveExtractOutcomeRecord::Corrupt,
+        ArchiveError::LimitExceeded { .. } => ArchiveExtractOutcomeRecord::LimitExceeded,
+        ArchiveError::Cancelled => ArchiveExtractOutcomeRecord::Cancelled,
+        ArchiveError::Failed(_) | ArchiveError::NonUtf8Path | ArchiveError::NotFound { .. } => {
+            ArchiveExtractOutcomeRecord::Internal
+        }
+    };
+    (outcome, error.to_string())
+}
+
+/// One extraction pass (M3.4a; design section 2.3 steps 3-4 and section 2.4): the header pass
+/// over the archive at `fd` collecting the metadata of the ordinals in `ranges`
+/// (`fylz_archive::inspect_for_extraction`), the selection-scoped size policy
+/// (`policy::evaluate_selection` -- a refusal returns `Refused` before a single frame is written),
+/// then `fylz_archive::extract_blocks_cancellable` writing the [frames] codec into `sink_fd` (the
+/// write end of a pipe the caller owns; never closed here, as `fd` is not). Both passes poll the
+/// sink for a hang-up every 64 headers ([sink_hung_up]); a write that meets `EPIPE` ends the pass
+/// the same way. The stream is empty for `Refused`, `NotSeekable`, `Unsupported` and a cancel before
+/// the first frame; `MAGIC ABORT` for a fatal error at any point (the reader requires the magic
+/// with a `Corrupt` result); `MAGIC ... DONE` for `Ok`. Synchronous, like every archive export.
+#[uniffi::export]
+pub fn archive_extract_ranges(
+    fd: i32,
+    ranges: Vec<ArchiveOrdinalRangeRecord>,
+    limits: ArchiveLimitsRecord,
+    sink_fd: i32,
+) -> ArchiveExtractRecord {
+    ignore_sigpipe();
+    if fd < 0 {
+        return ArchiveExtractRecord::before_frames(
+            ArchiveExtractOutcomeRecord::NotSeekable,
+            format!("not seekable (invalid descriptor {fd})"),
+        );
+    }
+    if sink_fd < 0 {
+        return ArchiveExtractRecord::before_frames(
+            ArchiveExtractOutcomeRecord::Internal,
+            format!("invalid extraction sink descriptor {sink_fd}"),
+        );
+    }
+    let limits = Limits::from(limits);
+    let selection = Selection::Ranges(ranges.iter().map(|r| (r.first, r.last)).collect());
+    let mut cancel = || sink_hung_up(sink_fd);
+    // SAFETY: `sink_fd` is caller-owned for the whole call, per this function's contract; the
+    // `ManuallyDrop` keeps the `File` from closing it.
+    let mut sink = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(sink_fd) });
+
+    let selected = match fylz_archive::inspect_for_extraction(fd, &selection, &mut cancel) {
+        Ok(selected) => selected,
+        Err(error) => {
+            let (outcome, message) = extract_outcome(&error);
+            if outcome == ArchiveExtractOutcomeRecord::Corrupt {
+                // The reader requires the magic with a Corrupt result: `MAGIC ABORT`.
+                let _ = frames::FrameWriter::new(&mut *sink).abort(&message);
+            }
+            return ArchiveExtractRecord::before_frames(outcome, message);
+        }
+    };
+    let decision = fylz_archive::policy::evaluate_selection(
+        selected.archive_bytes,
+        &selected.entries,
+        &limits,
+    );
+    if !decision.allowed {
+        return ArchiveExtractRecord::before_frames(
+            ArchiveExtractOutcomeRecord::Refused,
+            decision
+                .reason
+                .unwrap_or("Archive extraction was refused.")
+                .to_string(),
+        );
+    }
+
+    let extract_limits = ExtractLimits::from(&limits);
+    let mut writer = frames::FrameWriter::new(&mut *sink);
+    let outcome = fylz_archive::extract_blocks_cancellable(
+        fd,
+        &selection,
+        &extract_limits,
+        &mut writer,
+        &mut cancel,
+    );
+    let (entries_written, bytes_written, entries_failed) = writer.counts();
+    let (result_outcome, message, stop_ordinal) = match outcome.result {
+        Ok(()) => match writer.finish() {
+            Ok(_) => (ArchiveExtractOutcomeRecord::Ok, None, None),
+            Err(error) => {
+                let (code, message) = extract_outcome(&error);
+                (code, Some(message), None)
+            }
+        },
+        Err(error) => {
+            let (code, message) = extract_outcome(&error);
+            // Best effort: the reader has a terminal frame when the pipe still has a reader.
+            let _ = writer.abort(&message);
+            (code, Some(message), outcome.stop_ordinal)
+        }
+    };
+    ArchiveExtractRecord {
+        outcome: result_outcome,
+        message,
+        entries_written,
+        bytes_written,
+        entries_failed,
+        stop_ordinal,
     }
 }
 
@@ -716,6 +947,13 @@ mod tests {
                     path: "a/b".into(),
                 },
             ),
+            (
+                ArchiveError::Failed("ZIP bad CRC: 0x1 should be 0x2".into()),
+                ArchiveEngineError::Failed {
+                    detail: "ZIP bad CRC: 0x1 should be 0x2".into(),
+                },
+            ),
+            (ArchiveError::Cancelled, ArchiveEngineError::Cancelled),
         ];
         for (engine, expected) in cases {
             assert_eq!(ArchiveEngineError::from(engine), expected);
@@ -934,6 +1172,39 @@ mod tests {
                 matches!(result, Err(ArchiveEngineError::Corrupt { ref detail }) if detail.contains("writing the listing")),
                 "{result:?}"
             );
+            // M3.4a: a closed reader is a *cancel* for the bulk path -- noticed by the poll during a
+            // long header walk (10,001 headers, nothing written yet), and by the EPIPE of the first
+            // frame flush when the walk is too short to be polled.
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let record = archive_extract_ranges(
+                fixture("archives/hostile/many-entries.tar.zst").as_raw_fd(),
+                vec![ArchiveOrdinalRangeRecord {
+                    first: 10_000,
+                    last: 10_000,
+                }],
+                limits(),
+                writer.as_raw_fd(),
+            );
+            assert_eq!(
+                record.outcome,
+                ArchiveExtractOutcomeRecord::Cancelled,
+                "{record:?}"
+            );
+            assert_eq!(record.entries_written, 0);
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let record = archive_extract_ranges(
+                fixture("archives/sample-cd.zip").as_raw_fd(),
+                vec![ArchiveOrdinalRangeRecord { first: 0, last: 7 }],
+                limits(),
+                writer.as_raw_fd(),
+            );
+            assert_eq!(
+                record.outcome,
+                ArchiveExtractOutcomeRecord::Cancelled,
+                "{record:?}"
+            );
             return;
         }
         let exe = std::env::current_exe().unwrap();
@@ -950,6 +1221,422 @@ mod tests {
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M3.4a: archive_extract_ranges.
+    // -----------------------------------------------------------------------------------------
+
+    /// The frames of a stream, as `(tag, ordinal-or-0)` with the DONE/ABORT payloads kept.
+    #[derive(Debug, PartialEq)]
+    enum Frame {
+        Begin {
+            ordinal: u32,
+            declared: i64,
+            kind: u8,
+            path: String,
+        },
+        Data {
+            ordinal: u32,
+            len: u32,
+        },
+        End {
+            ordinal: u32,
+            bytes: u64,
+            warn: u8,
+        },
+        Fail {
+            ordinal: u32,
+            kind: u8,
+            message: String,
+        },
+        Done {
+            entries: u32,
+            bytes: u64,
+            failed: u32,
+        },
+        Abort {
+            message: String,
+        },
+    }
+
+    fn walk(bytes: &[u8]) -> Vec<Frame> {
+        assert_eq!(&bytes[..4], b"FZX1", "magic");
+        let mut at = 4;
+        let mut frames = Vec::new();
+        let u32_at = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        let u64_at = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        let u16_at = |at: usize| u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()) as usize;
+        while at < bytes.len() {
+            let tag = bytes[at];
+            at += 1;
+            match tag {
+                frames::TAG_BEGIN => {
+                    let ordinal = u32_at(at);
+                    let declared = i64::from_le_bytes(bytes[at + 4..at + 12].try_into().unwrap());
+                    let kind = bytes[at + 12];
+                    let len = u32_at(at + 13) as usize;
+                    let path = String::from_utf8(bytes[at + 17..at + 17 + len].to_vec()).unwrap();
+                    at += 17 + len;
+                    frames.push(Frame::Begin {
+                        ordinal,
+                        declared,
+                        kind,
+                        path,
+                    });
+                }
+                frames::TAG_DATA => {
+                    let ordinal = u32_at(at);
+                    let len = u32_at(at + 4);
+                    at += 8 + len as usize;
+                    frames.push(Frame::Data { ordinal, len });
+                }
+                frames::TAG_END => {
+                    let ordinal = u32_at(at);
+                    let bytes_ = u64_at(at + 4);
+                    let warn = bytes[at + 12];
+                    let len = u16_at(at + 13);
+                    at += 15 + len;
+                    frames.push(Frame::End {
+                        ordinal,
+                        bytes: bytes_,
+                        warn,
+                    });
+                }
+                frames::TAG_FAIL => {
+                    let ordinal = u32_at(at);
+                    let kind = bytes[at + 4];
+                    let len = u16_at(at + 5);
+                    let message = String::from_utf8(bytes[at + 7..at + 7 + len].to_vec()).unwrap();
+                    at += 7 + len;
+                    frames.push(Frame::Fail {
+                        ordinal,
+                        kind,
+                        message,
+                    });
+                }
+                frames::TAG_DONE => {
+                    frames.push(Frame::Done {
+                        entries: u32_at(at),
+                        bytes: u64_at(at + 4),
+                        failed: u32_at(at + 12),
+                    });
+                    at += 16;
+                }
+                frames::TAG_ABORT => {
+                    let len = u16_at(at);
+                    let message = String::from_utf8(bytes[at + 2..at + 2 + len].to_vec()).unwrap();
+                    at += 2 + len;
+                    frames.push(Frame::Abort { message });
+                }
+                other => panic!("unknown tag {other} at {at}"),
+            }
+        }
+        frames
+    }
+
+    fn all_ranges(name: &str) -> Vec<ArchiveOrdinalRangeRecord> {
+        let listing = archive_inspect(fixture(name).as_raw_fd(), limits(), 200_000).unwrap();
+        let last = listing.rows.iter().map(|r| r.ordinal).max().unwrap_or(0);
+        vec![ArchiveOrdinalRangeRecord { first: 0, last }]
+    }
+
+    fn extract_to_file(
+        name: &str,
+        ranges: Vec<ArchiveOrdinalRangeRecord>,
+        limits: ArchiveLimitsRecord,
+    ) -> (ArchiveExtractRecord, Vec<u8>) {
+        let sink_path = scratch(&format!("{}.fzx", name.replace('/', "_")));
+        let sink = File::create(&sink_path).unwrap();
+        let record =
+            archive_extract_ranges(fixture(name).as_raw_fd(), ranges, limits, sink.as_raw_fd());
+        assert!(sink.metadata().is_ok(), "the sink is the caller's to close");
+        (record, std::fs::read(&sink_path).unwrap())
+    }
+
+    #[test]
+    fn archive_extract_ranges_streams_every_selected_entry_and_ends_with_done() {
+        let (record, bytes) = extract_to_file(
+            "archives/tree.zip",
+            all_ranges("archives/tree.zip"),
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Ok,
+            "{record:?}"
+        );
+        assert_eq!(record.message, None);
+        assert_eq!(record.stop_ordinal, None);
+        // 40 files and 8 directory rows.
+        assert_eq!(record.entries_written, 48);
+        assert_eq!(record.entries_failed, 0);
+        let frames = walk(&bytes);
+        let begins = frames
+            .iter()
+            .filter(|f| matches!(f, Frame::Begin { .. }))
+            .count();
+        assert_eq!(begins, 48);
+        let data_bytes: u64 = frames
+            .iter()
+            .map(|f| match f {
+                Frame::Data { len, .. } => *len as u64,
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(data_bytes, record.bytes_written);
+        assert_eq!(
+            frames.last(),
+            Some(&Frame::Done {
+                entries: 48,
+                bytes: record.bytes_written,
+                failed: 0
+            })
+        );
+        // A BEGIN carries the declared size and the kind; `readme.txt` is ordinal 8 (after the
+        // eight directory rows) with the generator's size for index 0.
+        assert!(frames.contains(&Frame::Begin {
+            ordinal: 8,
+            declared: 100,
+            kind: frames::KIND_FILE,
+            path: "readme.txt".into()
+        }));
+        assert!(frames.contains(&Frame::Begin {
+            ordinal: 0,
+            declared: 0,
+            kind: frames::KIND_DIRECTORY,
+            path: "photos/".into()
+        }));
+    }
+
+    #[test]
+    fn archive_extract_ranges_refuses_before_any_frame_when_the_selection_fails_the_size_policy() {
+        // 10,001 entries under the default cap of 10,000: refused, nothing written.
+        let (record, bytes) = extract_to_file(
+            "archives/hostile/many-entries.tar.zst",
+            vec![ArchiveOrdinalRangeRecord {
+                first: 0,
+                last: 20_000,
+            }],
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Refused,
+            "{record:?}"
+        );
+        assert_eq!(
+            record.message.as_deref(),
+            Some("Archive contains too many entries.")
+        );
+        assert!(bytes.is_empty(), "a refusal writes no frame");
+        // Exactly 10,000 is allowed.
+        let (record, _) = extract_to_file(
+            "archives/hostile/many-small-10000.tar.zst",
+            vec![ArchiveOrdinalRangeRecord {
+                first: 0,
+                last: 20_000,
+            }],
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Ok,
+            "{record:?}"
+        );
+        assert_eq!(record.entries_written, 10_000);
+        // A 3 MiB member in a 3,850-byte archive: the ratio rule, in every mode.
+        let (record, bytes) = extract_to_file(
+            "archives/sample-entries.zip",
+            all_ranges("archives/sample-entries.zip"),
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Refused,
+            "{record:?}"
+        );
+        assert_eq!(
+            record.message.as_deref(),
+            Some("Archive contains a suspicious compression ratio.")
+        );
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn archive_extract_ranges_reports_a_crc_failure_as_a_fail_frame_and_finishes_ok() {
+        let (record, bytes) = extract_to_file(
+            "archives/crc-bad.zip",
+            all_ranges("archives/crc-bad.zip"),
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Ok,
+            "{record:?}"
+        );
+        assert_eq!((record.entries_written, record.entries_failed), (2, 1));
+        assert_eq!(record.bytes_written, 13);
+        let frames = walk(&bytes);
+        assert!(frames.iter().any(|f| matches!(f, Frame::Fail { ordinal: 1, kind, message } if *kind == frames::FAIL_CRC && message.contains("ZIP bad CRC"))), "{frames:?}");
+        assert_eq!(
+            frames.last(),
+            Some(&Frame::Done {
+                entries: 2,
+                bytes: 13,
+                failed: 1
+            })
+        );
+        // 7-Zip's CRC warning becomes the same kind.
+        let (record, bytes) = extract_to_file(
+            "archives/crc-bad.7z",
+            all_ranges("archives/crc-bad.7z"),
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Ok,
+            "{record:?}"
+        );
+        assert_eq!((record.entries_written, record.entries_failed), (2, 1));
+        assert!(walk(&bytes).iter().any(
+            |f| matches!(f, Frame::Fail { ordinal: 1, kind, .. } if *kind == frames::FAIL_CRC)
+        ));
+    }
+
+    #[test]
+    fn archive_extract_ranges_aborts_on_a_fatal_error_with_the_blamed_ordinal() {
+        let (record, bytes) = extract_to_file(
+            "archives/inflate-bad.zip",
+            all_ranges("archives/inflate-bad.zip"),
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Corrupt,
+            "{record:?}"
+        );
+        assert!(record
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains("decompression failed")));
+        assert_eq!(record.stop_ordinal, Some(1));
+        assert_eq!(record.entries_written, 1);
+        let frames = walk(&bytes);
+        assert!(
+            matches!(frames.last(), Some(Frame::Abort { message }) if message.contains("decompression failed"))
+        );
+        assert!(frames
+            .iter()
+            .any(|f| matches!(f, Frame::Begin { ordinal: 1, .. })));
+        // Corrupt before the first entry (a truncated compressed stream): MAGIC ABORT, nothing else.
+        let (record, bytes) = extract_to_file(
+            "truncated.tar.gz",
+            vec![ArchiveOrdinalRangeRecord { first: 0, last: 5 }],
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Corrupt,
+            "{record:?}"
+        );
+        assert!(
+            matches!(walk(&bytes).as_slice(), [Frame::Abort { .. }]),
+            "{:?}",
+            walk(&bytes)
+        );
+    }
+
+    #[test]
+    fn archive_extract_ranges_answers_bad_descriptors_and_non_archives_without_frames() {
+        let sink_path = scratch("bad.fzx");
+        let sink = File::create(&sink_path).unwrap();
+        let record = archive_extract_ranges(-1, vec![], limits(), sink.as_raw_fd());
+        assert_eq!(record.outcome, ArchiveExtractOutcomeRecord::NotSeekable);
+        let record = archive_extract_ranges(
+            fixture("archives/tree.zip").as_raw_fd(),
+            vec![],
+            limits(),
+            -1,
+        );
+        assert_eq!(record.outcome, ArchiveExtractOutcomeRecord::Internal);
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let record = archive_extract_ranges(reader.as_raw_fd(), vec![], limits(), sink.as_raw_fd());
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::NotSeekable,
+            "{record:?}"
+        );
+        let (record, bytes) = extract_to_file(
+            "archives/sample-encrypted-header.7z",
+            vec![ArchiveOrdinalRangeRecord { first: 0, last: 4 }],
+            limits(),
+        );
+        assert_eq!(
+            record.outcome,
+            ArchiveExtractOutcomeRecord::Unsupported,
+            "{record:?}"
+        );
+        assert!(bytes.is_empty());
+        assert_eq!(
+            std::fs::read(&sink_path).unwrap().len(),
+            0,
+            "nothing reached the sink"
+        );
+    }
+
+    #[test]
+    fn extract_outcomes_map_every_engine_error() {
+        let cases = [
+            (
+                ArchiveError::NotSeekable("x".into()),
+                ArchiveExtractOutcomeRecord::NotSeekable,
+            ),
+            (
+                ArchiveError::Unsupported("x".into()),
+                ArchiveExtractOutcomeRecord::Unsupported,
+            ),
+            (
+                ArchiveError::Fatal("x".into()),
+                ArchiveExtractOutcomeRecord::Corrupt,
+            ),
+            (
+                ArchiveError::LimitExceeded {
+                    entry: "e".into(),
+                    rule: "total",
+                },
+                ArchiveExtractOutcomeRecord::LimitExceeded,
+            ),
+            (
+                ArchiveError::Cancelled,
+                ArchiveExtractOutcomeRecord::Cancelled,
+            ),
+            (
+                ArchiveError::Failed("x".into()),
+                ArchiveExtractOutcomeRecord::Internal,
+            ),
+            (
+                ArchiveError::NonUtf8Path,
+                ArchiveExtractOutcomeRecord::Internal,
+            ),
+            (
+                ArchiveError::NotFound {
+                    ordinal: 1,
+                    path: "p".into(),
+                },
+                ArchiveExtractOutcomeRecord::Internal,
+            ),
+        ];
+        for (error, expected) in cases {
+            let (outcome, message) = extract_outcome(&error);
+            assert_eq!(outcome, expected, "{error:?}");
+            assert_eq!(message, error.to_string());
+        }
+        assert_eq!(ArchiveEngineError::Cancelled.to_string(), "cancelled");
+        assert_eq!(
+            ArchiveEngineError::Failed { detail: "d".into() }.to_string(),
+            "d"
         );
     }
 

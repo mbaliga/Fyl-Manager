@@ -1,16 +1,23 @@
 #![no_main]
 
 use fylz_archive::extract;
+use fylz_archive::extract_blocks;
 use fylz_archive::extract_entry_at;
 use fylz_archive::inspect;
+use fylz_archive::inspect_for_extraction;
 use fylz_archive::inspect_into;
+use fylz_archive::policy::evaluate_selection;
 use fylz_archive::policy::Limits;
 use fylz_archive::read_entry;
 use fylz_archive::ArchiveEntry;
 use fylz_archive::ArchiveError;
+use fylz_archive::BlockSink;
 use fylz_archive::DestinationProvider;
+use fylz_archive::EntryMetadata;
 use fylz_archive::ExtractLimits;
+use fylz_archive::FailKind;
 use fylz_archive::Selection;
+use fylz_archive::Warning;
 use libfuzzer_sys::fuzz_target;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -111,6 +118,8 @@ fuzz_target!(|data: &[u8]| {
                 max_file_bytes: 1024 * 1024,
                 max_total_uncompressed_bytes: 4 * 1024 * 1024,
                 max_entries: 4_096,
+                max_path_depth: 64,
+                max_name_length: 255,
             },
             dev_null.as_raw_fd(),
         );
@@ -127,6 +136,61 @@ fuzz_target!(|data: &[u8]| {
         max_file_bytes: 1024 * 1024,
         max_total_uncompressed_bytes: 4 * 1024 * 1024,
         max_entries: 4_096,
+        max_path_depth: 64,
+        max_name_length: 255,
     };
     let _ = extract(file.as_raw_fd(), &Selection::All, &extract_limits, &mut sink);
+
+    // M3.4: the bulk path over the first half of the listed ordinals (a real plan never selects
+    // the root, which inspect() dropped; a hostile range that names it is passed over).
+    let last = inspection
+        .entries
+        .get(inspection.entries.len() / 2)
+        .map_or(0, |e| e.ordinal);
+    let selection = Selection::Ranges(vec![(0, last)]);
+    if let Ok(selected) = inspect_for_extraction(
+        File::open(&path).expect("reopening the scratch archive").as_raw_fd(),
+        &selection,
+        &mut || false,
+    ) {
+        let _ = evaluate_selection(selected.archive_bytes, &selected.entries, &limits);
+    }
+    let mut counting = Counting::default();
+    let _ = extract_blocks(
+        File::open(&path).expect("reopening the scratch archive").as_raw_fd(),
+        &selection,
+        &extract_limits,
+        &mut counting,
+    );
 });
+
+/// A BlockSink that only counts: the frames a real sink would write are the FFI's business.
+#[derive(Default)]
+struct Counting {
+    begun: u32,
+    bytes: u64,
+    ended: u32,
+    failed: u32,
+}
+
+impl BlockSink for Counting {
+    fn begin(&mut self, _entry: &EntryMetadata) -> Result<bool, ArchiveError> {
+        self.begun += 1;
+        Ok(true)
+    }
+
+    fn write(&mut self, _ordinal: u32, block: &[u8]) -> Result<(), ArchiveError> {
+        self.bytes += block.len() as u64;
+        Ok(())
+    }
+
+    fn end(&mut self, _ordinal: u32, _bytes: u64, _warning: Option<Warning>) -> Result<(), ArchiveError> {
+        self.ended += 1;
+        Ok(())
+    }
+
+    fn failed(&mut self, _ordinal: u32, _kind: FailKind, _message: &str) -> Result<(), ArchiveError> {
+        self.failed += 1;
+        Ok(())
+    }
+}

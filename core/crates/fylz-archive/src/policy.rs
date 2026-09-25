@@ -25,6 +25,13 @@
 //!   refused; an entry that is only `.` or `./` is the archive root (`is_archive_root`), neither
 //!   counted nor refused. The browsing tree normalises the same way, so the two agree.
 //!
+//! - **A selection-scoped size pass** (M3.4, `docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section
+//!   2.4): [evaluate_selection] runs only the size rules -- entry count, per-file size, running
+//!   total, the archive-level ratio, plus the duplicate-key rule as defence in depth -- over the
+//!   entries a caller selected, immediately before extracting them. The structural rules (paths,
+//!   links, unknown sizes) are the whole archive's business and stay with [evaluate] and its
+//!   `structural_only` twin; [structural_check] re-runs them for one entry at extraction time.
+//!
 //! Everything else is literal: `Long.MAX_VALUE` overflow guard -> `checked_add`, a negative
 //! `archiveBytes` is unrepresentable in `u64`, `lowercase(Locale.ROOT)` -> `str::to_lowercase`,
 //! the drive-letter regex -> a two-byte check, and Kotlin's `String.length`/`isBlank` semantics
@@ -249,6 +256,89 @@ pub fn evaluate(archive_bytes: u64, entries: &[EntryMetadata], limits: &Limits) 
         return Decision::refused("Archive contains a suspicious compression ratio.");
     }
     Decision::allowed()
+}
+
+/// The size rules of [evaluate] over a **selection** (M3.4): the entries about to be extracted,
+/// not the whole archive. Same order and reason strings: archive size, entry count (`>`, so a
+/// selection of exactly `max_entries` passes), then per entry the duplicate-key rule (defence in
+/// depth -- a structurally sound archive has none, but a stale plan might), unknown size, the
+/// per-file cap, the running total with its overflow guard, the per-entry ratio when a compressed
+/// size is known; finally the archive-level ratio of the **selected** bytes over the archive's
+/// own length. No path or link rule: those are structural, decided over the whole archive from
+/// the persisted listing summary (the Kotlin planner is their gate), and re-checked per entry by
+/// [structural_check] as the extraction reaches it.
+pub fn evaluate_selection(
+    archive_bytes: u64,
+    selected: &[EntryMetadata],
+    limits: &Limits,
+) -> Decision {
+    if archive_bytes > limits.max_archive_bytes {
+        return Decision::refused("Archive exceeds the allowed input size.");
+    }
+    if selected.len() > limits.max_entries {
+        return Decision::refused("Archive contains too many entries.");
+    }
+    let mut total_uncompressed: u64 = 0;
+    let mut normalized_paths: HashSet<String> = HashSet::new();
+    for entry in selected {
+        if !normalized_paths.insert(normalized_path_key(&entry.path)) {
+            return Decision::refused("Archive contains duplicate or colliding paths.");
+        }
+        let Some(uncompressed) = entry.uncompressed else {
+            return Decision::refused("Archive contains an entry with unknown size.");
+        };
+        let is_directory = entry.kind == EntryKind::Directory;
+        if !is_directory && uncompressed > limits.max_file_bytes {
+            return Decision::refused("Archive contains a file larger than the extraction limit.");
+        }
+        total_uncompressed = match total_uncompressed.checked_add(uncompressed) {
+            Some(total) => total,
+            None => return Decision::refused("Archive size metadata overflowed."),
+        };
+        if total_uncompressed > limits.max_total_uncompressed_bytes {
+            return Decision::refused("Archive expands beyond the total extraction limit.");
+        }
+        if !is_directory && uncompressed > 0 {
+            match entry.compressed {
+                Some(0) => {
+                    return Decision::refused("Archive contains an implausibly compressed entry.");
+                }
+                Some(compressed) => {
+                    if uncompressed as f64 / compressed as f64 > limits.max_compression_ratio {
+                        return Decision::refused(
+                            "Archive contains a suspicious compression ratio.",
+                        );
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+    if total_uncompressed > 0
+        && (archive_bytes == 0
+            || total_uncompressed as f64 / archive_bytes as f64 > limits.max_compression_ratio)
+    {
+        return Decision::refused("Archive contains a suspicious compression ratio.");
+    }
+    Decision::allowed()
+}
+
+/// The structural rules of [evaluate] for **one** entry -- its path ([validate_path]) and, for a
+/// link, its target ([validate_link]) -- under `max_path_depth`/`max_name_length`. What
+/// `extract_blocks` runs on every selected entry as it reaches it (M3.4, defence in depth against
+/// a plan built from a listing the archive no longer matches), failing that one entry rather than
+/// the pass. Duplicate keys need the whole archive and are not checked here.
+pub(crate) fn structural_check(
+    entry: &EntryMetadata,
+    max_path_depth: usize,
+    max_name_length: usize,
+) -> Option<&'static str> {
+    let limits = Limits {
+        max_path_depth,
+        max_name_length,
+        ..Limits::default()
+    };
+    validate_path(&entry.path, &limits).or_else(|| validate_link(entry, &limits))
 }
 
 /// Kotlin's `normalizedPathKey`: backslashes to slashes, trailing slashes trimmed, lower-cased --

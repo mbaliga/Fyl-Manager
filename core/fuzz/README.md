@@ -18,8 +18,11 @@ per `docs/agent/MASTER_PLAN.md` section 3.4.
   with the listing codec writer attached, into memory -- also on inputs `inspect` refuses, since
   damage after the first entry is a partial listing there), `read_entry` of the first listed path
   (only when its declared size is modest -- it buffers in memory), `extract_entry_at` of the first
-  listed entry by its ordinal into `/dev/null`, and `extract` of everything into `/dev/null` under
-  tight `ExtractLimits`. Seed it with the committed fixtures: pass `../fixtures` (from here)
+  listed entry by its ordinal into `/dev/null`, `extract` of everything into `/dev/null` under
+  tight `ExtractLimits`, and (M3.4a) the bulk pair over a `Selection::Ranges` covering the first
+  half of the listed ordinals: `inspect_for_extraction` plus `policy::evaluate_selection`, then
+  `extract_blocks` into a counting `BlockSink` (the header-level `FAILED` rule, the CRC/size/decode
+  classification and the early exit run here). Seed it with the committed fixtures: pass `../fixtures` (from here)
   or `fixtures` (from `core/`) as a second corpus directory, as the commands below do. libFuzzer
   reads a seed directory recursively, so that one argument also covers M3.2a's ZIP/7z/ISO fixtures
   under `fixtures/archives/` and the hostile ones under `fixtures/archives/hostile/` (150 seed

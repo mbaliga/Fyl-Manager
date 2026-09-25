@@ -270,6 +270,9 @@ class DecoderServiceMappingTest {
             ArchiveEngineException.NotSeekable("not seekable (fifo)") to (ArchiveExtractResult.OUTCOME_NOT_SEEKABLE to "not seekable (fifo)"),
             ArchiveEngineException.Unsupported("Unrecognized archive format") to (ArchiveExtractResult.OUTCOME_UNSUPPORTED to "Unrecognized archive format"),
             ArchiveEngineException.Internal("bug") to (ArchiveExtractResult.OUTCOME_INTERNAL to "bug"),
+            // M3.4a: a per-entry failure of the one entry asked for reads as damage; a cancel is its own code.
+            ArchiveEngineException.Failed("ZIP bad CRC: 0x1 should be 0x2") to (ArchiveExtractResult.OUTCOME_CORRUPT to "ZIP bad CRC: 0x1 should be 0x2"),
+            ArchiveEngineException.Cancelled() to (ArchiveExtractResult.OUTCOME_CANCELLED to "cancelled"),
             RuntimeException("details that must not leak") to (ArchiveExtractResult.OUTCOME_INTERNAL to "RuntimeException"),
         )
         for ((failure, expected) in cases) {
@@ -282,6 +285,8 @@ class DecoderServiceMappingTest {
             assertThrows(IllegalStateException::class.java) { sink.fd }
         }
         assertEquals(6, ArchiveExtractResult.OUTCOME_NOT_FOUND)
+        assertEquals(7, ArchiveExtractResult.OUTCOME_CANCELLED)
+        assertEquals(8, ArchiveExtractResult.OUTCOME_REFUSED)
     }
 
     @Test

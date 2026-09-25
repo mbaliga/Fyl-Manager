@@ -31,6 +31,10 @@ data class ArchiveExtractResult(
         const val OUTCOME_INTERNAL = ArchiveInspection.OUTCOME_INTERNAL
         /** No entry with the expected path at the ordinal: the listing is stale, or the id forged. */
         const val OUTCOME_NOT_FOUND = 6
+        /** The caller cancelled (M3.4: the sink's reader went away); nothing is wrong with the archive. */
+        const val OUTCOME_CANCELLED = 7
+        /** The engine's selection-scoped size policy refused the extraction before any byte moved (M3.4). */
+        const val OUTCOME_REFUSED = 8
 
         fun ok(bytesWritten: Long): ArchiveExtractResult = ArchiveExtractResult(OUTCOME_OK, null, bytesWritten)
 

@@ -98,6 +98,10 @@ private fun Throwable.toOutcome(): Pair<Int, String?> = when (this) {
         is ArchiveEngineException.LimitExceeded -> ArchiveInspection.OUTCOME_LIMIT_EXCEEDED to "limit exceeded ($rule) at entry $entry"
         is ArchiveEngineException.Internal -> ArchiveInspection.OUTCOME_INTERNAL to detail
         is ArchiveEngineException.NotFound -> ArchiveExtractResult.OUTCOME_NOT_FOUND to "no entry \"$path\" at header $ordinal"
+        // M3.4a: one entry's data or header wrong while the archive stays readable -- for the
+        // single-entry `extractEntry` that entry is what the caller wanted, so it reads as damage.
+        is ArchiveEngineException.Failed -> ArchiveInspection.OUTCOME_CORRUPT to detail
+        is ArchiveEngineException.Cancelled -> ArchiveExtractResult.OUTCOME_CANCELLED to "cancelled"
     }
     else -> ArchiveInspection.OUTCOME_INTERNAL to javaClass.simpleName
 }
