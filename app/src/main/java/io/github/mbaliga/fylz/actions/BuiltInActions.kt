@@ -388,7 +388,10 @@ object BuiltInActions {
     )
 
     private fun themeAction(mode: ThemeMode, title: String, order: Int): BuiltInBinding = BuiltInBinding(
-        def = def("fylz.theme.${mode.name.lowercase()}", title, "Brightness", listOf(Placement.Room(RoomId.TOOLS, order))),
+        // "Brightness" (MC.0a) named no real vector either -- the old theme rows drew no icon at
+        // all (a filled/hollow square selection marker, not an `Icon`). "None" documents that the
+        // Tools room renders these text-only, exactly as before (MC.0d fix).
+        def = def("fylz.theme.${mode.name.lowercase()}", title, "None", listOf(Placement.Room(RoomId.TOOLS, order))),
         visibleWhen = ALWAYS,
         enabledWhen = ALWAYS,
         checked = { it.themeMode == mode },
@@ -441,7 +444,9 @@ object BuiltInActions {
 
     private fun archiveToolsMenu(): List<BuiltInBinding> = listOf(
         BuiltInBinding(
-            def = def("fylz.protect", "Create ZIP", "Lock", listOf(Placement.Menu(MenuId.ARCHIVE_TOOLS, 10))),
+            // "Lock" (MC.0a) named no real vector; the old Create-ZIP button actually drew
+            // Icons.Outlined.Archive, not a lock (MC.0d fix -- see the implementation report).
+            def = def("fylz.protect", "Create ZIP", "Archive", listOf(Placement.Menu(MenuId.ARCHIVE_TOOLS, 10))),
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
             // ArchiveToolsOverlay owns its own menu/dialog state with no external trigger today.

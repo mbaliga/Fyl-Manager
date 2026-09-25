@@ -38,20 +38,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.PictureAsPdf
-import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.TextSnippet
@@ -60,14 +55,12 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -172,8 +165,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -184,8 +175,6 @@ import dev.aarso.cellshell.EdgeTimelineScrubber
 import dev.aarso.cellshell.RoomEdge
 import dev.aarso.cellshell.ShakeToRefresh
 import dev.aarso.cellshell.SpatialShell
-import dev.aarso.cellshell.WheelItem
-import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
 import io.github.mbaliga.fylz.actions.ActionContext
 import io.github.mbaliga.fylz.actions.ActionDispatcher
@@ -196,13 +185,15 @@ import io.github.mbaliga.fylz.actions.BuiltInActions
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
+import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
+import io.github.mbaliga.fylz.ui.actions.LocationsRoom
 import io.github.mbaliga.fylz.ui.actions.NavigateUpButton
+import io.github.mbaliga.fylz.ui.actions.RecoveryRoom
 import io.github.mbaliga.fylz.ui.actions.SelectAllButton
 import io.github.mbaliga.fylz.ui.actions.SelectionActionBar
+import io.github.mbaliga.fylz.ui.actions.ToolsRoom
 import io.github.mbaliga.fylz.ui.actions.SortMenuButton
 import io.github.mbaliga.fylz.ui.actions.TopAppBarActions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 
@@ -311,18 +302,18 @@ private suspend fun runPreflight(context: Context, sources: List<Uri>, destinati
 /**
  * The app, and the owner of its theme.
  *
- * [recoveryRoom] and [overlays] are composed *inside* [FylzTheme] on purpose. Recovery used to
- * be a sibling screen under a bare `MaterialTheme`, which is why it — like the Tools and Index
- * activities — arrived light inside an otherwise dark app. Content that belongs to Fylz is
- * rendered by Fylz's theme; there is no second place for that decision to be made.
+ * [overlays] is composed *inside* [FylzTheme] on purpose. Recovery used to be a sibling screen
+ * under a bare `MaterialTheme`, which is why it — like the Tools and Index activities — arrived
+ * light inside an otherwise dark app. Content that belongs to Fylz is rendered by Fylz's theme;
+ * there is no second place for that decision to be made. The Recovery room itself is now built by
+ * [FylzV1Workspace] straight from the action registry (design MC.0d), the same way the Locations
+ * and Tools rooms are, rather than handed down as a composable slot.
  *
- * @param recoveryRoom the storage-and-recovery surface, shown as the shell's bottom room.
  * @param overlays dialogs the caller owns and needs drawn over everything.
  */
 @Composable
 fun FylzV1App(
     viewUri: Uri? = null,
-    recoveryRoom: @Composable () -> Unit = {},
     onShowHistory: () -> Unit = {},
     operationsNeedingAttention: Int = 0,
     overlays: @Composable () -> Unit = {},
@@ -336,7 +327,6 @@ fun FylzV1App(
         FylzV1Workspace(
             themeMode = themeMode,
             onThemeModeChange = { themeMode = it },
-            recoveryRoom = recoveryRoom,
             viewUri = viewUri,
             onShowHistory = onShowHistory,
             operationsNeedingAttention = operationsNeedingAttention,
@@ -349,7 +339,6 @@ fun FylzV1App(
 private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    recoveryRoom: @Composable () -> Unit,
     viewUri: Uri? = null,
     onShowHistory: () -> Unit = {},
     operationsNeedingAttention: Int = 0,
@@ -1142,6 +1131,10 @@ private fun FylzV1Workspace(
             LocationsRoom(
                 tabs = tabs,
                 activeTabId = activeTabId,
+                resolver = actionResolver,
+                dispatcher = actionDispatcher,
+                state = browserState,
+                ctx = actionContext,
                 onSelect = { id ->
                     activeTabId = id
                     shell.closeAll()
@@ -1151,38 +1144,14 @@ private fun FylzV1Workspace(
                     homeRefreshKey += 1
                     shell.closeAll()
                 },
-                onClose = { tab ->
-                    val wasActive = activeTabId == tab.id
-                    tabs.remove(tab)
-                    if (wasActive) activeTabId = tabs.lastOrNull()?.id
-                },
-                onAdd = {
-                    shell.closeAll()
-                    rootPicker.launch(null)
-                },
             )
         },
         right = {
-            ToolsRoom(
-                themeMode = themeMode,
-                onThemeModeChange = onThemeModeChange,
-                onAction = { action ->
-                    shell.closeAll()
-                    when (action) {
-                        ToolsAction.RECYCLE_BIN -> recycleDialog = true
-                        ToolsAction.REMOTES -> remoteDialog = true
-                        ToolsAction.WEBDAV -> webDavDialog = true
-                        ToolsAction.TOOLS -> runCatching {
-                            context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
-                        }.onFailure { toast("Tools are unavailable on this build") }
-                        ToolsAction.INDEX -> runCatching {
-                            context.startActivity(Intent(context, IndexManagerActivity::class.java))
-                        }.onFailure { toast("The index manager is unavailable") }
-                    }
-                },
-            )
+            ToolsRoom(actionResolver, actionDispatcher, browserState, actionContext)
         },
-        bottom = recoveryRoom,
+        bottom = {
+            RecoveryRoom(actionResolver, actionDispatcher, browserState, actionContext)
+        },
     ) {
     // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
     // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
@@ -1218,17 +1187,12 @@ private fun FylzV1Workspace(
             Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(Modifier.weight(1f)) {
                     if (wide) {
-                        LibraryRail(
-                            activeTab = activeTab,
+                        LibraryRailRoom(
+                            resolver = actionResolver,
+                            dispatcher = actionDispatcher,
+                            state = browserState,
+                            ctx = actionContext,
                             favorites = library.favorites(),
-                            onToggleFavorite = {
-                                activeTab?.let { tab ->
-                                    library.toggleFavorite(tab.current.uri, tab.current.name)
-                                    refresh()
-                                }
-                            },
-                            onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
-                            onRecycle = { recycleDialog = true },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
                         HorizontalDivider(Modifier.width(1.dp).fillMaxHeight())
@@ -1669,42 +1633,6 @@ private fun FylzV1Workspace(
             ctx = actionContext,
             onDismiss = { commandPaletteOpen = false },
         )
-    }
-}
-
-@Composable
-private fun LibraryRail(
-    activeTab: FolderTab?,
-    favorites: List<io.github.mbaliga.fylz.library.FavoriteLocation>,
-    onToggleFavorite: () -> Unit,
-    onOpenRoot: () -> Unit,
-    onRecycle: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Surface(modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Workspace", style = MaterialTheme.typography.titleMedium)
-            FilledTonalButton(onClick = onOpenRoot, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.FolderOpen, null)
-                Text("Open root", Modifier.padding(start = 8.dp))
-            }
-            OutlinedButton(onClick = onToggleFavorite, enabled = LegacyAvailability.favouriteEnabled(activeTab != null), modifier = Modifier.fillMaxWidth()) {
-                Icon(
-                    if (activeTab?.current?.uri in favorites.map { it.uri }) Icons.Outlined.Star else Icons.Outlined.StarBorder,
-                    null,
-                )
-                Text("Favourite", Modifier.padding(start = 8.dp))
-            }
-            OutlinedButton(onClick = onRecycle, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Outlined.RestoreFromTrash, null)
-                Text("Recycle Bin", Modifier.padding(start = 8.dp))
-            }
-            HorizontalDivider()
-            Text("FAVOURITES", style = MaterialTheme.typography.labelSmall)
-            favorites.forEach { Text(it.name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            Spacer(Modifier.weight(1f))
-            Text("SAF providers supply local, cloud, USB, SMB and SFTP roots installed on the device.", style = MaterialTheme.typography.labelSmall)
-        }
     }
 }
 
@@ -2270,171 +2198,3 @@ private fun formatBytes(bytes: Long): String {
     } while (value >= 1_024 && unit < units.lastIndex)
     return "%.1f %s".format(value, units[unit])
 }
-
-/**
- * The left room: every open location, plus the ways to get another one.
- *
- * This replaces the numbered chip row that used to sit above the file list. The chips were a
- * second navigation surface stacked on the first, they mis-aligned on device, and — the deeper
- * problem — they made "which folder am I in" a horizontal scroll through abbreviations. As rows
- * in the word wheel the same locations are readable, and reaching them is the same gesture as
- * everything else in the app.
- *
- * The wheel's `selectedId` uses a sentinel for the home surface rather than a nullable id: the
- * rail always has exactly one focused row, and "no tab open" is a real place in this app (the
- * storage home screen), not the absence of one.
- */
-@Composable
-private fun LocationsRoom(
-    tabs: List<FolderTab>,
-    activeTabId: String?,
-    onSelect: (String) -> Unit,
-    onOpenHome: () -> Unit,
-    onClose: (FolderTab) -> Unit,
-    onAdd: () -> Unit,
-) {
-    val items = remember(tabs) {
-        buildList {
-            add(WheelItem(HOME_WHEEL_ID, "Home"))
-            tabs.forEach { add(WheelItem(it.id, it.current.name.ifBlank { "Folder" })) }
-            add(WheelItem(ADD_WHEEL_ID, "Add a location…"))
-        }
-    }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .statusBarsPadding()
-            .padding(start = 24.dp, end = 16.dp, top = 32.dp, bottom = 32.dp),
-    ) {
-        WordWheelRail(
-            items = items,
-            selectedId = activeTabId ?: HOME_WHEEL_ID,
-            onSelect = { id ->
-                when (id) {
-                    HOME_WHEEL_ID -> onOpenHome()
-                    ADD_WHEEL_ID -> onAdd()
-                    else -> onSelect(id)
-                }
-            },
-            inkColor = MaterialTheme.colorScheme.onSurface,
-            accentColor = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f),
-            trailing = { item ->
-                // Only the focused row gets a trailing slot, so closing is offered for the
-                // location you are actually looking at — which is also the only one where
-                // "close" has an unambiguous meaning.
-                tabs.firstOrNull { it.id == item.id }?.let { tab ->
-                    IconButton(onClick = { onClose(tab) }, modifier = Modifier.size(40.dp)) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "Close ${tab.current.name}",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            },
-        )
-    }
-}
-
-/** What a row in the tools room does. */
-private enum class ToolsAction { RECYCLE_BIN, REMOTES, WEBDAV, TOOLS, INDEX }
-
-/**
- * The right room: the app's own tools and settings.
- *
- * These were all buried in the file browser's overflow menu, which had eleven items and no
- * shape because it mixed "make a folder here" with "open the index manager". They are not
- * actions on the folder you are looking at; they are the app, and they get a surface.
- *
- * It renders in Fylz's theme like everything else here. That is the fix for the light-coloured
- * Tools screen inside a dark app: the destination activities were painting under a bare
- * `MaterialTheme`, and so was this menu's host.
- */
-@Composable
-private fun ToolsRoom(
-    themeMode: ThemeMode,
-    onThemeModeChange: (ThemeMode) -> Unit,
-    onAction: (ToolsAction) -> Unit,
-) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        RoomHeading("Tools")
-        ToolsRow("Recycle Bin") { onAction(ToolsAction.RECYCLE_BIN) }
-        ToolsRow(stringResource(R.string.remotes_title)) { onAction(ToolsAction.REMOTES) }
-        ToolsRow("Quick WebDAV listing") { onAction(ToolsAction.WEBDAV) }
-        ToolsRow(stringResource(R.string.tools_title)) { onAction(ToolsAction.TOOLS) }
-        ToolsRow(stringResource(R.string.tools_index)) { onAction(ToolsAction.INDEX) }
-
-        Spacer(Modifier.size(20.dp))
-        RoomHeading("Appearance")
-        ThemeMode.entries.forEach { mode ->
-            val selected = mode == themeMode
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { onThemeModeChange(mode) }
-                    .padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // A filled square for the chosen mode rather than a RadioButton: the same
-                // marker the rail uses, so the two rooms read as one app.
-                Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
-                    if (selected) {
-                        Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
-                    }
-                }
-                Text(
-                    mode.readableLabel(),
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RoomHeading(text: String) {
-    Text(
-        text.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(bottom = 8.dp),
-    )
-}
-
-@Composable
-private fun ToolsRow(label: String, onClick: () -> Unit) {
-    Text(
-        label,
-        style = MaterialTheme.typography.bodyLarge,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-    )
-}
-
-/** Sentence-case names for the theme modes; the enum's own names are shouting. */
-private fun ThemeMode.readableLabel(): String = when (this) {
-    ThemeMode.SYSTEM -> "Follow the system"
-    ThemeMode.LIGHT -> "Light"
-    ThemeMode.DARK -> "Dark"
-}
-
-/** The storage home surface's row in the locations wheel. Not a tab, but a real destination. */
-private const val HOME_WHEEL_ID = "__home__"
-
-/** The picker's row. A verb in a list of nouns, which is why it sits at the end. */
-private const val ADD_WHEEL_ID = "__add__"

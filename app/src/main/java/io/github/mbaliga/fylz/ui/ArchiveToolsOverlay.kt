@@ -8,13 +8,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.FolderZip
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
@@ -22,7 +18,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -38,8 +33,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.actions.ActionResolver
+import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.data.ArchiveInspection
 import io.github.mbaliga.fylz.data.ArchiveService
+import io.github.mbaliga.fylz.ui.actions.ArchiveToolsMenuDialog
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -51,7 +49,7 @@ private enum class ArchivePasswordPurpose {
 }
 
 @Composable
-fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
+fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val service = remember { ArchiveService(context.applicationContext) }
@@ -160,43 +158,18 @@ fun ArchiveToolsOverlay(modifier: Modifier = Modifier) {
     }
 
     if (menuOpen) {
-        AlertDialog(
-            onDismissRequest = { if (!busy) menuOpen = false },
-            icon = { Icon(Icons.Outlined.FolderZip, contentDescription = null) },
-            title = { Text("Archive tools") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "Create standard or AES-256 password-protected ZIP files, or inspect and safely extract an existing ZIP.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Button(
-                        onClick = {
-                            menuOpen = false
-                            sourcePicker.launch(arrayOf("*/*"))
-                        },
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Archive, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Create ZIP")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            menuOpen = false
-                            archivePicker.launch(ZIP_MIME_TYPES)
-                        },
-                        enabled = !busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Outlined.Unarchive, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Inspect and extract ZIP")
-                    }
+        ArchiveToolsMenuDialog(
+            resolver = resolver,
+            state = state,
+            busy = busy,
+            onDismiss = { menuOpen = false },
+            onSelect = { id ->
+                menuOpen = false
+                when (id.value) {
+                    "fylz.protect" -> sourcePicker.launch(arrayOf("*/*"))
+                    "fylz.archive.inspect" -> archivePicker.launch(ZIP_MIME_TYPES)
                 }
             },
-            confirmButton = { TextButton(onClick = { menuOpen = false }) { Text("Done") } },
         )
     }
 

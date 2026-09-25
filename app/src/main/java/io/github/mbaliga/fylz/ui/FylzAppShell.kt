@@ -2,34 +2,6 @@ package io.github.mbaliga.fylz.ui
 
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.Backup
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.RestorePage
-import androidx.compose.material.icons.outlined.SettingsBackupRestore
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -37,13 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.operations.FileOperation
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationJournal
@@ -59,14 +25,16 @@ import kotlinx.coroutines.launch
  *
  * There is no chrome left. Recovery used to be one of two `NavigationBarItem`s across the
  * bottom of the app; it is a **room** now — a surface parked off the bottom edge that the file
- * workspace lifts and parts to reveal, rendered by [FylzV1App]'s [SpatialShell]. Tabs went for
+ * workspace lifts and parts to reveal, rendered by [FylzV1App]'s `SpatialShell`. Tabs went for
  * the reason the owner gave after the first test build: a bottom tab bar is not the fonebrew
  * pattern, and two permanent tabs for a screen most sessions never open is chrome charging rent.
  *
- * This function keeps only what Recovery *needs* — the journal and the operation history dialog
- * — and hands the room down as content. That matters for more than tidiness: the content is
- * composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own colours
- * instead of the bare `MaterialTheme` default it used to sit in.
+ * The room's content itself is built by [FylzV1App]/`FylzV1Workspace` straight from the action
+ * registry (design MC.0d) -- one `RecoveryActionCard` per resolved `Room(RECOVERY)` action, in
+ * `ui/actions/RoomActionsRenderer.kt` -- since that is where the registry, resolver and dispatcher
+ * already live. This function keeps only what Recovery *needs* that the registry can't supply
+ * itself: the operations journal, and `showHistory`/`operationsNeedingAttention`, threaded down so
+ * the Operation-history card's FAB and its attention count stay wired to this journal instance.
  */
 @Composable
 fun FylzAppShell(viewUri: Uri? = null) {
@@ -83,18 +51,12 @@ fun FylzAppShell(viewUri: Uri? = null) {
     val operations by journal.operations.collectAsState()
     // Also handed to FylzV1App/FylzV1Workspace's own BrowserState (P1.10-style split state --
     // FylzAppShell owns showHistory and the operations journal, FylzV1Workspace owns everything
-    // else a registry condition reads) via onShowHistory/operationsNeedingAttention below; the
-    // RecoveryHome card above keeps computing this the same way it always has.
+    // else a registry condition reads, including the Recovery room's own cards) via
+    // onShowHistory/operationsNeedingAttention below.
     val attentionCount = operations.count { it.state == OperationState.NEEDS_ATTENTION }
 
     FylzV1App(
         viewUri = viewUri,
-        recoveryRoom = {
-            RecoveryHome(
-                operations = operations,
-                onOpenOperations = { showHistory = true },
-            )
-        },
         onShowHistory = { showHistory = true },
         operationsNeedingAttention = attentionCount,
     ) {
@@ -145,107 +107,6 @@ fun FylzAppShell(viewUri: Uri? = null) {
                     }
                 },
             )
-        }
-    }
-}
-
-@Composable
-private fun RecoveryHome(
-    operations: List<FileOperation>,
-    onOpenOperations: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val attentionCount = operations.count { it.state == OperationState.NEEDS_ATTENTION }
-    Column(
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-    ) {
-        Text("Storage & recovery", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            "Review file operations, restore earlier file versions, manage backups, and safely work with ZIP archives.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        RecoveryActionCard(
-            icon = Icons.Outlined.History,
-            title = "Operation history",
-            description = if (attentionCount == 0) {
-                "Review completed, failed, cancelled, and interrupted file operations."
-            } else {
-                "$attentionCount operation${if (attentionCount == 1) "" else "s"} need attention."
-            },
-            action = {
-                FloatingActionButton(onClick = onOpenOperations) {
-                    Icon(Icons.Outlined.History, contentDescription = "Open operation history")
-                }
-            },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.History,
-            title = "File history",
-            description = "Configure local version retention, inspect saved versions, and perform verified restores.",
-            action = { FileHistoryOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.Backup,
-            title = "Backup plans",
-            description = "Create, schedule, run, inspect, restore, and delete transactional backups.",
-            action = { BackupOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.RestorePage,
-            title = "Import existing backups",
-            description = "Rediscover verified manifest-bearing backup folders after reinstall or app-data loss.",
-            action = { BackupImportOverlay() },
-        )
-        RecoveryActionCard(
-            icon = Icons.Outlined.Archive,
-            title = "Archive tools",
-            description = "Create standard or AES-256 protected ZIP files, inspect archives, and extract through safety limits.",
-            action = { ArchiveToolsOverlay() },
-        )
-
-        Text(
-            "Recovery metadata stays private to this app and is excluded from Android cloud backup. External backup snapshots and archives remain in the destinations you selected.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp, bottom = 24.dp),
-        )
-    }
-}
-
-@Composable
-private fun RecoveryActionCard(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    action: @Composable () -> Unit,
-) {
-    Surface(
-        shape = MaterialTheme.shapes.extraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(18.dp),
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp))
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            action()
         }
     }
 }
