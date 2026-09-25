@@ -33,5 +33,18 @@ class FylzOperationContractTest {
             )
         }
     }
-}
 
+    @Test fun extractionMayTargetSelectedRootButRequiresHash() {
+        val request = FylzExternalOperationRequest(
+            requestId = "request-extract",
+            kind = FylzExternalOperationKind.EXTRACT_PACKAGE,
+            sourceUri = Uri.parse("content://downloads/document/payload"),
+            destinationTreeUri = Uri.parse("content://storage/tree/kindle"),
+            expectedSha256 = "b".repeat(64),
+        )
+        assertEquals("content://io.github.mbaliga.fylz.operations/status/request-extract", FylzOperationContract.statusUri(request.requestId).toString())
+        assertThrows(IllegalArgumentException::class.java) {
+            request.copy(expectedSha256 = null)
+        }
+    }
+}

@@ -4,7 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 
-enum class FylzExternalOperationKind { RECURSIVE_BACKUP, STAGE_PACKAGE, COPY, SHA256 }
+enum class FylzExternalOperationKind { RECURSIVE_BACKUP, STAGE_PACKAGE, EXTRACT_PACKAGE, COPY, SHA256 }
 enum class FylzExternalOperationState { QUEUED, RUNNING, SUCCEEDED, FAILED, INTERRUPTED, CANCELLED }
 
 data class FylzExternalOperationRequest(
@@ -22,12 +22,18 @@ data class FylzExternalOperationRequest(
             "Fylz only accepts opaque content:// destination capabilities."
         }
         require(expectedSha256 == null || SHA256.matches(expectedSha256)) { "Expected SHA-256 is invalid." }
-        if (kind in setOf(FylzExternalOperationKind.RECURSIVE_BACKUP, FylzExternalOperationKind.STAGE_PACKAGE, FylzExternalOperationKind.COPY)) {
+        if (kind in setOf(FylzExternalOperationKind.RECURSIVE_BACKUP, FylzExternalOperationKind.STAGE_PACKAGE, FylzExternalOperationKind.EXTRACT_PACKAGE, FylzExternalOperationKind.COPY)) {
             require(destinationTreeUri != null) { "$kind requires a destination tree." }
         }
         if (kind == FylzExternalOperationKind.STAGE_PACKAGE) {
             require(isSafeRelativePath(destinationRelativePath)) { "Package staging requires a safe destination path." }
             require(expectedSha256 != null) { "Package staging requires an expected SHA-256." }
+        }
+        if (kind == FylzExternalOperationKind.EXTRACT_PACKAGE) {
+            require(destinationRelativePath == null || isSafeRelativePath(destinationRelativePath)) {
+                "Package extraction destination is unsafe."
+            }
+            require(expectedSha256 != null) { "Package extraction requires an expected SHA-256." }
         }
     }
 
@@ -43,6 +49,7 @@ object FylzOperationContract {
     const val PERMISSION_OPERATE = "io.github.mbaliga.fylz.permission.OPERATE"
     const val ACTION_EXECUTE = "io.github.mbaliga.fylz.action.EXECUTE_OPERATION"
     const val ACTION_CANCEL = "io.github.mbaliga.fylz.action.CANCEL_OPERATION"
+    const val STATUS_AUTHORITY = "io.github.mbaliga.fylz.operations"
     const val EXTRA_VERSION = "io.github.mbaliga.fylz.extra.OPERATION_CONTRACT_VERSION"
     const val EXTRA_REQUEST_ID = "io.github.mbaliga.fylz.extra.REQUEST_ID"
     const val EXTRA_KIND = "io.github.mbaliga.fylz.extra.OPERATION_KIND"
@@ -57,6 +64,9 @@ object FylzOperationContract {
     const val EXTRA_SHA256 = "io.github.mbaliga.fylz.extra.SHA256"
     const val EXTRA_OUTPUT_URI = "io.github.mbaliga.fylz.extra.OUTPUT_URI"
     const val EXTRA_ERROR_CODE = "io.github.mbaliga.fylz.extra.ERROR_CODE"
+
+    fun statusUri(requestId: String): Uri =
+        Uri.Builder().scheme("content").authority(STATUS_AUTHORITY).appendPath("status").appendPath(requestId).build()
 
     fun decode(intent: Intent): Pair<FylzExternalOperationRequest, PendingIntent> {
         require(intent.action == ACTION_EXECUTE) { "Unsupported Fylz operation action." }
@@ -98,4 +108,3 @@ private fun isSafeRelativePath(path: String?): Boolean {
     if (path.isNullOrBlank() || path.startsWith('/') || '\u0000' in path) return false
     return path.replace('\\', '/').split('/').none { it.isBlank() || it == "." || it == ".." }
 }
-
