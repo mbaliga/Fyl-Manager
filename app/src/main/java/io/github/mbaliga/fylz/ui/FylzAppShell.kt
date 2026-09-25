@@ -81,6 +81,11 @@ fun FylzAppShell(viewUri: Uri? = null) {
     // Compose's own dispatcher, forever, for the app's whole lifetime) -- see OperationJournal's
     // own KDoc.
     val operations by journal.operations.collectAsState()
+    // Also handed to FylzV1App/FylzV1Workspace's own BrowserState (P1.10-style split state --
+    // FylzAppShell owns showHistory and the operations journal, FylzV1Workspace owns everything
+    // else a registry condition reads) via onShowHistory/operationsNeedingAttention below; the
+    // RecoveryHome card above keeps computing this the same way it always has.
+    val attentionCount = operations.count { it.state == OperationState.NEEDS_ATTENTION }
 
     FylzV1App(
         viewUri = viewUri,
@@ -90,6 +95,8 @@ fun FylzAppShell(viewUri: Uri? = null) {
                 onOpenOperations = { showHistory = true },
             )
         },
+        onShowHistory = { showHistory = true },
+        operationsNeedingAttention = attentionCount,
     ) {
         if (showHistory) {
             OperationHistoryDialog(

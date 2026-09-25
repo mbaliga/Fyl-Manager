@@ -203,11 +203,18 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.outlined.Close
 import io.github.mbaliga.fylz.browse.entryStops
 import dev.aarso.cellshell.EdgeTimelineScrubber
+import dev.aarso.cellshell.RoomEdge
 import dev.aarso.cellshell.ShakeToRefresh
 import dev.aarso.cellshell.SpatialShell
 import dev.aarso.cellshell.WheelItem
 import dev.aarso.cellshell.WordWheelRail
 import dev.aarso.cellshell.rememberSpatialController
+import io.github.mbaliga.fylz.actions.ActionContext
+import io.github.mbaliga.fylz.actions.ActionRegistry
+import io.github.mbaliga.fylz.actions.BrowserState
+import io.github.mbaliga.fylz.actions.BuiltInActions
+import io.github.mbaliga.fylz.actions.RoomId
+import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -330,6 +337,8 @@ private suspend fun runPreflight(context: Context, sources: List<Uri>, destinati
 fun FylzV1App(
     viewUri: Uri? = null,
     recoveryRoom: @Composable () -> Unit = {},
+    onShowHistory: () -> Unit = {},
+    operationsNeedingAttention: Int = 0,
     overlays: @Composable () -> Unit = {},
 ) {
     var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
@@ -343,6 +352,8 @@ fun FylzV1App(
             onThemeModeChange = { themeMode = it },
             recoveryRoom = recoveryRoom,
             viewUri = viewUri,
+            onShowHistory = onShowHistory,
+            operationsNeedingAttention = operationsNeedingAttention,
         )
         overlays()
     }
@@ -354,6 +365,8 @@ private fun FylzV1Workspace(
     onThemeModeChange: (ThemeMode) -> Unit,
     recoveryRoom: @Composable () -> Unit,
     viewUri: Uri? = null,
+    onShowHistory: () -> Unit = {},
+    operationsNeedingAttention: Int = 0,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -956,6 +969,175 @@ private fun FylzV1Workspace(
         }
     }
 
+    // MC.0a (design §2.8 item 1): the registry and its BrowserState/ActionContext wiring are
+    // constructed and tested here, but nothing renders from them yet -- every menu below still
+    // calls its own lambdas directly, unchanged. `recycleSelection`/`refresh` are captured through
+    // a differently-named reference so the ActionContext overrides of the same name don't recurse
+    // into themselves.
+    val doRecycleSelection = ::recycleSelection
+    val doRefresh = ::refresh
+
+    // Not `remember`-wrapped: its methods close over plain (non-`remember`ed) locals recomputed on
+    // every recomposition (`selectedEntries`, `activeTab`, …) -- a keyless `remember` would freeze
+    // those at first composition, and keying it on everything it touches would rebuild it just as
+    // often anyway, so a fresh object per recomposition is both simpler and actually correct.
+    val actionContext = object : ActionContext {
+        override fun cut() { clipboard = FylzClipboard(ClipboardMode.CUT, selectedEntries) }
+        override fun copy() { clipboard = FylzClipboard(ClipboardMode.COPY, selectedEntries) }
+        override fun copyTo() {
+            pendingDestinationChooser = DestinationChooserRequest(PendingDestinationAction.COPY, selectedEntries.map { it.uri }, null)
+        }
+        override fun moveTo() {
+            pendingDestinationChooser = DestinationChooserRequest(PendingDestinationAction.MOVE, selectedEntries.map { it.uri }, null)
+        }
+        override fun recycleSelection() { doRecycleSelection() }
+        override fun rename() { renameDialog = true }
+        override fun tags() { tagDialog = true }
+        override fun compress() { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") }
+        override fun extract() {
+            val archiveUri = selectedEntries.firstOrNull()?.uri ?: return
+            pendingArchiveUri = archiveUri
+            extractPassword = ""
+            scope.launch {
+                val encrypted = runCatching { archiveService.inspectZip(archiveUri).encrypted }.getOrDefault(false)
+                if (encrypted) {
+                    extractPasswordDialog = true
+                } else {
+                    pendingDestinationAction = PendingDestinationAction.EXTRACT
+                    destinationPicker.launch(null)
+                }
+            }
+        }
+        override fun batchRename() { batchRenameDialog = true }
+        override fun pdfTools() { pdfDialog = true }
+        override fun share() {
+            val uris = ArrayList(selectedEntries.map { it.uri })
+            val intent = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).setType(selectedEntries.first().mimeType).putExtra(Intent.EXTRA_STREAM, uris.first())
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).setType("*/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
+        }
+        override fun clearSelection() { selectedUris = emptySet() }
+
+        override fun paste() { pasteClipboard() }
+        override fun clearClipboard() { clipboard = null }
+        override fun toggleViewMode() { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }
+        override fun refresh() { doRefresh() }
+
+        override fun newFolder() { createDialog = "folder" }
+        override fun newFile() { createDialog = "file" }
+        override fun scanToPdf() { startScan() }
+        override fun findDuplicates() {
+            scope.launch {
+                loading = true
+                runCatching { fileTools.findDuplicates(entries.filterNot { it.isDirectory }.map { it.uri }) }
+                    .onSuccess { groups ->
+                        duplicateResult = if (groups.isEmpty()) {
+                            "No duplicate files found in this folder."
+                        } else {
+                            groups.joinToString("\n\n") { group ->
+                                "${group.items.size} files · ${formatBytes(group.sizeBytes)}\n${group.items.joinToString("\n")}"
+                            }
+                        }
+                    }
+                    .onFailure { toast(it.message ?: "Duplicate scan failed") }
+                loading = false
+            }
+        }
+        override fun aiOrganize() { aiDialog = true }
+
+        override fun navigateUp() {
+            val tab = activeTab ?: return
+            val index = tabs.indexOfFirst { it.id == tab.id }
+            if (index >= 0 && tab.locations.size > 1) {
+                tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
+            }
+        }
+        override fun selectAll() { selectedUris = visibleEntries.map { it.uri }.toSet() }
+
+        override fun setSortField(field: SortField) { sortSpec = sortSpec.withField(field) }
+        override fun toggleFoldersFirst() { sortSpec = sortSpec.copy(foldersFirst = !sortSpec.foldersFirst) }
+
+        override fun open(entry: FileEntry) { openEntry(entry) }
+        override fun openWith(entry: FileEntry) { openExternal(entry) }
+        override fun toggleSelected(entry: FileEntry) {
+            selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
+            focusedEntry = entry.takeUnless(FileEntry::isDirectory)
+        }
+
+        override fun addTab() { shell.closeAll(); rootPicker.launch(null) }
+        override fun closeTab(tabId: String) {
+            val tab = tabs.firstOrNull { it.id == tabId } ?: return
+            val wasActive = activeTabId == tab.id
+            tabs.remove(tab)
+            if (wasActive) activeTabId = tabs.lastOrNull()?.id
+        }
+
+        override fun openRoot() { activeTabId = null; homeRefreshKey += 1 }
+        override fun toggleFavourite() {
+            activeTab?.let { tab -> library.toggleFavorite(tab.current.uri, tab.current.name); doRefresh() }
+        }
+        override fun openRecycleBin() { shell.closeAll(); recycleDialog = true }
+
+        override fun openRemotes() { shell.closeAll(); remoteDialog = true }
+        override fun openWebDavQuick() { shell.closeAll(); webDavDialog = true }
+        override fun openToolsActivity() {
+            shell.closeAll()
+            runCatching { context.startActivity(Intent(context, PostV1ToolsActivity::class.java)) }
+                .onFailure { toast("Tools are unavailable on this build") }
+        }
+        override fun openIndexActivity() {
+            shell.closeAll()
+            runCatching { context.startActivity(Intent(context, IndexManagerActivity::class.java)) }
+                .onFailure { toast("The index manager is unavailable") }
+        }
+        override fun setThemeMode(mode: ThemeMode) { onThemeModeChange(mode) }
+
+        override fun showOperationHistory() { onShowHistory() }
+
+        override fun openRoom(room: RoomId) {
+            when (room) {
+                RoomId.LOCATIONS -> shell.open(RoomEdge.LEFT)
+                RoomId.TOOLS -> shell.open(RoomEdge.RIGHT)
+                RoomId.RECOVERY -> shell.open(RoomEdge.BOTTOM)
+                RoomId.LIBRARY_RAIL -> Unit
+            }
+        }
+    }
+
+    // Static across the app's lifetime -- BuiltInActions.all()'s `run` lambdas take
+    // (ActionContext, BrowserState, ActionTarget?) as parameters; nothing here closes over this
+    // composable's own local state, so remembering it once is always correct, not just cheap.
+    val actionRegistry = remember { ActionRegistry(BuiltInActions.all()) }
+
+    val browserState = remember(
+        activeTab, entries, visibleEntries, selectedEntries, selectedUris, focusedEntry, clipboard,
+        sortSpec, viewMode, previewMode, query, searchRecursive, themeMode, legacyBinNames,
+        operationsNeedingAttention, refreshKey,
+    ) {
+        BrowserState(
+            hasActiveTab = activeTab != null,
+            canNavigateUp = LegacyAvailability.canNavigateUp(activeTab?.locations),
+            entries = entries,
+            visibleEntries = visibleEntries,
+            selection = selectedEntries,
+            selectionOrder = selectedUris.toList(),
+            focused = focusedEntry,
+            clipboard = clipboard,
+            sortSpec = sortSpec,
+            viewMode = viewMode,
+            previewMode = previewMode,
+            query = query,
+            searchRecursive = searchRecursive,
+            themeMode = themeMode,
+            currentFolderIsFavourite = activeTab?.current?.uri?.let { uri -> library.favorites().any { it.uri == uri } } ?: false,
+            legacyBinCount = legacyBinNames.size,
+            operationsNeedingAttention = operationsNeedingAttention,
+        )
+    }
+
     // Back closes an open room before it does anything else: a room is not a back-stack entry,
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
@@ -1038,7 +1220,7 @@ private fun FylzV1Workspace(
                         clipboard?.let { cb ->
                             InputChip(
                                 selected = false,
-                                enabled = activeTab != null,
+                                enabled = LegacyAvailability.clipboardChipEnabled(activeTab != null),
                                 onClick = ::pasteClipboard,
                                 label = { Text(clipboardChipLabel(cb)) },
                                 leadingIcon = {
@@ -1073,19 +1255,19 @@ private fun FylzV1Workspace(
                                 DropdownMenuItem(
                                     text = { Text("New folder") },
                                     leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
-                                    enabled = activeTab != null,
+                                    enabled = LegacyAvailability.newFolderEnabled(activeTab != null),
                                     onClick = { moreExpanded = false; createDialog = "folder" },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("New text file") },
                                     leadingIcon = { Icon(Icons.Outlined.TextSnippet, null) },
-                                    enabled = activeTab != null,
+                                    enabled = LegacyAvailability.newFileEnabled(activeTab != null),
                                     onClick = { moreExpanded = false; createDialog = "file" },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Scan to PDF") },
                                     leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, null) },
-                                    enabled = activeTab != null,
+                                    enabled = LegacyAvailability.scanToPdfEnabled(activeTab != null),
                                     onClick = { moreExpanded = false; startScan() },
                                 )
                                 // Recycle Bin, Remotes, WebDAV, Tools, the index manager and
@@ -1096,7 +1278,7 @@ private fun FylzV1Workspace(
                                 // acts on the folder you are looking at.
                                 DropdownMenuItem(
                                     text = { Text("Find duplicates") },
-                                    enabled = entries.count { !it.isDirectory } > 1,
+                                    enabled = LegacyAvailability.findDuplicatesEnabled(entries),
                                     onClick = {
                                         moreExpanded = false
                                         scope.launch {
@@ -1118,7 +1300,7 @@ private fun FylzV1Workspace(
                                 )
                                 DropdownMenuItem(
                                     text = { Text("AI organize proposal") },
-                                    enabled = focusedEntry != null,
+                                    enabled = LegacyAvailability.aiOrganizeEnabled(focusedEntry),
                                     onClick = { moreExpanded = false; aiDialog = true },
                                 )
                             }
@@ -1130,12 +1312,9 @@ private fun FylzV1Workspace(
                 if (selectedEntries.isNotEmpty()) {
                     SelectionActionBar(
                         count = selectedEntries.size,
-                        canRename = selectedEntries.size == 1,
-                        canExtract = selectedEntries.size == 1 &&
-                            selectedEntries.first().kind == EntryKind.ARCHIVE &&
-                            isZipFamilyArchive(selectedEntries.first().name),
-                        canPdfTools = selectedEntries.isNotEmpty() &&
-                            selectedEntries.all { it.kind == EntryKind.PDF },
+                        canRename = LegacyAvailability.canRename(selectedEntries),
+                        canExtract = LegacyAvailability.canExtract(selectedEntries),
+                        canPdfTools = LegacyAvailability.canPdfTools(selectedEntries),
                         onPdfTools = { pdfDialog = true },
                         onCut = { clipboard = FylzClipboard(ClipboardMode.CUT, selectedEntries) },
                         onCopyToClipboard = { clipboard = FylzClipboard(ClipboardMode.COPY, selectedEntries) },
@@ -1664,7 +1843,7 @@ private fun LibraryRail(
                 Icon(Icons.Outlined.FolderOpen, null)
                 Text("Open root", Modifier.padding(start = 8.dp))
             }
-            OutlinedButton(onClick = onToggleFavorite, enabled = activeTab != null, modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onToggleFavorite, enabled = LegacyAvailability.favouriteEnabled(activeTab != null), modifier = Modifier.fillMaxWidth()) {
                 Icon(
                     if (activeTab?.current?.uri in favorites.map { it.uri }) Icons.Outlined.Star else Icons.Outlined.StarBorder,
                     null,
@@ -1733,7 +1912,7 @@ private fun FileBrowser(
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(
                 onClick = onNavigateUp,
-                enabled = activeTab.locations.size > 1,
+                enabled = LegacyAvailability.canNavigateUp(activeTab.locations),
                 modifier = Modifier.size(48.dp),
             ) {
                 Icon(Icons.Outlined.ArrowBack, stringResource(R.string.browser_parent_folder))
@@ -1749,7 +1928,7 @@ private fun FileBrowser(
             SortMenu(sortSpec, onSortSpecChange)
             IconButton(
                 onClick = onSelectAll,
-                enabled = entries.isNotEmpty(),
+                enabled = LegacyAvailability.selectAllEnabled(entries),
                 modifier = Modifier.size(48.dp),
             ) {
                 Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))

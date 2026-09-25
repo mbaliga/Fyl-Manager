@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/fylz-types",
+    "crates/fylz-actions",
     "crates/fylz-archive",
     "crates/fylz-sniff",
     "crates/fylz-rename",
