@@ -86,8 +86,23 @@ Notable dependencies as of M2.2:
   **zlib licence** (`core/third_party/zlib/LICENSE`, Copyright (C) 1995-2026 Jean-loup Gailly and
   Mark Adler): the origin must not be misrepresented, altered versions must be plainly marked, and
   the notice may not be removed — the sources are unaltered and the notice stays in the submodule.
+- bzip2 1.0.8 (`core/third_party/bzip2`, a git submodule of `https://sourceware.org/git/bzip2.git`
+  pinned to release tag `bzip2-1.0.8`, commit `6a8690fc8d26c815e798c588f796eabe9d684cf0`, M3.1
+  part 2d) — statically linked into `fylz-archive` as libarchive's bzip2 filter backend, never a
+  Cargo dependency. The tag has no CMake build, so `build.rs` compiles exactly the `Makefile`'s
+  library objects (`blocksort.c huffman.c crctable.c randtable.c compress.c decompress.c bzlib.c`)
+  with the `cc` crate; the `bzip2`/`bzip2recover` programs, tests and documentation are not built.
+  **bzip2 licence** (SPDX `bzip2-1.0.6`; `core/third_party/bzip2/LICENSE`, copyright (C) 1996-2019
+  Julian R Seward), BSD-style, with four conditions that this distribution meets and passes on:
+  redistributions of source code retain the copyright notice, the list of conditions and the
+  disclaimer (the unaltered `LICENSE` stays in the submodule); the origin of the software is not
+  misrepresented; the sources are unaltered, and any altered version must be plainly marked as
+  such; and the author's name is not used to endorse or promote products derived from it. Its
+  `README` adds a PATENTS note: to the author's knowledge bzip2/libbzip2 uses no patented
+  algorithms, but no patent search was carried out and no guarantee is given.
 - `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
-  M3.1) are covered by `cargo deny` and never linked into the APK.
+  M3.1; `cc` is now also a direct build-dependency of `fylz-archive`, for bzip2) are covered by
+  `cargo deny` and never linked into the APK.
 
 ## Test-only dependency
 

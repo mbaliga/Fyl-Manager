@@ -29,7 +29,8 @@
 //! libarchive's own CMake build silently drops a format that needs a library it can't find rather
 //! than failing. Compression backends (zlib, bzip2, xz, zstd, lz4 -- all permissive, per section
 //! 2.2) are added one at a time, each verified to still build before the next is added, never all
-//! at once: lz4 (M3.1 part 2a), zstd (part 2b), zlib (part 2c), the rest in follow-up tasks.
+//! at once: lz4 (M3.1 part 2a), zstd (part 2b), zlib (part 2c), bzip2 (part 2d), the rest in
+//! follow-up tasks.
 //!
 //! Every companion, and libarchive itself, is built with `CMAKE_INSTALL_LIBDIR=lib` pinned
 //! explicitly: `GNUInstallDirs` (which all of these projects use) picks `lib64` on Fedora/RHEL-
@@ -91,6 +92,46 @@ fn build_companion(target: &str, name: &str, src: &Path, options: &[(&str, &str)
     }
     configure_android_toolchain(target, name, &mut cfg);
     cfg.build()
+}
+
+/// Builds bzip2 (`core/third_party/bzip2`, whose pinned tag ships only a `Makefile`, no CMake) as
+/// `$OUT_DIR/bzip2/libbz2.a` with the `cc` crate: exactly the `Makefile`'s `OBJS` sources, its
+/// `-O2` (matching the `Release` profile every CMake companion gets, whatever the cargo profile),
+/// and its `BIGFILES` define. `cc` reads cargo-ndk's `CC_<target>`/`AR_<target>` for Android, so
+/// this follows the same host-vs-`cargo ndk` routing as [build_companion] without a toolchain
+/// file. Returns the directory holding `libbz2.a`; the caller emits the link lines (cargo
+/// metadata is off here so `static=bz2` lands after `static=archive`, once, like every other
+/// companion's).
+fn build_bzip2(src: &Path) -> PathBuf {
+    const SOURCES: [&str; 7] = [
+        "blocksort.c",
+        "huffman.c",
+        "crctable.c",
+        "randtable.c",
+        "compress.c",
+        "decompress.c",
+        "bzlib.c",
+    ];
+    for file in SOURCES.iter().chain(["bzlib.h", "bzlib_private.h"].iter()) {
+        println!("cargo:rerun-if-changed={}", src.join(file).display());
+    }
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("bzip2");
+    std::fs::create_dir_all(&out_dir).expect("creating the bzip2 output directory");
+    cc::Build::new()
+        .files(SOURCES.iter().map(|file| src.join(file)))
+        .include(src)
+        // The Makefile's BIGFILES: 64-bit off_t for BZ2_bzRead/BZ2_bzWrite on 32-bit
+        // (armeabi-v7a); bionic honours it from API 24, below this crate's platform level.
+        .define("_FILE_OFFSET_BITS", "64")
+        // BZ_NO_STDIO is deliberately NOT defined: it would drop the stdio API and make bzlib's
+        // internal AssertH failures call an application-supplied bz_internal_error() that
+        // nothing here provides, turning an assertion into an unresolved symbol at link time.
+        .opt_level(2)
+        .warnings(false)
+        .cargo_metadata(false)
+        .out_dir(&out_dir)
+        .compile("bz2");
+    out_dir
 }
 
 /// The path a companion built by [build_companion] installs its static library to, given its
@@ -177,6 +218,9 @@ fn main() {
     let zlib_include = zlib_prefix.join("include");
     let zlib_library = static_lib_path(&zlib_prefix, "z");
 
+    let bzip2_src = third_party.join("bzip2");
+    let bzip2_lib_dir = build_bzip2(&bzip2_src);
+
     let libarchive_src = third_party.join("libarchive");
     println!(
         "cargo:rerun-if-changed={}",
@@ -216,7 +260,6 @@ fn main() {
         .define("ENABLE_PCRE2POSIX", "OFF")
         // Compression backends not yet added -- OFF, added incrementally in follow-up tasks (see
         // this file's own doc comment above).
-        .define("ENABLE_BZip2", "OFF")
         .define("ENABLE_LZMA", "OFF")
         .define("ENABLE_LZO", "OFF")
         // lz4: preset libarchive's own FIND_PATH/FIND_LIBRARY cache variables to the companion
@@ -238,7 +281,13 @@ fn main() {
         // `#ifdef HAVE_ZLIB_H` in archive_read_support_format_zip.c.
         .define("ENABLE_ZLIB", "ON")
         .define("ZLIB_INCLUDE_DIR", &zlib_include)
-        .define("ZLIB_LIBRARY", &zlib_library);
+        .define("ZLIB_LIBRARY", &zlib_library)
+        // bzip2: FindBZip2 skips its own find_library when BZIP2_LIBRARIES is preset (the
+        // include dir is the submodule root, where bzlib.h lives), then link-tests
+        // BZ2_bzCompressInit against it. Note the option's own odd case, ENABLE_BZip2.
+        .define("ENABLE_BZip2", "ON")
+        .define("BZIP2_INCLUDE_DIR", &bzip2_src)
+        .define("BZIP2_LIBRARIES", bzip2_lib_dir.join("libbz2.a"));
 
     configure_android_toolchain(&target, "libarchive", &mut cfg);
 
@@ -268,4 +317,6 @@ fn main() {
         zlib_prefix.join("lib").display()
     );
     println!("cargo:rustc-link-lib=static=z");
+    println!("cargo:rustc-link-search=native={}", bzip2_lib_dir.display());
+    println!("cargo:rustc-link-lib=static=bz2");
 }

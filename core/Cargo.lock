@@ -236,6 +236,7 @@ version = "0.1.0"
 name = "fylz-archive"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "cmake",
 ]
 

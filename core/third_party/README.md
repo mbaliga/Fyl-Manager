@@ -13,3 +13,4 @@ libraries follow later in M3/M4.
 | `lz4/` | lz4 (only `lib/` is compiled) | `v1.10.0` (`ebb370ca`) | BSD-2-Clause | `lz4/lib/LICENSE` |
 | `zstd/` | Zstandard (only `lib/` is compiled) | `v1.5.7` (`f8745da6`) | BSD-3-Clause, elected from the BSD-3-Clause OR GPL-2.0 dual licence (see `THIRD_PARTY_NOTICES.md`) | `zstd/LICENSE` |
 | `zlib/` | zlib (the library proper; `contrib/` is never built) | `v1.3.2` (`da607da7`) | Zlib | `zlib/LICENSE` |
+| `bzip2/` | bzip2 (only the seven `libbz2` objects, compiled by the `cc` crate -- no CMake at this tag) | `bzip2-1.0.8` (`6a8690fc`) | bzip2-1.0.6 (BSD-style; see `THIRD_PARTY_NOTICES.md`) | `bzip2/LICENSE` |

@@ -11,15 +11,16 @@ of files.
 Needs the Python `lz4` package for the lz4 fixtures, and/or `zstandard` for the zstd fixtures
 (`pip install --user lz4 zstandard`; PyPI is reachable in this project's build environment even
 when the `lz4`/`zstd` CLIs are not installed). Fails loudly naming exactly what to install rather
-than silently skipping a format. The zlib fixtures (gzip, and a ZIP with deflated entries) need
-only the standard library (`gzip`, `zipfile`).
+than silently skipping a format. The zlib fixtures (gzip, and a ZIP with deflated entries) and
+the bzip2 fixtures need only the standard library (`gzip`, `zipfile`, `bz2`).
 
-Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd] [zlib]
+Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd] [zlib] [bzip2]
   With no arguments, generates every format this script knows about.
 """
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import sys
@@ -120,10 +121,23 @@ def generate_zlib(tar_bytes: bytes) -> None:
     write(FIXTURES_DIR / "sample-deflate.zip", buf.getvalue())
 
 
+def generate_bzip2(tar_bytes: bytes) -> None:
+    compressed = bz2.compress(tar_bytes)
+    write(FIXTURES_DIR / "sample.tar.bz2", compressed)
+    # Hostile, same shape as the others: the "BZh" magic and block header survive the cut, so the
+    # filter still bids, but the single 900k block is incomplete -- and bzip2 cannot emit a byte
+    # of a block before it has read all of it (the inverse BWT needs the whole block), so nothing
+    # decodes at all; asserted below.
+    truncated = compressed[: len(compressed) // 2]
+    assert bz2.BZ2Decompressor().decompress(truncated) == b""
+    write(FIXTURES_DIR / "truncated.tar.bz2", truncated)
+
+
 GENERATORS: dict[str, Callable[[bytes], None]] = {
     "lz4": generate_lz4,
     "zstd": generate_zstd,
     "zlib": generate_zlib,
+    "bzip2": generate_bzip2,
 }
 
 
