@@ -23,6 +23,8 @@ pub mod policy;
 mod extract_tests;
 #[cfg(test)]
 mod policy_tests;
+#[cfg(test)]
+mod seek_tests;
 
 pub use policy::Decision;
 pub use policy::EntryKind;
@@ -325,6 +327,18 @@ fn describe_file_type(file_type: std::fs::FileType) -> &'static str {
 #[allow(clippy::unnecessary_cast)]
 fn widen_time(t: sys::TimeT) -> i64 {
     t as i64
+}
+
+/// Whether `metadata` is the archive's own root directory rather than an entry in it. libarchive
+/// lists the root of an ISO 9660 image as a directory named `.` (`iso9660.c`'s `build_pathname`
+/// names the nameless root that way), and a tar made with `tar -C dir -cf x.tar .` carries a
+/// `./` member for the same reason. It is the extraction folder itself: nothing to create,
+/// nothing a user could select, and the policy's `.`-segment rule (ported verbatim from Kotlin,
+/// which only ever saw ZIPs) would otherwise refuse every ISO image outright. [inspect] and
+/// [extract] therefore pass over it, uncounted. Entries *under* such a root (`./file`) are left
+/// exactly as libarchive names them, so the policy still judges them.
+fn is_archive_root(metadata: &EntryMetadata) -> bool {
+    metadata.kind == EntryKind::Directory && matches!(metadata.path.as_str(), "." | "./")
 }
 
 /// Owns a libarchive read handle for exactly one forward pass over a seekable fd -- opening it
@@ -818,7 +832,12 @@ pub fn entries(fd: RawFd) -> Result<Vec<ArchiveEntry>, ArchiveError> {
 /// should use [entries] instead: this function pays for a full read of every entry's body up to
 /// and including the match. For a bounded write to a destination, use [extract].
 pub fn read_entry(fd: RawFd, path: &str) -> Result<Option<Vec<u8>>, ArchiveError> {
-    let mut reader = Reader::open_fd(fd)?;
+    read_entry_from(Reader::open_fd(fd)?, path)
+}
+
+/// [read_entry] over an already-open [Reader] -- split out so a test can drive the same lookup
+/// through [Reader::open_unchecked] on a pipe (the M3.2 negative controls).
+fn read_entry_from(mut reader: Reader, path: &str) -> Result<Option<Vec<u8>>, ArchiveError> {
     while let Some(entry) = reader.next_entry()? {
         if entry.path == path {
             return Ok(Some(reader.read_current_entry_data()?));
@@ -844,9 +863,16 @@ pub fn filter_names(fd: RawFd) -> Result<Vec<String>, ArchiveError> {
 /// and the encryption verdict. Uses only [Limits::max_listing_entries] of `limits` -- past it the
 /// result is `LimitExceeded { entry, rule: "listing" }`, a memory bound for the decoder process,
 /// not a policy verdict ([inspect_with_policy] gives that). Non-UTF-8 names are decoded lossily
-/// and flagged, never an error.
+/// and flagged, never an error. The archive's own root directory, when a format lists one
+/// ([is_archive_root]), is not an entry.
 pub fn inspect(fd: RawFd, limits: &Limits) -> Result<Inspection, ArchiveError> {
-    let mut reader = Reader::open_fd(fd)?;
+    inspect_reader(Reader::open_fd(fd)?, limits)
+}
+
+/// [inspect]'s header pass over an already-open [Reader] -- split out so a test can run the same
+/// pass through [Reader::open_unchecked] on a pipe and show what the streaming readers cannot
+/// report (the M3.2 negative controls).
+fn inspect_reader(mut reader: Reader, limits: &Limits) -> Result<Inspection, ArchiveError> {
     let mut entries = Vec::new();
     let mut format: Option<(u32, Option<String>)> = None;
     loop {
@@ -860,6 +886,9 @@ pub fn inspect(fd: RawFd, limits: &Limits) -> Result<Inspection, ArchiveError> {
         };
         // SAFETY: `entry` was just returned by `next_header` on this reader.
         let metadata = unsafe { Reader::metadata(entry) }?;
+        if is_archive_root(&metadata) {
+            continue;
+        }
         if entries.len() >= limits.max_listing_entries {
             return Err(ArchiveError::LimitExceeded {
                 entry: metadata.path,
@@ -907,7 +936,8 @@ pub fn inspect_with_policy(
 /// [ExtractReport::skipped_links] and `dest` is not consulted; `Other`-kind entries (device
 /// nodes, fifos) likewise go uncounted in [ExtractReport::skipped]. Entries not selected are
 /// passed over without reading their data. Names that are not UTF-8 are decoded lossily, the same
-/// way [inspect] reports them, so a path taken from an [Inspection] matches its entry here.
+/// way [inspect] reports them, so a path taken from an [Inspection] matches its entry here; the
+/// archive's own root directory ([is_archive_root]) is passed over uncounted, as [inspect] omits it.
 pub fn extract(
     fd: RawFd,
     selection: &Selection,
@@ -932,6 +962,9 @@ pub fn extract(
     while let Some(entry) = reader.next_header()? {
         // SAFETY: `entry` was just returned by `next_header` on this reader.
         let metadata = unsafe { Reader::metadata(entry) }?;
+        if is_archive_root(&metadata) {
+            continue;
+        }
         if let Some(wanted) = &wanted {
             let key = policy::normalized_path_key(&metadata.path);
             if !wanted.contains(&key) {

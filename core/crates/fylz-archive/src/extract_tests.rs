@@ -51,7 +51,7 @@ const LINK_ESCAPES: &str = "Archive contains a link that escapes the extraction 
 /// A [DestinationProvider] writing each offered entry to a file under `dir` (slashes flattened to
 /// `__`), recording what it was offered and what it was told was finished. Declines directories,
 /// as the app's SAF-backed provider will.
-struct TempProvider {
+pub(crate) struct TempProvider {
     dir: PathBuf,
     files: Vec<File>,
     offered: Vec<ArchiveEntry>,
@@ -59,7 +59,7 @@ struct TempProvider {
 }
 
 impl TempProvider {
-    fn new(dir: &Path) -> Self {
+    pub(crate) fn new(dir: &Path) -> Self {
         let out = dir.join("out");
         fs::create_dir_all(&out).unwrap();
         TempProvider {
@@ -74,12 +74,12 @@ impl TempProvider {
         self.dir.join(entry_path.replace('/', "__"))
     }
 
-    fn read(&self, entry_path: &str) -> Vec<u8> {
+    pub(crate) fn read(&self, entry_path: &str) -> Vec<u8> {
         fs::read(self.output_path(entry_path))
             .unwrap_or_else(|e| panic!("reading the output for {entry_path}: {e}"))
     }
 
-    fn offered_paths(&self) -> Vec<&str> {
+    pub(crate) fn offered_paths(&self) -> Vec<&str> {
         self.offered.iter().map(|e| e.path.as_str()).collect()
     }
 }

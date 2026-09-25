@@ -17,7 +17,11 @@ per `docs/agent/MASTER_PLAN.md` section 3.4.
   `fylz_archive::inspect` (one header pass), `read_entry` of the first listed path (only when its
   declared size is modest -- it buffers in memory) and `extract` of everything into `/dev/null`
   under tight `ExtractLimits`. Seed it with the committed fixtures: pass `../fixtures` (from here)
-  or `fixtures` (from `core/`) as a second corpus directory, as the commands below do.
+  or `fixtures` (from `core/`) as a second corpus directory, as the commands below do. libFuzzer
+  reads a seed directory recursively, so that one argument also covers M3.2a's ZIP/7z/ISO fixtures
+  under `fixtures/archives/` and the hostile ones under `fixtures/archives/hostile/` (150 seed
+  files in all with the corpus this run kept). The corpus directory itself is gitignored -- the
+  committed fixtures are the seeds, and the commands below are how they reach the fuzzer.
   **Limitation:** libarchive and its companions are built by cmake, not by rustc, so they carry no
   sanitizer instrumentation -- a C memory-safety bug is caught here only if it faults outright
   (SIGSEGV/SIGABRT), never as an ASan report at the first bad byte.
