@@ -98,6 +98,16 @@
             tools:node="merge" />
 
         <!--
+            M3.4: the extraction notification's Cancel action. It sets a flag in the operation's plan
+            row (`extract_plans.cancel_requested`) that the running extractor polls; it never cancels
+            the WorkManager request, which would take the transfers queued behind it down too
+            (DESIGN-M34-SELECTIVE-EXTRACT.md section 2.3 step 8). Not exported.
+        -->
+        <receiver
+            android:name=".operations.ExtractCancelReceiver"
+            android:exported="false" />
+
+        <!--
             M2.4: the isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4). Native
             code parsing untrusted file content runs here, never in the UI process:
             isolatedProcess strips it down to no permissions of its own (it cannot open a file by

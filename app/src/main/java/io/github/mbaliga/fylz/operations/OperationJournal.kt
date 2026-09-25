@@ -70,6 +70,81 @@ class OperationJournal(context: Context) {
         refreshOperations()
     }
 
+    // ------------------------------------------------------------------ M3.4: extraction plans
+
+    /** The operation and its plan, atomically (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.2). */
+    @Synchronized
+    fun putWithExtractPlan(operation: FileOperation, plan: ExtractPlan) {
+        OperationsDao.putWithExtractPlan(database.writableDatabase, operation, plan)
+        refreshOperations()
+    }
+
+    @Synchronized
+    fun extractPlan(operationId: String): ExtractPlan? = OperationsDao.extractPlan(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun hasExtractPlan(operationId: String): Boolean = OperationsDao.hasExtractPlan(database.readableDatabase, operationId)
+
+    /** See [OperationsDao.claimExtract]; republishes [operations] on success. */
+    @Synchronized
+    fun claimExtract(operationId: String, from: Set<OperationState>): Boolean {
+        val claimed = OperationsDao.claimExtract(database.writableDatabase, operationId, from, System.currentTimeMillis())
+        if (claimed) refreshOperations()
+        return claimed
+    }
+
+    @Synchronized
+    fun updateOperationStateIf(operationId: String, from: OperationState, to: OperationState): Boolean {
+        val changed = OperationsDao.updateOperationStateIf(database.writableDatabase, operationId, from, to, System.currentTimeMillis())
+        if (changed) refreshOperations()
+        return changed
+    }
+
+    /**
+     * One item rewritten in place. [refresh] `false` leaves [operations] stale until the next
+     * refreshing write or [refresh] -- the extraction worker's per-frame journal writes would
+     * otherwise reload every operation with all its items on each one (quadratic in a large
+     * `Here` extraction); it refreshes on a 250 ms / 8 MiB throttle and at the end instead.
+     */
+    @Synchronized
+    fun updateItem(operationId: String, item: OperationItem, refresh: Boolean = true) {
+        OperationsDao.updateItem(database.writableDatabase, operationId, item, System.currentTimeMillis())
+        if (refresh) refreshOperations()
+    }
+
+    @Synchronized
+    fun updateOperationState(operationId: String, state: OperationState) {
+        OperationsDao.updateOperationState(database.writableDatabase, operationId, state, System.currentTimeMillis())
+        refreshOperations()
+    }
+
+    @Synchronized
+    fun setCancelRequested(operationId: String) {
+        OperationsDao.setCancelRequested(database.writableDatabase, operationId)
+    }
+
+    @Synchronized
+    fun isCancelRequested(operationId: String): Boolean = OperationsDao.isCancelRequested(database.readableDatabase, operationId)
+
+    /** See [OperationsDao.retryExtract]. */
+    @Synchronized
+    fun retryExtract(operationId: String): Boolean {
+        val retried = OperationsDao.retryExtract(database.writableDatabase, operationId, System.currentTimeMillis())
+        if (retried) refreshOperations()
+        return retried
+    }
+
+    @Synchronized
+    fun putEntryDigests(operationId: String, digests: Map<Int, String>) =
+        OperationsDao.putEntryDigests(database.writableDatabase, operationId, digests)
+
+    @Synchronized
+    fun entryDigests(operationId: String): Map<Int, String> = OperationsDao.entryDigests(database.readableDatabase, operationId)
+
+    /** Republishes [operations] from the database (for a caller that wrote with `refresh = false`). */
+    @Synchronized
+    fun refresh() = refreshOperations()
+
     private fun refreshOperations() {
         _operations.value = OperationsDao.list(database.readableDatabase)
     }

@@ -11,6 +11,7 @@ import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.decoder.DecoderClient
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationRunner
+import io.github.mbaliga.fylz.operations.WorkLookup
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -74,7 +75,8 @@ class FylzApplication : Application() {
         // (RUNNING/PREFLIGHT/PAUSED -> NEEDS_ATTENTION/"PROCESS_INTERRUPTED") before anything else
         // in the process gets a chance to construct a journal of its own -- OperationRunner.recover
         // (P0.6) depends on that having already happened.
+        // M3.4: EXTRACT rows are reconciled against WorkManager (a live worker is left to re-claim).
         val journal = OperationJournal(this)
-        operationScope.launch { OperationRunner.recover(journal, contentResolver) }
+        operationScope.launch { OperationRunner.recover(journal, contentResolver, WorkLookup.viaWorkManager(this@FylzApplication)) }
     }
 }

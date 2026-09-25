@@ -159,4 +159,57 @@ class OperationRetryPolicyTest {
             ),
         )
     }
+
+    // ------------------------------------------------------------------ M3.4: planned extractions
+
+    private val archiveEntry = Uri.parse("content://io.github.mbaliga.fylz.archives/document/ZW50cnk")
+    private val destinationFolder = Uri.parse("content://io.github.mbaliga.fylz.files/tree/primary%3A/document/primary%3Adest")
+
+    private fun plannedExtract(state: OperationState, itemState: OperationState = OperationState.FAILED) = FileOperation(
+        id = "extract-1",
+        type = FileOperationType.EXTRACT,
+        items = listOf(
+            OperationItem(source = archiveEntry, destination = destinationFolder, displayName = "docs", state = OperationState.SUCCEEDED),
+            OperationItem(source = archiveEntry, destination = destinationFolder, displayName = "hello.txt", state = itemState, errorCode = "ARCHIVE_CRC_MISMATCH"),
+        ),
+        conflictPolicy = ConflictPolicy.SKIP,
+        state = state,
+        destination = destinationFolder,
+    )
+
+    @Test
+    fun `a planned extraction in a retryable state is re-claimed as the same operation`() {
+        listOf(OperationState.FAILED, OperationState.PARTIAL, OperationState.CANCELLED, OperationState.NEEDS_ATTENTION, OperationState.INTERRUPTED).forEach { state ->
+            val operation = plannedExtract(state)
+            assertTrue(OperationRetryPolicy.isPlannedExtract(operation))
+            assertEquals("$state", OperationRetryPlan.ReclaimExtract("extract-1"), OperationRetryPolicy.plan(operation))
+            assertTrue(OperationRetryPolicy.canRetry(operation))
+            assertEquals("Retry extraction", OperationRetryPolicy.actionLabel(operation))
+        }
+    }
+
+    @Test
+    fun `a planned extraction that succeeded, is queued, running or has nothing unfinished is not retryable`() {
+        assertEquals(null, OperationRetryPolicy.plan(plannedExtract(OperationState.SUCCEEDED, itemState = OperationState.SUCCEEDED)))
+        assertEquals(null, OperationRetryPolicy.plan(plannedExtract(OperationState.QUEUED)))
+        assertEquals(null, OperationRetryPolicy.plan(plannedExtract(OperationState.RUNNING)))
+        assertEquals(null, OperationRetryPolicy.plan(plannedExtract(OperationState.PAUSED_BY_SYSTEM)))
+        assertEquals("every item succeeded", null, OperationRetryPolicy.plan(plannedExtract(OperationState.FAILED, itemState = OperationState.SUCCEEDED)))
+    }
+
+    @Test
+    fun `a legacy extraction row -- a plain file source and no destination -- is never retryable`() {
+        val legacy = FileOperation(
+            id = "legacy-extract",
+            type = FileOperationType.EXTRACT,
+            items = listOf(OperationItem(source = Uri.parse("content://io.github.mbaliga.fylz.files/document/primary%3Aa.zip"), destination = destinationFolder, displayName = "a.zip", state = OperationState.FAILED)),
+            state = OperationState.FAILED,
+        )
+        assertFalse(OperationRetryPolicy.isPlannedExtract(legacy))
+        assertEquals(null, OperationRetryPolicy.plan(legacy))
+        assertEquals("Retry unavailable", OperationRetryPolicy.actionLabel(legacy))
+        val mixedSources = plannedExtract(OperationState.FAILED).let { it.copy(items = it.items + OperationItem(source = Uri.parse("content://other/x"), destination = destinationFolder, displayName = "x", state = OperationState.FAILED)) }
+        assertFalse(OperationRetryPolicy.isPlannedExtract(mixedSources))
+        assertEquals("the copy rules do not apply either: an archive source is not a file to copy", null, OperationRetryPolicy.plan(mixedSources.copy(type = FileOperationType.EXTRACT)))
+    }
 }

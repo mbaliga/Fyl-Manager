@@ -19,8 +19,9 @@ class FylzV1AppSizeTest {
     // the dead `fileIcon` went, paying for archive-location lines in openEntry/refresh/search).
     private val fylzV1AppMaxLines = 2271
 
-    // FylzAppShell.kt must not grow past its MC.0e size.
-    private val fylzAppShellMaxLines = 112
+    // FylzAppShell.kt must not grow past its MC.0e size (112); lowered to 101 in M3.4b, when the
+    // retry dispatch moved to operations/RetryDispatcher.kt.
+    private val fylzAppShellMaxLines = 101
 
     private val preMc0Lines = 2529
 

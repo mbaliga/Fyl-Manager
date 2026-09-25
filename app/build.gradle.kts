@@ -149,6 +149,9 @@ dependencies {
     // class of test; only PdfPagePlanPolicyTest opts in via @RunWith(RobolectricTestRunner::class)
     // -- every other test class keeps running as a fast plain-JVM test.
     testImplementation("org.robolectric:robolectric:4.16.1")
+    // M3.4b: TestListenableWorkerBuilder/WorkManagerTestInitHelper for TransferWorker's EXTRACT path
+    // (docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md section 2.8). Test-only; never in the APK.
+    testImplementation("androidx.work:work-testing:2.11.2")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

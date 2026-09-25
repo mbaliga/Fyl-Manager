@@ -35,4 +35,14 @@ interface IDecoderService {
     // byte for byte) into `sink`, under the extraction caps in `limits`. Stops reading the archive
     // as soon as the entry is written. Ownership as for listArchive.
     ArchiveExtractResult extractEntry(in ParcelFileDescriptor archive, int ordinal, String expectedPath, in ArchiveLimits limits, in ParcelFileDescriptor sink);
+
+    // M3.4 (DESIGN-M34-SELECTIVE-EXTRACT.md section 2.3): one pass over the archive writing every
+    // selected entry -- `ordinalsBitmap` is a bitmap of header ordinals (bit 8*i+j of byte i), which
+    // the service turns into exact ordinal ranges in-process -- as FZX1 frames into `sink`
+    // (ExtractFrameReader is the reader). The header pass first runs the selection-scoped size policy
+    // under `limits`; a refusal leaves the stream empty. The result is the authority for the outcome
+    // (OK, REFUSED, CORRUPT, LIMIT_EXCEEDED, CANCELLED, ...) and carries the entry and byte counts
+    // and the ordinal the pass stopped at. Ownership as for listArchive. The caller binds this on
+    // the isolated extraction instance (`:decoders:extract`), never the browsing one.
+    ArchiveExtractResult extractRanges(in ParcelFileDescriptor archive, in ArchiveLimits limits, in byte[] ordinalsBitmap, in ParcelFileDescriptor sink);
 }

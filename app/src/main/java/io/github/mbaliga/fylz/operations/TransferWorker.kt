@@ -2,14 +2,18 @@ package io.github.mbaliga.fylz.operations
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import io.github.mbaliga.fylz.FylzApplication
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -22,9 +26,21 @@ import kotlinx.coroutines.CancellationException
  * more of what would otherwise stop it (backgrounding, memory pressure) and survives a runtime
  * restart via WorkManager's own persistence, not just an in-process `CoroutineScope`.
  *
- * Scope for this task is deliberately copy and move: Phase 1's own goal statement is "transfers
- * are durable" specifically, and every other operation type (recycle, restore, permanent delete,
- * archive, extract, PDF, rename, create) keeps running through [OperationRunner.run] unchanged.
+ * Scope was deliberately copy and move: Phase 1's own goal statement is "transfers are durable"
+ * specifically, and every other operation type (recycle, restore, permanent delete, archive, PDF,
+ * rename, create) keeps running through [OperationRunner.run] unchanged. **M3.4 adds EXTRACT**
+ * (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.3): the input carries only the operation
+ * id ([KEY_OPERATION_ID]); the plan lives in the journal, and [ArchiveExtractor.run] claims it, runs
+ * it and writes its outcome. Two rules keep an extraction from poisoning the transfers queued behind
+ * it under `APPEND_OR_REPLACE`: **every journaled outcome returns [Result.success]** (SUCCEEDED,
+ * PARTIAL, FAILED, CANCELLED and "not claimed" alike -- the journal, not WorkManager, is the record),
+ * and a user cancel is a **flag** in the plan row (`extract_plans.cancel_requested`, set by
+ * [OperationRunner.cancel] or the notification's [ExtractCancelReceiver]), never
+ * `WorkManager.cancelWorkById`, which would cancel the whole unique chain. Only a system stop
+ * (`isStopped` with a reason other than `STOP_REASON_CANCELLED_BY_APP`) returns [Result.retry], after
+ * the extractor has left the items `PAUSED_BY_SYSTEM` with their staging kept for the re-run to
+ * resume. The extraction's notification shows a bar and a byte line ("Reading archive…" until the
+ * first entry), which the copy/move notification does not (logged).
  *
  * The notification's only action today is Cancel (via [WorkManager.createCancelPendingIntent]).
  * True mid-item Pause -- resuming a specific operation from wherever it left off, rather than
@@ -36,13 +52,16 @@ import kotlinx.coroutines.CancellationException
 class TransferWorker(
     context: Context,
     params: WorkerParameters,
+    /** How an EXTRACT run gets its extractor; the default needs the real [FylzApplication], tests inject a fake. */
+    private val extractorFactory: (Context) -> ArchiveExtractor = ::defaultExtractor,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         val type = inputData.getString(KEY_TYPE)?.let(FileOperationType::valueOf)
             ?: return Result.failure(errorData("Missing transfer type."))
+        if (type == FileOperationType.EXTRACT) return doExtract()
         if (type != FileOperationType.COPY && type != FileOperationType.MOVE) {
-            return Result.failure(errorData("TransferWorker only handles COPY and MOVE."))
+            return Result.failure(errorData("TransferWorker only handles COPY, MOVE and EXTRACT."))
         }
         val sources = inputData.getStringArray(KEY_SOURCES)?.map(Uri::parse)
             ?.takeIf { it.isNotEmpty() }
@@ -88,6 +107,84 @@ class TransferWorker(
         }
     }
 
+    /**
+     * The EXTRACT path (M3.4). Every outcome the extractor journals is [Result.success]; a missing
+     * operation id is the one [Result.failure] (nothing to journal against); a system stop is
+     * [Result.retry] once the items are `PAUSED_BY_SYSTEM`.
+     */
+    private suspend fun doExtract(): Result {
+        val operationId = inputData.getString(KEY_OPERATION_ID)?.takeIf { it.isNotBlank() }
+            ?: return Result.failure(errorData("Missing operation id."))
+        // A refused foreground start (API 31+ background restrictions) must not fail the extraction:
+        // the work still runs, only without its notification.
+        runCatching { setForeground(extractForegroundInfo(operationId, ExtractProgress(0, 0, 0L, null, readingArchive = true))) }
+        return try {
+            val extractor = extractorFactory(applicationContext)
+            val outcome = extractor.run(
+                operationId = operationId,
+                ownWorkId = id,
+                stopReason = { if (isStopped) stopReason else WorkInfo.STOP_REASON_NOT_STOPPED },
+                onProgress = { progress ->
+                    setProgressAsync(
+                        Data.Builder()
+                            .putInt(KEY_PROGRESS_ITEM_INDEX, progress.itemIndex)
+                            .putInt(KEY_PROGRESS_ITEM_COUNT, progress.itemCount)
+                            .putLong(KEY_PROGRESS_COMPLETED_BYTES, progress.completedBytes)
+                            .apply { progress.totalBytes?.let { putLong(KEY_PROGRESS_TOTAL_BYTES, it) } }
+                            .build(),
+                    )
+                    setForegroundAsync(extractForegroundInfo(operationId, progress))
+                },
+            )
+            when (outcome) {
+                ExtractRunOutcome.PausedBySystem -> Result.retry()
+                ExtractRunOutcome.NotClaimed, is ExtractRunOutcome.Finished -> Result.success()
+            }
+        } catch (cancelled: CancellationException) {
+            // The extractor has already written PAUSED_BY_SYSTEM (or CANCELLED for an app cancel of the
+            // work itself) under NonCancellable before rethrowing.
+            if (isStopped && stopReason != WorkInfo.STOP_REASON_CANCELLED_BY_APP) Result.retry() else Result.success()
+        } catch (failure: Throwable) {
+            // The extractor journals its own failures; anything escaping it is a bug, and still must
+            // not poison the chain.
+            Result.success()
+        }
+    }
+
+    private fun extractForegroundInfo(operationId: String, progress: ExtractProgress): ForegroundInfo {
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Transfers", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Progress for copy and move operations"
+            },
+        )
+        val total = progress.totalBytes
+        val text = when {
+            progress.readingArchive -> "Reading archive…"
+            total != null && total > 0L -> "${formatBytes(progress.completedBytes)} of ${formatBytes(total)}"
+            else -> formatBytes(progress.completedBytes)
+        }
+        val cancel = PendingIntent.getBroadcast(
+            applicationContext,
+            operationId.hashCode(),
+            ExtractCancelReceiver.intent(applicationContext, operationId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("Extracting")
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .addAction(0, "Cancel", cancel)
+        if (progress.readingArchive || total == null || total <= 0L) {
+            builder.setProgress(0, 0, true)
+        } else {
+            builder.setProgress(PROGRESS_MAX, permille(progress.completedBytes, total), false)
+        }
+        return ForegroundInfo(NOTIFICATION_ID, builder.build())
+    }
+
     private fun errorData(message: String) = Data.Builder().putString(KEY_ERROR_MESSAGE, message).build()
 
     private fun readNameOverrides(): Map<Uri, String> = nameOverridesFrom(inputData)
@@ -121,6 +218,7 @@ class TransferWorker(
         const val UNIQUE_WORK_NAME = "fylz-transfers"
 
         internal const val KEY_TYPE = "type"
+        internal const val KEY_OPERATION_ID = "operation_id"
         internal const val KEY_SOURCES = "sources"
         internal const val KEY_DESTINATION = "destination"
         internal const val KEY_CONFLICT_POLICY = "conflict_policy"
@@ -136,6 +234,44 @@ class TransferWorker(
 
         private const val CHANNEL_ID = "fylz_transfers"
         private const val NOTIFICATION_ID = 8_300
+
+        /** The extraction bar's scale: permille, so a 5 GB extraction moves it smoothly past 2^31 bytes. */
+        internal const val PROGRESS_MAX = 1_000
+
+        /** `completed / total` on the 0..[PROGRESS_MAX] scale, overflow-safe for any byte counts. */
+        internal fun permille(completed: Long, total: Long): Int {
+            if (total <= 0L) return 0
+            val fraction = completed.toDouble() / total.toDouble()
+            return (fraction * PROGRESS_MAX).toInt().coerceIn(0, PROGRESS_MAX)
+        }
+
+        internal fun formatBytes(bytes: Long): String {
+            val units = arrayOf("B", "KB", "MB", "GB", "TB")
+            var value = bytes.toDouble()
+            var unit = 0
+            while (value >= 1000.0 && unit < units.lastIndex) {
+                value /= 1000.0
+                unit += 1
+            }
+            return if (unit == 0) "$bytes B" else String.format(java.util.Locale.ROOT, "%.1f %s", value, units[unit])
+        }
+
+        /** The real extractor: every collaborator from the application (M3.4). */
+        private fun defaultExtractor(context: Context): ArchiveExtractor {
+            val app = context.applicationContext as FylzApplication
+            return ArchiveExtractor(
+                context = app,
+                journal = OperationJournal(app),
+                catalog = app.archiveCatalog,
+                extractionClient = { app.decoderClient.extraction() },
+            )
+        }
+
+        /** The EXTRACT input: the operation id only; the plan is in the journal. */
+        fun extractInputData(operationId: String): Data = Data.Builder()
+            .putString(KEY_TYPE, FileOperationType.EXTRACT.name)
+            .putString(KEY_OPERATION_ID, operationId)
+            .build()
 
         fun inputData(
             type: FileOperationType,

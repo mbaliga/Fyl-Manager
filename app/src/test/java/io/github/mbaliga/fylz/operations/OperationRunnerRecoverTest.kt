@@ -1,12 +1,14 @@
 package io.github.mbaliga.fylz.operations
 
 import android.net.Uri
+import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.storage.FaultyDocumentsProvider
 import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.VolumeDescriptor
 import io.github.mbaliga.fylz.storage.testing.TreeNode
 import io.github.mbaliga.fylz.storage.testing.buildTree
 import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -143,5 +145,106 @@ class OperationRunnerRecoverTest {
         val restored = File(destinationDir, "photo.jpg")
         assertTrue(restored.exists())
         assertEquals(4_096L, restored.length())
+    }
+
+    // ------------------------------------------------------------------ M3.4: EXTRACT reconciliation
+
+    private val archiveRoot = Uri.parse("content://io.github.mbaliga.fylz.archives/document/cm9vdA")
+
+    private fun writeExtractRecord(operationId: String, state: OperationState, itemState: OperationState = state, errorCode: String? = null, stagingFileName: String? = null, updatedAtMillis: Long = 1_000L, withPlan: Boolean = true) {
+        val stagingUri = stagingFileName?.let { name ->
+            File(destinationDir, name).writeText("partial")
+            documentUri("destination/$name")
+        }
+        val operation = FileOperation(
+            id = operationId,
+            type = FileOperationType.EXTRACT,
+            items = listOf(OperationItem(id = "$operationId-0", source = archiveRoot, destination = treeUriFor("destination"), displayName = "docs", state = itemState, errorCode = errorCode, stagingUri = stagingUri)),
+            conflictPolicy = ConflictPolicy.SKIP,
+            state = state,
+            createdAtMillis = updatedAtMillis,
+            updatedAtMillis = updatedAtMillis,
+            destination = treeUriFor("destination"),
+        )
+        if (withPlan) {
+            journal.putWithExtractPlan(operation, ExtractPlan(operationId, archiveRoot, "key", ExtractLayout.HERE, null, OrdinalBitmap.of(0), ArchiveLimits.forExtraction(null, false), false, false, items = listOf(ExtractPlanItem(0, "docs", "docs", ConflictPolicy.SKIP))))
+        } else {
+            journal.put(operation)
+        }
+    }
+
+    private fun alive(vararg ids: String) = WorkLookup { tag -> if (tag.removePrefix("op:") in ids) setOf(UUID.randomUUID()) else emptySet() }
+
+    @Test
+    fun `an extraction whose tagged work is still alive is left alone, whatever its state`() = runBlocking {
+        writeExtractRecord("ex-run", OperationState.RUNNING)
+        writeExtractRecord("ex-paused", OperationState.PAUSED_BY_SYSTEM)
+        writeExtractRecord("ex-int", OperationState.NEEDS_ATTENTION, errorCode = "PROCESS_INTERRUPTED", stagingFileName = ".fylz-part-ex-int-0-docs")
+        writeExtractRecord("ex-queued", OperationState.QUEUED)
+
+        OperationRunner.recover(journal, RuntimeEnvironment.getApplication().contentResolver, alive("ex-run", "ex-paused", "ex-int", "ex-queued"), nowMillis = { 10_000_000L })
+
+        assertEquals(OperationState.RUNNING, journal.find("ex-run")!!.state)
+        assertEquals(OperationState.PAUSED_BY_SYSTEM, journal.find("ex-paused")!!.state)
+        assertEquals(OperationState.NEEDS_ATTENTION, journal.find("ex-int")!!.state)
+        assertTrue("its staging is kept for the live worker to clean", File(destinationDir, ".fylz-part-ex-int-0-docs").exists())
+        assertEquals(OperationState.QUEUED, journal.find("ex-queued")!!.state)
+    }
+
+    @Test
+    fun `an extraction whose work is gone becomes INTERRUPTED with its recorded staging deleted`() = runBlocking {
+        writeExtractRecord("ex-gone", OperationState.NEEDS_ATTENTION, errorCode = "PROCESS_INTERRUPTED", stagingFileName = ".fylz-part-ex-gone-0-docs")
+        writeExtractRecord("ex-paused-gone", OperationState.PAUSED_BY_SYSTEM, stagingFileName = ".fylz-part-ex-paused-gone-0-docs")
+        val untouched = File(destinationDir, "keep.txt").apply { writeText("keep") }
+
+        OperationRunner.recover(journal, RuntimeEnvironment.getApplication().contentResolver, WorkLookup.NONE)
+
+        listOf("ex-gone", "ex-paused-gone").forEach { id ->
+            val recovered = journal.find(id)!!
+            assertEquals(id, OperationState.INTERRUPTED, recovered.state)
+            assertEquals(OperationState.INTERRUPTED, recovered.items.single().state)
+            assertEquals("PROCESS_INTERRUPTED", recovered.items.single().errorCode)
+            assertNull(recovered.items.single().stagingUri)
+            assertFalse(File(destinationDir, ".fylz-part-$id-0-docs").exists())
+            assertTrue("retryable as the same operation", OperationRetryPolicy.plan(recovered) is OperationRetryPlan.ReclaimExtract)
+        }
+        assertTrue(untouched.exists())
+    }
+
+    @Test
+    fun `a queued extraction with no work is NEVER_RAN once it is old enough, and left alone while young`() = runBlocking {
+        writeExtractRecord("ex-old", OperationState.QUEUED, updatedAtMillis = 1_000L)
+        writeExtractRecord("ex-young", OperationState.QUEUED, updatedAtMillis = 5_000_000L)
+
+        OperationRunner.recover(journal, RuntimeEnvironment.getApplication().contentResolver, WorkLookup.NONE, nowMillis = { 5_000_000L + 30_000L })
+
+        val old = journal.find("ex-old")!!
+        assertEquals(OperationState.FAILED, old.state)
+        assertEquals(ExtractErrorCodes.NEVER_RAN, old.items.single().errorCode)
+        assertEquals(OperationState.QUEUED, journal.find("ex-young")!!.state)
+    }
+
+    @Test
+    fun `a legacy extraction row without a plan is not reconciled`() = runBlocking {
+        writeExtractRecord("legacy", OperationState.RUNNING, withPlan = false)
+        writeExtractRecord("legacy-queued", OperationState.QUEUED, withPlan = false, updatedAtMillis = 1L)
+        OperationRunner.recover(journal, RuntimeEnvironment.getApplication().contentResolver, WorkLookup.NONE, nowMillis = { 10_000_000L })
+        assertEquals(OperationState.RUNNING, journal.find("legacy")!!.state)
+        assertEquals(OperationState.QUEUED, journal.find("legacy-queued")!!.state)
+    }
+
+    @Test
+    fun `the conditional update does not clobber a claim that raced recovery`() = runBlocking {
+        writeExtractRecord("ex-race", OperationState.QUEUED, updatedAtMillis = 1_000L)
+        // The lookup runs between the read and the write: a worker claims the row right then.
+        val racing = WorkLookup { _ ->
+            check(journal.claimExtract("ex-race", ArchiveExtractor.CLAIMABLE))
+            emptySet()
+        }
+        OperationRunner.recover(journal, RuntimeEnvironment.getApplication().contentResolver, racing, nowMillis = { 10_000_000L })
+        val row = journal.find("ex-race")!!
+        assertEquals(OperationState.RUNNING, row.state)
+        assertEquals(OperationState.RUNNING, row.items.single().state)
+        assertNull(row.items.single().errorCode)
     }
 }

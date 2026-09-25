@@ -38,4 +38,13 @@ object FylzCore {
     @Throws(ArchiveEngineException::class)
     fun extractEntryAt(fd: Int, ordinal: Int, expectedPath: String, limits: ArchiveLimitsRecord, sinkFd: Int): Long =
         archiveExtractEntryAt(fd, if (ordinal < 0) UInt.MAX_VALUE else ordinal.toUInt(), expectedPath, limits, sinkFd).toLong()
+
+    /**
+     * One pass writing every entry in [ranges] (inclusive header-ordinal runs) into [sinkFd] as
+     * FZX1 frames under [limits] (M3.4a): the selection-scoped size policy first, then the
+     * extraction pass. Returns a record rather than throwing, so the counts survive a fatal;
+     * neither descriptor is closed here.
+     */
+    fun extractRanges(fd: Int, ranges: List<ArchiveOrdinalRangeRecord>, limits: ArchiveLimitsRecord, sinkFd: Int): ArchiveExtractRecord =
+        archiveExtractRanges(fd, ranges, limits, sinkFd)
 }

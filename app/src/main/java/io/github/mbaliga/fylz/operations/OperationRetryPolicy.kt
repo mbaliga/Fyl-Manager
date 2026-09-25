@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.operations
 
 import android.net.Uri
+import io.github.mbaliga.fylz.archive.ArchiveDocumentId
 
 sealed interface OperationRetryPlan {
     data class Transfer(
@@ -11,6 +12,16 @@ sealed interface OperationRetryPlan {
     ) : OperationRetryPlan
 
     data class FinishMoveCleanup(
+        val operationId: String,
+    ) : OperationRetryPlan
+
+    /**
+     * M3.4: an EXTRACT operation with a plan is retried by **re-claiming the same operation** --
+     * `OperationJournal.retryExtract` moves it and its unfinished items back to `QUEUED` in one
+     * transaction and `OperationRunner.enqueueExtract` runs it again -- where a copy retry is a
+     * new operation over the unfinished sources.
+     */
+    data class ReclaimExtract(
         val operationId: String,
     ) : OperationRetryPlan
 }
@@ -66,10 +77,23 @@ object OperationRetryPolicy {
             allIncompleteItemsHaveDestination &&
             incompleteErrorCodes.all { it == MOVE_SOURCE_DELETE_PENDING }
 
+    /**
+     * M3.4: a planned extraction is recognisable from its row alone -- an EXTRACT with a
+     * destination whose every item's source is an archive document; the legacy zip4j path
+     * (`ArchiveService.extractZip`) writes plain file sources and no destination. The DAO's
+     * `retryExtract` still checks that the plan row exists before anything moves.
+     */
+    fun isPlannedExtract(operation: FileOperation): Boolean =
+        operation.type == FileOperationType.EXTRACT &&
+            operation.destination != null &&
+            operation.items.isNotEmpty() &&
+            operation.items.all { ArchiveDocumentId.isArchiveUri(it.source) }
+
     fun plan(operation: FileOperation): OperationRetryPlan? {
         if (operation.state !in retryableStates) return null
         val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
         if (incomplete.isEmpty()) return null
+        if (isPlannedExtract(operation)) return OperationRetryPlan.ReclaimExtract(operation.id)
 
         if (
             isMoveCleanupRetry(
@@ -111,6 +135,7 @@ object OperationRetryPolicy {
     fun actionLabel(operation: FileOperation): String = when (plan(operation)) {
         is OperationRetryPlan.FinishMoveCleanup -> "Finish move"
         is OperationRetryPlan.Transfer -> "Retry unfinished"
+        is OperationRetryPlan.ReclaimExtract -> "Retry extraction"
         null -> "Retry unavailable"
     }
 }

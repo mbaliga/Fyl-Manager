@@ -121,6 +121,9 @@ Notable dependencies as of M2.2:
 ## Test-only dependency
 
 - JUnit 4.13.2 — Eclipse Public License 1.0
+- `androidx.work:work-testing` 2.11.2 (M3.4b) — Apache License 2.0; a `testImplementation`
+  dependency only (`TestListenableWorkerBuilder`, `WorkManagerTestInitHelper` for the transfer
+  worker's extraction tests), never shipped in the APK.
 
 ## Release review procedure
 

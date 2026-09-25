@@ -9,14 +9,20 @@ import kotlinx.parcelize.Parcelize
  * 2.2): the bytes streamed into the caller's sink when [outcome] is [OUTCOME_OK], else the
  * engine's verdict as data with its message -- never an exception across Binder. The outcome
  * codes are [ArchiveInspection]'s plus [OUTCOME_NOT_FOUND] (no header at the ordinal, or a
- * different path there: the archive changed under its listing). M3.4's selective extraction
- * extends this type with its per-entry counts.
+ * different path there: the archive changed under its listing). M3.4's `extractRanges` extends
+ * the same type with its per-entry counts: [entriesWritten] and [entriesFailed] over the pass, and
+ * [stopOrdinal] -- the header the pass stopped at on a fatal or a cancel ([NO_STOP_ORDINAL] when
+ * it ran to the end), which is where a re-issue resumes. A single-entry `extractEntry` leaves the
+ * three at their defaults.
  */
 @Parcelize
 data class ArchiveExtractResult(
     val outcome: Int,
     val message: String?,
     val bytesWritten: Long,
+    val entriesWritten: Int = 0,
+    val entriesFailed: Int = 0,
+    val stopOrdinal: Int = NO_STOP_ORDINAL,
 ) : Parcelable {
 
     @IgnoredOnParcel
@@ -35,6 +41,9 @@ data class ArchiveExtractResult(
         const val OUTCOME_CANCELLED = 7
         /** The engine's selection-scoped size policy refused the extraction before any byte moved (M3.4). */
         const val OUTCOME_REFUSED = 8
+
+        /** [stopOrdinal] when the pass ran to its end (or the result is a single entry's). */
+        const val NO_STOP_ORDINAL = -1
 
         fun ok(bytesWritten: Long): ArchiveExtractResult = ArchiveExtractResult(OUTCOME_OK, null, bytesWritten)
 

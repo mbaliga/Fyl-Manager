@@ -29,11 +29,6 @@ class FileOperationService(
         val totalBytes: Long?,
     )
 
-    private data class TargetPlan(
-        val requestedName: String,
-        val existing: DocNode? = null,
-    )
-
     suspend fun copy(
         sourceUris: List<Uri>,
         destinationTreeUri: Uri,
@@ -134,6 +129,10 @@ class FileOperationService(
         // item in a batch lands on the same volume, so there is nothing per-item to re-classify.
         val verifyThisTransfer = shouldVerify(verifySettings.mode.value, classifyDestination(context, destinationTreeUri))
 
+        // M3.4: the target-planning helpers live in TargetPlanning.kt, shared with extraction; here
+        // without a NameIndex, so every lookup is one child listing as before.
+        val targets = TargetPlanner(resolver, recycleBin, destination)
+
         val operation = FileOperation(
             type = if (move) FileOperationType.MOVE else FileOperationType.COPY,
             items = sourceUris.map { uri ->
@@ -191,7 +190,7 @@ class FileOperationService(
                         // resolved before this call, per the UI's own PreflightSheet-then-ConflictSheet
                         // sequencing in FylzV1App.kt).
                         val itemPolicy = conflictResolutions[sourceUri] ?: conflictPolicy
-                        val plan = resolveTargetPlan(destination, sourceName, source.lastModified, itemPolicy)
+                        val plan = targets.resolveTargetPlan(sourceName, source.lastModified, itemPolicy)
                         if (plan == null) {
                             current = updateItem(current, index) {
                                 it.copy(state = OperationState.SUCCEEDED, errorCode = "SKIPPED_CONFLICT")
@@ -281,7 +280,7 @@ class FileOperationService(
                             journal.put(current)
                         }
 
-                        val copied = finalizeTarget(destination, plan, staged)
+                        val copied = targets.finalizeTarget(plan, staged)
 
                         if (move && !source.delete(resolver)) {
                             current = updateItem(current, index) { item ->
@@ -484,71 +483,6 @@ class FileOperationService(
             check(expected == actual) {
                 "Copy verification failed for ${source.name}: expected $expected bytes, wrote $actual bytes."
             }
-        }
-    }
-
-    /**
-     * [staged] is always still under its `.fylz-part-*` staging name at this point (P0.6): every
-     * copy writes there first, regardless of conflict policy, and only reaches its real name here,
-     * after verification. On a plain create or Keep-both (no [TargetPlan.existing]), that's a
-     * direct rename. A Replace conflict goes through [RecycleBinService]'s shared policy (also used
-     * by its own restore): the existing item is renamed aside and recycled -- into [destination]'s
-     * `.fylz-trash` if it has one -- only after the replacement has actually landed under the
-     * requested name, never before.
-     */
-    private suspend fun finalizeTarget(destination: DocNode, plan: TargetPlan, staged: DocNode): DocNode {
-        val existing = plan.existing
-        if (existing == null) {
-            return if (staged.name == plan.requestedName) staged else staged.rename(resolver, plan.requestedName)
-        }
-        return recycleBin.replaceWithRecycleFallback(
-            destinationRoot = destination,
-            existing = existing,
-            staged = staged,
-            requestedName = plan.requestedName,
-            originalParentUri = destination.uri,
-        )
-    }
-
-    /**
-     * @param policy the effective per-item policy (P1.6) -- [ASK][ConflictPolicy.ASK] reaching
-     *   here at all means a conflict this specific item never got a real resolution for: the UI's
-     *   own `ConflictSheet` (`ui/FylzV1App.kt`) checks every source item against the destination
-     *   and resolves each one before ever starting the transfer, so in practice this only throws
-     *   for a caller that bypasses that check entirely (a direct `copy`/`move` call, as every
-     *   existing test still makes with its default `ConflictPolicy.ASK`) or a conflict that
-     *   appeared in the narrow window between that check and this actually running.
-     */
-    private fun resolveTargetPlan(
-        destination: DocNode,
-        requestedName: String,
-        sourceLastModified: Long?,
-        policy: ConflictPolicy,
-    ): TargetPlan? {
-        val existing = destination.findChild(resolver, requestedName)
-            ?: return TargetPlan(requestedName = requestedName)
-        return when (policy) {
-            ConflictPolicy.ASK -> error("A file named $requestedName already exists.")
-            ConflictPolicy.SKIP -> null
-            ConflictPolicy.KEEP_BOTH -> TargetPlan(requestedName = uniqueName(destination, requestedName))
-            ConflictPolicy.REPLACE -> TargetPlan(requestedName = requestedName, existing = existing)
-            ConflictPolicy.REPLACE_IF_NEWER -> {
-                val existingModified = existing.lastModified
-                val newer = sourceLastModified != null && existingModified != null && sourceLastModified > existingModified
-                if (newer) TargetPlan(requestedName = requestedName, existing = existing) else null
-            }
-        }
-    }
-
-    private fun uniqueName(destination: DocNode, requestedName: String): String {
-        val dot = requestedName.lastIndexOf('.')
-        val base = if (dot > 0) requestedName.substring(0, dot) else requestedName
-        val extension = if (dot > 0) requestedName.substring(dot) else ""
-        var index = 2
-        while (true) {
-            val candidate = "$base ($index)$extension"
-            if (destination.findChild(resolver, candidate) == null) return candidate
-            index += 1
         }
     }
 

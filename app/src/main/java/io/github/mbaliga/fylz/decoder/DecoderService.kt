@@ -4,9 +4,12 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import io.github.mbaliga.fylz.core.ArchiveExtractRecord
 import io.github.mbaliga.fylz.core.ArchiveInspectionRecord
 import io.github.mbaliga.fylz.core.ArchiveLimitsRecord
+import io.github.mbaliga.fylz.core.ArchiveOrdinalRangeRecord
 import io.github.mbaliga.fylz.core.FylzCore
+import io.github.mbaliga.fylz.operations.OrdinalBitmap
 import kotlinx.coroutines.runBlocking
 
 /** The engine call behind [DecoderService.inspectArchive]: a raw fd, the limits, the row cap. */
@@ -17,6 +20,9 @@ typealias ArchiveListEngine = (fd: Int, limits: ArchiveLimitsRecord, sinkFd: Int
 
 /** The engine call behind [DecoderService.extractEntry]; returns the bytes written. */
 typealias ArchiveExtractEngine = (fd: Int, ordinal: Int, expectedPath: String, limits: ArchiveLimitsRecord, sinkFd: Int) -> Long
+
+/** The engine call behind [DecoderService.extractRanges] (M3.4): the archive fd, the ordinal ranges, the limits, the sink fd. */
+typealias ArchiveExtractRangesEngine = (fd: Int, ranges: List<ArchiveOrdinalRangeRecord>, limits: ArchiveLimitsRecord, sinkFd: Int) -> ArchiveExtractRecord
 
 /**
  * The isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4): parsing untrusted files
@@ -38,8 +44,14 @@ typealias ArchiveExtractEngine = (fd: Int, ordinal: Int, expectedPath: String, l
  * browsing pair: the same header pass writing the full listing into a pipe the client owns, and
  * one entry by header ordinal streamed into another (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md`
  * section 2.2); this process closes its dup of each sink when the engine returns, which is the
- * EOF half of the pipe protocol (the client closes its own write end). Every engine is a
- * constructor-injected lambda defaulting to the real [FylzCore] call, so the *mapping* -- every
+ * EOF half of the pipe protocol (the client closes its own write end). `extractRanges` (M3.4,
+ * `docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.3) is bulk extraction: the caller's
+ * ordinal **bitmap** becomes exact inclusive ranges here, in-process (no Binder-size cap to merge
+ * around), and one engine pass writes every selected entry as frames into the sink; the engine
+ * answers with a record, never an exception, so the counts survive a fatal. The same service class
+ * serves the browsing process (`:decoders`) and the isolated extraction instance
+ * (`:decoders:extract`, `bindIsolatedService`); which one a call lands on is the client's choice.
+ * Every engine is a constructor-injected lambda defaulting to the real [FylzCore] call, so the *mapping* -- every
  * `ArchiveEngineException` subclass to its outcome, any other `Throwable` to `OUTCOME_INTERNAL`,
  * the record-to-Parcelable copy -- is unit-tested on the JVM without a native library
  * (`DecoderServiceMappingTest`). Android instantiates the service through the no-argument
@@ -49,6 +61,7 @@ class DecoderService(
     private val engine: ArchiveEngine = FylzCore::inspectArchive,
     private val listEngine: ArchiveListEngine = FylzCore::listArchive,
     private val extractEngine: ArchiveExtractEngine = FylzCore::extractEntryAt,
+    private val extractRangesEngine: ArchiveExtractRangesEngine = FylzCore::extractRanges,
 ) : Service() {
 
     private val binder = object : IDecoderService.Stub() {
@@ -73,6 +86,13 @@ class DecoderService(
             limits: ArchiveLimits,
             sink: ParcelFileDescriptor,
         ): ArchiveExtractResult = this@DecoderService.extractEntry(archive, ordinal, expectedPath, limits, sink)
+
+        override fun extractRanges(
+            archive: ParcelFileDescriptor,
+            limits: ArchiveLimits,
+            ordinalsBitmap: ByteArray,
+            sink: ParcelFileDescriptor,
+        ): ArchiveExtractResult = this@DecoderService.extractRanges(archive, limits, ordinalsBitmap, sink)
     }
 
     /**
@@ -113,6 +133,30 @@ class DecoderService(
         sink.use { out ->
             try {
                 ArchiveExtractResult.ok(extractEngine(open.fd, ordinal, expectedPath, limits.toRecord(), out.fd))
+            } catch (failure: Throwable) {
+                failure.toFailedExtraction()
+            }
+        }
+    }
+
+    /**
+     * As [extractEntry]: both descriptors are closed here when the engine returns. The bitmap is
+     * decoded to inclusive ranges first ([OrdinalBitmap.ranges]); an empty selection is a valid,
+     * empty pass. An engine exception here would be a bug (the engine returns a record for every
+     * verdict), and maps like the others so nothing is ever thrown across Binder.
+     */
+    internal fun extractRanges(
+        archive: ParcelFileDescriptor,
+        limits: ArchiveLimits,
+        ordinalsBitmap: ByteArray,
+        sink: ParcelFileDescriptor,
+    ): ArchiveExtractResult = archive.use { open ->
+        sink.use { out ->
+            try {
+                val ranges = OrdinalBitmap.fromByteArray(ordinalsBitmap).ranges().map { range ->
+                    ArchiveOrdinalRangeRecord(first = range.first.toUInt(), last = range.last.toUInt())
+                }
+                extractRangesEngine(open.fd, ranges, limits.toRecord(), out.fd).toResult()
             } catch (failure: Throwable) {
                 failure.toFailedExtraction()
             }

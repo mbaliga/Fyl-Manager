@@ -36,6 +36,10 @@ import java.io.File
  *
  * P1.12 (schema version 2, additive): the same shape again, for
  * [io.github.mbaliga.fylz.index.LocalIndexStore] -- see [createIndexTables]/[migrateLegacyIndex].
+ *
+ * M3.4 (schema version 3, additive, no foreign keys): the extraction plan an EXTRACT operation is
+ * written with before it is enqueued -- [createExtractTables]: `extract_plans`,
+ * `extract_plan_items`, `extract_entry_digests`; deleted with their operation by [OperationsDao].
  */
 class FylzDatabase(private val context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
@@ -78,6 +82,7 @@ class FylzDatabase(private val context: Context) :
         migrateLegacyJournal(db)
         createIndexTables(db)
         migrateLegacyIndex(db)
+        createExtractTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -85,6 +90,60 @@ class FylzDatabase(private val context: Context) :
             createIndexTables(db)
             migrateLegacyIndex(db)
         }
+        if (oldVersion < 3) {
+            createExtractTables(db)
+        }
+    }
+
+    /**
+     * M3.4 (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.2): the plan half of an EXTRACT
+     * operation. `extract_plans` is one row per operation (the archive's root document Uri and
+     * catalog key, the layout, the ordinal bitmap, the limits as JSON, the consent and sanitise
+     * flags, and the cancel flag the worker polls); `extract_plan_items` one row per top-level item
+     * (its root path in the tree, requested name, conflict policy and Keep-both override);
+     * `extract_entry_digests` one row per verified entry. No foreign keys: the DAO deletes plan rows
+     * wherever it deletes an operation.
+     */
+    private fun createExtractTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_EXTRACT_PLANS} (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                archive_uri TEXT NOT NULL,
+                catalog_key TEXT NOT NULL,
+                layout TEXT NOT NULL,
+                folder_name TEXT,
+                ordinals BLOB NOT NULL,
+                limits_json TEXT NOT NULL,
+                consent INTEGER NOT NULL,
+                sanitize INTEGER NOT NULL,
+                cancel_requested INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_EXTRACT_PLAN_ITEMS} (
+                operation_id TEXT NOT NULL,
+                item_index INTEGER NOT NULL,
+                root_path TEXT NOT NULL,
+                requested_name TEXT NOT NULL,
+                conflict_policy TEXT NOT NULL,
+                name_override TEXT,
+                PRIMARY KEY (operation_id, item_index)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS} (
+                operation_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                PRIMARY KEY (operation_id, ordinal)
+            )
+            """.trimIndent(),
+        )
     }
 
     /**
@@ -375,7 +434,7 @@ class FylzDatabase(private val context: Context) :
 
     companion object {
         const val DATABASE_NAME = "fylz.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
 
         internal const val LEGACY_PREFERENCES_NAME = "fylz_operation_journal"
         internal const val LEGACY_RECORDS_KEY = "operations"

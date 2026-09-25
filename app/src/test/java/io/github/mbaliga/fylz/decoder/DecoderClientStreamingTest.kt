@@ -68,6 +68,12 @@ class DecoderClientStreamingTest {
             ParcelFileDescriptor.AutoCloseOutputStream(sink).use { it.write(payload) }
             return ArchiveExtractResult.ok(payload.size.toLong())
         }
+        override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult {
+            onCall()
+            if (delayMillis > 0) Thread.sleep(delayMillis)
+            ParcelFileDescriptor.AutoCloseOutputStream(sink).use { it.write(payload) }
+            return ArchiveExtractResult.ok(payload.size.toLong())
+        }
     }
 
     private fun client(
@@ -206,6 +212,7 @@ class DecoderClientStreamingTest {
             }
             override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor) = error("unused")
             override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor) = error("unused")
+            override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor) = error("unused")
         }
         val healthy = writingStub(ByteArray(0))
         val client = DecoderClient(
@@ -259,6 +266,7 @@ class DecoderClientStreamingTest {
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor) = okInspection
         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor) = ArchiveExtractResult.ok(0)
+        override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor) = ArchiveExtractResult.ok(0)
     }
 
     @Test

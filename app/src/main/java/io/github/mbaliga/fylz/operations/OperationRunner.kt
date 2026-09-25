@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.operations
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -57,18 +58,40 @@ data class OperationProgress(
  * now always explicit: nothing but [cancel] ever cancels one, so a service's own journal is
  * correct to record every cancellation it sees as user-initiated. Before this, composable teardown
  * cancelled the UI's `rememberCoroutineScope()` and looked identical to the user pressing Cancel.
+ *
+ * M3.4 adds [enqueueExtract] (`docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.2): an EXTRACT
+ * operation whose plan is already in the journal goes into the same unique queue, tagged
+ * `op:<id>`, tracked here under the **operation** id; [cancel] on one sets the plan's cancel flag
+ * through [cancelExtract] instead of cancelling the work, so the transfers queued behind it live on.
  */
 class OperationRunner(
     private val scope: CoroutineScope,
     /** Only needed for [enqueueTransfer]/[cancel]'s WorkManager path (P1.2) -- every other member
      * here is plain-JVM testable without one, which existing tests rely on. */
     private val context: Context? = null,
+    /**
+     * How [cancel] flags an extraction (M3.4): `true` when [cancel]'s id names a planned extraction
+     * and the flag was set. The default asks the journal (`hasExtractPlan`) and writes
+     * `extract_plans.cancel_requested`, so an extraction enqueued by an earlier process is flagged too.
+     */
+    private val cancelExtract: (String) -> Boolean = { id ->
+        val journal = context?.let { OperationJournal(it.applicationContext) }
+        if (journal != null && journal.hasExtractPlan(id)) {
+            journal.setCancelRequested(id)
+            true
+        } else {
+            false
+        }
+    },
 ) {
 
     private val _operations = MutableStateFlow<List<RunningOperation>>(emptyList())
     val operations: StateFlow<List<RunningOperation>> = _operations.asStateFlow()
 
     private val jobs = mutableMapOf<String, Job>()
+
+    /** EXTRACT operations enqueued through this runner, by operation id. Guarded by [extracts]. */
+    private val extracts = mutableSetOf<String>()
 
     /**
      * Launches [block] on the app scope, tracked in [operations] as [type]/[label] until it
@@ -122,9 +145,42 @@ class OperationRunner(
      * request. A no-op once it has already finished (the id is no longer tracked by then). */
     fun cancel(id: String) {
         jobs[id]?.cancel()
+        // M3.4: an extraction is cancelled by a flag the extractor polls, never cancelWorkById
+        // (that would cancel the whole unique chain behind it).
+        val tracked = synchronized(extracts) { id in extracts }
+        if (cancelExtract(id) || tracked) return
         val appContext = context ?: return
         val workId = runCatching { UUID.fromString(id) }.getOrNull() ?: return
         WorkManager.getInstance(appContext).cancelWorkById(workId)
+    }
+
+    /**
+     * M3.4: enqueues the planned EXTRACT operation [operationId] -- already written with its plan by
+     * `OperationJournal.putWithExtractPlan` -- as durable work in the same unique queue as copy and
+     * move, tagged [extractTag]. Tracked in [operations] under the operation id (so the UI's Cancel
+     * reaches [cancel]'s flag path) with progress from the worker's own `WorkInfo`. Returns once the
+     * work is terminal; never throws for a journaled outcome -- the journal is the record, and the
+     * worker returns success for every one of them.
+     */
+    suspend fun enqueueExtract(operationId: String, label: String = "Extracting", itemCount: Int = 0) {
+        val appContext = requireNotNull(context) { "OperationRunner needs a context to enqueue durable extractions." }
+        val workManager = WorkManager.getInstance(appContext)
+        val request = OneTimeWorkRequestBuilder<TransferWorker>()
+            .setInputData(TransferWorker.extractInputData(operationId))
+            .addTag(extractTag(operationId))
+            .build()
+        synchronized(extracts) { extracts += operationId }
+        _operations.update { it + RunningOperation(operationId, FileOperationType.EXTRACT, label, itemCount = itemCount) }
+        try {
+            workManager.enqueueUniqueWork(TransferWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            workManager.getWorkInfoByIdFlow(request.id)
+                .filterNotNull()
+                .onEach { info -> applyWorkInfo(operationId, info) }
+                .first { it.state.isFinished }
+        } finally {
+            synchronized(extracts) { extracts -= operationId }
+            _operations.update { list -> list.filterNot { it.id == operationId } }
+        }
     }
 
     /**
@@ -190,6 +246,9 @@ class OperationRunner(
     }
 
     companion object {
+        /** The WorkManager tag of the EXTRACT operation [operationId]'s request (design section 2.2). */
+        fun extractTag(operationId: String): String = "op:$operationId"
+
         /**
          * Call once at app start (P0.6), with a [journal] the caller just constructed -- its own
          * constructor synchronously marks every operation a dead process left `RUNNING`,
@@ -203,8 +262,21 @@ class OperationRunner(
          * safe retry. An item that reached `NEEDS_ATTENTION` any other way (for example
          * `MOVE_SOURCE_DELETE_PENDING`) is untouched: that has its own recovery action
          * (`FileOperationService.finishMoveCleanup`).
+         *
+         * **EXTRACT operations with a plan** (M3.4, design section 2.3 step 9) are reconciled against
+         * WorkManager through [workLookup]: one whose tagged work is still alive is left alone (the
+         * re-run claims it, `NEEDS_ATTENTION`/`PROCESS_INTERRUPTED` included); a `RUNNING`,
+         * `PAUSED_BY_SYSTEM` or interrupted one whose work is gone has its recorded staging deleted and
+         * becomes `INTERRUPTED` (a **conditional** state change, so a claim that raced this is not
+         * clobbered); a `QUEUED` one older than [NEVER_RAN_AGE_MILLIS] with no work becomes
+         * `FAILED / NEVER_RAN`. Legacy EXTRACT rows (no plan: the encrypted-ZIP path) are untouched.
          */
-        suspend fun recover(journal: OperationJournal, resolver: ContentResolver) = withContext(Dispatchers.IO) {
+        suspend fun recover(
+            journal: OperationJournal,
+            resolver: ContentResolver,
+            workLookup: WorkLookup = WorkLookup.NONE,
+            nowMillis: () -> Long = System::currentTimeMillis,
+        ) = withContext(Dispatchers.IO) {
             journal.list()
                 .filter { it.type == FileOperationType.COPY || it.type == FileOperationType.MOVE }
                 .forEach { operation ->
@@ -225,8 +297,46 @@ class OperationRunner(
                         )
                     }
                 }
+            journal.list()
+                .filter { it.type == FileOperationType.EXTRACT && journal.hasExtractPlan(it.id) }
+                .forEach { operation -> reconcileExtract(journal, resolver, workLookup, nowMillis(), operation) }
         }
 
+        private fun reconcileExtract(journal: OperationJournal, resolver: ContentResolver, workLookup: WorkLookup, now: Long, operation: FileOperation) {
+            val alive = workLookup.activeWorkIds(extractTag(operation.id)).isNotEmpty()
+            when (operation.state) {
+                OperationState.RUNNING, OperationState.PAUSED_BY_SYSTEM, OperationState.NEEDS_ATTENTION -> {
+                    if (alive) return
+                    val interrupted = operation.state == OperationState.NEEDS_ATTENTION &&
+                        operation.items.none { it.state == OperationState.NEEDS_ATTENTION && it.errorCode != PROCESS_INTERRUPTED }
+                    if (operation.state == OperationState.NEEDS_ATTENTION && !interrupted) return
+                    if (!journal.updateOperationStateIf(operation.id, operation.state, OperationState.INTERRUPTED)) return
+                    operation.items.forEach { item ->
+                        if (item.state == OperationState.SUCCEEDED) return@forEach
+                        item.stagingUri?.let { staging -> DocNode.load(resolver, staging)?.delete(resolver) }
+                        journal.updateItem(operation.id, item.copy(state = OperationState.INTERRUPTED, errorCode = PROCESS_INTERRUPTED, stagingUri = null), refresh = false)
+                    }
+                    journal.refresh()
+                    Log.i(TAG, "Extraction ${operation.id}: its work is gone; marked interrupted")
+                }
+                OperationState.QUEUED -> {
+                    if (alive || now - operation.updatedAtMillis < NEVER_RAN_AGE_MILLIS) return
+                    if (!journal.updateOperationStateIf(operation.id, OperationState.QUEUED, OperationState.FAILED)) return
+                    operation.items.forEach { item ->
+                        if (item.state == OperationState.SUCCEEDED) return@forEach
+                        journal.updateItem(operation.id, item.copy(state = OperationState.FAILED, errorCode = ExtractErrorCodes.NEVER_RAN), refresh = false)
+                    }
+                    journal.refresh()
+                    Log.i(TAG, "Extraction ${operation.id}: queued with no work; marked never run")
+                }
+                else -> Unit
+            }
+        }
+
+        private const val TAG = "OperationRunner"
         private const val PROCESS_INTERRUPTED = "PROCESS_INTERRUPTED"
+
+        /** A `QUEUED` extraction younger than this is still between its plan write and its enqueue. */
+        const val NEVER_RAN_AGE_MILLIS = 60_000L
     }
 }

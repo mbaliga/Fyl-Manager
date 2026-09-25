@@ -3,6 +3,8 @@ package io.github.mbaliga.fylz.decoder
 import io.github.mbaliga.fylz.core.ArchiveEngineException
 import io.github.mbaliga.fylz.core.ArchiveEntryKindRecord
 import io.github.mbaliga.fylz.core.ArchiveEntryRecord
+import io.github.mbaliga.fylz.core.ArchiveExtractOutcomeRecord
+import io.github.mbaliga.fylz.core.ArchiveExtractRecord
 import io.github.mbaliga.fylz.core.ArchiveInspectionRecord
 import io.github.mbaliga.fylz.core.ArchiveLimitsRecord
 
@@ -79,6 +81,29 @@ internal fun Throwable.toFailedInspection(): ArchiveInspection {
     val (outcome, message) = toOutcome()
     return ArchiveInspection.failed(outcome, message)
 }
+
+/**
+ * `archive_extract_ranges`'s outcome record (M3.4a) to the Parcelable: the outcome enum to the same
+ * codes `extractEntry`'s exceptions map to, the counts clamped, `stop_ordinal` to
+ * [ArchiveExtractResult.NO_STOP_ORDINAL] when absent. Exhaustive over the enum.
+ */
+internal fun ArchiveExtractRecord.toResult(): ArchiveExtractResult = ArchiveExtractResult(
+    outcome = when (outcome) {
+        ArchiveExtractOutcomeRecord.OK -> ArchiveExtractResult.OUTCOME_OK
+        ArchiveExtractOutcomeRecord.REFUSED -> ArchiveExtractResult.OUTCOME_REFUSED
+        ArchiveExtractOutcomeRecord.NOT_SEEKABLE -> ArchiveExtractResult.OUTCOME_NOT_SEEKABLE
+        ArchiveExtractOutcomeRecord.UNSUPPORTED -> ArchiveExtractResult.OUTCOME_UNSUPPORTED
+        ArchiveExtractOutcomeRecord.CORRUPT -> ArchiveExtractResult.OUTCOME_CORRUPT
+        ArchiveExtractOutcomeRecord.LIMIT_EXCEEDED -> ArchiveExtractResult.OUTCOME_LIMIT_EXCEEDED
+        ArchiveExtractOutcomeRecord.CANCELLED -> ArchiveExtractResult.OUTCOME_CANCELLED
+        ArchiveExtractOutcomeRecord.INTERNAL -> ArchiveExtractResult.OUTCOME_INTERNAL
+    },
+    message = message,
+    bytesWritten = bytesWritten.toClampedLong(),
+    entriesWritten = entriesWritten.toClampedInt(),
+    entriesFailed = entriesFailed.toClampedInt(),
+    stopOrdinal = stopOrdinal?.toClampedInt() ?: ArchiveExtractResult.NO_STOP_ORDINAL,
+)
 
 /** The same table for `extractEntry` (M3.3), plus `NotFound` -> [ArchiveExtractResult.OUTCOME_NOT_FOUND]. */
 internal fun Throwable.toFailedExtraction(): ArchiveExtractResult {

@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,18 @@ sealed class DecoderCall<out T> {
  * flight the client unbinds (section 2.9), so `:decoders` costs nothing between browsing sessions
  * and comes back on the next call.
  *
+ * **The extraction instance** ([extraction], M3.4, `docs/agent/DESIGN-M34-SELECTIVE-EXTRACT.md`
+ * section 2.3): bulk extraction runs on a second isolated process, `:decoders:extract`, bound with
+ * `bindIsolatedService(intent, BIND_AUTO_CREATE, "extract", executor, connection)`, so a browse
+ * call's timeout never reaps a running extraction and an extraction's abandonment never reaps the
+ * browsing process. [extraction] hands out a **separate** `DecoderClient` for it -- the same
+ * generation/liveness machinery over a different binding -- with no idle timer (the extractor
+ * calls [unbind] when the operation ends), no transparent retry (a transport loss is the
+ * extractor's to handle) and its transactions on `Dispatchers.IO` rather than the fixed pool (an
+ * abandoned extraction transaction would otherwise hold one of four threads while the next queued
+ * extraction waited for it). The real factory needs a `Context`; tests inject their own through
+ * `extractionFactory`.
+ *
  * [bind]/[unbind] are the only seam onto real Android IPC, so tests can drive the exact
  * [ServiceConnection] callbacks (a hang, a disconnect) without a real isolated process --
  * genuine cross-process kill-on-timeout and crash-recovery behaviour is a device-only concern,
@@ -97,11 +110,18 @@ class DecoderClient(
     private val bind: (ServiceConnection) -> Boolean,
     private val unbind: (ServiceConnection) -> Unit,
     private val timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    /** [NO_IDLE_UNBIND] keeps the binding until [unbind] is called (the extraction instance). */
     private val idleUnbindMillis: Long = IDLE_UNBIND_MILLIS,
     /** How often a streaming call checks for progress; the inactivity budget is counted in these steps. */
     private val livenessPollMillis: Long = LIVENESS_POLL_MILLIS,
     /** The archive descriptor's shared file offset, or `null` when it cannot be read (then only sink bytes count). */
     private val offsetProbe: (ParcelFileDescriptor) -> Long? = ::sharedOffset,
+    /** Where transactions and drains run; `null` is the dedicated fixed pool of [STREAM_THREADS]. */
+    transactionDispatcher: CoroutineDispatcher? = null,
+    /** Whether a transaction dropped by *another* call's timeout is retried once on a fresh binding. */
+    private val retryOnDrop: Boolean = true,
+    /** Makes the client for the isolated extraction instance; `null` when this client cannot provide one. */
+    private val extractionFactory: (() -> DecoderClient)? = null,
 ) {
     constructor(context: Context, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS) : this(
         bind = { connection ->
@@ -109,7 +129,27 @@ class DecoderClient(
         },
         unbind = { connection -> context.unbindService(connection) },
         timeoutMillis = timeoutMillis,
+        extractionFactory = { forExtraction(context) },
     )
+
+    /**
+     * A fresh client bound to the isolated extraction instance (`:decoders:extract`), for one
+     * extraction operation: the caller runs its `callStreaming` calls on it and then [unbind]s it,
+     * which also reaps the process when the extraction was abandoned. Throws when this client was
+     * built without a factory (a test client that never asked for one).
+     */
+    fun extraction(): DecoderClient = checkNotNull(extractionFactory) { "This DecoderClient has no extraction factory." }()
+
+    /**
+     * Drops the current binding whatever its state -- a pending bind is cancelled, an in-flight
+     * transaction is left to end with `DeadObjectException` and be logged once -- and unbinds, so the
+     * platform can reap the process. The next call, if any, binds afresh. What the extractor calls
+     * when an operation ends (section 2.3 step 8).
+     */
+    fun unbind() {
+        val generation = synchronized(lock) { binding?.generation } ?: return
+        dropConnection(generation)
+    }
 
     /** One binding: its generation, and the deferred its `onServiceConnected` completes. */
     private inner class Binding(val generation: Long) : ServiceConnection {
@@ -150,9 +190,11 @@ class DecoderClient(
      * threads are daemons: the pool is never shut down (the client is application-scoped).
      */
     private val transactions = CoroutineScope(
-        Executors.newFixedThreadPool(STREAM_THREADS) { runnable ->
-            Thread(runnable, "decoder-stream-${streamThreads.incrementAndGet()}").apply { isDaemon = true }
-        }.asCoroutineDispatcher() + SupervisorJob(),
+        (
+            transactionDispatcher ?: Executors.newFixedThreadPool(STREAM_THREADS) { runnable ->
+                Thread(runnable, "decoder-stream-${streamThreads.incrementAndGet()}").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
+            ) + SupervisorJob(),
     )
 
     /** Idle timers, off the transaction pool so a saturated pool cannot delay an unbind. */
@@ -222,7 +264,7 @@ class DecoderClient(
             inFlight -= 1
             if (inFlight == 0) binding?.generation else null
         } ?: return
-        armIdleTimer(arm)
+        if (idleUnbindMillis != NO_IDLE_UNBIND) armIdleTimer(arm)
     }
 
     private fun armIdleTimer(generation: Long) {
@@ -286,7 +328,7 @@ class DecoderClient(
                 when (val attempt = attemptOnce(timeoutMillis, block)) {
                     is Attempt.Ok -> return DecoderCall.Ok(attempt.value)
                     Attempt.TimedOut -> return DecoderCall.TimedOut
-                    is Attempt.Failed -> if (!attempt.retryable || attempts > 1) return DecoderCall.Failed
+                    is Attempt.Failed -> if (!retryOnDrop || !attempt.retryable || attempts > 1) return DecoderCall.Failed
                 }
             }
         } finally {
@@ -350,11 +392,25 @@ class DecoderClient(
      * the connection is kept. [drain] may run twice: a transaction dropped by another call's
      * timeout is retried once on a fresh binding with a fresh pipe, so the drain must start over
      * from an empty sink each time it is invoked.
+     *
+     * M3.4 (section 2.3 step 6) extends the liveness rule without changing it: [busy] is polled
+     * each tick and pauses the inactivity count while true (the drain is inside a slow provider
+     * `write`/`close` -- a cloud, an OTG drive, an SD card fsync -- which must not look like a hung
+     * engine); [progress] is a third activity signal beside the sink bytes and the archive offset (a
+     * demultiplexer's own count); [cancelled] is polled each tick too and, when true, closes the
+     * read end (EPIPE for the engine), waits up to [drainFailureWaitMillis] for the transaction,
+     * abandons it otherwise, and returns [DecoderCall.Failed] -- the caller that asked for the cancel
+     * knows what that means. [drainFailureWaitMillis] also bounds the wait after the drain itself
+     * fails (the extractor's cancel throws out of its drain).
      */
     suspend fun <T : Any> callStreaming(
         archive: ParcelFileDescriptor,
         inactivityMillis: Long = STREAM_INACTIVITY_MILLIS,
         drain: suspend (InputStream) -> Unit,
+        busy: () -> Boolean = { false },
+        progress: () -> Long = { 0L },
+        cancelled: () -> Boolean = { false },
+        drainFailureWaitMillis: Long = inactivityMillis,
         block: (IDecoderService, ParcelFileDescriptor) -> T,
     ): DecoderCall<T> {
         beginCall()
@@ -362,10 +418,10 @@ class DecoderClient(
             var attempts = 0
             while (true) {
                 attempts += 1
-                when (val attempt = streamOnce(archive, inactivityMillis, drain, block)) {
+                when (val attempt = streamOnce(archive, inactivityMillis, drain, busy, progress, cancelled, drainFailureWaitMillis, block)) {
                     is Attempt.Ok -> return DecoderCall.Ok(attempt.value)
                     Attempt.TimedOut -> return DecoderCall.TimedOut
-                    is Attempt.Failed -> if (!attempt.retryable || attempts > 1) return DecoderCall.Failed
+                    is Attempt.Failed -> if (!retryOnDrop || !attempt.retryable || attempts > 1) return DecoderCall.Failed
                 }
             }
         } finally {
@@ -377,6 +433,10 @@ class DecoderClient(
         archive: ParcelFileDescriptor,
         inactivityMillis: Long,
         drain: suspend (InputStream) -> Unit,
+        busy: () -> Boolean,
+        progress: () -> Long,
+        cancelled: () -> Boolean,
+        drainFailureWaitMillis: Long,
         block: (IDecoderService, ParcelFileDescriptor) -> T,
     ): Attempt<T> {
         val pipe = ParcelFileDescriptor.createPipe()
@@ -422,9 +482,11 @@ class DecoderClient(
             }
             transaction = startedTransaction
 
-            // Liveness: sink bytes or the archive's shared offset moving within the budget.
+            // Liveness: sink bytes, the archive's shared offset or the caller's own progress moving
+            // within the budget; the count pauses while the caller says it is busy.
             var lastDrained = -1L
             var lastOffset: Long? = null
+            var lastProgress = -1L
             var idleMillis = 0L
             var result: T? = null
             while (result == null) {
@@ -435,16 +497,28 @@ class DecoderClient(
                     // by closing both pipe ends (the engine's write gets EPIPE and returns), then
                     // surface the drain's own failure.
                     closePipe()
-                    withTimeoutOrNull(inactivityMillis) { runCatching { startedTransaction.await() } } ?: abandonAndDrop(startedTransaction, generation)
+                    withTimeoutOrNull(drainFailureWaitMillis) { runCatching { startedTransaction.await() } } ?: abandonAndDrop(startedTransaction, generation)
                     startedDrain.await()
+                }
+                if (cancelled()) {
+                    // The caller withdrew: the read end goes first (the engine's next write gets EPIPE,
+                    // and its header-pass poll sees the hang-up), the transaction gets a bounded wait,
+                    // then it is abandoned and the binding dropped so the process can be reaped.
+                    closePipe()
+                    withTimeoutOrNull(drainFailureWaitMillis) { runCatching { startedTransaction.await() } } ?: abandon(startedTransaction)
+                    dropConnection(generation)
+                    startedDrain.cancel()
+                    return Attempt.Failed(retryable = false)
                 }
                 val nowDrained = drained.get()
                 val nowOffset = offsetProbe(archive)
-                if (nowDrained != lastDrained || nowOffset != lastOffset) {
+                val nowProgress = progress()
+                if (nowDrained != lastDrained || nowOffset != lastOffset || nowProgress != lastProgress) {
                     lastDrained = nowDrained
                     lastOffset = nowOffset
+                    lastProgress = nowProgress
                     idleMillis = 0L
-                } else {
+                } else if (!busy()) {
                     idleMillis += livenessPollMillis
                     if (idleMillis >= inactivityMillis) {
                         closePipe()
@@ -461,10 +535,12 @@ class DecoderClient(
             while (!startedDrain.isCompleted) {
                 if (withTimeoutOrNull(livenessPollMillis) { startedDrain.await() } != null) break
                 val nowDrained = drained.get()
-                if (nowDrained != lastDrained) {
+                val nowProgress = progress()
+                if (nowDrained != lastDrained || nowProgress != lastProgress) {
                     lastDrained = nowDrained
+                    lastProgress = nowProgress
                     idleMillis = 0L
-                } else {
+                } else if (!busy()) {
                     idleMillis += livenessPollMillis
                     if (idleMillis >= inactivityMillis) {
                         closePipe()
@@ -570,6 +646,41 @@ class DecoderClient(
 
         /** How long the binding stays up with nothing in flight (section 2.9). */
         const val IDLE_UNBIND_MILLIS = 60_000L
+
+        /** An `idleUnbindMillis` that never arms the idle timer: the binding lives until [unbind]. */
+        const val NO_IDLE_UNBIND = Long.MAX_VALUE
+
+        /** The `instanceName` of the isolated extraction process: `:decoders:extract` (M3.4). */
+        const val EXTRACTION_INSTANCE = "extract"
+
+        /** How long an extraction waits for the transaction to return after a cancel or a drain failure. */
+        const val EXTRACTION_CANCEL_WAIT_MILLIS = 5_000L
+
+        /** `bindIsolatedService`'s callback executor; the callbacks only complete a deferred. */
+        private val connectionExecutor: java.util.concurrent.Executor by lazy {
+            Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "decoder-extract-connection").apply { isDaemon = true } }
+        }
+
+        /**
+         * The client of the isolated extraction instance (M3.4, section 2.3 step 3): a bind with
+         * `bindIsolatedService(..., "extract", ...)`, no idle timer, no transparent retry,
+         * transactions on `Dispatchers.IO`. One per extraction operation; the extractor unbinds it.
+         */
+        fun forExtraction(context: Context): DecoderClient = DecoderClient(
+            bind = { connection ->
+                context.bindIsolatedService(
+                    Intent(context, DecoderService::class.java),
+                    Context.BIND_AUTO_CREATE,
+                    EXTRACTION_INSTANCE,
+                    connectionExecutor,
+                    connection,
+                )
+            },
+            unbind = { connection -> context.unbindService(connection) },
+            idleUnbindMillis = NO_IDLE_UNBIND,
+            transactionDispatcher = Dispatchers.IO,
+            retryOnDrop = false,
+        )
 
         /** How often a streaming call samples its two liveness signals. */
         const val LIVENESS_POLL_MILLIS = 1_000L

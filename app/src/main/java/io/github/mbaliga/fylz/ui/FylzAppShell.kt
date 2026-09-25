@@ -10,12 +10,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.operations.FileOperationService
-import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationJournal
-import io.github.mbaliga.fylz.operations.OperationRetryPlan
 import io.github.mbaliga.fylz.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.operations.OperationState
+import io.github.mbaliga.fylz.operations.RetryDispatcher
 import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,6 +44,12 @@ fun FylzAppShell(viewUri: Uri? = null) {
     // P1.11: this journal instance, not a second default-constructed one -- see OperationJournal's
     // own KDoc for why retrying through a DIFFERENT instance would leave `operations` below stale.
     val fileOperations = remember { FileOperationService(context.applicationContext, journal = journal) }
+    // M3.4: the retry dispatch (transfer replay, move cleanup, extraction re-claim) lives in
+    // operations/RetryDispatcher.kt; a re-claimed extraction is enqueued through the app's runner.
+    val retries = remember {
+        val runner = (context.applicationContext as FylzApplication).operationRunner
+        RetryDispatcher(fileOperations, journal) { id -> runner.enqueueExtract(id) }
+    }
     var showHistory by remember { mutableStateOf(false) }
     // P1.11: journal.operations replaces the old 1-second poll (a plain SQLite read directly on
     // Compose's own dispatcher, forever, for the app's whole lifetime) -- see OperationJournal's
@@ -76,25 +82,7 @@ fun FylzAppShell(viewUri: Uri? = null) {
                         Toast.makeText(context, "This operation cannot be retried safely.", Toast.LENGTH_LONG).show()
                     } else {
                         scope.launch {
-                            runCatching {
-                                when (plan) {
-                                    is OperationRetryPlan.Transfer -> when (plan.type) {
-                                        FileOperationType.COPY -> fileOperations.copy(
-                                            sourceUris = plan.sourceUris,
-                                            destinationTreeUri = plan.destinationTreeUri,
-                                            conflictPolicy = plan.conflictPolicy,
-                                        )
-                                        FileOperationType.MOVE -> fileOperations.move(
-                                            sourceUris = plan.sourceUris,
-                                            destinationTreeUri = plan.destinationTreeUri,
-                                            conflictPolicy = plan.conflictPolicy,
-                                        )
-                                        else -> error("Unsupported retry type.")
-                                    }
-                                    is OperationRetryPlan.FinishMoveCleanup ->
-                                        fileOperations.finishMoveCleanup(plan.operationId)
-                                }
-                            }.onSuccess {
+                            runCatching { retries.dispatch(plan) }.onSuccess {
                                 Toast.makeText(context, "Recovery action completed.", Toast.LENGTH_LONG).show()
                             }.onFailure { failure ->
                                 Toast.makeText(

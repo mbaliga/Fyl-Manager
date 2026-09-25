@@ -294,7 +294,9 @@ implementation added):
    have no `Uri` yet.
 9. **Inspect is widened beyond the ZIP family** (7z, ISO, tar and the five compressed-tar MIME
    types in the picker); Extract is not (ZIP-only button, `fylz.extract`'s `enabledWhen` unchanged).
-10. **Extraction still stages whole archives** until M3.4.
+10. **Extraction still stages whole archives** until M3.4. Closed for the queue path by M3.4b:
+    `ArchiveExtractor` re-opens the archive through the catalog's `PinnedSource` per call (a
+    seekable document is never copied); the legacy zip4j path keeps staging until M3.4c narrows it.
 11. **Full-listing transport deferred to M3.3**; M3.2 carries the first 500 rows in the Parcelable
     (measured under 256 KB for 500 long-ish paths). Closed by M3.3: the listing streams through a
     pipe in the `FZL1` codec (M3.3 entry below).
@@ -358,7 +360,8 @@ implementation added):
 3. RAR/CBR, `arj img dmg wim xar`, and single-file compressed streams (`notes.txt.gz`) are not
    browsable (section 2.5); the plan's table says "read: yes" for several.
 4. Copy-out is per entry (materialise, then copy; about N/2 full decompressions for `tar.*` and
-   solid 7z) until M3.4's one-pass bulk path (section 2.4).
+   solid 7z) until M3.4's one-pass bulk path (section 2.4). The one-pass path landed in M3.4b
+   (`ArchiveExtractor` over `extractRanges`); the actions that reach it land in M3.4c.
 5. Entries over 512 MiB cannot be opened in place ("Extract it instead").
 6. Encrypted entries, links and special files do not open (section 2.4); hardlinks resolve.
 7. Pipes as the one bulk channel; SELinux for passed *file* descriptors (read and write alike) is
@@ -431,6 +434,8 @@ implementation added):
 34. The once-per-process cache sweep runs from `ArchiveCatalog.open` and `ArchiveInspector.inspect`
     (first wins); the design only said it moves out of `ArchiveSource.resolve()`.
 35. `ArchiveExtractResult` is the minimal `outcome/message/bytesWritten`; M3.4 adds its counts.
+    Closed by M3.4b: `entriesWritten`, `entriesFailed`, `stopOrdinal` (defaulted, so `extractEntry`
+    is untouched).
 36. **(b)** The provider's attach test uses the manifest's `<provider>` attributes read from the
     XML when Robolectric's package manager does not know the manifest (this project runs without
     `includeAndroidResources`); `attachInfo` still enforces the contract, and the test asserts
@@ -604,7 +609,92 @@ implementation added):
     decode-kind fixture). `tree.zip`/`tree.tar.zst` have 8 explicit directory rows (the tar adds
     `late/` after `late/x.txt`), one implicit directory, a relative symlink and a cross-folder hardlink.
 
-**Relevant commits:** the M3.4a commit (this entry's items 25–36 and the design's 6–9, 23 as landed).
+37. **(b) The plan holds the archive's root document Uri and catalog key, not a `staged_path`**
+    (design section 2.2's schema): a staged copy belongs to the catalog's `PinnedSource` and never
+    outlives the process, so a re-run of a stream-only source stages again through the catalog and
+    a changed key at claim is `ARCHIVE_CHANGED`.
+38. **(b) Hardlink targets are tee-written during the pass** to every destination path the plan
+    mapped to the target's ordinal (design section 2.3 step 7 copies them after the pass); the
+    target's bytes count once per path. A target that fails fails every item holding a path to it.
+39. **(b) Recovery marks a planned EXTRACT whose work is gone `INTERRUPTED`** (items
+    `INTERRUPTED`/`PROCESS_INTERRUPTED`, staging deleted), the state copy/move get, rather than the
+    design's `NEEDS_ATTENTION / PROCESS_INTERRUPTED`; the claim states are `QUEUED |
+    PAUSED_BY_SYSTEM | NEEDS_ATTENTION` (the journal constructor's own session recovery turns a
+    `RUNNING` row into `NEEDS_ATTENTION` before a re-run can claim it) plus `RUNNING` when no other
+    work with the tag is alive. `INTERRUPTED` reaches a run only through the retry (`QUEUED`).
+40. **(b) An item is `SUCCEEDED` only when every planned entry of it completed**; an item with any
+    entry still missing after the re-issue is `FAILED / ARCHIVE_FATAL` (the design named only
+    items with no completed entry).
+41. **(b) Conflict rules are settled at claim, before the pass:** `SKIP` (and `ASK`) with a
+    same-named sibling, and `REPLACE_IF_NEWER` with an older or unknown source mtime, end the
+    item `SUCCEEDED / SKIPPED_CONFLICT` and leave its ordinals out of the pass (a hardlink target
+    another item needs is still read); a `KEEP_BOTH` name taken since planning is re-uniquified
+    from the requested name; `REPLACE` goes through `TargetPlanner.finalizeTarget` (the aside-then-
+    recycle rule).
+42. **(b) The encryption rule, refined:** a whole ZIP with protected entries -> the legacy path; an
+    archive with encrypted metadata, or a selection that touches a protected entry -> refused with
+    the M3.9 message; plain entries of a partly protected archive extract normally.
+43. **(b) `callStreaming` gains `busy`, `progress`, `cancelled` and `drainFailureWaitMillis`**; the
+    cancel hook closes the read end, waits the bounded time, drops the binding and returns
+    `DecoderCall.Failed` -- no new `DecoderCall` variant, so the catalog's and entry cache's
+    exhaustive `when`s stay as they are and the extractor, which asked for the cancel, reads the
+    `Failed`. The drain runs as a job on the client's own scope that `callStreaming` awaits, not
+    as a structured child of the extractor (the design's wording).
+44. **(b) The extraction instance:** `DecoderClient.forExtraction(context)` binds with
+    `bindIsolatedService(intent, BIND_AUTO_CREATE, "extract", executor, connection)`, runs
+    transactions on `Dispatchers.IO`, never retries a dropped transaction, never arms the idle
+    timer (`NO_IDLE_UNBIND`) and is `unbind()`-ed by the extractor at the end of every run;
+    `extraction()` hands out a fresh client per operation through an injected factory. The real
+    isolated binding is a device check (section 19).
+45. **(b) The reader's plan total is the pass's `maxTotalUncompressedBytes`** (the cap the engine
+    enforces), not the selection's declared sum.
+46. **(b) A cancel during the header pass** is seen by the client's liveness tick (1 s) polling the
+    flag (a 250 ms read throttle), which closes the read end; the engine's 64-header `poll` then
+    ends the call. Between frames the demultiplexer polls the same flag.
+47. **(b) The extraction notification** is "Extracting" with a permille bar (`setProgress(1000,
+    permille)`), a byte line ("Reading archive…" until the first `BEGIN`), the download icon and a
+    Cancel action (`ExtractCancelReceiver`, manifest, not exported; `goAsync` off the main thread);
+    `setForeground` failures are swallowed so a background-start restriction never fails the run.
+48. **(b) `OperationRunner.cancel` flags any planned extraction**, whether or not this runner
+    enqueued it (the default asks the journal for a plan), before falling back to
+    `cancelWorkById` for a copy/move; operation ids are UUIDs too, so the fallback on an unknown
+    extract id would have been a silent no-op.
+49. **(b) `WorkLookup`** is the one WorkManager question (ids of unfinished work with a tag) behind
+    an interface; an uninitialised WorkManager answers "nothing", which recovery reads as gone.
+    `NEVER_RAN_AGE_MILLIS` = 60 s. `androidx.work:work-testing:2.11.2` is a test dependency
+    (`THIRD_PARTY_NOTICES.md`).
+50. **(b) Test scope, honestly:** no "distinct fds across two calls" assertion (a closed descriptor's
+    number is reused in-process, so the fake sees the same number for two fresh opens; contract iii
+    is M3.3's per-call `PinnedSource.open()`); the one-listing-at-planning/one-at-claim claim is by
+    construction (one `NameIndex` each), not counted; the `busy` pause is proven at the
+    `DecoderClient` level (the faulty provider has no slow-write seam); the wide `Here` case is 500
+    roots, not 2,000; "summary unavailable" cannot be reached through `ArchiveCatalog` (it fails
+    closed earlier), so only the structural-refusal and non-OK-summary branches are exercised; a
+    real process stop is simulated by cancelling the run's coroutine with a stop reason.
+51. **(b) `LIMIT_EXCEEDED` fails the pending items with that code and is never retried; `REFUSED`
+    is `ARCHIVE_REFUSED`;** a transport loss without a `stopOrdinal` resumes at the last terminal
+    frame's ordinal + 1; the re-issue reduces `maxTotalUncompressedBytes` by the completed bytes
+    and `maxEntries` by the entries done.
+52. **(b) A system stop** leaves every non-terminal item `PAUSED_BY_SYSTEM` with its staging kept
+    (the re-run deletes it and starts the item over -- item-level, not byte-level resume); a
+    `CancellationException` whose stop reason is `STOP_REASON_CANCELLED_BY_APP` writes
+    `CANCELLED / WORK_CANCELLED` (someone cancelled the work itself, the chain problem of item 22);
+    only the former makes the worker return `Result.retry()`.
+53. **(b) `FylzAppShell.kt` 112 -> 101** (`RetryDispatcher.kt` takes the dispatch; ratchet lowered);
+    `OperationRetryPolicy.isPlannedExtract` recognises a planned row from its shape (an EXTRACT
+    with a destination whose sources are all archive documents) and the DAO's `retryExtract` still
+    checks the plan row exists.
+54. **(b) `TargetPlanning.kt`** (`TargetPlan`, `NameIndex`, `TargetPlanner`) is shared by
+    `FileOperationService` (no index: one child listing per lookup, as before) and the extractor
+    (index); `verifyFile` stays in `FileOperationService`. Sanitised nested components that collide
+    are uniquified per directory (`a?b`/`a*b` -> `a_b`, `a_b (2)`), top-level ones at planning.
+55. **(b) Progress is item-level** (`ExtractProgress`: current item, item count, completed bytes,
+    total when every size is known, "reading archive"), reported on a 250 ms throttle; journal
+    item rows are written per entry end on `ProgressWriteThrottle` (250 ms / 8 MiB) with
+    `refreshOperations()` on the same throttle, never per write.
+
+**Relevant commits:** the M3.4a commit (this entry's items 25–36 and the design's 6–9, 23 as landed);
+the M3.4b commit (items 37–55 and the design's 1, 2, 4, 5, 9–14, 17–22, 24 as landed).
 
 **Risk if it turns out wrong:**
 - LZMA2 fatality (26): if a later libarchive makes the decode error `FAILED`, the re-issue rule
@@ -616,3 +706,13 @@ implementation added):
 - Re-check after `begin` (29): a frame reader that creates the document on `BEGIN` pays one
   create-and-delete for a hostile entry a stale plan selected; the planner refuses such archives whole
   from the persisted summary, so this only fires when the archive changed under the plan.
+- Tee-written hardlinks (38): a hardlink whose target is huge is written twice during the pass
+  rather than copied after it; the cost is the same bytes, spent earlier, and a target failure takes
+  the linked item with it.
+- Recovery to `INTERRUPTED` (39): if a re-run's process is killed before the journal constructor
+  runs, WorkManager re-runs it and the row is `RUNNING`; the claim then relies on the tag lookup
+  saying no *other* work is alive, which an uninitialised WorkManager answers as "none" -- a stale
+  claim in that window would run twice against staged names that include the operation id, so the
+  second run deletes and redoes the first's staging rather than corrupting it.
+- The cancel hook returning `Failed` (43): a genuine dropped connection during a cancel is read as
+  the cancel; both end in `CANCELLED`, which is what the user asked for.

@@ -8,13 +8,16 @@ import io.github.mbaliga.fylz.decoder.ArchiveInspection
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.decoder.DecoderClient
 import io.github.mbaliga.fylz.decoder.IDecoderService
+import io.github.mbaliga.fylz.operations.OrdinalBitmap
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -32,7 +35,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * before the first write, so the drain rule needs the bytes to be there), closes its copy of the
  * sink, and answers with the same Parcelables. [interleaveMillis] sleeps between body chunks so
  * two concurrent `extractEntry` calls on descriptors that share an offset would corrupt each other
- * -- the amendment-1 test.
+ * -- the amendment-1 test. `extractRanges` (M3.4) writes the FZX1 frame stream the real engine
+ * would for the bitmap's ordinals -- `BEGIN`/`DATA`/`END` per entry in ordinal order, directories
+ * and links with their kinds and no data -- with injection points for a per-entry failure, an abort
+ * at an ordinal, a truncation, a refusal and a lying size, and records every call's arguments.
  */
 class FakeArchive(
     val entries: List<Entry>,
@@ -129,6 +135,129 @@ class FakeArchiveDecoder(
     /** How long `listArchive` sleeps before writing anything (a slow decoder). */
     var listDelayMillis: Long = 0L
 
+    // ------------------------------------------------------------------ M3.4: extractRanges
+
+    /** One `extractRanges` call as the stub saw it. */
+    class RangesCall(val archiveFd: Int, val limits: ArchiveLimits, val ordinals: OrdinalBitmap)
+
+    val rangesCalls = CopyOnWriteArrayList<RangesCall>()
+
+    /** Ordinals whose entry fails with a `FAIL` frame of this kind after its data (a CRC/size/decode failure). */
+    val failOrdinals = HashMap<Int, Int>()
+
+    /** Ordinals that fail with a stand-alone `FAIL` (a header-level failure): no `BEGIN`, no data. */
+    val headerFailOrdinals = HashSet<Int>()
+
+    /** When set, the stream aborts (`ABORT`, result CORRUPT with `stopOrdinal`) on reaching this ordinal -- **once**; the next call runs through. */
+    var abortAtOrdinal: Int? = null
+
+    /** When set, the stream is cut (no terminal frame, result OK) after this many bytes of the first entry at or after `truncateAtOrdinal`. */
+    var truncateAtOrdinal: Int? = null
+
+    /** When set, `extractRanges` answers this result and writes no frame at all. */
+    var rangesFailure: ArchiveExtractResult? = null
+
+    /** Ordinals whose `END.bytes` lies by this much (a size mismatch the reader must catch). */
+    val lieAboutSize = HashMap<Int, Long>()
+
+    /** Sleep between `DATA` frames, so a cancel can land mid-entry. */
+    var rangesInterleaveMillis: Long = 0L
+
+    /** Called before each `DATA` frame is written; returning false stops the stream where it is (a cancel seen by the engine). */
+    var beforeData: (ordinal: Int) -> Boolean = { true }
+
+    override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult {
+        val bitmap = OrdinalBitmap.fromByteArray(ordinalsBitmap)
+        rangesCalls += RangesCall(archive.fd, limits, bitmap)
+        rangesFailure?.let { failure ->
+            sink.close()
+            return failure
+        }
+        val header = readHeader(archive)
+        val channel = FileInputStream(archive.fileDescriptor).channel
+        var entriesWritten = 0
+        var bytesWritten = 0L
+        var entriesFailed = 0
+        var stop: Int? = null
+        var outcome = ArchiveExtractResult.OUTCOME_OK
+        var message: String? = null
+        ParcelFileDescriptor.AutoCloseOutputStream(sink).use { out ->
+            val writer = ExtractFrameTestWriter(out)
+            try {
+                run loop@{
+                    bitmap.ordinals().forEach { ordinal ->
+                        if (ordinal >= header.entries.length()) return@forEach
+                        // Read afresh per entry, so a test can arm the abort from `beforeData` mid-call.
+                        val abortAt = abortAtOrdinal
+                        if (abortAt != null && ordinal >= abortAt) {
+                            abortAtOrdinal = null
+                            writer.abort("Damaged archive at $ordinal")
+                            outcome = ArchiveExtractResult.OUTCOME_CORRUPT
+                            message = "Damaged archive at $ordinal"
+                            stop = ordinal
+                            return@loop
+                        }
+                        val entry = header.entries.getJSONObject(ordinal)
+                        val kind = entry.getInt("k")
+                        val path = entry.getString("p")
+                        if (ordinal in headerFailOrdinals) {
+                            writer.fail(ordinal, ExtractFrameReader.FAIL_DECODE, "header unreadable")
+                            entriesFailed += 1
+                            return@forEach
+                        }
+                        val declared = if (kind == ArchiveEntryInfo.KIND_FILE) entry.getLong("s") else 0L
+                        writer.begin(ordinal, declared, frameKind(kind), path)
+                        if (kind != ArchiveEntryInfo.KIND_FILE) {
+                            writer.end(ordinal, 0L, null)
+                            entriesWritten += 1
+                            return@forEach
+                        }
+                        val length = entry.getInt("len")
+                        val offset = header.bodyBase + entry.getInt("off")
+                        var at = 0
+                        val truncateAt = truncateAtOrdinal
+                        while (at < length) {
+                            val n = minOf(chunkBytes, length - at)
+                            if (!beforeData(ordinal)) {
+                                outcome = ArchiveExtractResult.OUTCOME_CANCELLED
+                                message = "cancelled"
+                                stop = ordinal
+                                return@loop
+                            }
+                            channel.position((offset + at).toLong())
+                            if (rangesInterleaveMillis > 0) Thread.sleep(rangesInterleaveMillis)
+                            val buffer = ByteBuffer.allocate(n)
+                            while (buffer.hasRemaining()) if (channel.read(buffer) < 0) break
+                            if (truncateAt != null && ordinal >= truncateAt && at + n >= minOf(length, chunkBytes * 2)) {
+                                // Cut mid-entry: what a killed engine leaves. The result still says OK.
+                                truncateAtOrdinal = null
+                                writer.data(ordinal, buffer.array().copyOf(maxOf(1, buffer.position() / 2)))
+                                return@loop
+                            }
+                            writer.data(ordinal, buffer.array().copyOf(buffer.position()))
+                            at += n
+                        }
+                        val failKind = failOrdinals[ordinal]
+                        if (failKind != null) {
+                            writer.fail(ordinal, failKind, "entry $ordinal failed")
+                            entriesFailed += 1
+                        } else {
+                            writer.end(ordinal, length.toLong() + (lieAboutSize[ordinal] ?: 0L), null)
+                            entriesWritten += 1
+                            bytesWritten += length
+                        }
+                    }
+                    writer.done(entriesWritten, bytesWritten, entriesFailed)
+                }
+            } catch (broken: IOException) {
+                // The reader went away (a cancel closed the read end): the engine reports Cancelled.
+                outcome = ArchiveExtractResult.OUTCOME_CANCELLED
+                message = "cancelled"
+            }
+        }
+        return ArchiveExtractResult(outcome, message, bytesWritten, entriesWritten, entriesFailed, stop ?: ArchiveExtractResult.NO_STOP_ORDINAL)
+    }
+
     override fun ping(): Boolean = true
 
     override fun sniff(pfd: ParcelFileDescriptor): String = "application/octet-stream"
@@ -209,6 +338,15 @@ class FakeArchiveDecoder(
         return ArchiveExtractResult.ok(written + shortByBytes)
     }
 
+    /** The listing's `ArchiveEntryInfo.KIND_*` to the frame codec's kind codes (`frames.rs`'s `kind_code`). */
+    private fun frameKind(kind: Int): Int = when (kind) {
+        ArchiveEntryInfo.KIND_FILE -> ExtractFrameReader.KIND_FILE
+        ArchiveEntryInfo.KIND_DIRECTORY -> ExtractFrameReader.KIND_DIRECTORY
+        ArchiveEntryInfo.KIND_SYMLINK -> ExtractFrameReader.KIND_SYMLINK
+        ArchiveEntryInfo.KIND_HARDLINK -> ExtractFrameReader.KIND_HARDLINK
+        else -> ExtractFrameReader.KIND_OTHER
+    }
+
     private fun readHeader(archive: ParcelFileDescriptor): FakeHeader {
         val channel = FileInputStream(archive.fileDescriptor).channel
         channel.position(0L)
@@ -229,9 +367,11 @@ class FakeArchiveDecoder(
         var dirs = 0
         var links = 0
         var total = 0L
+        var encrypted = false
         val rowList = ArrayList<ArchiveEntryInfo>()
         for (index in 0 until entries.length()) {
             val entry = entries.getJSONObject(index)
+            if (entry.getBoolean("enc")) encrypted = true
             when (entry.getInt("k")) {
                 ArchiveEntryInfo.KIND_FILE -> files++
                 ArchiveEntryInfo.KIND_DIRECTORY -> dirs++
@@ -259,7 +399,7 @@ class FakeArchiveDecoder(
             directoryCount = dirs,
             linkCount = links,
             totalUncompressedBytes = total,
-            hasEncryptedEntries = false,
+            hasEncryptedEntries = encrypted,
             hasEncryptedMetadata = false,
             hasLossyNames = false,
             policyAllowed = header.json.getBoolean("policyAllowed"),

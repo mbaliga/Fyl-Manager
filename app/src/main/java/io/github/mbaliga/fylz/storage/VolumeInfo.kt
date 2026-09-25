@@ -38,6 +38,17 @@ object VolumeInfoResolver {
      *   app never resolves a `File` for the system `ExternalStorageProvider` or a third-party
      *   provider, so [filesystemType][VolumeInfo.filesystemType] is always null there).
      */
+    /**
+     * [resolve] for a transfer or extraction destination as the operation code holds it (a tree
+     * grant or a resolved document Uri): the real path comes from this app's own provider when
+     * the destination is one of its documents, else stays unknown (M3.4 shares this with the UI's
+     * preflight).
+     */
+    fun resolveForDestination(context: Context, destination: Uri): VolumeInfo {
+        val documentUri = runCatching { io.github.mbaliga.fylz.operations.DocNode.resolveDestinationUri(destination) }.getOrDefault(destination)
+        return resolve(context, destination, FylzFilesDocumentsProvider.fileFor(context, documentUri))
+    }
+
     fun resolve(context: Context, destinationTreeUri: Uri, destinationPath: File?): VolumeInfo {
         val freeBytes = destinationPath?.let(::statFsAvailableBytes)
             ?: queryRootAvailableBytes(context, destinationTreeUri)

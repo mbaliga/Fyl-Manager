@@ -4,9 +4,13 @@ import android.os.ParcelFileDescriptor
 import io.github.mbaliga.fylz.core.ArchiveEngineException
 import io.github.mbaliga.fylz.core.ArchiveEntryKindRecord
 import io.github.mbaliga.fylz.core.ArchiveEntryRecord
+import io.github.mbaliga.fylz.core.ArchiveExtractOutcomeRecord
+import io.github.mbaliga.fylz.core.ArchiveExtractRecord
 import io.github.mbaliga.fylz.core.ArchiveInspectionRecord
 import io.github.mbaliga.fylz.core.ArchiveLimitsRecord
+import io.github.mbaliga.fylz.core.ArchiveOrdinalRangeRecord
 import io.github.mbaliga.fylz.core.InternalException
+import io.github.mbaliga.fylz.operations.OrdinalBitmap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -294,5 +298,69 @@ class DecoderServiceMappingTest {
         val pfd = pipe()
         serviceThrowing(ArchiveEngineException.Corrupt("x")).inspectArchive(pfd, limits, 500)
         assertThrows(IllegalStateException::class.java) { pfd.fd }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // M3.4b: extractRanges.
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    fun `extractRanges turns the bitmap into exact inclusive ranges, passes the limits, copies the record and closes both descriptors`() {
+        var seen: List<Any>? = null
+        val record = ArchiveExtractRecord(ArchiveExtractOutcomeRecord.OK, null, 5u, 4_096uL, 1u, null)
+        val service = DecoderService(extractRangesEngine = { fd, ranges, limitsRecord, sinkFd -> seen = listOf(fd, ranges, limitsRecord, sinkFd); record })
+        val archive = pipe()
+        val sink = pipe()
+        val (archiveFd, sinkFd) = archive.fd to sink.fd
+        val result = service.extractRanges(archive, limits, OrdinalBitmap.of(0, 1, 2, 7, 9, 10).toByteArray(), sink)
+        assertEquals(ArchiveExtractResult(ArchiveExtractResult.OUTCOME_OK, null, 4_096L, entriesWritten = 5, entriesFailed = 1, stopOrdinal = ArchiveExtractResult.NO_STOP_ORDINAL), result)
+        assertTrue(result.isOk)
+        assertEquals(
+            listOf(archiveFd, listOf(ArchiveOrdinalRangeRecord(0u, 2u), ArchiveOrdinalRangeRecord(7u, 7u), ArchiveOrdinalRangeRecord(9u, 10u)), limits.toRecord(), sinkFd),
+            seen,
+        )
+        assertThrows(IllegalStateException::class.java) { archive.fd }
+        assertThrows(IllegalStateException::class.java) { sink.fd }
+        // An empty bitmap is an empty, valid selection.
+        DecoderService(extractRangesEngine = { _, ranges, _, _ -> seen = listOf(ranges); record }).extractRanges(pipe(), limits, ByteArray(0), pipe())
+        assertEquals(listOf(emptyList<ArchiveOrdinalRangeRecord>()), seen)
+    }
+
+    @Test
+    fun `every extractRanges outcome maps to its code and the counts and stop ordinal come through`() {
+        val expected = mapOf(
+            ArchiveExtractOutcomeRecord.OK to ArchiveExtractResult.OUTCOME_OK,
+            ArchiveExtractOutcomeRecord.REFUSED to ArchiveExtractResult.OUTCOME_REFUSED,
+            ArchiveExtractOutcomeRecord.NOT_SEEKABLE to ArchiveExtractResult.OUTCOME_NOT_SEEKABLE,
+            ArchiveExtractOutcomeRecord.UNSUPPORTED to ArchiveExtractResult.OUTCOME_UNSUPPORTED,
+            ArchiveExtractOutcomeRecord.CORRUPT to ArchiveExtractResult.OUTCOME_CORRUPT,
+            ArchiveExtractOutcomeRecord.LIMIT_EXCEEDED to ArchiveExtractResult.OUTCOME_LIMIT_EXCEEDED,
+            ArchiveExtractOutcomeRecord.CANCELLED to ArchiveExtractResult.OUTCOME_CANCELLED,
+            ArchiveExtractOutcomeRecord.INTERNAL to ArchiveExtractResult.OUTCOME_INTERNAL,
+        )
+        assertEquals(ArchiveExtractOutcomeRecord.values().toSet(), expected.keys)
+        for ((outcome, code) in expected) {
+            val record = ArchiveExtractRecord(outcome, "m", 3u, 99uL, 2u, 41u)
+            val result = DecoderService(extractRangesEngine = { _, _, _, _ -> record }).extractRanges(pipe(), limits, ByteArray(1), pipe())
+            assertEquals(outcome.name, code, result.outcome)
+            assertEquals("m", result.message)
+            assertEquals(99L, result.bytesWritten)
+            assertEquals(3, result.entriesWritten)
+            assertEquals(2, result.entriesFailed)
+            assertEquals(41, result.stopOrdinal)
+        }
+    }
+
+    @Test
+    fun `an engine exception from extractRanges maps like extractEntry's and still closes the sink`() {
+        val sink = pipe()
+        val result = DecoderService(extractRangesEngine = { _, _, _, _ -> throw InternalException("Rust panic") }).extractRanges(pipe(), limits, ByteArray(1), sink)
+        assertEquals(ArchiveExtractResult.OUTCOME_INTERNAL, result.outcome)
+        assertEquals("InternalException", result.message)
+        assertEquals(0L, result.bytesWritten)
+        assertEquals(ArchiveExtractResult.NO_STOP_ORDINAL, result.stopOrdinal)
+        assertThrows(IllegalStateException::class.java) { sink.fd }
+        val cancelled = DecoderService(extractRangesEngine = { _, _, _, _ -> throw ArchiveEngineException.Cancelled() }).extractRanges(pipe(), limits, ByteArray(1), pipe())
+        assertEquals(ArchiveExtractResult.OUTCOME_CANCELLED, cancelled.outcome)
     }
 }
