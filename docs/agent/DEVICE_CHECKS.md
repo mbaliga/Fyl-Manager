@@ -312,3 +312,33 @@ failure; `:decoders` is free to die and come back, invisibly to the user beyond 
 failing softly (a file marked "can't preview" rather than a spinner that never resolves).
 Steps 2 and 4 are the "kill-and-restart" and "crash marks the file unsafe, never crashes the app"
 guarantees section 4.4 states in words; nothing before this milestone could observe either one.
+
+## 15. M2 — cold-start delta
+
+GATE-M2 (`docs/agent/MASTER_PLAN.md`'s own text: "APK size delta and cold-start delta reported")
+needs a real number this sandboxed container cannot produce — no real device, so no real launch to
+time. `docs/agent/REPORT-M2.md` §5 carries this as **device-needed** rather than a measured number.
+
+**Steps:**
+1. `adb shell am start -W -n <pkg>/<launcher activity>` five times on a build from before M2
+   landed (e.g. `f15a314`, P1.14, the last commit before `core/` existed) and five times on the
+   current build, force-stopping the app between runs so each start is a genuine cold start.
+2. Report the median `TotalTime` (the line `am start -W` itself prints) for each build.
+
+**Expected:** no measurable regression, since the Rust core is loaded lazily. What this run
+actually found by reading the code, rather than assumed: `FylzCore` (the hand-written Kotlin
+wrapper in `app/src/main/java/io/github/mbaliga/fylz/core/FylzCore.kt`) is two one-line delegating
+functions with no `init`/companion-object loading logic of its own. The actual
+`System.loadLibrary`-equivalent call is `Native.register(...)` (JNA) inside the *generated*
+`fylz_ffi_android.kt`'s `UniffiLib`/`IntegrityCheckingUniffiLib` — both plain Kotlin `object`s, so
+that `init` block runs only the first time either object is referenced, not at class-load or app
+startup. The only call site anywhere in the app that references `FylzCore` (and so would trigger
+that first reference) is `DecoderService.sniff()` — and `DecoderService` runs in the separate,
+`android:isolatedProcess="true"`/`android:process=":decoders"` process (section 4.4), never the
+main app process `am start` times. Nothing in `MainActivity`/`FylzApplication`/any other
+main-process startup path calls `FylzCore` at all (confirmed by grep: `DecoderService.kt` is the
+only importer), and nothing yet calls `DecoderService` itself either (M2.5's own progress note:
+"nothing calls sniff from app code yet") — so as of M2.6, the `:decoders` process is not even
+spawned in ordinary use, let alone the native library loaded in the process `am start` measures.
+On paper this means M2 should show a zero cold-start delta for the main process; confirming that on
+a real device, rather than trusting the code-reading argument alone, is this check's own job.
