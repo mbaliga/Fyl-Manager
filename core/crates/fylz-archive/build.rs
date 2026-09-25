@@ -29,7 +29,7 @@
 //! libarchive's own CMake build silently drops a format that needs a library it can't find rather
 //! than failing. Compression backends (zlib, bzip2, xz, zstd, lz4 -- all permissive, per section
 //! 2.2) are added one at a time, each verified to still build before the next is added, never all
-//! at once: lz4 first (M3.1 part 2a), the rest in follow-up tasks.
+//! at once: lz4 (M3.1 part 2a), then zstd (part 2b), the rest in follow-up tasks.
 //!
 //! Every companion, and libarchive itself, is built with `CMAKE_INSTALL_LIBDIR=lib` pinned
 //! explicitly: `GNUInstallDirs` (which all of these projects use) picks `lib64` on Fedora/RHEL-
@@ -114,6 +114,26 @@ fn main() {
         ],
     );
 
+    let zstd_prefix = build_companion(
+        &target,
+        "zstd",
+        &third_party.join("zstd/build/cmake"),
+        &[
+            ("ZSTD_BUILD_PROGRAMS", "OFF"),
+            ("ZSTD_BUILD_SHARED", "OFF"),
+            ("ZSTD_BUILD_STATIC", "ON"),
+            ("ZSTD_BUILD_TESTS", "OFF"),
+            ("ZSTD_BUILD_CONTRIB", "OFF"),
+            ("ZSTD_LEGACY_SUPPORT", "OFF"),
+            // Pinned because zstd's own default differs by platform (OFF under the NDK, ON
+            // elsewhere), which would silently make the host and Android libraries differ. OFF:
+            // libarchive's zstd read filter never uses worker threads, its write filter asks for 0
+            // workers unless told otherwise (which zstd accepts without ZSTD_MULTITHREAD), and OFF
+            // keeps a pthread dependency out of the static library.
+            ("ZSTD_MULTITHREAD_SUPPORT", "OFF"),
+        ],
+    );
+
     let libarchive_src = third_party.join("libarchive");
     println!(
         "cargo:rerun-if-changed={}",
@@ -156,7 +176,6 @@ fn main() {
         .define("ENABLE_ZLIB", "OFF")
         .define("ENABLE_BZip2", "OFF")
         .define("ENABLE_LZMA", "OFF")
-        .define("ENABLE_ZSTD", "OFF")
         .define("ENABLE_LZO", "OFF")
         // lz4: preset libarchive's own FIND_PATH/FIND_LIBRARY cache variables to the companion
         // just built, so its CMake never searches for lz4 itself. Presetting the cache variables
@@ -165,7 +184,12 @@ fn main() {
         // sysroot (docs/agent/DESIGN-M31-COMPRESSION-LIBS.md section 1).
         .define("ENABLE_LZ4", "ON")
         .define("LZ4_INCLUDE_DIR", lz4_prefix.join("include"))
-        .define("LZ4_LIBRARY", static_lib_path(&lz4_prefix, "lz4"));
+        .define("LZ4_LIBRARY", static_lib_path(&lz4_prefix, "lz4"))
+        // zstd: same mechanism as lz4. libarchive additionally link-tests ZSTD_decompressStream
+        // against ZSTD_LIBRARY and only defines HAVE_LIBZSTD if that passes.
+        .define("ENABLE_ZSTD", "ON")
+        .define("ZSTD_INCLUDE_DIR", zstd_prefix.join("include"))
+        .define("ZSTD_LIBRARY", static_lib_path(&zstd_prefix, "zstd"));
 
     configure_android_toolchain(&target, "libarchive", &mut cfg);
 
@@ -183,4 +207,9 @@ fn main() {
         lz4_prefix.join("lib").display()
     );
     println!("cargo:rustc-link-lib=static=lz4");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        zstd_prefix.join("lib").display()
+    );
+    println!("cargo:rustc-link-lib=static=zstd");
 }

@@ -11,3 +11,4 @@ libraries follow later in M3/M4.
 |---|---|---|---|---|
 | `libarchive/` | libarchive | `v3.8.9` (`27cbc782`) | BSD-2-Clause (with the exceptions listed in `THIRD_PARTY_NOTICES.md`) | `libarchive/COPYING` |
 | `lz4/` | lz4 (only `lib/` is compiled) | `v1.10.0` (`ebb370ca`) | BSD-2-Clause | `lz4/lib/LICENSE` |
+| `zstd/` | Zstandard (only `lib/` is compiled) | `v1.5.7` (`f8745da6`) | BSD-3-Clause, elected from the BSD-3-Clause OR GPL-2.0 dual licence (see `THIRD_PARTY_NOTICES.md`) | `zstd/LICENSE` |

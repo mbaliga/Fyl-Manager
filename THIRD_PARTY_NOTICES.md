@@ -64,6 +64,17 @@ Notable dependencies as of M2.2:
   `lib/` is **BSD-2-Clause** (`core/third_party/lz4/lib/LICENSE`, Copyright (c) 2011-2020, Yann
   Collet). The GPL-2.0-or-later `programs/` tree (`programs/COPYING`) is never built
   (`LZ4_BUILD_CLI=OFF`); `build/cmake/CMakeLists.txt` is CC0 and only drives the build.
+- zstd (Zstandard) 1.5.7 (`core/third_party/zstd`, a git submodule pinned to release tag `v1.5.7`,
+  commit `f8745da6ff1ad1e7bab384bd1f9d742439278e99`, M3.1 part 2b) — statically linked into
+  `fylz-archive` as libarchive's zstd filter backend, never a Cargo dependency. Only `lib/` is
+  compiled (`ZSTD_BUILD_PROGRAMS=OFF`, `ZSTD_BUILD_CONTRIB=OFF`, `ZSTD_BUILD_TESTS=OFF`,
+  `ZSTD_LEGACY_SUPPORT=OFF`, `ZSTD_MULTITHREAD_SUPPORT=OFF`). Zstandard is dual-licensed,
+  **BSD-3-Clause** (`core/third_party/zstd/LICENSE`, Copyright (c) Meta Platforms, Inc. and
+  affiliates) **or** GPL-2.0 (`core/third_party/zstd/COPYING`), every `lib/` source header
+  offering "You may select, at your option, one of the above-listed licenses". **Fylz elects the
+  BSD-3-Clause licence** for its use of Zstandard; the GPLv2 option is not exercised (section 2.2:
+  GPL never enters the core app). `COPYING` stays in the submodule only because it is part of the
+  upstream tree.
 - `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
   M3.1) are covered by `cargo deny` and never linked into the APK.
 
