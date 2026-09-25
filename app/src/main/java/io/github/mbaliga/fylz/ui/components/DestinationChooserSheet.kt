@@ -26,8 +26,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import io.github.mbaliga.fylz.model.FolderTab
+import io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.ui.StorageHomeScreen
+
+/** The open tabs a copy or move may land in: a tab whose current location is an archive is not
+ * writable (M3.3, DESIGN-M33 §2.5) and is left out. */
+internal fun destinationTabs(tabs: List<FolderTab>): List<FolderTab> =
+    tabs.filterNot { ArchiveDocumentsProvider.isArchiveUri(it.current.uri) }
 
 /**
  * P1.8: the in-app destination chooser "Copy to…"/"Move to…" (and Paste) open instead of going
@@ -48,6 +54,7 @@ fun DestinationChooserSheet(
     onOtherLocation: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    val tabs = destinationTabs(tabs)
     Dialog(onDismissRequest = onCancel) {
         Surface(
             shape = MaterialTheme.shapes.extraLarge,

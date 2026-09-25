@@ -90,8 +90,9 @@ object FileFormatRegistry {
         "mts", "m2ts", "vob", "ogv", "wmv", "flv",
     )
     private val archives = setOf(
-        "zip", "zipx", "7z", "rar", "tar", "gz", "gzip", "bz2", "xz", "zst", "tgz", "tbz", "tbz2",
-        "txz", "cab", "arj", "lha", "lzh", "cpio", "iso", "img", "dmg", "wim", "xar", "deb", "rpm",
+        "zip", "zipx", "7z", "rar", "tar", "gz", "gzip", "bz2", "xz", "zst", "lz4", "tgz", "tbz", "tbz2",
+        "txz", "tzst", "tar.lz4", "cab", "arj", "lha", "lzh", "cpio", "iso", "img", "dmg", "wim", "xar", "deb", "rpm",
+        "cb7", "warc",
     )
     private val fonts = setOf("ttf", "otf", "ttc", "otc", "woff", "woff2", "eot", "pfb", "pfm", "bdf", "pcf")
     private val office = setOf(
@@ -187,7 +188,7 @@ object FileFormatRegistry {
 
     fun compoundExtension(name: String): String {
         val lower = name.lowercase(Locale.ROOT)
-        val compound = listOf("nii.gz", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "user.js")
+        val compound = listOf("nii.gz", "tar.gz", "tar.bz2", "tar.xz", "tar.zst", "tar.lz4", "user.js")
             .firstOrNull { lower.endsWith(".$it") }
         return compound ?: lower.substringAfterLast('.', "")
     }

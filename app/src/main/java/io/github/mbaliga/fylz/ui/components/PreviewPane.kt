@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.preview.FileFormatRegistry
@@ -152,8 +153,10 @@ fun PreviewPane(
                 descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
                     ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
-                    ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
+                // M3.3 (DESIGN-M33 §2.7): every format libarchive reads here, plus the ZIP containers
+                // (APK, JAR, CBZ, 3MF, ...) whose inspection stays.
+                descriptor.extension in ZIP_CONTAINER_EXTENSIONS || BrowsableArchiveFormats.matches(entry.name) ->
+                    ArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
                     GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())

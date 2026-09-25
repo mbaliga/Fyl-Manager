@@ -41,16 +41,12 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.outlined.TextSnippet
-import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -111,6 +107,7 @@ import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
 import io.github.mbaliga.fylz.model.FolderTab
 import io.github.mbaliga.fylz.model.FylzClipboard
+import io.github.mbaliga.fylz.model.isBrowsableArchive
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
@@ -140,6 +137,7 @@ import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
 import io.github.mbaliga.fylz.search.SearchProgress
 import io.github.mbaliga.fylz.search.SearchQuery
+import io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider
 import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
@@ -183,7 +181,9 @@ import io.github.mbaliga.fylz.actions.ActionRegistry
 import io.github.mbaliga.fylz.actions.ActionResolver
 import io.github.mbaliga.fylz.actions.ActionTarget
 import io.github.mbaliga.fylz.actions.BrowserState
+import io.github.mbaliga.fylz.actions.BrowserStateInputs
 import io.github.mbaliga.fylz.actions.BuiltInActions
+import io.github.mbaliga.fylz.actions.buildBrowserState
 import io.github.mbaliga.fylz.actions.GestureId
 import io.github.mbaliga.fylz.actions.KeyChord
 import io.github.mbaliga.fylz.actions.KeyRouter
@@ -506,6 +506,7 @@ private fun FylzV1Workspace(
 
     fun refresh() {
         refreshKey += 1
+        (context.applicationContext as FylzApplication).archiveCatalog.forgetFailures()
     }
 
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
@@ -815,7 +816,7 @@ private fun FylzV1Workspace(
     // checks for it at every folder and every entry.
     LaunchedEffect(query, searchRecursive, activeTab?.current?.uri, refreshKey, legacyBinNames) {
         val tab = activeTab
-        if (!searchRecursive || query.isBlank() || tab == null) {
+        if (!searchRecursive || query.isBlank() || tab == null || ArchiveDocumentsProvider.isArchiveUri(tab.current.uri)) {
             searchProgress = null
             return@LaunchedEffect
         }
@@ -917,11 +918,13 @@ private fun FylzV1Workspace(
     }
 
     fun openEntry(entry: FileEntry) {
-        if (entry.isDirectory) {
+        if (entry.isDirectory || entry.isBrowsableArchive) {
             val tab = activeTab ?: return
             val index = tabs.indexOfFirst { it.id == tab.id }
+            // M3.3: an archive pushes its provider root as the location; the fifth nesting level is refused with a toast.
+            val uri = if (entry.isDirectory) entry.uri else runCatching { ArchiveDocumentsProvider.rootUri(entry) }.getOrElse { toast(it.message ?: "Unable to open this archive"); return }
             if (index >= 0) {
-                tabs[index] = tab.copy(locations = tab.locations + FolderLocation(entry.uri, entry.name))
+                tabs[index] = tab.copy(locations = tab.locations + FolderLocation(uri, entry.name))
             }
         } else {
             focusedEntry = entry
@@ -1133,26 +1136,14 @@ private fun FylzV1Workspace(
         sortSpec, viewMode, previewMode, query, searchRecursive, themeMode, legacyBinNames,
         operationsNeedingAttention, refreshKey, activeTabId, actionRegistry,
     ) {
-        BrowserState(
-            hasActiveTab = activeTab != null,
-            canNavigateUp = (activeTab?.locations?.size ?: 0) > 1,
-            entries = entries,
-            visibleEntries = visibleEntries,
-            selection = selectedEntries,
-            selectionOrder = selectedUris.toList(),
-            focused = focusedEntry,
-            clipboard = clipboard,
-            sortSpec = sortSpec,
-            viewMode = viewMode,
-            previewMode = previewMode,
-            query = query,
-            searchRecursive = searchRecursive,
-            themeMode = themeMode,
-            currentFolderIsFavourite = activeTab?.current?.uri?.let { uri -> library.favorites().any { it.uri == uri } } ?: false,
-            legacyBinCount = legacyBinNames.size,
-            operationsNeedingAttention = operationsNeedingAttention,
-            activeTabId = activeTabId,
-            registryProblemCount = actionRegistry.problems.size,
+        buildBrowserState(
+            BrowserStateInputs(
+                activeTab = activeTab, activeTabId = activeTabId, entries = entries, visibleEntries = visibleEntries,
+                selection = selectedEntries, selectionOrder = selectedUris, focused = focusedEntry, clipboard = clipboard,
+                sortSpec = sortSpec, viewMode = viewMode, previewMode = previewMode, query = query, searchRecursive = searchRecursive,
+                themeMode = themeMode, favouriteUris = library.favorites().map { it.uri }, legacyBinCount = legacyBinNames.size,
+                operationsNeedingAttention = operationsNeedingAttention, registryProblemCount = actionRegistry.problems.size,
+            ),
         )
     }
 
@@ -2263,13 +2254,6 @@ private fun WebDavDialog(onDismiss: () -> Unit, onConnect: (String, String, Stri
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
-}
-
-private fun fileIcon(kind: EntryKind) = when (kind) {
-    EntryKind.ARCHIVE -> Icons.Outlined.Archive
-    EntryKind.PDF -> Icons.Outlined.PictureAsPdf
-    EntryKind.TEXT, EntryKind.MARKDOWN -> Icons.Outlined.TextSnippet
-    else -> Icons.Outlined.ViewSidebar
 }
 
 private fun libraryKind(kind: EntryKind): String = kind.name.lowercase().replaceFirstChar(Char::uppercase)

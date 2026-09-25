@@ -439,8 +439,35 @@ implementation added):
     copying an empty folder; the design named only `DocumentRepository.listChildren`.
 38. **(b)** `openDocument` honours a `CancellationSignal` by cancelling its fill; callers that pass
     none (`openInputStream`, Coil, the transfer engine) run to completion or failure, as designed.
+39. **(c)** `FileFormatRegistry.archives` was extended with `lz4 tzst tar.lz4 cb7 warc` (and the
+    `tar.lz4` compound) so that `EntryKind.ARCHIVE` classification agrees with
+    `BrowsableArchiveFormats`; the design said the registry set "stays private", which it does. The
+    browsable set itself has no `kind` precondition, so the two can still drift -- a test pins the
+    browsable set at 27 members and names every excluded family.
+40. **(c)** `ArchivePreview` (the renamed `ZipArchivePreview`) loads through `ArchiveCatalog`, not
+    `ArchiveInspector.inspect`: one listing on disk serves the folder view and the preview, and the
+    tree supplies the quarantined count and the partial message. The preview caps at 500 root
+    children of the tree itself; the engine's `rowsTruncated` is no longer what it shows.
+41. **(c)** `refresh()` calls `ArchiveCatalog.forgetFailures()`, so a pull-to-refresh retries a
+    memoised catalog failure (a vanished or unreadable source) -- the design left the retry path
+    implicit. Nothing else clears the memo before the process ends.
+42. **(c)** `LocationKind.of(uri)` derives the kind from the Uri's authority in
+    `buildBrowserState`; `FolderLocation` carries no kind field and `SessionCodec` is unchanged.
+    MC.2 will need a richer source (tree roots for internal/sd/usb/network, the bin) than the
+    authority for the remaining values.
+43. **(c)** The dead `private fun fileIcon` in `FylzV1App.kt` (unreferenced since the entry row took
+    `EntryThumbnail`) was removed together with the `BrowserState` extraction; the file is 2271 lines
+    (from 2287) and the ratchet follows. The design estimated about 10 lines of saving.
+44. **(c)** The design's `SessionCodecTest` restore-and-list case is the sibling class
+    `SessionRestoreArchiveLocationTest` (it needs the hosted providers and the fake decoder).
+45. **(c)** The Compose paths -- tap and double-tap into an archive, the breadcrumb, Up out of an
+    archive, disabled actions in the menus, `ArchivePreview`, an entry previewed through its document
+    Uri, search staying off inside an archive -- have no unit coverage (no Compose harness); the
+    registry rows, the builder, the format set, the destination filter and the restore path do.
+    Section 18 covers them on a device.
 
-**Relevant commits:** `05c3531` (a); the M3.3b commit that extends this entry; c and d extend it.
+**Relevant commits:** `05c3531` (a); `9b1bceb` (b); the M3.3c commit that extends this entry; d
+extends it.
 
 **Risk if it turns out wrong:**
 - Ordinals (22): a listing and an `extract_entry_at` that count headers differently would fetch

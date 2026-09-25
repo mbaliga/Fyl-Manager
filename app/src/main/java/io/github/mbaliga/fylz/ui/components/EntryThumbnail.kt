@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -63,8 +64,11 @@ fun EntryThumbnail(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    // M3.3 (DESIGN-M33 §2.4): no thumbnails inside archives -- each would be a fill of the whole
+    // entry to cache; entries show their kind icon instead (logged).
     val thumbnailable = !entry.isDirectory &&
-        (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO)
+        (entry.kind == EntryKind.IMAGE || entry.kind == EntryKind.VIDEO) &&
+        !ArchiveDocumentsProvider.isArchiveUri(entry.uri)
 
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = entry.uri, key2 = thumbnailable) {
         if (!thumbnailable) {

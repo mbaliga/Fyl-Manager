@@ -62,6 +62,11 @@ private object LegacyOracle {
 
     /** `FylzV1App.kt:1667` at `6e3ab3f`. */
     fun favouriteEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+
+    /** M3.3 (DESIGN-M33 §2.6): inside an archive location every action that writes the selection's
+     * source or the current location is disabled -- read-only until M3.6. The frozen twin of
+     * `BuiltInActions`' `WRITABLE_LOCATION`. */
+    fun writableLocation(state: BrowserState): Boolean = state.locationKind != LocationKind.ARCHIVE
 }
 
 @RunWith(RobolectricTestRunner::class)
@@ -78,17 +83,18 @@ class ActionResolverGoldenTest {
 
     private fun expectedSelectionBar(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
         if (state.selectionCount == 0) return emptyList()
+        val writable = LegacyOracle.writableLocation(state)
         return listOf(
-            Triple(id("fylz.cut"), true, null),
+            Triple(id("fylz.cut"), writable, null),
             Triple(id("fylz.copy"), true, null),
             Triple(id("fylz.copy-to"), true, null),
-            Triple(id("fylz.move-to"), true, null),
-            Triple(id("fylz.recycle"), true, null),
-            Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection), null),
-            Triple(id("fylz.tags"), true, null),
+            Triple(id("fylz.move-to"), writable, null),
+            Triple(id("fylz.recycle"), writable, null),
+            Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection) && writable, null),
+            Triple(id("fylz.tags"), writable, null),
             Triple(id("fylz.compress"), true, null),
             Triple(id("fylz.extract"), LegacyOracle.canExtract(state.selection), null),
-            Triple(id("fylz.rename.batch"), true, null),
+            Triple(id("fylz.rename.batch"), writable, null),
             Triple(id("fylz.pdf.tools"), LegacyOracle.canPdfTools(state.selection), null),
             Triple(id("fylz.share"), true, null),
             Triple(id("fylz.select.clear"), true, null),
@@ -98,7 +104,7 @@ class ActionResolverGoldenTest {
     private fun expectedTopAppBar(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
         val result = mutableListOf<Triple<ActionId, Boolean, Boolean?>>()
         if (state.clipboard != null) {
-            result += Triple(id("fylz.paste"), LegacyOracle.clipboardChipEnabled(state.hasActiveTab), null)
+            result += Triple(id("fylz.paste"), LegacyOracle.clipboardChipEnabled(state.hasActiveTab) && LegacyOracle.writableLocation(state), null)
             result += Triple(id("fylz.clipboard.clear"), true, null)
         }
         result += Triple(id("fylz.view.toggle"), true, null)
@@ -106,14 +112,17 @@ class ActionResolverGoldenTest {
         return result
     }
 
-    private fun expectedOverflow(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
-        Triple(id("fylz.new-folder"), LegacyOracle.newFolderEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.new-file"), LegacyOracle.newFileEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.scan-to-pdf"), LegacyOracle.scanToPdfEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.find-duplicates"), LegacyOracle.findDuplicatesEnabled(state.entries), null),
-        Triple(id("fylz.ai.organize"), LegacyOracle.aiOrganizeEnabled(state.focused), null),
-        Triple(id("fylz.commands"), true, null),
-    )
+    private fun expectedOverflow(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
+        val writable = LegacyOracle.writableLocation(state)
+        return listOf(
+            Triple(id("fylz.new-folder"), LegacyOracle.newFolderEnabled(state.hasActiveTab) && writable, null),
+            Triple(id("fylz.new-file"), LegacyOracle.newFileEnabled(state.hasActiveTab) && writable, null),
+            Triple(id("fylz.scan-to-pdf"), LegacyOracle.scanToPdfEnabled(state.hasActiveTab) && writable, null),
+            Triple(id("fylz.find-duplicates"), LegacyOracle.findDuplicatesEnabled(state.entries) && writable, null),
+            Triple(id("fylz.ai.organize"), LegacyOracle.aiOrganizeEnabled(state.focused) && writable, null),
+            Triple(id("fylz.commands"), true, null),
+        )
+    }
 
     private fun expectedBrowserRow(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
         Triple(id("fylz.navigate.up"), state.canNavigateUp, null),
@@ -135,7 +144,7 @@ class ActionResolverGoldenTest {
 
     private fun expectedLibraryRail(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
         Triple(id("fylz.open-root"), true, null),
-        Triple(id("fylz.favourite.toggle"), LegacyOracle.favouriteEnabled(state.hasActiveTab), state.currentFolderIsFavourite),
+        Triple(id("fylz.favourite.toggle"), LegacyOracle.favouriteEnabled(state.hasActiveTab) && LegacyOracle.writableLocation(state), state.currentFolderIsFavourite),
         Triple(id("fylz.recycle-bin"), true, null),
     )
 

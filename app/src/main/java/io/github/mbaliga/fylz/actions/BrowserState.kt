@@ -38,6 +38,9 @@ data class BrowserState(
     // test's named-arg `base()` stay byte-identical.
     val activeTabId: String? = null,
     val registryProblemCount: Int = 0,
+    // M3.3 (DESIGN-M33 §2.6): section C3's `location.kind` as far as M3.3 can tell it; ARCHIVE
+    // disables every write action through the registry. Defaulted for the same reason.
+    val locationKind: LocationKind = LocationKind.FOLDER,
 ) {
     val selectionCount: Int get() = selection.size
     val selectionKinds: Set<EntryKind> get() = selection.mapTo(HashSet()) { it.kind }

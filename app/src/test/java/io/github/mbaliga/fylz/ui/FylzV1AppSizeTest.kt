@@ -14,8 +14,10 @@ import java.io.File
 class FylzV1AppSizeTest {
 
     // The MC.0 ratchet: FylzV1App.kt's line count right after MC.0f (LegacyAvailability.kt deleted,
-    // the dead shortcut policies gone). Was 2529 lines pre-MC.0.
-    private val fylzV1AppMaxLines = 2287
+    // the dead shortcut policies gone). Was 2529 lines pre-MC.0, 2287 after MC.0f; lowered to
+    // 2271 in M3.3c (the BrowserState construction moved to actions/BrowserStateBuilder.kt and
+    // the dead `fileIcon` went, paying for archive-location lines in openEntry/refresh/search).
+    private val fylzV1AppMaxLines = 2271
 
     // FylzAppShell.kt must not grow past its MC.0e size.
     private val fylzAppShellMaxLines = 112

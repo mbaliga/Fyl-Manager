@@ -48,6 +48,7 @@ object BrowserStateFixtures {
         currentFolderIsFavourite: Boolean = false,
         legacyBinCount: Int = 0,
         operationsNeedingAttention: Int = 0,
+        locationKind: LocationKind = LocationKind.FOLDER,
     ): BrowserState = BrowserState(
         hasActiveTab = hasActiveTab,
         canNavigateUp = canNavigateUp,
@@ -66,6 +67,7 @@ object BrowserStateFixtures {
         currentFolderIsFavourite = currentFolderIsFavourite,
         legacyBinCount = legacyBinCount,
         operationsNeedingAttention = operationsNeedingAttention,
+        locationKind = locationKind,
     )
 
     private val file1 = entry("a.txt", EntryKind.TEXT)
@@ -152,6 +154,17 @@ object BrowserStateFixtures {
 
     fun operationsAttention2(): BrowserState = base(operationsNeedingAttention = 2)
 
+    // M3.3 (DESIGN-M33 §2.6): the three archive-location fixtures, so every read-only row is exercised.
+    private val archiveEntry = entry("inside.txt", EntryKind.TEXT, uri = "content://io.github.mbaliga.fylz.archives/document/aW5zaWRl")
+
+    fun archiveRootNoSelection(): BrowserState = base(entries = listOf(archiveEntry, dir1, pdf1), locationKind = LocationKind.ARCHIVE)
+
+    fun archiveFolderWithSelection(): BrowserState =
+        base(entries = listOf(archiveEntry, pdf1), selection = listOf(archiveEntry), focused = archiveEntry, locationKind = LocationKind.ARCHIVE)
+
+    fun archiveWithClipboard(): BrowserState =
+        base(entries = listOf(archiveEntry, pdf1), clipboard = FylzClipboard(ClipboardMode.COPY, listOf(file1)), locationKind = LocationKind.ARCHIVE)
+
     fun all(): List<Pair<String, BrowserState>> = listOf(
         "noTabClipboardNull" to noTabClipboardNull(),
         "noTabClipboardSet" to noTabClipboardSet(),
@@ -184,5 +197,8 @@ object BrowserStateFixtures {
         "operationsAttention0" to operationsAttention0(),
         "operationsAttention1" to operationsAttention1(),
         "operationsAttention2" to operationsAttention2(),
+        "archiveRootNoSelection" to archiveRootNoSelection(),
+        "archiveFolderWithSelection" to archiveFolderWithSelection(),
+        "archiveWithClipboard" to archiveWithClipboard(),
     )
 }

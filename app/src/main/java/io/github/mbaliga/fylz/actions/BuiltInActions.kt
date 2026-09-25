@@ -5,11 +5,17 @@ import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
+import io.github.mbaliga.fylz.model.isBrowsableArchive
 import io.github.mbaliga.fylz.ui.clipboardChipLabel
 import io.github.mbaliga.fylz.ui.isZipFamilyArchive
 
 private val ALWAYS: (BrowserState) -> Boolean = { true }
 private val HAS_SELECTION: (BrowserState) -> Boolean = { it.selectionCount > 0 }
+
+/** M3.3 (DESIGN-M33 §2.6): an archive location is read-only until M3.6 -- every action that writes
+ * the selection's source or the current location is disabled there. `ActionResolverGoldenTest`'s
+ * `LegacyOracle.writableLocation` is this rule's frozen twin. */
+private val WRITABLE_LOCATION: (BrowserState) -> Boolean = { it.locationKind != LocationKind.ARCHIVE }
 
 private fun def(
     id: String,
@@ -49,7 +55,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.cut", "Cut", "ContentCut", listOf(Placement.SelectionBar(10), Placement.Shortcut(KeyChord(Key.X, ctrl = true)))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = ALWAYS,
+            enabledWhen = WRITABLE_LOCATION,
             run = { ctx, _, _ -> ctx.cut() },
         ),
         BuiltInBinding(
@@ -67,7 +73,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.move-to", "Move to…", "DriveFileMove", listOf(Placement.SelectionBar(40))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = ALWAYS,
+            enabledWhen = WRITABLE_LOCATION,
             run = { ctx, _, _ -> ctx.moveTo() },
         ),
         BuiltInBinding(
@@ -77,19 +83,19 @@ object BuiltInActions {
                 destructive = true,
             ),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = ALWAYS,
+            enabledWhen = WRITABLE_LOCATION,
             run = { ctx, _, _ -> ctx.recycleSelection() },
         ),
         BuiltInBinding(
             def = def("fylz.rename", "Rename", "Edit", listOf(Placement.SelectionBar(60), Placement.Shortcut(KeyChord(Key.F2)))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = { it.selection.size == 1 },
+            enabledWhen = { it.selection.size == 1 && WRITABLE_LOCATION(it) },
             run = { ctx, _, _ -> ctx.rename() },
         ),
         BuiltInBinding(
             def = def("fylz.tags", "Tags", "Tag", listOf(Placement.SelectionBar(70))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = ALWAYS,
+            enabledWhen = WRITABLE_LOCATION,
             run = { ctx, _, _ -> ctx.tags() },
         ),
         BuiltInBinding(
@@ -111,7 +117,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.rename.batch", "Batch rename", "TextSnippet", listOf(Placement.SelectionBar(100))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = ALWAYS,
+            enabledWhen = WRITABLE_LOCATION,
             run = { ctx, _, _ -> ctx.batchRename() },
         ),
         BuiltInBinding(
@@ -138,7 +144,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.paste", "Paste", "ContentPaste", listOf(Placement.Toolbar(Bar.TOP_APP_BAR, 10), Placement.Shortcut(KeyChord(Key.V, ctrl = true)))),
             visibleWhen = { it.clipboard != null },
-            enabledWhen = { it.hasActiveTab },
+            enabledWhen = { it.hasActiveTab && WRITABLE_LOCATION(it) },
             label = { state -> state.clipboard?.let(::clipboardChipLabel) ?: "Paste" },
             run = { ctx, _, _ -> ctx.paste() },
         ),
@@ -172,31 +178,32 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.new-folder", "New folder", "CreateNewFolder", listOf(Placement.Menu(MenuId.OVERFLOW, 10), Placement.Shortcut(KeyChord(Key.N, ctrl = true, shift = true)))),
             visibleWhen = ALWAYS,
-            enabledWhen = { it.hasActiveTab },
+            enabledWhen = { it.hasActiveTab && WRITABLE_LOCATION(it) },
             run = { ctx, _, _ -> ctx.newFolder() },
         ),
         BuiltInBinding(
             def = def("fylz.new-file", "New text file", "TextSnippet", listOf(Placement.Menu(MenuId.OVERFLOW, 20), Placement.Shortcut(KeyChord(Key.N, ctrl = true)))),
             visibleWhen = ALWAYS,
-            enabledWhen = { it.hasActiveTab },
+            enabledWhen = { it.hasActiveTab && WRITABLE_LOCATION(it) },
             run = { ctx, _, _ -> ctx.newFile() },
         ),
         BuiltInBinding(
             def = def("fylz.scan-to-pdf", "Scan to PDF", "PictureAsPdf", listOf(Placement.Menu(MenuId.OVERFLOW, 30))),
             visibleWhen = ALWAYS,
-            enabledWhen = { it.hasActiveTab },
+            enabledWhen = { it.hasActiveTab && WRITABLE_LOCATION(it) },
             run = { ctx, _, _ -> ctx.scanToPdf() },
         ),
         BuiltInBinding(
             def = def("fylz.find-duplicates", "Find duplicates", "FindReplace", listOf(Placement.Menu(MenuId.OVERFLOW, 40))),
             visibleWhen = ALWAYS,
-            enabledWhen = { state -> state.entries.count { !it.isDirectory } > 1 },
+            // Inside an archive this would materialise every entry to hash it (DESIGN-M33 §2.4).
+            enabledWhen = { state -> state.entries.count { !it.isDirectory } > 1 && WRITABLE_LOCATION(state) },
             run = { ctx, _, _ -> ctx.findDuplicates() },
         ),
         BuiltInBinding(
             def = def("fylz.ai.organize", "AI organize proposal", "AutoAwesome", listOf(Placement.Menu(MenuId.OVERFLOW, 50))),
             visibleWhen = ALWAYS,
-            enabledWhen = { it.focused != null },
+            enabledWhen = { it.focused != null && WRITABLE_LOCATION(it) },
             run = { ctx, _, _ -> ctx.aiOrganize() },
         ),
         BuiltInBinding(
@@ -262,7 +269,8 @@ object BuiltInActions {
                 "fylz.open", "Open", "FolderOpen",
                 listOf(
                     Placement.Gesture(GestureId.ITEM_TAP),
-                    Placement.Gesture(GestureId.ITEM_DOUBLE_TAP, targetWhen = { it is ActionTarget.Entry && it.entry.isDirectory }),
+                    // M3.3: a double-tap on a browsable archive browses it, like a folder.
+                    Placement.Gesture(GestureId.ITEM_DOUBLE_TAP, targetWhen = { it is ActionTarget.Entry && (it.entry.isDirectory || it.entry.isBrowsableArchive) }),
                     Placement.Shortcut(KeyChord(Key.Enter)),
                 ),
                 requiresTarget = TargetKind.ENTRY,
@@ -275,7 +283,7 @@ object BuiltInActions {
             def = def(
                 "fylz.open-with", "Open with…", "OpenWith",
                 listOf(
-                    Placement.Gesture(GestureId.ITEM_DOUBLE_TAP, targetWhen = { it is ActionTarget.Entry && !it.entry.isDirectory }),
+                    Placement.Gesture(GestureId.ITEM_DOUBLE_TAP, targetWhen = { it is ActionTarget.Entry && !it.entry.isDirectory && !it.entry.isBrowsableArchive }),
                     Placement.ContextMenu("open", 10),
                 ),
                 requiresTarget = TargetKind.FILE,
@@ -325,7 +333,8 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.favourite.toggle", "Favourite", "Star", listOf(Placement.Room(RoomId.LIBRARY_RAIL, 20))),
             visibleWhen = ALWAYS,
-            enabledWhen = { it.hasActiveTab },
+            // Favourites are tree folders; an archive location is not one (DESIGN-M33 §2.6).
+            enabledWhen = { it.hasActiveTab && WRITABLE_LOCATION(it) },
             checked = { it.currentFolderIsFavourite },
             run = { ctx, _, _ -> ctx.toggleFavourite() },
         ),
