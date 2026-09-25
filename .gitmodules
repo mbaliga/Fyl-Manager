@@ -13,3 +13,6 @@
 [submodule "core/third_party/zstd"]
 	path = core/third_party/zstd
 	url = https://github.com/facebook/zstd.git
+[submodule "core/third_party/zlib"]
+	path = core/third_party/zlib
+	url = https://github.com/madler/zlib.git

@@ -11,17 +11,21 @@ of files.
 Needs the Python `lz4` package for the lz4 fixtures, and/or `zstandard` for the zstd fixtures
 (`pip install --user lz4 zstandard`; PyPI is reachable in this project's build environment even
 when the `lz4`/`zstd` CLIs are not installed). Fails loudly naming exactly what to install rather
-than silently skipping a format.
+than silently skipping a format. The zlib fixtures (gzip, and a ZIP with deflated entries) need
+only the standard library (`gzip`, `zipfile`).
 
-Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd]
+Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd] [zlib]
   With no arguments, generates every format this script knows about.
 """
 
 from __future__ import annotations
 
+import gzip
 import io
 import sys
 import tarfile
+import zipfile
+import zlib
 from pathlib import Path
 from typing import Callable
 
@@ -85,9 +89,41 @@ def generate_zstd(tar_bytes: bytes) -> None:
     write(FIXTURES_DIR / "truncated.tar.zst", compressed[: len(compressed) // 2])
 
 
+def generate_zlib(tar_bytes: bytes) -> None:
+    # mtime=0: the gzip header otherwise embeds the current time, and these bytes are committed.
+    compressed = gzip.compress(tar_bytes, mtime=0)
+    write(FIXTURES_DIR / "sample.tar.gz", compressed)
+    # Hostile, same shape as the lz4/zstd cases: the gzip magic and header survive the cut, so the
+    # filter still bids, but the deflate stream ends mid-block. Unlike lz4/zstd, deflate decodes
+    # incrementally, so the cut point matters: at half, the stream has yielded fewer than 512
+    # bytes, i.e. not even the first tar header is complete, so `entries` and `read_entry` alike
+    # must fail (checked below rather than assumed, since a change to ENTRIES would move it).
+    truncated = compressed[: len(compressed) // 2]
+    decoded = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(truncated)
+    assert len(decoded) < 512, f"truncated.tar.gz decodes {len(decoded)} bytes, a whole tar header"
+    write(FIXTURES_DIR / "truncated.tar.gz", truncated)
+    # A ZIP whose entries use method 8 (deflate): libarchive's ZIP reader can only decode those
+    # when built with zlib (`archive_read_support_format_zip.c` is `#ifdef HAVE_ZLIB_H`), which
+    # is the highest-value thing zlib unlocks. A fixed DOS timestamp and explicit Unix mode keep
+    # the bytes deterministic. `writestr` with ZIP_DEFLATED always records method 8, even for
+    # entries this short where deflate does not actually save bytes; asserted below.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, contents in ENTRIES:
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, contents)
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue())) as zf:
+        methods = {i.filename: i.compress_type for i in zf.infolist()}
+    assert all(m == zipfile.ZIP_DEFLATED for m in methods.values()), methods
+    write(FIXTURES_DIR / "sample-deflate.zip", buf.getvalue())
+
+
 GENERATORS: dict[str, Callable[[bytes], None]] = {
     "lz4": generate_lz4,
     "zstd": generate_zstd,
+    "zlib": generate_zlib,
 }
 
 

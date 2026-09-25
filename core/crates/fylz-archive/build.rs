@@ -29,7 +29,7 @@
 //! libarchive's own CMake build silently drops a format that needs a library it can't find rather
 //! than failing. Compression backends (zlib, bzip2, xz, zstd, lz4 -- all permissive, per section
 //! 2.2) are added one at a time, each verified to still build before the next is added, never all
-//! at once: lz4 (M3.1 part 2a), then zstd (part 2b), the rest in follow-up tasks.
+//! at once: lz4 (M3.1 part 2a), zstd (part 2b), zlib (part 2c), the rest in follow-up tasks.
 //!
 //! Every companion, and libarchive itself, is built with `CMAKE_INSTALL_LIBDIR=lib` pinned
 //! explicitly: `GNUInstallDirs` (which all of these projects use) picks `lib64` on Fedora/RHEL-
@@ -58,8 +58,10 @@ fn configure_android_toolchain(target: &str, library_name: &str, cfg: &mut cmake
     let android_abi = env::var("ANDROID_ABI")
         .unwrap_or_else(|_| panic!("cargo-ndk sets ANDROID_ABI (building {library_name})"));
     // cargo-ndk's own ANDROID_PLATFORM is the bare API level (e.g. "31"); the NDK's CMake
-    // toolchain file wants it as "android-31".
-    let api_level = env::var("ANDROID_PLATFORM").unwrap_or_else(|_| "26".to_string());
+    // toolchain file wants it as "android-31". The fallback is app/build.gradle.kts's minSdk (31,
+    // which its buildCore* tasks pass as `-P 31`), so the C libraries are never compiled against
+    // an older API level than the app itself requires.
+    let api_level = env::var("ANDROID_PLATFORM").unwrap_or_else(|_| "31".to_string());
     cfg.define("CMAKE_TOOLCHAIN_FILE", toolchain)
         .define("ANDROID_ABI", android_abi)
         .define("ANDROID_PLATFORM", format!("android-{api_level}"));
@@ -98,6 +100,33 @@ fn static_lib_path(prefix: &Path, output_name: &str) -> PathBuf {
     prefix.join("lib").join(format!("lib{output_name}.a"))
 }
 
+/// Fails the build unless libarchive's configured `CMakeCache.txt` (under the install prefix
+/// `cmake::Config::build` returned, in the `build/` directory the cmake crate configures into)
+/// records `key` as exactly `expected`. Needed because the NDK sysroot ships its own zlib
+/// (`usr/include/zlib.h`, `usr/lib/<triple>/libz.a` and `<triple>/<api>/libz.so` for every ABI)
+/// and most Linux hosts a distro one: were the preset ever dropped or misspelt, FindZLIB would
+/// find one of those silently and libarchive would compile against a zlib other than the
+/// vendored one, so "the vendored library is the one used" is checked rather than assumed.
+fn assert_cache_path(libarchive_prefix: &Path, key: &str, expected: &Path) {
+    let cache_path = libarchive_prefix.join("build").join("CMakeCache.txt");
+    let cache = std::fs::read_to_string(&cache_path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", cache_path.display()));
+    let prefix = format!("{key}:");
+    let actual = cache
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .and_then(|line| line.split_once('='))
+        .map(|(_, value)| value.trim())
+        .unwrap_or_else(|| panic!("{key} is not in {}", cache_path.display()));
+    assert_eq!(
+        Path::new(actual),
+        expected,
+        "libarchive's {key} is `{actual}`, not the vendored `{}` (see {})",
+        expected.display(),
+        cache_path.display()
+    );
+}
+
 fn main() {
     let target = env::var("TARGET").expect("cargo always sets TARGET");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo sets this"));
@@ -133,6 +162,20 @@ fn main() {
             ("ZSTD_MULTITHREAD_SUPPORT", "OFF"),
         ],
     );
+
+    let zlib_prefix = build_companion(
+        &target,
+        "zlib",
+        &third_party.join("zlib"),
+        &[
+            ("ZLIB_BUILD_SHARED", "OFF"),
+            ("ZLIB_BUILD_STATIC", "ON"),
+            ("ZLIB_BUILD_TESTING", "OFF"),
+            ("ZLIB_INSTALL", "ON"),
+        ],
+    );
+    let zlib_include = zlib_prefix.join("include");
+    let zlib_library = static_lib_path(&zlib_prefix, "z");
 
     let libarchive_src = third_party.join("libarchive");
     println!(
@@ -173,7 +216,6 @@ fn main() {
         .define("ENABLE_PCRE2POSIX", "OFF")
         // Compression backends not yet added -- OFF, added incrementally in follow-up tasks (see
         // this file's own doc comment above).
-        .define("ENABLE_ZLIB", "OFF")
         .define("ENABLE_BZip2", "OFF")
         .define("ENABLE_LZMA", "OFF")
         .define("ENABLE_LZO", "OFF")
@@ -189,11 +231,20 @@ fn main() {
         // against ZSTD_LIBRARY and only defines HAVE_LIBZSTD if that passes.
         .define("ENABLE_ZSTD", "ON")
         .define("ZSTD_INCLUDE_DIR", zstd_prefix.join("include"))
-        .define("ZSTD_LIBRARY", static_lib_path(&zstd_prefix, "zstd"));
+        .define("ZSTD_LIBRARY", static_lib_path(&zstd_prefix, "zstd"))
+        // zlib: same mechanism, and the one case where presetting is load-bearing rather than
+        // merely tidy -- see [assert_cache_path], which checks the result after configuring.
+        // Enables libarchive's gzip filter and ZIP method 8 (deflate), the latter being
+        // `#ifdef HAVE_ZLIB_H` in archive_read_support_format_zip.c.
+        .define("ENABLE_ZLIB", "ON")
+        .define("ZLIB_INCLUDE_DIR", &zlib_include)
+        .define("ZLIB_LIBRARY", &zlib_library);
 
     configure_android_toolchain(&target, "libarchive", &mut cfg);
 
     let dst = cfg.build();
+    assert_cache_path(&dst, "ZLIB_INCLUDE_DIR", &zlib_include);
+    assert_cache_path(&dst, "ZLIB_LIBRARY", &zlib_library);
     println!(
         "cargo:rustc-link-search=native={}",
         dst.join("lib").display()
@@ -212,4 +263,9 @@ fn main() {
         zstd_prefix.join("lib").display()
     );
     println!("cargo:rustc-link-lib=static=zstd");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        zlib_prefix.join("lib").display()
+    );
+    println!("cargo:rustc-link-lib=static=z");
 }

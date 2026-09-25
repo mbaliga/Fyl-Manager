@@ -75,6 +75,17 @@ Notable dependencies as of M2.2:
   BSD-3-Clause licence** for its use of Zstandard; the GPLv2 option is not exercised (section 2.2:
   GPL never enters the core app). `COPYING` stays in the submodule only because it is part of the
   upstream tree.
+- zlib 1.3.2 (`core/third_party/zlib`, a git submodule pinned to release tag `v1.3.2`, commit
+  `da607da739fa6047df13e66a2af6b8bec7c2a498`, M3.1 part 2c) — statically linked into `fylz-archive`
+  as libarchive's gzip filter backend and its ZIP deflate (method 8) decoder, never a Cargo
+  dependency, and used in preference to the zlib the Android NDK sysroot ships for every ABI
+  (`build.rs` fails the build unless libarchive was configured against the vendored copy, so the
+  host and all three ABIs carry this same zlib). Only the library proper is compiled
+  (`ZLIB_BUILD_SHARED=OFF`, `ZLIB_BUILD_STATIC=ON`, `ZLIB_BUILD_TESTING=OFF`; every `contrib/`
+  option defaults off, so `contrib/minizip` and its separate `LICENSE.Info-Zip` are never built).
+  **zlib licence** (`core/third_party/zlib/LICENSE`, Copyright (C) 1995-2026 Jean-loup Gailly and
+  Mark Adler): the origin must not be misrepresented, altered versions must be plainly marked, and
+  the notice may not be removed — the sources are unaltered and the notice stays in the submodule.
 - `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
   M3.1) are covered by `cargo deny` and never linked into the APK.
 
