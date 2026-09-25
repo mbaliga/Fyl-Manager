@@ -292,12 +292,18 @@ requirement one format at a time.
 timeout (`DecoderClient`'s own default, distinct from section 4.4's stated 5 s/30 s per-purpose
 budgets, which a real caller should pass explicitly once one exists), and dropping the connection
 on either a timeout or a crash so the next call rebinds fresh rather than reusing a connection to
-a process that may already be gone. Losing every binding to an isolated process is what lets the
-platform actually kill it — `unbindService` is the "kill" half of "kill-and-restart," there is no
-separate `Process.killProcess` call to make from the client side. `DecoderClientTest` covers this
-retry/timeout state machine against a fake `IDecoderService.Stub` bound through a test-injected
-seam; genuine cross-process crash and timeout behaviour is real-device-only and is tracked in
-`docs/agent/DEVICE_CHECKS.md` instead, since Robolectric runs every "process" in one JVM.
+a process that may already be gone. The timeout abandons the call rather than waiting it out: each
+Binder transaction runs in a client-owned job outside the caller's coroutine scope, so when the
+deadline passes the caller gets its failure value and the client unbinds immediately, while the
+hung transaction is left to return on its own (normally with `DeadObjectException` once the process
+has been reaped) and is swallowed with one warning; nothing on the client side can interrupt the
+Binder thread in `:decoders`, only the platform reaping the process ends it. Losing every binding
+to an isolated process is what lets the platform actually kill it — `unbindService` is the "kill"
+half of "kill-and-restart," there is no separate `Process.killProcess` call to make from the client
+side. `DecoderClientTest` covers this retry/timeout state machine against a fake
+`IDecoderService.Stub` bound through a test-injected seam; genuine cross-process crash and timeout
+behaviour is real-device-only and is tracked in `docs/agent/DEVICE_CHECKS.md` instead, since
+Robolectric runs every "process" in one JVM.
 
 ## Theme architecture
 
