@@ -48,6 +48,17 @@ data class ArchiveInspection(
     val policyReason: String?,
     val rows: List<ArchiveEntryInfo>,
     val rowsTruncated: Boolean,
+    /** `listArchive` only (M3.3): the header pass stopped on a damaged header after at least one
+     * entry; the listing holds what was read, and [partialMessage] is libarchive's text for the
+     * damage. Always `false` from `inspectArchive`, which reports that damage as [OUTCOME_CORRUPT].
+     * Defaulted so every existing construction site stays as it is. */
+    val partial: Boolean = false,
+    val partialMessage: String? = null,
+    /** The policy's verdict with every size rule switched off (M3.3a): a reason only when a rule no
+     * destination size could relax fired -- an unsafe or duplicate path, an escaping link, an unknown
+     * size, an overflowing sum. `null` when the archive is structurally sound. M3.4 refuses
+     * extraction from an archive whose structural verdict is a refusal or unknown. */
+    val structuralRefusal: String? = null,
 ) : Parcelable {
 
     @IgnoredOnParcel

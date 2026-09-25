@@ -33,6 +33,7 @@ enum Kind {
 
 #[derive(Arbitrary, Debug)]
 struct Entry {
+    ordinal: u32,
     path: String,
     name_lossy: bool,
     kind: Kind,
@@ -79,6 +80,7 @@ impl From<Kind> for EntryKind {
 impl From<Entry> for EntryMetadata {
     fn from(entry: Entry) -> Self {
         EntryMetadata {
+            ordinal: entry.ordinal,
             path: entry.path,
             name_lossy: entry.name_lossy,
             kind: entry.kind.into(),

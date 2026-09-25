@@ -12,6 +12,12 @@ import kotlinx.coroutines.runBlocking
 /** The engine call behind [DecoderService.inspectArchive]: a raw fd, the limits, the row cap. */
 typealias ArchiveEngine = (fd: Int, limits: ArchiveLimitsRecord, maxRows: Int) -> ArchiveInspectionRecord
 
+/** The engine call behind [DecoderService.listArchive]: the archive fd, the limits, the sink fd. */
+typealias ArchiveListEngine = (fd: Int, limits: ArchiveLimitsRecord, sinkFd: Int) -> ArchiveInspectionRecord
+
+/** The engine call behind [DecoderService.extractEntry]; returns the bytes written. */
+typealias ArchiveExtractEngine = (fd: Int, ordinal: Int, expectedPath: String, limits: ArchiveLimitsRecord, sinkFd: Int) -> Long
+
 /**
  * The isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4): parsing untrusted files
  * with native code happens here, in a separate, `android:isolatedProcess="true"` process, never
@@ -22,20 +28,28 @@ typealias ArchiveEngine = (fd: Int, limits: ArchiveLimitsRecord, maxRows: Int) -
  * `sniff` delegates to [FylzCore.sniffFile], backed by the `fylz-sniff` crate's real content
  * detection (M2.5). Its `runBlocking` is deliberate: AIDL calls run on a Binder thread-pool
  * thread with no caller waiting on anything else, so blocking it for the length of one native
- * call costs nothing a coroutine would save. (`inspectArchive` needs none, because the archive
- * engine's uniffi function is synchronous -- a `suspend` function that never awaits is a pattern
- * not to copy.)
+ * call costs nothing a coroutine would save. (The archive calls need none, because the archive
+ * engine's uniffi functions are synchronous -- a `suspend` function that never awaits is a
+ * pattern not to copy.)
  *
  * `inspectArchive` (M3.2) reads the archive through the caller's descriptor with `fylz-archive`
  * and answers with an [ArchiveInspection] whose `outcome` carries the engine's verdict as data:
- * nothing is ever thrown across Binder from here. The engine is a constructor-injected [engine]
- * lambda, defaulting to the real [FylzCore.inspectArchive], so the *mapping* -- every
+ * nothing is ever thrown across Binder from here. `listArchive` and `extractEntry` (M3.3) are the
+ * browsing pair: the same header pass writing the full listing into a pipe the client owns, and
+ * one entry by header ordinal streamed into another (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md`
+ * section 2.2); this process closes its dup of each sink when the engine returns, which is the
+ * EOF half of the pipe protocol (the client closes its own write end). Every engine is a
+ * constructor-injected lambda defaulting to the real [FylzCore] call, so the *mapping* -- every
  * `ArchiveEngineException` subclass to its outcome, any other `Throwable` to `OUTCOME_INTERNAL`,
  * the record-to-Parcelable copy -- is unit-tested on the JVM without a native library
  * (`DecoderServiceMappingTest`). Android instantiates the service through the no-argument
  * constructor Kotlin generates for the all-defaults primary one.
  */
-class DecoderService(private val engine: ArchiveEngine = FylzCore::inspectArchive) : Service() {
+class DecoderService(
+    private val engine: ArchiveEngine = FylzCore::inspectArchive,
+    private val listEngine: ArchiveListEngine = FylzCore::listArchive,
+    private val extractEngine: ArchiveExtractEngine = FylzCore::extractEntryAt,
+) : Service() {
 
     private val binder = object : IDecoderService.Stub() {
         override fun ping(): Boolean = true
@@ -48,6 +62,17 @@ class DecoderService(private val engine: ArchiveEngine = FylzCore::inspectArchiv
 
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection =
             this@DecoderService.inspectArchive(archive, limits, maxRows)
+
+        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection =
+            this@DecoderService.listArchive(archive, limits, sink)
+
+        override fun extractEntry(
+            archive: ParcelFileDescriptor,
+            ordinal: Int,
+            expectedPath: String,
+            limits: ArchiveLimits,
+            sink: ParcelFileDescriptor,
+        ): ArchiveExtractResult = this@DecoderService.extractEntry(archive, ordinal, expectedPath, limits, sink)
     }
 
     /**
@@ -64,6 +89,35 @@ class DecoderService(private val engine: ArchiveEngine = FylzCore::inspectArchiv
                 failure.toFailedInspection()
             }
         }
+
+    /** As [inspectArchive]; both descriptors are closed here when the engine returns. */
+    internal fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection =
+        archive.use { open ->
+            sink.use { out ->
+                try {
+                    listEngine(open.fd, limits.toRecord(), out.fd).toInspection()
+                } catch (failure: Throwable) {
+                    failure.toFailedInspection()
+                }
+            }
+        }
+
+    /** As [inspectArchive]; both descriptors are closed here when the engine returns. */
+    internal fun extractEntry(
+        archive: ParcelFileDescriptor,
+        ordinal: Int,
+        expectedPath: String,
+        limits: ArchiveLimits,
+        sink: ParcelFileDescriptor,
+    ): ArchiveExtractResult = archive.use { open ->
+        sink.use { out ->
+            try {
+                ArchiveExtractResult.ok(extractEngine(open.fd, ordinal, expectedPath, limits.toRecord(), out.fd))
+            } catch (failure: Throwable) {
+                failure.toFailedExtraction()
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder = binder
 }

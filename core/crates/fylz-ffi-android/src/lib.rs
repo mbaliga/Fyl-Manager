@@ -4,7 +4,20 @@
 //! Kotlin -> Gradle) end to end; `sniff` itself is `fylz-sniff`'s content-detection logic (M2.5)
 //! wired to a real, caller-owned file descriptor. `archive_inspect` (M3.2b) is `fylz-archive`'s
 //! one header pass plus the extraction policy, summarised into a record small enough to cross
-//! Binder (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.4).
+//! Binder (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.4). `archive_list_into` and
+//! `archive_extract_entry_at` (M3.3a) are the browsing pair: the same header pass writing the
+//! full listing into a caller-owned pipe as it goes, and one entry by header ordinal streamed
+//! into another (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.2).
+//!
+//! SIGPIPE: the sinks those two write into are pipes the UI process owns, and a cancelled call
+//! closes the read end first, so the engine's `write_all` gets `EPIPE`. Rust installs `SIG_IGN`
+//! for SIGPIPE only in binaries (`lang_start`), never in a cdylib such as this one, so with a
+//! default disposition that write would kill `:decoders` outright and the failure would look like
+//! a crash rather than an `Err`. Android's runtime does ignore SIGPIPE in every app process
+//! (`app_process`'s `main` does so before the Zygote forks, and `:decoders` is a Zygote fork), but
+//! this crate does not rely on it: [ignore_sigpipe] runs once at the start of every exported
+//! archive function, through a hand-declared `signal(2)` as `fylz-archive`'s `sys` module declares
+//! its own externs.
 //!
 //! Naming: every uniffi record/enum here ends in `Record`, because uniffi generates Kotlin classes
 //! with these exact names into `io.github.mbaliga.fylz.core`, and `DecoderService` imports both
@@ -13,18 +26,55 @@
 //! carry a field named `detail`, never `message`: uniffi's generated Kotlin error class would
 //! otherwise declare `val message` against `Throwable.message` and fail to compile.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::{FromRawFd, RawFd};
+use std::sync::Once;
 
 use fylz_archive::ArchiveError;
 use fylz_archive::Decision;
 use fylz_archive::EntryKind;
 use fylz_archive::EntryMetadata;
+use fylz_archive::ExtractLimits;
 use fylz_archive::Inspection;
 use fylz_archive::Limits;
 
 uniffi::setup_scaffolding!();
+
+mod signal_sys {
+    //! The one `signal(2)` declaration behind [super::ignore_sigpipe], hand-written for the same
+    //! reason `fylz-archive`'s `sys` module is: a couple of decades-old, stable libc symbols do
+    //! not justify a `libc` crate dependency in the shipped library. `SIGPIPE` is 13 and `SIG_IGN`
+    //! is `(sighandler_t) 1` on every Linux ABI this crate builds for (aarch64, armv7, x86_64
+    //! bionic, and the glibc host), per the kernel's `asm-generic/signal.h`.
+    use std::os::raw::c_int;
+
+    pub type SigHandler = usize;
+    pub const SIGPIPE: c_int = 13;
+    pub const SIG_IGN: SigHandler = 1;
+    #[cfg(test)]
+    pub const SIG_DFL: SigHandler = 0;
+
+    unsafe extern "C" {
+        pub fn signal(signum: c_int, handler: SigHandler) -> SigHandler;
+    }
+}
+
+static SIGPIPE_IGNORED: Once = Once::new();
+
+/// Sets SIGPIPE to `SIG_IGN` once per process (see the crate doc for why a cdylib must do this
+/// itself), so a write into a pipe whose reader has gone reports `EPIPE` as an `Err` instead of
+/// terminating the decoder process.
+fn ignore_sigpipe() {
+    SIGPIPE_IGNORED.call_once(|| {
+        // SAFETY: `signal` with `SIG_IGN` installs no handler code of ours and touches no memory;
+        // its only effect is the process-wide disposition of SIGPIPE, which nothing in this
+        // process relies on being the default.
+        unsafe {
+            signal_sys::signal(signal_sys::SIGPIPE, signal_sys::SIG_IGN);
+        }
+    });
+}
 
 /// The `fylz-core` workspace version, for the Kotlin side to log/display.
 #[uniffi::export]
@@ -183,6 +233,8 @@ impl From<ArchiveEntryKindRecord> for EntryKind {
 /// engine -- libarchive has no per-entry compressed size -- so it is not carried).
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveEntryRecord {
+    /// `EntryMetadata::ordinal`: the raw header index this entry came from (M3.3).
+    pub ordinal: u32,
     pub path: String,
     pub name_lossy: bool,
     pub kind: ArchiveEntryKindRecord,
@@ -197,6 +249,7 @@ pub struct ArchiveEntryRecord {
 impl From<&EntryMetadata> for ArchiveEntryRecord {
     fn from(entry: &EntryMetadata) -> Self {
         ArchiveEntryRecord {
+            ordinal: entry.ordinal,
             path: entry.path.clone(),
             name_lossy: entry.name_lossy,
             kind: entry.kind.into(),
@@ -240,9 +293,23 @@ pub struct ArchiveInspectionRecord {
     pub policy_allowed: bool,
     pub policy_reason: Option<String>,
     /// The first `max_rows` entries, in archive order, cut **here** so a large listing never
-    /// crosses uniffi (or Binder) whole.
+    /// crosses uniffi (or Binder) whole. Empty from `archive_list_into`, whose listing went into
+    /// the sink instead.
     pub rows: Vec<ArchiveEntryRecord>,
     pub rows_truncated: bool,
+    /// `archive_list_into` only (M3.3): the header pass stopped on a damaged header after at
+    /// least one entry; the sink holds what was read, with its trailer flagged partial, and
+    /// `partial_message` is libarchive's own text for the damage. Always `false` from
+    /// `archive_inspect`, which reports that damage as `Corrupt` instead.
+    #[uniffi(default = false)]
+    pub partial: bool,
+    #[uniffi(default = None)]
+    pub partial_message: Option<String>,
+    /// `Inspection::structural_refusal` (M3.3a): the policy's reason under limits with every size
+    /// rule off, so only the structural rules (paths, duplicates, links, unknown sizes, overflow)
+    /// can fire. `None` when the archive is structurally sound whatever its size.
+    #[uniffi(default = None)]
+    pub structural_refusal: Option<String>,
 }
 
 /// `fylz_archive::ArchiveError` over uniffi, plus the one case the engine never produces from
@@ -261,6 +328,10 @@ pub enum ArchiveEngineError {
     /// An engine error `inspect` is documented never to return (`NonUtf8Path`): a bug to report
     /// as such, not something to blame the archive for.
     Internal { detail: String },
+    /// `archive_extract_entry_at` found no header at `ordinal`, or a different path there than
+    /// the caller expected: the archive changed under its listing, or the id was forged. Carries
+    /// its fields (so it is not a `flat_error`, which would drop them).
+    NotFound { ordinal: u32, path: String },
 }
 
 impl std::fmt::Display for ArchiveEngineError {
@@ -275,6 +346,9 @@ impl std::fmt::Display for ArchiveEngineError {
                 write!(f, "limit exceeded ({rule}) at entry {entry:?}")
             }
             ArchiveEngineError::Internal { detail } => write!(f, "internal error: {detail}"),
+            ArchiveEngineError::NotFound { ordinal, path } => {
+                write!(f, "no entry {path:?} at header {ordinal}")
+            }
         }
     }
 }
@@ -294,6 +368,10 @@ impl From<ArchiveError> for ArchiveEngineError {
             ArchiveError::NonUtf8Path => ArchiveEngineError::Internal {
                 detail: ArchiveError::NonUtf8Path.to_string(),
             },
+            ArchiveError::NotFound { ordinal, path } => ArchiveEngineError::NotFound {
+                ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
+                path,
+            },
         }
     }
 }
@@ -309,18 +387,98 @@ pub fn archive_inspect(
     limits: ArchiveLimitsRecord,
     max_rows: u32,
 ) -> Result<ArchiveInspectionRecord, ArchiveEngineError> {
+    ignore_sigpipe();
+    check_fd(fd)?;
+    let limits = Limits::from(limits);
+    let (inspection, decision) = fylz_archive::inspect_with_policy(fd, &limits)?;
+    Ok(summarize(inspection, decision, Some(max_rows), None))
+}
+
+/// The same header pass as [archive_inspect], writing the full listing into `sink_fd` in the
+/// `fylz_archive::listing` codec **as each header is read** (M3.3a; design section 2.2): the
+/// browser's transport for a table Binder could never carry whole. `sink_fd` is the write end of
+/// a pipe the caller created and owns (the decoder process closes its own dup after this returns;
+/// this function never closes it), `fd` the archive as for [archive_inspect]. The record comes
+/// back with `rows` empty, and `partial = true` (with libarchive's message) when the pass stopped
+/// on damage after at least one entry -- the sink then holds what was readable. The policy is
+/// evaluated over the same entries, so a browsing caller can refuse to *open* entries of an
+/// archive that failed the extraction rules while still listing it.
+#[uniffi::export]
+pub fn archive_list_into(
+    fd: i32,
+    limits: ArchiveLimitsRecord,
+    sink_fd: i32,
+) -> Result<ArchiveInspectionRecord, ArchiveEngineError> {
+    ignore_sigpipe();
+    check_fd(fd)?;
+    if sink_fd < 0 {
+        return Err(ArchiveEngineError::Internal {
+            detail: format!("invalid listing sink descriptor {sink_fd}"),
+        });
+    }
+    let limits = Limits::from(limits);
+    // SAFETY: `sink_fd` is caller-owned for the whole call, per this function's contract; the
+    // `ManuallyDrop` keeps the `File` from closing it.
+    let mut sink = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(sink_fd) });
+    let pass = fylz_archive::inspect_into(fd, &limits, &mut *sink)?;
+    sink.flush().map_err(|e| ArchiveEngineError::Corrupt {
+        detail: format!("writing the listing: {e}"),
+    })?;
+    let decision = fylz_archive::policy::evaluate(
+        pass.inspection.archive_bytes,
+        &pass.inspection.entries,
+        &limits,
+    );
+    Ok(summarize(pass.inspection, decision, None, pass.partial))
+}
+
+/// Streams the entry at raw header `ordinal` (`ArchiveEntryRecord::ordinal`, a listing record's
+/// ordinal), whose path must be byte for byte `expected_path`, into `sink_fd` (caller-owned, the
+/// write end of a pipe; never closed here) under the extraction caps in `limits`, and returns the
+/// bytes written; the engine stops reading the archive as soon as the entry is written (M3.3a;
+/// design section 2.2). A mismatch is [ArchiveEngineError::NotFound] with both fields.
+#[uniffi::export]
+pub fn archive_extract_entry_at(
+    fd: i32,
+    ordinal: u32,
+    expected_path: String,
+    limits: ArchiveLimitsRecord,
+    sink_fd: i32,
+) -> Result<u64, ArchiveEngineError> {
+    ignore_sigpipe();
+    check_fd(fd)?;
+    if sink_fd < 0 {
+        return Err(ArchiveEngineError::Internal {
+            detail: format!("invalid entry sink descriptor {sink_fd}"),
+        });
+    }
+    let limits = ExtractLimits::from(&Limits::from(limits));
+    Ok(fylz_archive::extract_entry_at(
+        fd,
+        ordinal as usize,
+        &expected_path,
+        &limits,
+        sink_fd,
+    )?)
+}
+
+fn check_fd(fd: i32) -> Result<(), ArchiveEngineError> {
     if fd < 0 {
         return Err(ArchiveEngineError::NotSeekable {
             detail: format!("not seekable (invalid descriptor {fd})"),
         });
     }
-    let limits = Limits::from(limits);
-    let (inspection, decision) = fylz_archive::inspect_with_policy(fd, &limits)?;
-    Ok(summarize(inspection, decision, max_rows))
+    Ok(())
 }
 
-/// Folds an [Inspection] and its [Decision] into the record, cutting the rows to `max_rows`.
-fn summarize(inspection: Inspection, decision: Decision, max_rows: u32) -> ArchiveInspectionRecord {
+/// Folds an [Inspection] and its [Decision] into the record, cutting the rows to `max_rows`;
+/// `None` carries no rows at all and is not "truncated" (the listing went into a sink instead).
+fn summarize(
+    inspection: Inspection,
+    decision: Decision,
+    max_rows: Option<u32>,
+    partial: Option<String>,
+) -> ArchiveInspectionRecord {
     let entries = &inspection.entries;
     let count = |predicate: fn(&EntryMetadata) -> bool| -> u32 {
         u32::try_from(entries.iter().filter(|e| predicate(e)).count()).unwrap_or(u32::MAX)
@@ -331,7 +489,20 @@ fn summarize(inspection: Inspection, decision: Decision, max_rows: u32) -> Archi
         .try_fold(0u64, |total, e| {
             e.uncompressed.and_then(|size| total.checked_add(size))
         });
-    let max_rows = max_rows as usize;
+    let (rows, rows_truncated) = match max_rows {
+        Some(max_rows) => {
+            let max_rows = max_rows as usize;
+            (
+                entries
+                    .iter()
+                    .take(max_rows)
+                    .map(ArchiveEntryRecord::from)
+                    .collect(),
+                entries.len() > max_rows,
+            )
+        }
+        None => (Vec::new(), false),
+    };
     ArchiveInspectionRecord {
         archive_bytes: inspection.archive_bytes,
         format_code: inspection.format_code,
@@ -348,12 +519,11 @@ fn summarize(inspection: Inspection, decision: Decision, max_rows: u32) -> Archi
         has_lossy_names: entries.iter().any(|e| e.name_lossy),
         policy_allowed: decision.allowed,
         policy_reason: decision.reason.map(str::to_string),
-        rows: entries
-            .iter()
-            .take(max_rows)
-            .map(ArchiveEntryRecord::from)
-            .collect(),
-        rows_truncated: entries.len() > max_rows,
+        rows,
+        rows_truncated,
+        partial: partial.is_some(),
+        partial_message: partial,
+        structural_refusal: inspection.structural_refusal.clone(),
     }
 }
 
@@ -415,6 +585,10 @@ mod tests {
         assert_eq!(record.rows.len(), 2);
         assert!(record.rows_truncated);
         assert_eq!(record.rows[0].path, "docs/");
+        assert_eq!(record.rows[0].ordinal, 0);
+        assert_eq!(record.rows[1].ordinal, 1);
+        assert!(!record.partial && record.partial_message.is_none());
+        assert_eq!(record.structural_refusal, None);
         assert_eq!(record.rows[0].kind, ArchiveEntryKindRecord::Directory);
         assert_eq!(record.rows[0].mode, 0o755);
         assert_eq!(record.rows[0].mtime, Some(1_577_836_800));
@@ -445,6 +619,11 @@ mod tests {
             Some("Archive contains a link that escapes the extraction folder.")
         );
         assert_eq!((record.file_count, record.link_count), (1, 1));
+        // An escaping link is structural: no destination size would make it safe.
+        assert_eq!(
+            record.structural_refusal.as_deref(),
+            Some("Archive contains a link that escapes the extraction folder.")
+        );
         assert_eq!(record.rows[1].kind, ArchiveEntryKindRecord::Symlink);
         assert_eq!(record.rows[1].link_target.as_deref(), Some("/etc/passwd"));
         // Links' declared sizes count toward the total, directories' do not.
@@ -527,6 +706,16 @@ mod tests {
                     detail: "entry pathname is not valid UTF-8".into(),
                 },
             ),
+            (
+                ArchiveError::NotFound {
+                    ordinal: 7,
+                    path: "a/b".into(),
+                },
+                ArchiveEngineError::NotFound {
+                    ordinal: 7,
+                    path: "a/b".into(),
+                },
+            ),
         ];
         for (engine, expected) in cases {
             assert_eq!(ArchiveEngineError::from(engine), expected);
@@ -559,6 +748,208 @@ mod tests {
         assert_eq!(
             ArchiveEngineError::Internal { detail: "x".into() }.to_string(),
             "internal error: x"
+        );
+        assert_eq!(
+            ArchiveEngineError::NotFound {
+                ordinal: 3,
+                path: "dir/x".into()
+            }
+            .to_string(),
+            "no entry \"dir/x\" at header 3"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M3.3a: the browsing pair and SIGPIPE.
+    // -----------------------------------------------------------------------------------------
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fylz-ffi-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    #[test]
+    fn archive_list_into_writes_the_listing_to_the_sink_and_returns_rows_empty() {
+        let sink_path = scratch("cd.fzl");
+        let sink = File::create(&sink_path).unwrap();
+        let file = fixture("archives/sample-cd.zip");
+        let record = archive_list_into(file.as_raw_fd(), limits(), sink.as_raw_fd()).unwrap();
+        assert!(record.rows.is_empty());
+        assert!(!record.rows_truncated);
+        assert!(!record.partial && record.partial_message.is_none());
+        assert_eq!(record.entry_count, 8);
+        assert!(record.policy_allowed);
+        // The sink holds the same bytes the engine's own writer produces, i.e. the golden file.
+        let golden = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../app/src/test/resources/fixtures/archives/sample-cd.fzl"),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&sink_path).unwrap(), golden);
+        // The sink descriptor is still open: the caller owns it.
+        assert!(sink.metadata().is_ok());
+        // A negative sink is refused before anything is read.
+        assert!(matches!(
+            archive_list_into(fixture("archives/sample-cd.zip").as_raw_fd(), limits(), -1),
+            Err(ArchiveEngineError::Internal { .. })
+        ));
+    }
+
+    #[test]
+    fn archive_list_into_reports_partial_for_a_damaged_tar_and_the_policy_over_what_was_read() {
+        let sink_path = scratch("damaged.fzl");
+        let sink = File::create(&sink_path).unwrap();
+        let file = fixture("archives/damaged-after-3.tar");
+        let record = archive_list_into(file.as_raw_fd(), limits(), sink.as_raw_fd()).unwrap();
+        assert!(record.partial);
+        assert!(record
+            .partial_message
+            .as_deref()
+            .is_some_and(|m| !m.is_empty()));
+        assert_eq!(record.entry_count, 3);
+        assert!(record.policy_allowed);
+        let bytes = std::fs::read(&sink_path).unwrap();
+        assert_eq!(bytes[bytes.len() - 1], 1, "trailer flagged partial");
+        // The same file through archive_inspect is Corrupt: M3.2's contract is unchanged.
+        assert!(matches!(
+            archive_inspect(
+                fixture("archives/damaged-after-3.tar").as_raw_fd(),
+                limits(),
+                5
+            ),
+            Err(ArchiveEngineError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn archive_extract_entry_at_streams_one_entry_and_reports_not_found_with_fields() {
+        let dest_path = scratch("hello.out");
+        let dest = File::create(&dest_path).unwrap();
+        let file = fixture("archives/sample-cd.zip");
+        // `hello.txt` is header 5 of sample-cd.zip (three directories, two docs files first).
+        let listing =
+            archive_inspect(fixture("archives/sample-cd.zip").as_raw_fd(), limits(), 500).unwrap();
+        let hello = listing.rows.iter().find(|r| r.path == "hello.txt").unwrap();
+        let written = archive_extract_entry_at(
+            file.as_raw_fd(),
+            hello.ordinal,
+            "hello.txt".into(),
+            limits(),
+            dest.as_raw_fd(),
+        )
+        .unwrap();
+        assert_eq!(written, 11);
+        assert_eq!(std::fs::read(&dest_path).unwrap(), b"hello world");
+        assert!(dest.metadata().is_ok(), "the sink is the caller's to close");
+        assert_eq!(
+            archive_extract_entry_at(
+                fixture("archives/sample-cd.zip").as_raw_fd(),
+                hello.ordinal,
+                "HELLO.TXT".into(),
+                limits(),
+                dest.as_raw_fd(),
+            ),
+            Err(ArchiveEngineError::NotFound {
+                ordinal: hello.ordinal,
+                path: "HELLO.TXT".into()
+            })
+        );
+        assert_eq!(
+            archive_extract_entry_at(
+                fixture("archives/sample-cd.zip").as_raw_fd(),
+                99,
+                "hello.txt".into(),
+                limits(),
+                dest.as_raw_fd(),
+            ),
+            Err(ArchiveEngineError::NotFound {
+                ordinal: 99,
+                path: "hello.txt".into()
+            })
+        );
+        assert!(matches!(
+            archive_extract_entry_at(-1, 0, "x".into(), limits(), dest.as_raw_fd()),
+            Err(ArchiveEngineError::NotSeekable { .. })
+        ));
+        assert!(matches!(
+            archive_extract_entry_at(
+                fixture("archives/sample-cd.zip").as_raw_fd(),
+                0,
+                "x".into(),
+                limits(),
+                -1
+            ),
+            Err(ArchiveEngineError::Internal { .. })
+        ));
+    }
+
+    /// The SIGPIPE contract (crate doc): a write into a pipe whose read end is closed must come
+    /// back as an `Err`, not kill the process. The Rust test harness is a binary, so it has
+    /// already set SIGPIPE to `SIG_IGN` for this process -- which is exactly the disposition a
+    /// cdylib cannot count on -- so the real check runs in a **child process** that first resets
+    /// SIGPIPE to `SIG_DFL` and then calls the exported function; the parent asserts the child
+    /// exited normally (an `Err` was returned) rather than being terminated by the signal. A
+    /// fresh process also means `ignore_sigpipe`'s `Once` genuinely runs inside the call under
+    /// test, whatever other tests did in this process.
+    #[test]
+    fn a_write_into_a_closed_pipe_is_an_error_not_a_dead_decoder_process() {
+        const CHILD_MARKER: &str = "FYLZ_SIGPIPE_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            // SAFETY: restoring the default disposition of SIGPIPE in a throwaway child process.
+            unsafe {
+                signal_sys::signal(signal_sys::SIGPIPE, signal_sys::SIG_DFL);
+            }
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let file = fixture("archives/sample-entries.zip");
+            let listing = archive_inspect(
+                fixture("archives/sample-entries.zip").as_raw_fd(),
+                limits(),
+                500,
+            )
+            .unwrap();
+            let big = listing.rows.iter().find(|r| r.path == "big.bin").unwrap();
+            // 3 MB into a pipe nobody reads: the first write past the pipe buffer is EPIPE.
+            let result = archive_extract_entry_at(
+                file.as_raw_fd(),
+                big.ordinal,
+                "big.bin".into(),
+                limits(),
+                writer.as_raw_fd(),
+            );
+            assert!(
+                matches!(result, Err(ArchiveEngineError::Corrupt { ref detail }) if detail.contains("writing the destination")),
+                "{result:?}"
+            );
+            // And the listing path the same way.
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            let result = archive_list_into(
+                fixture("archives/hostile/many-entries.tar.zst").as_raw_fd(),
+                limits(),
+                writer.as_raw_fd(),
+            );
+            assert!(
+                matches!(result, Err(ArchiveEngineError::Corrupt { ref detail }) if detail.contains("writing the listing")),
+                "{result:?}"
+            );
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(exe)
+            .arg("--exact")
+            .arg("tests::a_write_into_a_closed_pipe_is_an_error_not_a_dead_decoder_process")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .output()
+            .expect("re-running this test binary as a child process");
+        assert!(
+            output.status.success(),
+            "the child did not exit normally (status {:?}: SIGPIPE killed it, or the assertion failed):\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

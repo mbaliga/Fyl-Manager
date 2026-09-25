@@ -337,3 +337,113 @@ implementation added):
   memory the user pays for a browsing session; measured in M3.3.
 - The 500-row cap (11): a preview that shows 500 rows of an 80,000-entry tarball and a note --
   by design, but a user may read it as a truncated archive.
+
+## M3.3 — archive browsing as folders
+
+**Milestone:** M3.3 (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` rev 2 plus the five coordinator
+amendments from the M3.4 review; per-commit detail in `docs/agent/PROGRESS.md`'s `M3.3` row;
+device checks in `docs/agent/DEVICE_CHECKS.md` section 18 once M3.3d lands). Not a gate:
+log-and-continue. Commits: M3.3a (this entry; listing codec, ordinals, `extract_entry_at`,
+streaming decoder client, catalog, entry cache, sweeper), then b (provider), c (UI and registry),
+d (docs); each extends this entry.
+
+**What was decided, and needs a second read** (the design's section 3 list, then what
+implementation added):
+
+1. Drag-out deferred to M12.2 (design section 0): no drag substrate exists; every entry now has a
+   grantable `content://` Uri, which is the one thing drag needs.
+2. In-archive search off until M8 (the recursive engine walks `DocumentsContract` trees).
+3. RAR/CBR, `arj img dmg wim xar`, and single-file compressed streams (`notes.txt.gz`) are not
+   browsable (section 2.5); the plan's table says "read: yes" for several.
+4. Copy-out is per entry (materialise, then copy; about N/2 full decompressions for `tar.*` and
+   solid 7z) until M3.4's one-pass bulk path (section 2.4).
+5. Entries over 512 MiB cannot be opened in place ("Extract it instead").
+6. Encrypted entries, links and special files do not open (section 2.4); hardlinks resolve.
+7. Pipes as the one bulk channel; SELinux for passed *file* descriptors (read and write alike) is
+   unanswered until section 18 item 7 (section 2.2).
+8. Inactivity + archive-offset liveness instead of section 4.4's flat 30 s for streaming calls.
+9. Section 4.4's "read-only descriptors, structure as Parcelables": `:decoders` now receives a
+   writable pipe and structure crosses in a codec.
+10. `location.kind` arrives before MC.2 with a two-value set (`FOLDER`, `ARCHIVE`; section 2.6).
+11. No thumbnails inside archives (a thumbnail would be a fill per visible image).
+12. Archives over 200,000 entries are not browsable; damaged archives list partially.
+13. Listing memory in `:decoders` is the Rust `Vec` only (about 30 MB at the bound).
+14. Opening entries of a policy-refused archive is refused; browsing is not.
+15. Idle unbind after 60 s with nothing in flight (section 2.9; closes M3.2 item 12).
+16. Breadcrumb separator stays `/` (the plan writes `›`).
+17. A vanished archive behind a restored location toasts and stays; Up works.
+18. Ids carry no listing key: a clipboard entry pasted after the archive was replaced copies the new
+    archive's entry at that position (as a replaced file would).
+19. `ACTION_SEND_MULTIPLE` of thousands of ~250-character Uris can hit the transaction limit and
+    today's `runCatching` swallows it.
+20. `.iso` browsing overlaps M4.3 / section C3's `disk-image` kind.
+21. Fixtures live under `core/fixtures/archives/` and the golden `.fzl` files under
+    `app/src/test/resources/fixtures/archives/` (MASTER_PLAN section 3.4 asks for both trees).
+22. **Ordinal definition (amendment):** an entry's ordinal is the 0-based index of the raw
+    `archive_read_next_header` call that returned it, counting every header -- the ISO/tar `.`
+    root the engine drops, links, `Other` kinds -- never an index into the entry list; it lives on
+    `EntryMetadata.ordinal` from one shared counter, so a `./`-rooted tar's first member is
+    ordinal 1 (`dot-rooted.tar`). Document ids and M3.4's `Selection::Ordinals` use it.
+23. **SIGPIPE (amendment):** a cdylib gets no `SIG_IGN` from Rust's runtime, so `fylz-ffi-android`
+    ignores SIGPIPE once at the start of every exported archive function; a cancelled stream's
+    `EPIPE` is an `Err`, not a dead `:decoders`. Android's runtime already ignores it in app
+    processes (recorded, not relied on); the test proves it in a child process with `SIG_DFL`.
+24. **Pin the source, never a descriptor (amendment, blocker-class):** a Binder-passed
+    `ParcelFileDescriptor` shares the open file description and its offset; two concurrent engine
+    calls on dups of one descriptor would interleave (`read` + `lseek(SEEK_CUR)` after a rewind) and
+    silently corrupt tar/ISO/cpio reads. `PinnedSource` re-opens a descriptor per call
+    (`openFileDescriptor` again, or `ParcelFileDescriptor.open` on the staged/materialised file);
+    the design's "pins one `ArchiveSource.Resolved`" was that bug. The interleave test runs under
+    Robolectric, where an in-process stub receives the very same descriptor object -- the device
+    half is section 18.
+25. **Summary sidecar and `structural_refusal` (amendment):** `<key>.summary.json` beside every
+    `.fzl` (a disk-first load previously had no policy verdict, yet the entry cache refuses from
+    it); a listing without a readable sidecar fails closed and is re-listed. Rust computes
+    `structural_refusal` (the policy under `Limits::structural_only()`: sizes unbounded, ratio
+    infinite) on `Inspection`, the FFI record, the Parcelable and the sidecar; M3.4 refuses
+    extraction from an archive whose structural verdict is a refusal or unknown.
+26. **`.` segments are no-ops (amendment; a deliberate deviation from the Kotlin parity rule, for
+    the owner's review pass):** `validate_path`/`normalized_path_key` strip a leading `./`
+    repeatedly and drop `.` segments before the remaining checks; `..` stays refused; a directory
+    that is only `.`/`./` is the archive root. Closes M3.2 item 13. Every `tar -C dir -cf x.tar .`
+    archive and every ISO would otherwise be refused whole and none of its entries openable.
+    `folder/./file` left the Kotlin hostile corpus for the new allowed case.
+27. The codec carries the engine's (lossily decoded) path string, not the raw non-UTF-8 bytes:
+    Java's and Rust's replacement rules differ, and the byte-exact match must see the same string
+    the id was built from (M3.7 gives both a charset).
+28. `DecoderClient` retry-once applies to a transaction whose `RemoteException` arrived after
+    another call's drop bumped the generation; a bind dropped while connecting stays `Failed` (the
+    M3.2b test). A streaming call's `drain` may therefore run twice and must start over.
+29. A failing `drain` (the sink's disk is full) closes both pipe ends so the engine's write gets
+    `EPIPE`, and is thrown to the caller with the connection kept -- not the process's fault.
+30. Handles are reference counted (`retain`/`release`) rather than closed on LRU eviction, so a
+    fill in flight on an evicted archive completes; the source closes at zero.
+31. Observations on the fixtures worth knowing before trusting the tree's rules: libarchive's tar
+    reader reports directories with a trailing `/` whatever the header said (`tarfile` writes
+    `dir`), and its ZIP reader already rewrites `\` to `/` (`backslash.zip` lists as
+    `dir/file.txt`), so the tree's backslash rule only matters for a reader that does not.
+32. `sample-entries.zip`'s `font.ttf` is an sfnt header only (not renderable); section 18 item 2
+    previews a real font from a real archive.
+33. Directories and implicit entries are refused by the entry cache with "Folders cannot be opened
+    as files." (not in the design's refusal list).
+34. The once-per-process cache sweep runs from `ArchiveCatalog.open` and `ArchiveInspector.inspect`
+    (first wins); the design only said it moves out of `ArchiveSource.resolve()`.
+35. `ArchiveExtractResult` is the minimal `outcome/message/bytesWritten`; M3.4 adds its counts.
+
+**Relevant commits:** the M3.3a commit that adds this entry; b, c and d extend it.
+
+**Risk if it turns out wrong:**
+- Ordinals (22): a listing and an `extract_entry_at` that count headers differently would fetch
+  the wrong member; one shared counter and `NotFound` on a path mismatch are the guards, and a
+  mismatch surfaces as "This entry is no longer in the archive", never as wrong bytes.
+- Pinned source (24): if a provider hands back a *different* file on a re-open (a cloud provider
+  refreshing), two fills could read two versions; the declared-size check catches a length change
+  only. Staged and materialised sources are immutable files, so the risk is confined to
+  `PinnedSource.Document`.
+- The `.` rule (26): an archive that used `.` segments to smuggle nothing (there is nothing a `.`
+  can smuggle) is now extractable; `..`, absolute and drive-qualified paths are unchanged.
+- SIGPIPE (23): if the AndroidRuntime claim is wrong AND the `Once` failed to run before a write,
+  a cancelled stream would kill `:decoders`; the client treats that as `Failed` and rebinds, so
+  the failure mode is a wrong message, not a crash of the app.
+- The sidecar (25): a stale sidecar with a fresh `.fzl` cannot happen (the sidecar is written
+  after the rename and deleted with it), and a missing one re-lists -- the cost is one extra pass.

@@ -475,7 +475,7 @@ fn crc32(data: &[u8]) -> u32 {
 /// encodes every non-ASCII name as UTF-8 and sets bit 11), which is exactly the legacy shape a
 /// CP437 archiver produced, so it is built by hand here. Local header, central directory, end
 /// record; DOS date 1980-01-01, no extra fields, bit 11 clear.
-fn build_stored_zip(dir: &Path, entries: &[(&[u8], &[u8])]) -> std::path::PathBuf {
+pub(crate) fn build_stored_zip(dir: &Path, entries: &[(&[u8], &[u8])]) -> std::path::PathBuf {
     let mut out = Vec::new();
     let mut central = Vec::new();
     for (name, data) in entries {

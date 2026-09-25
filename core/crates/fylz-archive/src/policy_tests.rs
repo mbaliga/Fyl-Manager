@@ -16,6 +16,7 @@ use crate::policy::Limits;
 /// negative size is Kotlin's "unknown" and becomes `None`, the shape libarchive reports.
 fn meta(name: &str, directory: bool, compressed: i64, uncompressed: i64) -> EntryMetadata {
     EntryMetadata {
+        ordinal: 0,
         path: name.to_string(),
         name_lossy: false,
         kind: if directory {
@@ -35,6 +36,7 @@ fn meta(name: &str, directory: bool, compressed: i64, uncompressed: i64) -> Entr
 
 fn link(kind: EntryKind, path: &str, target: Option<&str>) -> EntryMetadata {
     EntryMetadata {
+        ordinal: 0,
         path: path.to_string(),
         name_lossy: false,
         kind,
@@ -91,6 +93,122 @@ fn rejects_traversal_absolute_and_drive_qualified_paths() {
     assert_eq!(
         evaluate(100, &[meta("C:/windows.txt", false, 10, 20)], &limits),
         refused("Archive contains a drive-qualified path.")
+    );
+}
+
+/// M3.3a's deliberate deviation from the Kotlin rule (the module doc's last bullet): a `.`
+/// segment is a no-op. Kotlin's `validatePath` refused `./a` and `a/./b` as "unsafe path
+/// segment" -- the twin of [rejects_traversal_absolute_and_drive_qualified_paths] above, which
+/// still refuses `..` -- but every `tar -C dir -cf x.tar .` archive names its members `./…`, so
+/// the parity rule refused them whole. Logged for the owner's review pass in `REVIEW_QUEUE.md`.
+#[test]
+fn a_dot_segment_is_a_no_op_not_an_escape_unlike_kotlin() {
+    let limits = Limits::default();
+    assert_eq!(
+        evaluate(100, &[meta("./a.txt", false, 10, 20)], &limits),
+        ALLOWED
+    );
+    assert_eq!(
+        evaluate(100, &[meta("././a.txt", false, 10, 20)], &limits),
+        ALLOWED
+    );
+    assert_eq!(
+        evaluate(100, &[meta("a/./b.txt", false, 10, 20)], &limits),
+        ALLOWED
+    );
+    assert_eq!(
+        evaluate(100, &[meta("./dir/", true, 0, 0)], &limits),
+        ALLOWED
+    );
+    // `..` stays refused, however it is dressed.
+    assert_eq!(
+        evaluate(100, &[meta("./../escape.txt", false, 10, 20)], &limits),
+        refused("Archive contains an unsafe path segment.")
+    );
+    assert_eq!(
+        evaluate(100, &[meta("a/./../b.txt", false, 10, 20)], &limits),
+        refused("Archive contains an unsafe path segment.")
+    );
+    // Stripping the prefix exposes what it hid: `.//abs` is the absolute path `/abs`.
+    assert_eq!(
+        evaluate(100, &[meta(".//abs.txt", false, 10, 20)], &limits),
+        refused("Archive contains an absolute or invalid path.")
+    );
+    // A name that is nothing but dots and slashes is not a member (a *directory* `.` is the
+    // archive root and never reaches the policy; a file so named is invalid).
+    assert_eq!(
+        evaluate(100, &[meta("./", false, 10, 20)], &limits),
+        refused("Archive contains an invalid path.")
+    );
+    assert_eq!(
+        evaluate(100, &[meta(".", false, 10, 20)], &limits),
+        refused("Archive contains an invalid path.")
+    );
+    // The duplicate key sees through the prefix too: `./a` and `a` are one path.
+    assert_eq!(
+        evaluate(
+            100,
+            &[meta("./a.txt", false, 10, 20), meta("a.txt", false, 10, 20)],
+            &limits
+        ),
+        refused("Archive contains duplicate or colliding paths.")
+    );
+    assert_eq!(
+        evaluate(
+            100,
+            &[meta("dir/./x", false, 10, 20), meta("DIR/X", false, 10, 20)],
+            &limits
+        ),
+        refused("Archive contains duplicate or colliding paths.")
+    );
+}
+
+#[test]
+fn structural_only_limits_switch_every_size_rule_off_and_nothing_else() {
+    let structural = Limits::default().structural_only();
+    assert_eq!(structural.max_entries, usize::MAX);
+    assert_eq!(structural.max_archive_bytes, u64::MAX);
+    assert_eq!(structural.max_file_bytes, u64::MAX);
+    assert_eq!(structural.max_total_uncompressed_bytes, u64::MAX);
+    assert!(structural.max_compression_ratio.is_infinite());
+    assert_eq!(structural.max_path_depth, Limits::default().max_path_depth);
+    assert_eq!(
+        structural.max_name_length,
+        Limits::default().max_name_length
+    );
+    // A bomb by size passes the structural rules ...
+    let bomb = [meta(
+        "big.bin",
+        false,
+        1,
+        1_u64 as i64 * 1024 * 1024 * 1024 * 8,
+    )];
+    assert_ne!(evaluate(100, &bomb, &Limits::default()), ALLOWED);
+    assert_eq!(evaluate(100, &bomb, &structural), ALLOWED);
+    // ... and an unsafe path, a duplicate, an escaping link and an unknown size do not.
+    assert_eq!(
+        evaluate(100, &[meta("../x", false, 1, 1)], &structural),
+        refused("Archive contains an unsafe path segment.")
+    );
+    assert_eq!(
+        evaluate(
+            100,
+            &[meta("a", false, 1, 1), meta("A", false, 1, 1)],
+            &structural
+        ),
+        refused("Archive contains duplicate or colliding paths.")
+    );
+    assert_eq!(
+        evaluate(
+            100,
+            &[link(EntryKind::Symlink, "l", Some("/etc/passwd"))],
+            &structural
+        ),
+        refused(LINK_ESCAPES)
+    );
+    assert_eq!(
+        evaluate(100, &[meta("unknown", false, 1, -1)], &structural),
+        refused("Archive contains an entry with unknown size.")
     );
 }
 
@@ -249,6 +367,9 @@ fn rejects_unknown_sizes_and_excessive_nesting() {
 // ArchiveExtractionPolicyFuzzTest.kt, the four cases.
 // ---------------------------------------------------------------------------------------------
 
+/// Kotlin's corpus minus `folder/./file`: M3.3a made a `.` segment a no-op (module doc, and
+/// [a_dot_segment_is_a_no_op_not_an_escape_unlike_kotlin]), so that one entry moved there as an
+/// *allowed* case; every other member of the Kotlin corpus is still refused.
 #[test]
 fn hostile_path_corpus_is_always_rejected() {
     let hostile = [
@@ -258,7 +379,6 @@ fn hostile_path_corpus_is_always_rejected() {
         "\\absolute",
         "C:/windows/system32",
         "C:\\windows\\system32",
-        "folder/./file",
         "folder/../file",
         "folder//../file",
         "\u{0}payload",

@@ -17,6 +17,13 @@
 //!   which cannot materialise a symlink or hardlink, so `extract()` never writes one -- but an
 //!   archive whose link *would* have escaped the extraction folder is refused outright, the M3
 //!   acceptance criterion "symlink escapes are refused". Evaluated per entry after its path rules.
+//! - **A `.` segment is a no-op, not an escape** (M3.3a, the decision `REVIEW_QUEUE.md`'s M3.2
+//!   entry item 13 asked for; a deliberate deviation from the Kotlin rule, which refused it):
+//!   `tar -C dir -cf x.tar .` names every member `./…`, and libarchive lists an ISO's root as `.`,
+//!   so the Kotlin rule refused every such archive whole. [validate_path] and [normalized_path_key]
+//!   strip a leading `./` repeatedly and drop `.` segments before the remaining checks; `..` stays
+//!   refused; an entry that is only `.` or `./` is the archive root (`is_archive_root`), neither
+//!   counted nor refused. The browsing tree normalises the same way, so the two agree.
 //!
 //! Everything else is literal: `Long.MAX_VALUE` overflow guard -> `checked_add`, a negative
 //! `archiveBytes` is unrepresentable in `u64`, `lowercase(Locale.ROOT)` -> `str::to_lowercase`,
@@ -43,6 +50,28 @@ pub struct Limits {
     /// to extract. 200,000 entries is roughly 30 MB of [EntryMetadata] -- inside the decoder
     /// process's 256 MB budget (`docs/agent/MASTER_PLAN.md` section 4.4) with room to spare.
     pub max_listing_entries: usize,
+}
+
+impl Limits {
+    /// These limits with every size rule switched off: `max_archive_bytes`, `max_file_bytes` and
+    /// `max_total_uncompressed_bytes` at `u64::MAX`, `max_entries` at `usize::MAX`,
+    /// `max_compression_ratio` at infinity. [evaluate] under them can only fire the **structural**
+    /// rules -- paths, duplicate keys, links, unknown sizes, a sum that overflows -- which is what
+    /// `Inspection::structural_refusal` (M3.3a) records so a caller with a larger destination than
+    /// the defaults assume can still tell "too big for these limits" from "unsafe whatever the
+    /// limits" (M3.4 refuses extraction from an archive whose structural verdict is a refusal).
+    pub fn structural_only(&self) -> Limits {
+        Limits {
+            max_entries: usize::MAX,
+            max_archive_bytes: u64::MAX,
+            max_file_bytes: u64::MAX,
+            max_total_uncompressed_bytes: u64::MAX,
+            max_compression_ratio: f64::INFINITY,
+            max_path_depth: self.max_path_depth,
+            max_name_length: self.max_name_length,
+            max_listing_entries: self.max_listing_entries,
+        }
+    }
 }
 
 impl Default for Limits {
@@ -81,6 +110,14 @@ pub enum EntryKind {
 /// section 2.4 is its consumer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryMetadata {
+    /// The 0-based index of the raw `archive_read_next_header` call that returned this entry,
+    /// counting **every** header: a format's own root directory (which `inspect` then drops as
+    /// an entry), links, `Other` kinds, and headers whose data later fails. Never an index into
+    /// `Inspection::entries`. It is what a browsing document id names and what
+    /// `extract_entry_at` walks to (M3.3), and what M3.4's `Selection::Ordinals` selects by;
+    /// one shared counter in the `Reader` produces it for every entry point. A test-constructed
+    /// entry may use 0: the policy never reads it.
+    pub ordinal: u32,
     pub path: String,
     /// `true` when the raw name was not UTF-8 and `path` is `String::from_utf8_lossy` of it
     /// (legacy CP437/GBK ZIPs; M3.7 adds charset detection). The policy validates the lossy
@@ -214,26 +251,55 @@ pub fn evaluate(archive_bytes: u64, entries: &[EntryMetadata], limits: &Limits) 
     Decision::allowed()
 }
 
-/// Kotlin's `normalizedPathKey`: backslashes to slashes, trailing slashes trimmed, lower-cased.
-/// `lowercase(Locale.ROOT)` and `str::to_lowercase` are both the locale-independent Unicode
-/// default case mapping, so two names collide here exactly when they did in Kotlin. Crate-visible
-/// (not public, as in Kotlin) because `extract()`'s `Selection::Paths` matches by the same key.
+/// Kotlin's `normalizedPathKey`: backslashes to slashes, trailing slashes trimmed, lower-cased --
+/// plus (M3.3a) a leading `./` stripped repeatedly and `.` segments dropped, so `./a` and `a` are
+/// one key, as they are one path. `lowercase(Locale.ROOT)` and `str::to_lowercase` are both the
+/// locale-independent Unicode default case mapping, so two names collide here exactly when they
+/// did in Kotlin. Crate-visible (not public, as in Kotlin) because `extract()`'s
+/// `Selection::Paths` matches by the same key.
 pub(crate) fn normalized_path_key(name: &str) -> String {
-    name.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    let slashes = name.replace('\\', "/");
+    let rest = strip_dot_prefix(&slashes).trim_end_matches('/');
+    rest.split('/')
+        .filter(|segment| *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+        .to_lowercase()
 }
 
-/// Kotlin's `validatePath`, rule for rule. Returns the reason string of the first failing rule.
+/// `./` (and, for ZIP names, `.\`) stripped from the front as many times as it appears.
+fn strip_dot_prefix(name: &str) -> &str {
+    let mut rest = name;
+    loop {
+        if let Some(stripped) = rest.strip_prefix("./") {
+            rest = stripped;
+        } else if let Some(stripped) = rest.strip_prefix(".\\") {
+            rest = stripped;
+        } else {
+            return rest;
+        }
+    }
+}
+
+/// Kotlin's `validatePath`, rule for rule, with the one M3.3a amendment (module doc): a leading
+/// `./` is stripped repeatedly and `.` segments are dropped before the remaining checks, so
+/// `./a` is judged as `a` and `.//abs` as the absolute path it is. Returns the reason string of
+/// the first failing rule.
 fn validate_path(name: &str, limits: &Limits) -> Option<&'static str> {
     if is_blank(name)
         || utf16_len(name) > limits.max_name_length.saturating_mul(limits.max_path_depth)
     {
         return Some("Archive contains an invalid path.");
     }
-    if name.contains('\0') || name.starts_with('/') || name.starts_with('\\') {
+    let rest = strip_dot_prefix(name);
+    if rest.contains('\0') || rest.starts_with('/') || rest.starts_with('\\') {
         return Some("Archive contains an absolute or invalid path.");
     }
-    let normalized = name.replace('\\', "/");
-    let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    let normalized = rest.replace('\\', "/");
+    let segments: Vec<&str> = normalized
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
     if segments.is_empty() {
         return Some("Archive contains an invalid path.");
     }
@@ -242,7 +308,7 @@ fn validate_path(name: &str, limits: &Limits) -> Option<&'static str> {
     }
     if segments
         .iter()
-        .any(|s| *s == "." || *s == ".." || utf16_len(s) > limits.max_name_length)
+        .any(|s| *s == ".." || utf16_len(s) > limits.max_name_length)
     {
         return Some("Archive contains an unsafe path segment.");
     }

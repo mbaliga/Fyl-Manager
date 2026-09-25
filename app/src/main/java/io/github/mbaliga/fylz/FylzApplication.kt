@@ -2,6 +2,9 @@ package io.github.mbaliga.fylz
 
 import android.app.Application
 import dev.aarso.crashrecovery.CrashRecovery
+import io.github.mbaliga.fylz.archive.ArchiveCacheSweeper
+import io.github.mbaliga.fylz.archive.ArchiveCatalog
+import io.github.mbaliga.fylz.archive.ArchiveEntryCache
 import io.github.mbaliga.fylz.archive.ArchiveInspector
 import io.github.mbaliga.fylz.archive.ArchiveSource
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
@@ -32,16 +35,35 @@ class FylzApplication : Application() {
     val archiveLimits: ArchiveLimits = ArchiveLimits()
 
     /**
-     * Archive inspection through the isolated decoder process (M3.2), application-scoped like
-     * [operationRunner] and for the same reason: `DecoderClient` owns a `ServiceConnection` that
-     * nothing composition-scoped could release, and the binding (and so `:decoders`) should live
-     * for a browsing session rather than per call. Bound with the application context. No idle
-     * unbind in M3.2 -- once used, the isolated process stays until the app process ends; M3.3
-     * measures that cost and decides. Reached as `(context.applicationContext as
-     * FylzApplication).archiveInspector`.
+     * The one client of the isolated decoder process, application-scoped like [operationRunner]
+     * and for the same reason: `DecoderClient` owns a `ServiceConnection` that nothing
+     * composition-scoped could release, and the binding (and so `:decoders`) should live for a
+     * browsing session rather than per call. Bound with the application context. Since M3.3 it
+     * unbinds after 60 s with nothing in flight (`DecoderClient.IDLE_UNBIND_MILLIS`) and rebinds on
+     * the next call.
+     */
+    val decoderClient: DecoderClient by lazy { DecoderClient(this) }
+
+    /** Keeps the archive caches (`archive-work/`, `archive-listings/`, `archive-entries/`) within budget (M3.3). */
+    val archiveCacheSweeper: ArchiveCacheSweeper by lazy { ArchiveCacheSweeper(this) }
+
+    /**
+     * Archive inspection through the isolated decoder process (M3.2). Reached as
+     * `(context.applicationContext as FylzApplication).archiveInspector`.
      */
     val archiveInspector: ArchiveInspector by lazy {
-        ArchiveInspector(ArchiveSource(this, archiveLimits), DecoderClient(this), archiveLimits)
+        ArchiveInspector(ArchiveSource(this, archiveLimits), decoderClient, archiveLimits, sweeper = archiveCacheSweeper)
+    }
+
+    /** Materialised archive entries, served as regular-file descriptors (M3.3, section 2.4). */
+    val archiveEntryCache: ArchiveEntryCache by lazy { ArchiveEntryCache(this, decoderClient, archiveLimits, archiveCacheSweeper) }
+
+    /**
+     * Archive listings as browsable trees (M3.3, section 2.3): what `ArchiveDocumentsProvider`
+     * and the archive preview open; one listing per archive, on disk and in memory.
+     */
+    val archiveCatalog: ArchiveCatalog by lazy {
+        ArchiveCatalog(this, ArchiveSource(this, archiveLimits), decoderClient, archiveLimits, archiveEntryCache, archiveCacheSweeper)
     }
 
     override fun onCreate() {

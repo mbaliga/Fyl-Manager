@@ -12,11 +12,14 @@ per `docs/agent/MASTER_PLAN.md` section 3.4.
   tuples; pure Rust, must never panic, and a refusal must always carry its reason. The target
   mirrors the engine's `EntryMetadata`/`Limits` field for field, so a type change on the engine
   side fails `cargo +nightly fuzz build` rather than silently narrowing what is fuzzed.
-- **`archive_entries`** (M3.1 part 3b) — the libarchive-backed engine itself: the input is
-  written to a scratch file (the engine takes only a seekable descriptor) and fed to
-  `fylz_archive::inspect` (one header pass), `read_entry` of the first listed path (only when its
-  declared size is modest -- it buffers in memory) and `extract` of everything into `/dev/null`
-  under tight `ExtractLimits`. Seed it with the committed fixtures: pass `../fixtures` (from here)
+- **`archive_entries`** (M3.1 part 3b; M3.3a added the browsing pair) — the libarchive-backed
+  engine itself: the input is written to a scratch file (the engine takes only a seekable
+  descriptor) and fed to `fylz_archive::inspect` (one header pass), `inspect_into` (the same pass
+  with the listing codec writer attached, into memory -- also on inputs `inspect` refuses, since
+  damage after the first entry is a partial listing there), `read_entry` of the first listed path
+  (only when its declared size is modest -- it buffers in memory), `extract_entry_at` of the first
+  listed entry by its ordinal into `/dev/null`, and `extract` of everything into `/dev/null` under
+  tight `ExtractLimits`. Seed it with the committed fixtures: pass `../fixtures` (from here)
   or `fixtures` (from `core/`) as a second corpus directory, as the commands below do. libFuzzer
   reads a seed directory recursively, so that one argument also covers M3.2a's ZIP/7z/ISO fixtures
   under `fixtures/archives/` and the hostile ones under `fixtures/archives/hostile/` (150 seed

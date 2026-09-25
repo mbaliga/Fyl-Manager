@@ -45,10 +45,14 @@ internal fun ArchiveInspectionRecord.toInspection(): ArchiveInspection = Archive
     policyReason = policyReason,
     rows = rows.map(ArchiveEntryRecord::toEntryInfo),
     rowsTruncated = rowsTruncated,
+    partial = partial,
+    partialMessage = partialMessage,
+    structuralRefusal = structuralRefusal,
 )
 
 internal fun ArchiveEntryRecord.toEntryInfo(): ArchiveEntryInfo = ArchiveEntryInfo(
     path = path,
+    ordinal = ordinal.toClampedInt(),
     kind = when (kind) {
         ArchiveEntryKindRecord.FILE -> ArchiveEntryInfo.KIND_FILE
         ArchiveEntryKindRecord.DIRECTORY -> ArchiveEntryInfo.KIND_DIRECTORY
@@ -71,16 +75,31 @@ internal fun ArchiveEntryRecord.toEntryInfo(): ArchiveEntryInfo = ArchiveEntryIn
  * surfacing as uniffi's `InternalException`, an `OutOfMemoryError`, a bug -- to
  * [ArchiveInspection.OUTCOME_INTERNAL] with the exception's class name and never a stack trace.
  */
-internal fun Throwable.toFailedInspection(): ArchiveInspection = when (this) {
+internal fun Throwable.toFailedInspection(): ArchiveInspection {
+    val (outcome, message) = toOutcome()
+    return ArchiveInspection.failed(outcome, message)
+}
+
+/** The same table for `extractEntry` (M3.3), plus `NotFound` -> [ArchiveExtractResult.OUTCOME_NOT_FOUND]. */
+internal fun Throwable.toFailedExtraction(): ArchiveExtractResult {
+    val (outcome, message) = toOutcome()
+    return ArchiveExtractResult.failed(outcome, message)
+}
+
+/**
+ * Engine exception -> (outcome, message). `NotFound` maps to [ArchiveExtractResult.OUTCOME_NOT_FOUND],
+ * a code only `extractEntry` can produce; the `when` is exhaustive over the sealed class.
+ */
+private fun Throwable.toOutcome(): Pair<Int, String?> = when (this) {
     is ArchiveEngineException -> when (this) {
-        is ArchiveEngineException.NotSeekable -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_NOT_SEEKABLE, detail)
-        is ArchiveEngineException.Unsupported -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_UNSUPPORTED, detail)
-        is ArchiveEngineException.Corrupt -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_CORRUPT, detail)
-        is ArchiveEngineException.LimitExceeded ->
-            ArchiveInspection.failed(ArchiveInspection.OUTCOME_LIMIT_EXCEEDED, "limit exceeded ($rule) at entry $entry")
-        is ArchiveEngineException.Internal -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_INTERNAL, detail)
+        is ArchiveEngineException.NotSeekable -> ArchiveInspection.OUTCOME_NOT_SEEKABLE to detail
+        is ArchiveEngineException.Unsupported -> ArchiveInspection.OUTCOME_UNSUPPORTED to detail
+        is ArchiveEngineException.Corrupt -> ArchiveInspection.OUTCOME_CORRUPT to detail
+        is ArchiveEngineException.LimitExceeded -> ArchiveInspection.OUTCOME_LIMIT_EXCEEDED to "limit exceeded ($rule) at entry $entry"
+        is ArchiveEngineException.Internal -> ArchiveInspection.OUTCOME_INTERNAL to detail
+        is ArchiveEngineException.NotFound -> ArchiveExtractResult.OUTCOME_NOT_FOUND to "no entry \"$path\" at header $ordinal"
     }
-    else -> ArchiveInspection.failed(ArchiveInspection.OUTCOME_INTERNAL, javaClass.simpleName)
+    else -> ArchiveInspection.OUTCOME_INTERNAL to javaClass.simpleName
 }
 
 /** A negative limit is meaningless; the engine gets zero, which refuses everything, rather than

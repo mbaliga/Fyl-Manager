@@ -1,7 +1,9 @@
 #![no_main]
 
 use fylz_archive::extract;
+use fylz_archive::extract_entry_at;
 use fylz_archive::inspect;
+use fylz_archive::inspect_into;
 use fylz_archive::policy::Limits;
 use fylz_archive::read_entry;
 use fylz_archive::ArchiveEntry;
@@ -24,8 +26,10 @@ use std::path::PathBuf;
 // and drives every parsing entry point over it: inspect() (one header pass, the policy's input),
 // read_entry() of the first listed path (bounded by that entry's declared size, so a declared
 // bomb never allocates its claim here), and extract() of everything into /dev/null under tight
-// runtime limits (the streaming read_data_block path and its caps). None may panic, hang, or --
-// the real point -- crash inside libarchive.
+// runtime limits (the streaming read_data_block path and its caps), plus M3.3's browsing pair:
+// inspect_into() (the same pass with the listing codec writer attached, into memory) and
+// extract_entry_at() of the first listed entry by its ordinal into /dev/null. None may panic,
+// hang, or -- the real point -- crash inside libarchive.
 //
 // Limitation to know about: libarchive and its five companions are compiled by cmake in the
 // engine's build.rs and are NOT sanitizer-instrumented (cargo-fuzz's -Zsanitizer flags reach
@@ -69,8 +73,21 @@ fuzz_target!(|data: &[u8]| {
 
     let file = File::open(&path).expect("reopening the scratch archive");
     let Ok(inspection) = inspect(file.as_raw_fd(), &limits) else {
+        // Damage after the first entry is a partial listing on the browsing path; run it too.
+        let mut sink = Vec::new();
+        let _ = inspect_into(
+            File::open(&path).expect("reopening the scratch archive").as_raw_fd(),
+            &limits,
+            &mut sink,
+        );
         return;
     };
+    let mut sink = Vec::new();
+    let _ = inspect_into(
+        File::open(&path).expect("reopening the scratch archive").as_raw_fd(),
+        &limits,
+        &mut sink,
+    );
 
     if let Some(first) = inspection.entries.first() {
         // read_entry buffers the whole body in memory: only worth it when the header's own claim
@@ -79,6 +96,24 @@ fuzz_target!(|data: &[u8]| {
             let file = File::open(&path).expect("reopening the scratch archive");
             let _ = read_entry(file.as_raw_fd(), &first.path);
         }
+    }
+
+    if let Some(first) = inspection.entries.first() {
+        let dev_null = OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .expect("opening /dev/null");
+        let _ = extract_entry_at(
+            File::open(&path).expect("reopening the scratch archive").as_raw_fd(),
+            first.ordinal as usize,
+            &first.path,
+            &ExtractLimits {
+                max_file_bytes: 1024 * 1024,
+                max_total_uncompressed_bytes: 4 * 1024 * 1024,
+                max_entries: 4_096,
+            },
+            dev_null.as_raw_fd(),
+        );
     }
 
     let file = File::open(&path).expect("reopening the scratch archive");

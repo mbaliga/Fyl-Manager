@@ -17,14 +17,14 @@ import org.junit.Ignore
 import org.junit.Test
 import org.robolectric.RuntimeEnvironment
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * `ArchiveSource` (docs/agent/DESIGN-M32-SEEKABLE-PFD.md section 2.3 and 2.8). The headline is
  * the first case: a local file resolves to the provider's own descriptor and **nothing is staged**
  * -- no whole-archive copy, the thing the milestone is named for. The rest drive the staging path
  * through [PipeDocumentsProvider] with `isSeekable = { false }` (Robolectric's file-backed pipe
- * would otherwise report a size), and every refusal is checked to leave no workspace behind.
+ * would otherwise report a size), and every refusal is checked to leave no workspace behind. The
+ * 24 h sweep of stale workspaces moved to `ArchiveCacheSweeper` in M3.3a (`ArchiveCacheSweeperTest`).
  */
 class ArchiveSourceTest : FylzDocumentsProviderTestBase() {
 
@@ -50,14 +50,12 @@ class ArchiveSourceTest : FylzDocumentsProviderTestBase() {
 
     private fun stagingSource(
         availableCacheBytes: () -> Long? = { Long.MAX_VALUE },
-        clock: () -> Long = System::currentTimeMillis,
         recheckInterval: Long = ArchiveSource.SPACE_RECHECK_INTERVAL_BYTES,
     ) = ArchiveSource(
         context,
         limits,
         isSeekable = { false },
         availableCacheBytes = availableCacheBytes,
-        clock = clock,
         spaceRecheckIntervalBytes = recheckInterval,
     )
 
@@ -181,25 +179,6 @@ class ArchiveSourceTest : FylzDocumentsProviderTestBase() {
         assertEquals(ArchiveSpacePolicy.MIN_TEMPORARY_HEADROOM - 1, failure.available)
         assertTrue("the re-check ran at least once during the copy", calls >= 2)
         assertTrue(workspaces().isEmpty())
-    }
-
-    @Test
-    fun `a stale workspace older than 24 hours is swept on the first resolve, a fresh one is kept`() = runBlocking {
-        val now = 1_700_000_000_000L
-        val stale = File(workRoot(), "stale-from-a-dead-process").apply { mkdirs(); File(this, "input").writeBytes(ByteArray(10)) }
-        assertTrue(stale.setLastModified(now - TimeUnit.HOURS.toMillis(25)))
-        val fresh = File(workRoot(), "fresh").apply { mkdirs(); File(this, "input").writeBytes(ByteArray(10)) }
-        assertTrue(fresh.setLastModified(now - TimeUnit.HOURS.toMillis(23)))
-
-        val source = ArchiveSource(context, limits, clock = { now })
-        source.resolve(localArchiveUri()).close()
-        assertFalse("the stale workspace is gone", stale.exists())
-        assertTrue("the fresh workspace is untouched", File(fresh, "input").exists())
-        // Only the first resolve sweeps: a workspace that ages past the cutoff later is left alone
-        // until the next process.
-        assertTrue(fresh.setLastModified(now - TimeUnit.HOURS.toMillis(30)))
-        source.resolve(localArchiveUri()).close()
-        assertTrue(fresh.exists())
     }
 
     /** Robolectric answers an unknown authority with a stream whose `read()` throws (an

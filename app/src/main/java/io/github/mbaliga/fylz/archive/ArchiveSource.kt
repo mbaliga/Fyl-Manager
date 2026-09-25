@@ -6,7 +6,6 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.StatFs
 import android.provider.DocumentsContract
-import android.util.Log
 import io.github.mbaliga.fylz.data.ArchiveSpacePolicy
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import kotlinx.coroutines.Dispatchers
@@ -18,8 +17,6 @@ import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
 import java.util.UUID
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.coroutineContext
 
 /**
@@ -46,16 +43,14 @@ import kotlin.coroutines.coroutineContext
  *    [ArchiveSourceException.ArchiveTooLarge]; when the size was unknown, [availableCacheBytes] is
  *    re-checked against the minimum headroom every [spaceRecheckIntervalBytes]. Any failure
  *    deletes the workspace. Success is [Resolved.Staged], whose [Resolved.close] deletes the copy.
- * 4. On the first `resolve()` per process, workspaces under `archive-work/` older than
- *    [STALE_WORKSPACE_MILLIS] are swept: a process death between staging and `close()` leaves one
- *    behind (`ArchiveService`'s own per-operation workspaces have the same leak and no sweep --
- *    verified by grep before this was added).
+ * 4. Workspaces a dead process left under `archive-work/` are swept by [ArchiveCacheSweeper]
+ *    (M3.3a moved the 24 h sweep M3.2c ran on the first `resolve()` out of here, next to the two
+ *    other archive caches it now keeps within budget).
  *
  * The lambdas are injectable for tests: Robolectric's `createPipe()` is file-backed and would
  * report a size, so the pipe-provider tests inject `isSeekable = { false }`; the space tests
- * inject [availableCacheBytes]; the sweep test injects [clock]. Everything the app can open by
- * `Uri` reaches the engine only through here, so the engine's `NotSeekable` is unreachable in
- * practice.
+ * inject [availableCacheBytes]. Everything the app can open by `Uri` reaches the engine only
+ * through here, so the engine's `NotSeekable` is unreachable in practice.
  */
 class ArchiveSource(
     private val context: Context,
@@ -64,7 +59,6 @@ class ArchiveSource(
     private val availableCacheBytes: () -> Long? = {
         runCatching { StatFs(context.cacheDir.path).availableBytes }.getOrNull()
     },
-    private val clock: () -> Long = System::currentTimeMillis,
     private val spaceRecheckIntervalBytes: Long = SPACE_RECHECK_INTERVAL_BYTES,
 ) {
     /** A descriptor the engine can read: the caller closes it (and, for a staged copy, the copy). */
@@ -87,15 +81,12 @@ class ArchiveSource(
         }
     }
 
-    private val swept = AtomicBoolean(false)
-
     /** The space this source's cache would have for a staged copy, for callers' own display. */
     internal fun availableCacheBytes(): Long? = availableCacheBytes.invoke()
 
     /** Resolves [uri] to a seekable descriptor; throws [ArchiveSourceException] and nothing else of its own. */
     @Throws(ArchiveSourceException::class)
     suspend fun resolve(uri: Uri): Resolved = withContext(Dispatchers.IO) {
-        sweepStaleWorkspaces()
         val direct = openDescriptor(uri)
         if (direct != null) {
             if (isSeekable(direct)) return@withContext Resolved.Direct(direct)
@@ -202,29 +193,13 @@ class ArchiveSource(
 
     private fun workRoot(): File = File(context.cacheDir, WORK_DIRECTORY)
 
-    /** Step 4, once per process (per instance, and the instance is application-scoped). */
-    private fun sweepStaleWorkspaces() {
-        if (!swept.compareAndSet(false, true)) return
-        val cutoff = clock() - STALE_WORKSPACE_MILLIS
-        val stale = workRoot().listFiles().orEmpty().filter { it.lastModified() < cutoff }
-        stale.forEach { workspace ->
-            if (!workspace.deleteRecursively()) Log.w(TAG, "Could not sweep stale archive workspace ${workspace.name}")
-        }
-        if (stale.isNotEmpty()) Log.i(TAG, "Swept ${stale.size} stale archive workspace(s)")
-    }
-
     companion object {
-        private const val TAG = "ArchiveSource"
-
         /** Where staged copies live; the same directory `ArchiveService`'s own workspaces use, so
          * the backup/transfer exclusion rules that already name it keep covering it. */
         const val WORK_DIRECTORY = "archive-work"
 
         /** How often, while copying a stream of unknown size, the cache headroom is re-checked. */
         const val SPACE_RECHECK_INTERVAL_BYTES = 64L * 1024L * 1024L
-
-        /** A workspace this old on the first resolve of a process was left by a dead process. */
-        val STALE_WORKSPACE_MILLIS: Long = TimeUnit.HOURS.toMillis(24)
     }
 }
 

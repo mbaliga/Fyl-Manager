@@ -76,6 +76,8 @@ class DecoderClientTest {
 
     private fun instantBinder(inspection: ArchiveInspection = okInspection): IDecoderService.Stub = object : IDecoderService.Stub() {
         override fun ping() = true
+        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+        override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = inspection
     }
@@ -87,6 +89,8 @@ class DecoderClientTest {
             Thread.sleep(hangMillis)
             return true
         }
+        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+        override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
 
         override fun sniff(pfd: ParcelFileDescriptor): String {
             Thread.sleep(hangMillis)
@@ -209,6 +213,8 @@ class DecoderClientTest {
     fun `a crash mid-call surfaces as sniff returning null, never a thrown exception`() = runBlocking {
         val diesMidCall = object : IDecoderService.Stub() {
             override fun ping() = true
+            override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+            override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor): String = throw DeadObjectException()
             override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
         }
@@ -228,6 +234,8 @@ class DecoderClientTest {
                 val binder = if (bindCalls == 1) {
                     object : IDecoderService.Stub() {
                         override fun ping(): Boolean = throw DeadObjectException()
+                        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+                        override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
                         override fun sniff(pfd: ParcelFileDescriptor) = "unreached"
                         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
                     }
@@ -306,6 +314,8 @@ class DecoderClientTest {
         // abandoned returns, but with DeadObjectException, only once the test lets it.
         val diesAfterAbandonment = object : IDecoderService.Stub() {
             override fun ping() = true
+            override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+            override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor): String {
                 release.await()
                 try {
@@ -356,6 +366,8 @@ class DecoderClientTest {
         var seen: Triple<Int, ArchiveLimits, Int>? = null
         val recording = object : IDecoderService.Stub() {
             override fun ping() = true
+            override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+            override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor) = "ok"
             override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
                 seen = Triple(archive.fd, limits, maxRows)
@@ -416,6 +428,8 @@ class DecoderClientTest {
                 val binder = if (bindCalls == 1) {
                     object : IDecoderService.Stub() {
                         override fun ping() = true
+                        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+                        override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
                         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
                         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection =
                             throw DeadObjectException()

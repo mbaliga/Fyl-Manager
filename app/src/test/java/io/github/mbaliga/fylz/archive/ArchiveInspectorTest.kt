@@ -7,6 +7,7 @@ import android.os.DeadObjectException
 import android.os.ParcelFileDescriptor
 import io.github.mbaliga.fylz.data.ArchiveSpacePolicy
 import io.github.mbaliga.fylz.decoder.ArchiveEntryInfo
+import io.github.mbaliga.fylz.decoder.ArchiveExtractResult
 import io.github.mbaliga.fylz.decoder.ArchiveInspection
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.decoder.DecoderClient
@@ -70,6 +71,8 @@ class ArchiveInspectorTest : FylzDocumentsProviderTestBase() {
         var calls = 0
         var lastStatSize: Long = -2L
         override fun ping() = true
+        override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
+        override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
             calls += 1

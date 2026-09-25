@@ -70,8 +70,7 @@ sealed class ArchiveInspectionResult {
  * descriptor through [ArchiveSource], hand it to the decoder process through [DecoderClient],
  * map the answer. Nothing outlives the call -- a staged copy is deleted as soon as the summary
  * is in hand, because the dialog shows the summary, not the archive. Application-scoped (one
- * per process, in `FylzApplication`), so the decoder binding lives as long as the app process;
- * M3.3 measures the idle cost and decides on an unbind policy.
+ * per process, in `FylzApplication`); the shared `DecoderClient` unbinds after 60 s idle (M3.3).
  */
 class ArchiveInspector(
     private val source: ArchiveSource,
@@ -79,8 +78,11 @@ class ArchiveInspector(
     private val limits: ArchiveLimits,
     /** MASTER_PLAN section 4.4's structure budget; injectable so a test's hung stub times out in milliseconds. */
     private val structureTimeoutMillis: Long = DecoderClient.STRUCTURE_TIMEOUT_MILLIS,
+    /** Runs the once-per-process cache sweep (M3.3a moved it here from `ArchiveSource`); `null` in tests that want none. */
+    private val sweeper: ArchiveCacheSweeper? = null,
 ) {
     suspend fun inspect(uri: Uri, maxRows: Int = DecoderClient.DEFAULT_MAX_ROWS): ArchiveInspectionResult {
+        sweeper?.sweepOnce()
         val resolved = try {
             source.resolve(uri)
         } catch (failure: ArchiveSourceException) {

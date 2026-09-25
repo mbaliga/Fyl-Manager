@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.decoder
 import android.os.Parcel
 import android.os.Parcelable
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,5 +128,32 @@ class ArchiveParcelablesTest {
         assertEquals(ArchiveInspection.UNKNOWN_SIZE, read.archiveBytes)
         assertTrue(read.rows.isEmpty())
         assertTrue(!read.isOk && !read.policyAllowed)
+    }
+
+    @Test
+    fun `ArchiveExtractResult survives a Parcel round trip`() {
+        val ok = ArchiveExtractResult.ok(1_234_567L)
+        assertEquals(ok, roundTrip(ok).first)
+        assertTrue(roundTrip(ok).first.isOk)
+        val failed = ArchiveExtractResult.failed(ArchiveExtractResult.OUTCOME_NOT_FOUND, "no entry \"x\" at header 3")
+        assertEquals(failed, roundTrip(failed).first)
+        assertFalse(roundTrip(failed).first.isOk)
+    }
+
+    @Test
+    fun `the M3 3 fields of ArchiveInspection and ArchiveEntryInfo survive a Parcel round trip`() {
+        val inspection = ArchiveInspection.failed(ArchiveInspection.OUTCOME_CORRUPT, "x").copy(
+            outcome = ArchiveInspection.OUTCOME_OK,
+            rows = listOf(row(1).copy(ordinal = 41)),
+            partial = true,
+            partialMessage = "Damaged tar archive",
+            structuralRefusal = "Archive contains an unsafe path segment.",
+        )
+        val (read, _) = roundTrip(inspection)
+        assertEquals(inspection, read)
+        assertTrue(read.partial)
+        assertEquals("Damaged tar archive", read.partialMessage)
+        assertEquals("Archive contains an unsafe path segment.", read.structuralRefusal)
+        assertEquals(41, read.rows.single().ordinal)
     }
 }

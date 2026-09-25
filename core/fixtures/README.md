@@ -42,10 +42,43 @@ sample tree (five files in `docs/`, `docs/notes/`, `images/` and the root; every
 | `hostile/symlink-escape.tar` | `tarfile`, symlink member -> `/etc/passwd` | the link rule: "Archive contains a link that escapes the extraction folder." |
 | `hostile/many-entries.tar.zst` | `tarfile`, 10,001 zero-length members, zstd level 19 | policy: "Archive contains too many entries." on a real file; `max_listing_entries` stops the pass when set below the count |
 
+### Browsing fixtures (M3.3a)
+
+The same script adds the archives `src/listing_tests.rs` and the Kotlin `archive/` tests browse
+(`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.10):
+
+| File | Made how | Proves |
+|---|---|---|
+| `nested-depth-4.zip` | stored ZIPs inside ZIPs, four archive levels, `innermost.txt` at the bottom | opens to its innermost file (the depth bound is 4 levels) |
+| `nested-depth-5.zip` | one level more | the fifth level is refused at id construction |
+| `implicit-dirs.zip` | `a/b/c.txt`, `a/d.txt`, `top.txt`, no directory rows (asserted) | `ArchiveTree` synthesises `a/` and `a/b/` |
+| `sample-entries.zip` | a `.txt`, a hand-written one-page PDF, a 1x1 PNG, a stub TTF (sfnt header only -- not renderable; a real font is too large to commit), a 3 MB zero-filled `.bin` (deflates to a few KB) | one of each kind of entry for the entry cache; `big.bin` for the size caps |
+| `mixed-links.tar` | `tarfile`: a file, an in-tree symlink and a hardlink to it, a fifo, a directory with a file | links and special files refused, the hardlink resolved to its target; every `kind` code and flag in the listing |
+| `messy-paths.tar` | `tarfile`, names verbatim: `./a`, `dir/` (written as `dir`; libarchive reports tar directories with a trailing slash), `/abs`, `c//d`, `dot/./e`, `../escape`, `in/../f`, `dup.txt` twice (`tar -r`'s shape), `both` then `both/inside.txt`, `README` and `readme` | every normalisation case, quarantine, last-member-wins, file-vs-directory, case kept distinct |
+| `backslash.zip` | `zipfile`, member `dir\file.txt` (asserted) | libarchive's ZIP reader already rewrites `\` to `/`, so the listing carries `dir/file.txt`; the tree's own rule is tested on a hand-built listing |
+| `dot-rooted.tar` | `tarfile`: `./`, `./first.txt`, `./sub/`, `./sub/second.txt` -- `tar -C dir -cf x.tar .`'s shape | header 0 is the root the engine drops; the first real member has **ordinal 1** and `extract_entry_at` fetches it under that ordinal |
+| `damaged-after-3.tar` | three good members, then a 1 KiB non-zero block where the fourth header would be | `inspect` fails; `inspect_into` lists three entries and flags the listing partial |
+
 Regenerate with `python3 tools/fixtures/make_archive_fixtures.py` (needs `pip install py7zr==1.1.3
 pycdlib==1.20.0 zstandard`, versions pinned because a different version may lay the bytes out
 differently). The script prints each output's SHA-256; the committed values are recorded in
-`docs/agent/PROGRESS.md`'s M3.2 row.
+`docs/agent/PROGRESS.md`'s M3.2 and M3.3 rows.
+
+### Golden listings -- `app/src/test/resources/fixtures/archives/*.fzl` (M3.3a)
+
+The listing codec (`src/listing.rs`, writer; `app/.../archive/ArchiveListingCodec.kt`, reader) is
+held together by golden files: the Rust writer's output for eight of the fixtures above
+(`sample-cd`, `messy-paths`, `backslash`, `mixed-links`, `implicit-dirs`, `damaged-after-3`,
+`dot-rooted`, `sample-entries`), committed under `app/src/test/resources/fixtures/archives/`
+(MASTER_PLAN section 3.4 asks for fixtures under both trees). `cargo test -p fylz-archive golden`
+asserts the writer reproduces every committed file byte for byte; `ArchiveListingCodecTest` and
+`ArchiveTreeTest` decode them. Regenerate them, after a deliberate codec change only, with
+
+```
+FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-archive golden
+```
+
+from `core/`, and update the Kotlin tests in the same commit.
 
 Both directories also seed the `archive_entries` fuzz target (`core/fuzz/README.md`): libFuzzer
 reads a seed directory recursively, so passing `fixtures` covers `archives/` and

@@ -2,7 +2,11 @@
 """Generates the archive-format fixtures under `core/fixtures/archives/` that `fylz-archive`'s
 M3.2 tests read (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.7): the ZIP, 7-Zip and ISO 9660
 files whose listing or data needs a *seek*, so the tests can show what a seekable descriptor buys
-over a pipe, plus the hostile files the extraction policy must refuse end to end.
+over a pipe, plus the hostile files the extraction policy must refuse end to end. M3.3
+(`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md` section 2.10) adds the browsing fixtures: nested
+archives at the depth bound and one past it, implicit directories, a mixed bag of entry types,
+links and special files, every messy path shape a real archive carries, a backslash-separated
+ZIP name, and a tar damaged after its third header.
 
 Every fixture is **deterministic** -- running this script twice must produce byte-identical files,
 and the script checks that itself (it builds everything twice in memory and compares before
@@ -84,6 +88,11 @@ TREE: list[tuple[str, bytes]] = sorted(
 DIRECTORIES: list[str] = ["docs/", "docs/notes/", "images/"]
 
 MANY_ENTRIES_COUNT = 10_001
+
+# The M3.3 depth bound (`ArchiveDocumentId.MAX_DEPTH`): `nested-depth-4.zip` has exactly this many
+# archive levels and opens to its innermost file; `nested-depth-5.zip` has one more and its fifth
+# level is refused at id construction.
+NESTED_DEPTH_LIMIT = 4
 
 
 def sha256(data: bytes) -> str:
@@ -355,6 +364,246 @@ def build_many_entries_tar_zst() -> bytes:
 
 
 # --------------------------------------------------------------------------------------------
+# M3.3 browsing fixtures
+# --------------------------------------------------------------------------------------------
+
+
+def stored_zip(entries: list[tuple[str, bytes]]) -> bytes:
+    """A ZIP of stored (uncompressed) members with fixed timestamps and modes -- the shape for a
+    ZIP that contains other ZIPs (already compressed) and for the small hand-set-name cases."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, contents in entries:
+            info = zip_entry(name)
+            info.compress_type = zipfile.ZIP_STORED
+            zf.writestr(info, contents)
+    return buf.getvalue()
+
+
+def build_nested_zip(levels: int) -> bytes:
+    """`levels` archive levels: the outermost ZIP holds `level2.zip`, which holds `level3.zip`,
+    ... down to the innermost ZIP, which holds `innermost.txt` and a `readme.txt` naming its
+    depth. Every level also carries a `readme.txt` so each is browsable in its own right."""
+    inner = stored_zip(
+        [
+            ("innermost.txt", b"the innermost file, %d archive levels down\n" % levels),
+            ("readme.txt", b"level %d of %d\n" % (levels, levels)),
+        ]
+    )
+    for level in range(levels - 1, 0, -1):
+        inner = stored_zip(
+            [
+                ("level%d.zip" % (level + 1), inner),
+                ("readme.txt", b"level %d of %d\n" % (level, levels)),
+            ]
+        )
+    return inner
+
+
+def build_nested_depth_4_zip() -> bytes:
+    return build_nested_zip(NESTED_DEPTH_LIMIT)
+
+
+def build_nested_depth_5_zip() -> bytes:
+    return build_nested_zip(NESTED_DEPTH_LIMIT + 1)
+
+
+def build_implicit_dirs_zip() -> bytes:
+    """Files two levels down with no directory rows at all (the shape `zip -r` without `-D`
+    avoids but many tools produce): the tree must synthesise `a/` and `a/b/`."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zip_entry("a/b/c.txt"), b"c\n")
+        zf.writestr(zip_entry("a/d.txt"), b"d\n")
+        zf.writestr(zip_entry("top.txt"), b"top\n")
+    data = buf.getvalue()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["a/b/c.txt", "a/d.txt", "top.txt"], zf.namelist()
+        assert not any(info.is_dir() for info in zf.infolist())
+    return data
+
+
+def minimal_pdf() -> bytes:
+    """One blank page, hand-written with a correct cross-reference table so `PdfRenderer` opens it."""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>",
+    ]
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for index, body in enumerate(objects, start=1):
+        offsets.append(out.tell())
+        out.write(b"%d 0 obj\n" % index)
+        out.write(body)
+        out.write(b"\nendobj\n")
+    xref = out.tell()
+    out.write(b"xref\n0 %d\n" % (len(objects) + 1))
+    out.write(b"0000000000 65535 f \n")
+    for offset in offsets:
+        out.write(b"%010d 00000 n \n" % offset)
+    out.write(b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref))
+    return out.getvalue()
+
+
+def minimal_png() -> bytes:
+    """A 1x1 opaque red PNG built with the standard library only."""
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00\xff\x00\x00", 9)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def stub_ttf() -> bytes:
+    """An sfnt offset table with no tables: the `00 01 00 00` signature every TrueType sniffer
+    keys on, and nothing a rasteriser could render. A real, renderable font is far too large to
+    commit under the 128 KiB cap and too involved to synthesise here; the device check previews a
+    real font from a real archive. This member exists so the fixture carries every kind of entry
+    the entry cache and the id scheme must handle by name."""
+    return struct.pack(">IHHHH", 0x00010000, 0, 0, 0, 0)
+
+
+def build_sample_entries_zip() -> bytes:
+    """One of each: a text file, a PDF, a PNG, a (stub) TTF and a 3 MB zero-filled `.bin` that
+    deflates to a few KB -- the entry cache's size-cap and declared-size checks get a member whose
+    uncompressed size is far larger than the archive."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(zip_entry("notes.txt"), b"An archive with one of each kind of entry.\n")
+        zf.writestr(zip_entry("page.pdf"), minimal_pdf())
+        zf.writestr(zip_entry("pixel.png"), minimal_png())
+        zf.writestr(zip_entry("font.ttf"), stub_ttf())
+        zf.writestr(zip_entry("big.bin"), bytes(3 * 1024 * 1024))
+    data = buf.getvalue()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.getinfo("big.bin").file_size == 3 * 1024 * 1024
+        assert zf.getinfo("page.pdf").file_size == len(minimal_pdf())
+    return data
+
+
+def build_mixed_links_tar() -> bytes:
+    """A regular file, an in-tree symlink to it, a hardlink to it, a fifo, and a directory with a
+    file: the entry cache must refuse the symlink and the fifo, resolve the hardlink to its
+    target's ordinal, and open the two files."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        tar.addfile(tar_member("target.txt", size=6), io.BytesIO(b"hello\n"))
+        symlink = tar_member("link-to-target", mode=0o777)
+        symlink.type = tarfile.SYMTYPE
+        symlink.linkname = "target.txt"
+        tar.addfile(symlink)
+        hardlink = tar_member("hard-to-target")
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "target.txt"
+        tar.addfile(hardlink)
+        fifo = tar_member("fifo", mode=0o644)
+        fifo.type = tarfile.FIFOTYPE
+        tar.addfile(fifo)
+        directory = tar_member("dir", mode=0o755)
+        directory.type = tarfile.DIRTYPE
+        tar.addfile(directory)
+        tar.addfile(tar_member("dir/inner.txt", size=6), io.BytesIO(b"inner\n"))
+    return buf.getvalue()
+
+
+# The raw member names of `messy-paths.tar`, in archive order, with what the tree must make of
+# each. Kept as one table so the Rust and Kotlin tests can be checked against it by eye.
+MESSY_PATHS: list[tuple[str, bytes | None]] = [
+    ("./a", b"a\n"),  # leading ./ stripped -> "a"
+    ("dir/", None),  # explicit directory, trailing slash trimmed -> "dir"
+    ("dir/x.txt", b"x\n"),
+    ("/abs", b"abs\n"),  # leading / stripped -> "abs"
+    ("c//d", b"d\n"),  # collapsed -> "c/d", "c" synthesised
+    ("dot/./e", b"e\n"),  # "." segment collapsed -> "dot/e"
+    ("../escape", b"escape\n"),  # climbs above the root -> quarantined
+    ("in/../f", b"f\n"),  # climbs but stays inside -> "f"
+    ("dup.txt", b"first\n"),  # the earlier of two members with one path: hidden
+    ("dup.txt", b"second\n"),  # last member wins
+    ("both", b"file\n"),  # a file ...
+    ("both/inside.txt", b"inside\n"),  # ... and a directory of the same name: the directory wins
+    ("README", b"upper\n"),  # case differs: two distinct entries
+    ("readme", b"lower\n"),
+]
+
+
+def build_messy_paths_tar() -> bytes:
+    """Every path shape the tree normalises, on one real tar. The duplicate member is what
+    `tar -r` (append) produces; `tarfile` writes it the same way when the name is added twice."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, contents in MESSY_PATHS:
+            if contents is None:
+                directory = tar_member(name, mode=0o755)
+                directory.type = tarfile.DIRTYPE
+                tar.addfile(directory)
+            else:
+                tar.addfile(tar_member(name, size=len(contents)), io.BytesIO(contents))
+    data = buf.getvalue()
+    # Verified, not assumed: tarfile stores every name verbatim (no leading-slash stripping, no
+    # normalisation), which is the whole point of this fixture.
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        assert tar.getnames() == [name.rstrip("/") if name.endswith("/") else name for name, _ in MESSY_PATHS] or \
+            tar.getnames() == [name for name, _ in MESSY_PATHS], tar.getnames()
+    return data
+
+
+def build_backslash_zip() -> bytes:
+    """A ZIP whose member name uses a backslash separator (written by some Windows tools);
+    `zipfile` only rewrites `os.sep`, which is `/` on the machine generating this."""
+    data = stored_zip([("dir\\file.txt", b"backslash\n"), ("top.txt", b"top\n")])
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        assert zf.namelist() == ["dir\\file.txt", "top.txt"], zf.namelist()
+    return data
+
+
+def build_dot_rooted_tar() -> bytes:
+    """The shape `tar -C dir -cf x.tar .` produces: a `./` directory member for the root itself,
+    then every member under `./`. The engine drops the root as an entry but it still occupies
+    header 0, so the first real member's ordinal is 1 -- the fact the ordinal contract is pinned
+    on (`docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md`, the M3.4-review amendment)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        root = tar_member("./", mode=0o755)
+        root.type = tarfile.DIRTYPE
+        tar.addfile(root)
+        tar.addfile(tar_member("./first.txt", size=6), io.BytesIO(b"first\n"))
+        sub = tar_member("./sub/", mode=0o755)
+        sub.type = tarfile.DIRTYPE
+        tar.addfile(sub)
+        tar.addfile(tar_member("./sub/second.txt", size=7), io.BytesIO(b"second\n"))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        assert tar.getnames() == ["./", "./first.txt", "./sub/", "./sub/second.txt"] or \
+            tar.getnames() == [".", "./first.txt", "./sub", "./sub/second.txt"], tar.getnames()
+    return data
+
+
+def build_damaged_after_3_tar() -> bytes:
+    """Three good members, then a header block that is not a tar header (a fixed non-zero byte
+    pattern, so it is neither the two zero blocks that mean end-of-archive nor a valid checksum):
+    libarchive lists three entries and then fails the fourth header."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for index in range(3):
+            body = b"member %d\n" % index
+            tar.addfile(tar_member("good-%d.txt" % index, size=len(body)), io.BytesIO(body))
+    data = buf.getvalue()
+    # Drop tarfile's end-of-archive padding (two zero blocks plus record padding): every byte after
+    # the third member's data is zero.
+    end = len(data)
+    while end > 0 and data[end - 1] == 0:
+        end -= 1
+    end = (end + 511) // 512 * 512
+    garbage = bytes((i * 73 + 29) % 255 + 1 for i in range(1024))
+    return data[:end] + garbage
+
+
+# --------------------------------------------------------------------------------------------
 
 
 FIXTURES: dict[Path, Callable[[], bytes]] = {
@@ -368,6 +617,16 @@ FIXTURES: dict[Path, Callable[[], bytes]] = {
     HOSTILE_DIR / "absolute-path.zip": build_absolute_path_zip,
     HOSTILE_DIR / "symlink-escape.tar": build_symlink_escape_tar,
     HOSTILE_DIR / "many-entries.tar.zst": build_many_entries_tar_zst,
+    # M3.3 browsing fixtures.
+    FIXTURES_DIR / "nested-depth-4.zip": build_nested_depth_4_zip,
+    FIXTURES_DIR / "nested-depth-5.zip": build_nested_depth_5_zip,
+    FIXTURES_DIR / "implicit-dirs.zip": build_implicit_dirs_zip,
+    FIXTURES_DIR / "sample-entries.zip": build_sample_entries_zip,
+    FIXTURES_DIR / "mixed-links.tar": build_mixed_links_tar,
+    FIXTURES_DIR / "messy-paths.tar": build_messy_paths_tar,
+    FIXTURES_DIR / "backslash.zip": build_backslash_zip,
+    FIXTURES_DIR / "dot-rooted.tar": build_dot_rooted_tar,
+    FIXTURES_DIR / "damaged-after-3.tar": build_damaged_after_3_tar,
 }
 
 

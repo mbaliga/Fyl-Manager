@@ -53,6 +53,7 @@ class DecoderServiceMappingTest {
         policyReason = "Archive contains an unsafe path segment.",
         rows = listOf(
             ArchiveEntryRecord(
+                ordinal = 0u,
                 path = "docs/",
                 nameLossy = false,
                 kind = ArchiveEntryKindRecord.DIRECTORY,
@@ -64,6 +65,7 @@ class DecoderServiceMappingTest {
                 encryptedMetadata = false,
             ),
             ArchiveEntryRecord(
+                ordinal = 1u,
                 path = "escape",
                 nameLossy = true,
                 kind = ArchiveEntryKindRecord.SYMLINK,
@@ -117,14 +119,17 @@ class DecoderServiceMappingTest {
         assertTrue(inspection.rowsTruncated)
         assertEquals(
             listOf(
-                ArchiveEntryInfo("docs/", ArchiveEntryInfo.KIND_DIRECTORY, null, 0L, 1_577_836_800L, 0x1ed, false, false, false),
+                ArchiveEntryInfo("docs/", ArchiveEntryInfo.KIND_DIRECTORY, null, 0L, 1_577_836_800L, 0x1ed, false, false, false, ordinal = 0),
                 ArchiveEntryInfo(
                     "escape", ArchiveEntryInfo.KIND_SYMLINK, "/etc/passwd",
-                    ArchiveEntryInfo.UNKNOWN_SIZE, ArchiveEntryInfo.UNKNOWN_MTIME, 0x1ff, true, true, true,
+                    ArchiveEntryInfo.UNKNOWN_SIZE, ArchiveEntryInfo.UNKNOWN_MTIME, 0x1ff, true, true, true, ordinal = 1,
                 ),
             ),
             inspection.rows,
         )
+        assertFalse(inspection.partial)
+        assertNull(inspection.partialMessage)
+        assertNull(inspection.structuralRefusal)
 
         // The engine saw this process's fd as a plain int, the limits as the uniffi record field
         // for field, and the row cap unchanged.
@@ -142,7 +147,7 @@ class DecoderServiceMappingTest {
     @Test
     fun `an unknown total and every kind map to their sentinels and codes`() {
         val kinds = ArchiveEntryKindRecord.values().map { kind ->
-            ArchiveEntryRecord("p", false, kind, null, null, null, 0u, false, false)
+            ArchiveEntryRecord(0u, "p", false, kind, null, null, null, 0u, false, false)
         }
         val service = DecoderService(engine = { _, _, _ -> record.copy(totalUncompressed = null, rows = kinds) })
         val inspection = service.inspectArchive(pipe(), limits, 500)
@@ -197,6 +202,86 @@ class DecoderServiceMappingTest {
             assertEquals(ArchiveInspection.OUTCOME_INTERNAL, inspection.outcome)
             assertEquals(className, inspection.message)
         }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // M3.3a: listArchive and extractEntry.
+    // ------------------------------------------------------------------------------------------
+
+    @Test
+    fun `listArchive copies the summary with partial and structural fields and closes both descriptors`() {
+        var seen: Triple<Int, ArchiveLimitsRecord, Int>? = null
+        val service = DecoderService(
+            listEngine = { fd, limitsRecord, sinkFd ->
+                seen = Triple(fd, limitsRecord, sinkFd)
+                record.copy(rows = emptyList(), rowsTruncated = false, partial = true, partialMessage = "Damaged tar archive", structuralRefusal = "Archive contains an unsafe path segment.")
+            },
+        )
+        val archive = pipe()
+        val sink = pipe()
+        val (archiveFd, sinkFd) = archive.fd to sink.fd
+        val inspection = service.listArchive(archive, limits, sink)
+        assertTrue(inspection.isOk)
+        assertTrue(inspection.rows.isEmpty())
+        assertFalse(inspection.rowsTruncated)
+        assertTrue(inspection.partial)
+        assertEquals("Damaged tar archive", inspection.partialMessage)
+        assertEquals("Archive contains an unsafe path segment.", inspection.structuralRefusal)
+        assertEquals(8, inspection.entryCount)
+        assertEquals(Triple(archiveFd, limits.toRecord(), sinkFd), seen)
+        assertThrows(IllegalStateException::class.java) { archive.fd }
+        assertThrows(IllegalStateException::class.java) { sink.fd }
+    }
+
+    @Test
+    fun `listArchive maps engine exceptions like inspectArchive, and closes the sink too`() {
+        val service = DecoderService(listEngine = { _, _, _ -> throw ArchiveEngineException.LimitExceeded("e10000", "listing") })
+        val sink = pipe()
+        val inspection = service.listArchive(pipe(), limits, sink)
+        assertEquals(ArchiveInspection.OUTCOME_LIMIT_EXCEEDED, inspection.outcome)
+        assertEquals("limit exceeded (listing) at entry e10000", inspection.message)
+        assertThrows(IllegalStateException::class.java) { sink.fd }
+        val internal = DecoderService(listEngine = { _, _, _ -> throw OutOfMemoryError("x") }).listArchive(pipe(), limits, pipe())
+        assertEquals(ArchiveInspection.OUTCOME_INTERNAL, internal.outcome)
+        assertEquals("OutOfMemoryError", internal.message)
+    }
+
+    @Test
+    fun `extractEntry returns the bytes written and passes the ordinal and path through`() {
+        var seen: List<Any>? = null
+        val service = DecoderService(extractEngine = { fd, ordinal, path, limitsRecord, sinkFd -> seen = listOf(fd, ordinal, path, limitsRecord, sinkFd); 4_096L })
+        val archive = pipe()
+        val sink = pipe()
+        val (archiveFd, sinkFd) = archive.fd to sink.fd
+        val result = service.extractEntry(archive, 7, "docs/readme.md", limits, sink)
+        assertEquals(ArchiveExtractResult.ok(4_096L), result)
+        assertTrue(result.isOk)
+        assertEquals(listOf(archiveFd, 7, "docs/readme.md", limits.toRecord(), sinkFd), seen)
+        assertThrows(IllegalStateException::class.java) { archive.fd }
+        assertThrows(IllegalStateException::class.java) { sink.fd }
+    }
+
+    @Test
+    fun `extractEntry maps NotFound to its own outcome and every other failure like the inspection table`() {
+        val cases = listOf(
+            ArchiveEngineException.NotFound(5u, "docs/readme.md") to (ArchiveExtractResult.OUTCOME_NOT_FOUND to "no entry \"docs/readme.md\" at header 5"),
+            ArchiveEngineException.LimitExceeded("big.bin", "file") to (ArchiveExtractResult.OUTCOME_LIMIT_EXCEEDED to "limit exceeded (file) at entry big.bin"),
+            ArchiveEngineException.Corrupt("Truncated input file") to (ArchiveExtractResult.OUTCOME_CORRUPT to "Truncated input file"),
+            ArchiveEngineException.NotSeekable("not seekable (fifo)") to (ArchiveExtractResult.OUTCOME_NOT_SEEKABLE to "not seekable (fifo)"),
+            ArchiveEngineException.Unsupported("Unrecognized archive format") to (ArchiveExtractResult.OUTCOME_UNSUPPORTED to "Unrecognized archive format"),
+            ArchiveEngineException.Internal("bug") to (ArchiveExtractResult.OUTCOME_INTERNAL to "bug"),
+            RuntimeException("details that must not leak") to (ArchiveExtractResult.OUTCOME_INTERNAL to "RuntimeException"),
+        )
+        for ((failure, expected) in cases) {
+            val sink = pipe()
+            val result = DecoderService(extractEngine = { _, _, _, _, _ -> throw failure }).extractEntry(pipe(), 0, "x", limits, sink)
+            assertEquals(failure.toString(), expected.first, result.outcome)
+            assertEquals(failure.toString(), expected.second, result.message)
+            assertFalse(result.isOk)
+            assertEquals(0L, result.bytesWritten)
+            assertThrows(IllegalStateException::class.java) { sink.fd }
+        }
+        assertEquals(6, ArchiveExtractResult.OUTCOME_NOT_FOUND)
     }
 
     @Test

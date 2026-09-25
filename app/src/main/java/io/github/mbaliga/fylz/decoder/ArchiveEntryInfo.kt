@@ -26,6 +26,9 @@ data class ArchiveEntryInfo(
     /** The stored name was not UTF-8 and [path] is its lossy decoding (legacy CP437/GBK ZIPs;
      * M3.7 adds charset detection). */
     val nameLossy: Boolean,
+    /** The entry's raw header index (M3.3, `EntryMetadata::ordinal`): what a browsing document id
+     * names and `extractEntry` walks to. Defaulted so existing construction sites stay as they are. */
+    val ordinal: Int = 0,
 ) : Parcelable {
 
     @IgnoredOnParcel
