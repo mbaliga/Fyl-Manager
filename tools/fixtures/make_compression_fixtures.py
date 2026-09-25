@@ -11,10 +11,11 @@ of files.
 Needs the Python `lz4` package for the lz4 fixtures, and/or `zstandard` for the zstd fixtures
 (`pip install --user lz4 zstandard`; PyPI is reachable in this project's build environment even
 when the `lz4`/`zstd` CLIs are not installed). Fails loudly naming exactly what to install rather
-than silently skipping a format. The zlib fixtures (gzip, and a ZIP with deflated entries) and
-the bzip2 fixtures need only the standard library (`gzip`, `zipfile`, `bz2`).
+than silently skipping a format. The zlib fixtures (gzip, and a ZIP with deflated entries), the
+bzip2 fixtures and the xz fixtures need only the standard library (`gzip`, `zipfile`, `bz2`,
+`lzma`).
 
-Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd] [zlib] [bzip2]
+Usage: python3 tools/fixtures/make_compression_fixtures.py [lz4] [zstd] [zlib] [bzip2] [xz]
   With no arguments, generates every format this script knows about.
 """
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import lzma
 import sys
 import tarfile
 import zipfile
@@ -133,11 +135,26 @@ def generate_bzip2(tar_bytes: bytes) -> None:
     write(FIXTURES_DIR / "truncated.tar.bz2", truncated)
 
 
+def generate_xz(tar_bytes: bytes) -> None:
+    compressed = lzma.compress(tar_bytes)
+    write(FIXTURES_DIR / "sample.tar.xz", compressed)
+    # Hostile, same shape as the others: the xz stream header survives the cut, so the filter
+    # still bids, but the single LZMA2 chunk is incomplete. LZMA2 decodes incrementally, so, as
+    # with gzip, the cut point matters: it must fall before the second tar header (bytes
+    # 1024-1535) is complete, so that neither the listing nor a read of `second.txt` can succeed;
+    # at half, the stream yields just past the first entry's padding. Checked rather than assumed.
+    truncated = compressed[: len(compressed) // 2]
+    decoded = lzma.LZMADecompressor().decompress(truncated)
+    assert 512 <= len(decoded) < 1536, f"truncated.tar.xz decodes {len(decoded)} bytes"
+    write(FIXTURES_DIR / "truncated.tar.xz", truncated)
+
+
 GENERATORS: dict[str, Callable[[bytes], None]] = {
     "lz4": generate_lz4,
     "zstd": generate_zstd,
     "zlib": generate_zlib,
     "bzip2": generate_bzip2,
+    "xz": generate_xz,
 }
 
 

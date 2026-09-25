@@ -29,8 +29,7 @@
 //! libarchive's own CMake build silently drops a format that needs a library it can't find rather
 //! than failing. Compression backends (zlib, bzip2, xz, zstd, lz4 -- all permissive, per section
 //! 2.2) are added one at a time, each verified to still build before the next is added, never all
-//! at once: lz4 (M3.1 part 2a), zstd (part 2b), zlib (part 2c), bzip2 (part 2d), the rest in
-//! follow-up tasks.
+//! at once: lz4 (M3.1 part 2a), zstd (part 2b), zlib (part 2c), bzip2 (part 2d), xz (part 2e).
 //!
 //! Every companion, and libarchive itself, is built with `CMAKE_INSTALL_LIBDIR=lib` pinned
 //! explicitly: `GNUInstallDirs` (which all of these projects use) picks `lib64` on Fedora/RHEL-
@@ -221,6 +220,25 @@ fn main() {
     let bzip2_src = third_party.join("bzip2");
     let bzip2_lib_dir = build_bzip2(&bzip2_src);
 
+    let xz_prefix = build_companion(
+        &target,
+        "xz",
+        &third_party.join("xz"),
+        &[
+            ("BUILD_SHARED_LIBS", "OFF"),
+            ("XZ_TOOL_XZ", "OFF"),
+            ("XZ_TOOL_XZDEC", "OFF"),
+            ("XZ_TOOL_LZMADEC", "OFF"),
+            ("XZ_TOOL_LZMAINFO", "OFF"),
+            ("XZ_TOOL_SCRIPTS", "OFF"),
+            ("XZ_TOOL_SYMLINKS", "OFF"),
+            ("XZ_DOC", "OFF"),
+            ("XZ_NLS", "OFF"),
+            ("XZ_DOXYGEN", "OFF"),
+            ("BUILD_TESTING", "OFF"),
+        ],
+    );
+
     let libarchive_src = third_party.join("libarchive");
     println!(
         "cargo:rerun-if-changed={}",
@@ -258,9 +276,7 @@ fn main() {
         .define("ENABLE_EXPAT", "OFF")
         .define("ENABLE_PCREPOSIX", "OFF")
         .define("ENABLE_PCRE2POSIX", "OFF")
-        // Compression backends not yet added -- OFF, added incrementally in follow-up tasks (see
-        // this file's own doc comment above).
-        .define("ENABLE_LZMA", "OFF")
+        // lzo: GPL-2.0, which section 2.2 keeps out of the core app for good.
         .define("ENABLE_LZO", "OFF")
         // lz4: preset libarchive's own FIND_PATH/FIND_LIBRARY cache variables to the companion
         // just built, so its CMake never searches for lz4 itself. Presetting the cache variables
@@ -287,7 +303,14 @@ fn main() {
         // BZ2_bzCompressInit against it. Note the option's own odd case, ENABLE_BZip2.
         .define("ENABLE_BZip2", "ON")
         .define("BZIP2_INCLUDE_DIR", &bzip2_src)
-        .define("BZIP2_LIBRARIES", bzip2_lib_dir.join("libbz2.a"));
+        .define("BZIP2_LIBRARIES", bzip2_lib_dir.join("libbz2.a"))
+        // xz: same mechanism as lz4. FindLibLZMA then link-tests lzma_auto_decoder,
+        // lzma_easy_encoder and lzma_lzma_preset against LIBLZMA_LIBRARY and only reports the
+        // library found if all three pass; libarchive adds its own HAVE_LZMA_STREAM_ENCODER_MT
+        // compile probe. Enables the xz, lzma and lzip filters.
+        .define("ENABLE_LZMA", "ON")
+        .define("LIBLZMA_INCLUDE_DIR", xz_prefix.join("include"))
+        .define("LIBLZMA_LIBRARY", static_lib_path(&xz_prefix, "lzma"));
 
     configure_android_toolchain(&target, "libarchive", &mut cfg);
 
@@ -319,4 +342,9 @@ fn main() {
     println!("cargo:rustc-link-lib=static=z");
     println!("cargo:rustc-link-search=native={}", bzip2_lib_dir.display());
     println!("cargo:rustc-link-lib=static=bz2");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        xz_prefix.join("lib").display()
+    );
+    println!("cargo:rustc-link-lib=static=lzma");
 }

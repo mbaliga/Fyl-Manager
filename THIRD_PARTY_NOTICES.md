@@ -100,6 +100,20 @@ Notable dependencies as of M2.2:
   such; and the author's name is not used to endorse or promote products derived from it. Its
   `README` adds a PATENTS note: to the author's knowledge bzip2/libbzip2 uses no patented
   algorithms, but no patent search was carried out and no guarantee is given.
+- XZ Utils 5.8.4, liblzma (`core/third_party/xz`, a git submodule pinned to release tag `v5.8.4`,
+  commit `d3e650e63c110e830fd5391e7f8b45df0b91d3da`, M3.1 part 2e) — liblzma is statically linked
+  into `fylz-archive` as libarchive's xz, lzma and lzip filter backend, never a Cargo dependency.
+  **Only `src/liblzma/` and `src/common/` (the tuklib helpers) are compiled**, driven by the root
+  `CMakeLists.txt` and `cmake/*.cmake` with every tool, script, symlink, documentation, test and
+  NLS option off (`XZ_TOOL_XZ`, `XZ_TOOL_XZDEC`, `XZ_TOOL_LZMADEC`, `XZ_TOOL_LZMAINFO`,
+  `XZ_TOOL_SCRIPTS`, `XZ_TOOL_SYMLINKS`, `XZ_DOC`, `XZ_NLS`, `XZ_DOXYGEN`, `BUILD_TESTING` all
+  `OFF`). Per `core/third_party/xz/COPYING`, **liblzma is under the BSD Zero Clause License
+  (0BSD)** (`core/third_party/xz/COPYING.0BSD`) — every `.c`/`.h` under `src/liblzma` and
+  `src/common` carries `SPDX-License-Identifier: 0BSD` — and the notice it asks for is:
+  Copyright (C) The XZ Utils authors and contributors. The tree's GPL and LGPL parts are neither
+  compiled nor shipped: GNU `getopt_long` in `lib/` (LGPLv2.1+, only ever built into the
+  command-line tools, on systems lacking it), the `xzgrep`/`xzdiff`/`xzless`/`xzmore` scripts
+  (GPLv2+), the GNU Autotools build files (GPLv2+/GPLv3+) and the `extra/` directory.
 - `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
   M3.1; `cc` is now also a direct build-dependency of `fylz-archive`, for bzip2) are covered by
   `cargo deny` and never linked into the APK.

@@ -19,3 +19,6 @@
 [submodule "core/third_party/bzip2"]
 	path = core/third_party/bzip2
 	url = https://sourceware.org/git/bzip2.git
+[submodule "core/third_party/xz"]
+	path = core/third_party/xz
+	url = https://github.com/tukaani-project/xz.git
