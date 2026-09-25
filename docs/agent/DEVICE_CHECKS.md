@@ -398,3 +398,68 @@ physical/Bluetooth keyboard to attach. **None of this ran on a device.**
 **What this verifies:** MC.0 (all six commits, `ed9e61b`..`(MC.0f)`) — the action registry itself,
 `docs/agent/DESIGN-MC0-ACTION-REGISTRY.md` §2.6/§2.7's acceptance bar, and MASTER_PLAN_ADDENDUM_1
 §C1/§D's "registry is the only source of shortcuts."
+
+## 17. M3.2 — seekable descriptors into `:decoders`
+
+`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` moved every archive inspection off zip4j and its
+whole-archive copy onto `fylz-archive` in the isolated decoder process, reading through a seekable
+`ParcelFileDescriptor` that `archive.ArchiveSource` resolves (the provider's own descriptor when
+`statSize >= 0`, a cache copy only when the provider can merely stream). Everything below was
+verified only in this sandbox: Rust tests on the committed ZIP/7z/ISO fixtures (pipe-fed negative
+controls included), Robolectric tests through the `bind`/`unbind`, `isSeekable` and `engine` seams,
+and a pipe-backed test provider. Robolectric's `createPipe()` is file-backed and reports a size, so
+the *default* seekability probe on a real pipe, real Binder descriptor passing, SELinux, real
+process death and real transaction sizes all need a device. **None of this ran on a device.**
+
+**Steps and expected results:**
+
+1. Copy a ZIP, a 7z (LZMA2, as 7-Zip writes by default) and an ISO 9660 image into `Downloads`
+   (the local `FylzFilesDocumentsProvider`), open Archive tools → Inspect on each, and separately
+   give an APK preview focus in the browser. Expected: the dialog/preview shows the format family
+   ("ZIP archive", "7-Zip archive", "ISO 9660 image"), file/folder counts, archive and expanded
+   sizes, and a verdict; `adb shell run-as io.github.mbaliga.fylz ls cache/archive-work` (or
+   `adb shell ls /data/data/io.github.mbaliga.fylz/cache/archive-work` on a debuggable build) is
+   **empty throughout** -- a seekable descriptor means nothing was copied. Before M3.2 every one
+   of these inspections copied the whole archive there first.
+2. Inspect the same ZIP through a third-party provider that streams -- Google Drive with a file
+   not yet downloaded offline, or any provider whose `openFileDescriptor` returns a pipe. Expected:
+   the dialog carries the line "Copied to temporary storage first: this location could not be read
+   in place", and `archive-work` is **empty again once the dialog is up**: the copy is released as
+   soon as the summary is in hand (the dialog shows the summary, not the archive). This is also
+   the one check of the default `statSize >= 0` probe on a genuine pipe (`ArchiveSourceTest`'s
+   ignored case): if the dialog does *not* say "copied", the probe called a pipe seekable and the
+   engine would have refused it as `NOT_SEEKABLE` ("could not be opened" plus a `Log.w` from
+   `ArchiveInspector`).
+3. Build a ZIP with 100,000 entries (`python3 -c "import zipfile; z=zipfile.ZipFile('many.zip','w'); [z.writestr(f'd{i//1000}/f{i}.txt', b'') for i in range(100000)]; z.close()"`),
+   push it to `Downloads`, Inspect it. Expected: the dialog appears with the counts (100,000
+   entries), `adb logcat` shows **no** `TransactionTooLargeException`, and the preview (rename it
+   `.zip` so the ZIP preview mounts) lists 500 rows and says "Only the first 500 entries are
+   shown." The Parcelable carries at most 500 rows by design; the full listing is M3.3's.
+4. SELinux: while running steps 1-3, `adb logcat | grep avc` shows **no denial** for
+   `isolated_app` reading the archive descriptor. `sniff` already reads through a passed
+   descriptor (section 14), but libarchive's reads are larger and seek; a denial here would
+   surface as every inspection ending in "could not be read safely" or `CORRUPT`.
+5. Hang: no debug-only `inspectArchive` variant was added. Use section 14 step 4's approach
+   against the new client -- a hostile input that keeps libarchive busy (a compressed tarball of a
+   few GB, whose header pass decompresses the whole stream, is the honest way to hit the budget).
+   Expected: the coroutine returns within about 30 s (`STRUCTURE_TIMEOUT_MILLIS`) with "The
+   archive took too long to read", not a frozen dialog and not "could not be read safely";
+   `io.github.mbaliga.fylz:decoders` **disappears** from `adb shell ps -A` shortly after (the
+   unbind lets the platform reap it); the next Inspect of a small archive works (a fresh
+   `:decoders` PID appears).
+6. Kill `:decoders` mid-inspect (`adb shell am kill io.github.mbaliga.fylz:decoders`, or
+   `kill -9 <pid>` from `ps -A | grep decoders`, while a large archive is being inspected).
+   Expected: "The archive could not be read safely."; the app neither crashes nor ANRs; the next
+   Inspect works (rebind, new PID). Also drive `DecoderClientTest`'s dropped-bind case for real:
+   kill the process *while the bind is still connecting* (kill immediately after tapping Inspect
+   on a cold `:decoders`) -- the same message, never a crash.
+7. A legacy ZIP with CP437 names (one made by an old Windows archiver, or
+   `zip -n .txt legacy.zip caf$'\xe9'.txt` in a `LANG=C` shell) inspects: names appear with
+   replacement characters, the dialog notes "Some entry names use a legacy encoding", and the
+   verdict is the policy's, **not** "This file is not an archive Fylz can open" -- lossy names are
+   flagged, never fatal, until M3.7 adds charset detection.
+
+**What this verifies:** M3.2 (`8e35497`, `1983c0c`, and the M3.2c commit) -- MASTER_PLAN's
+"Kotlin passes a seekable `ParcelFileDescriptor` into the decoder process. ZIP, 7z and ISO are read
+with seeks. Only non-seekable remote streams stage to cache, with a space check", section 4.4's
+structure budget and kill-and-restart, and the design's section 2.9 list, item for item.

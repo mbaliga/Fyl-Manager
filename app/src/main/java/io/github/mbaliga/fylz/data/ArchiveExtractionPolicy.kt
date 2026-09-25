@@ -1,4 +1,7 @@
-// Source of truth: core/crates/fylz-archive/src/policy.rs (M3.1 part 3). This copy stays only until ArchiveService reads through the Rust engine.
+// Source of truth: core/crates/fylz-archive/src/policy.rs (M3.1 part 3). Inspection has read the Rust
+// rules through the decoder process since M3.2; this copy is evaluated only by ArchiveService.extractZip
+// and is deleted in M3.4, when extraction moves onto the engine. Until then Inspect (Rust) and Extract
+// (this file) can disagree on the same ZIP -- a logged deviation, not something to paper over.
 package io.github.mbaliga.fylz.data
 
 import java.util.Locale

@@ -33,9 +33,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.actions.ActionResolver
 import io.github.mbaliga.fylz.actions.BrowserState
-import io.github.mbaliga.fylz.data.ArchiveInspection
+import io.github.mbaliga.fylz.archive.ArchiveFormatFamily
+import io.github.mbaliga.fylz.archive.ArchiveInspectionResult
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.ui.actions.ArchiveToolsMenuDialog
 import kotlinx.coroutines.launch
@@ -53,11 +55,14 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val service = remember { ArchiveService(context.applicationContext) }
+    // M3.2: inspection runs in the isolated decoder process over a seekable descriptor, through
+    // the application-scoped inspector (its decoder binding must outlive this composition).
+    val inspector = remember { (context.applicationContext as FylzApplication).archiveInspector }
     var menuOpen by remember { mutableStateOf(false) }
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var selectedArchive by remember { mutableStateOf<Uri?>(null) }
-    var inspection by remember { mutableStateOf<ArchiveInspection?>(null) }
+    var inspection by remember { mutableStateOf<ArchiveInspectionResult.Ready?>(null) }
     var pendingCreatePassword by remember { mutableStateOf<CharArray?>(null) }
     var pendingExtractPassword by remember { mutableStateOf<CharArray?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -143,12 +148,13 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
         selectedArchive = uri
         scope.launch {
             busy = true
-            runCatching { service.inspectZip(uri) }
-                .onSuccess { inspection = it }
-                .onFailure { failure ->
+            when (val result = inspector.inspect(uri)) {
+                is ArchiveInspectionResult.Ready -> inspection = result
+                else -> {
                     selectedArchive = null
-                    Toast.makeText(context, failure.message ?: "Unable to inspect archive.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, result.failureMessage() ?: "Unable to inspect archive.", Toast.LENGTH_LONG).show()
                 }
+            }
             busy = false
         }
     }
@@ -167,7 +173,7 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
                 menuOpen = false
                 when (id.value) {
                     "fylz.protect" -> sourcePicker.launch(arrayOf("*/*"))
-                    "fylz.archive.inspect" -> archivePicker.launch(ZIP_MIME_TYPES)
+                    "fylz.archive.inspect" -> archivePicker.launch(INSPECTABLE_ARCHIVE_MIME_TYPES)
                 }
             },
         )
@@ -199,14 +205,14 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, modifier:
 
     inspection?.let { value ->
         ArchiveInspectionDialog(
-            inspection = value,
+            result = value,
             busy = busy,
             onDismiss = {
                 inspection = null
                 selectedArchive = null
             },
             onExtract = {
-                if (value.encrypted) {
+                if (value.summary.hasEncryptedEntries) {
                     passwordPurpose = ArchivePasswordPurpose.EXTRACT
                 } else {
                     pendingExtractPassword = null
@@ -304,38 +310,68 @@ private fun ArchivePasswordDialog(
 
 @Composable
 private fun ArchiveInspectionDialog(
-    inspection: ArchiveInspection,
+    result: ArchiveInspectionResult.Ready,
     busy: Boolean,
     onDismiss: () -> Unit,
     onExtract: () -> Unit,
 ) {
-    val allowed = inspection.extractionDecision.allowed
+    val summary = result.summary
+    val allowed = summary.policyAllowed
+    // Extraction is still zip4j until M3.4, so only a ZIP gets the button; the verdict shown is the
+    // Rust policy's, which extractZip's Kotlin copy re-checks -- the two can disagree until then.
+    val extractable = ArchiveFormatFamily.isZip(summary.formatCode)
+    val family = ArchiveFormatFamily.label(summary.formatCode, summary.filters)
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         icon = { Icon(Icons.Outlined.Unarchive, contentDescription = null) },
         title = { Text("Archive inspection") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(if (inspection.encrypted) "Encrypted ZIP" else "Standard ZIP")
-                Text("${inspection.fileCount} files · ${inspection.directoryCount} folders")
-                Text("Archive size: ${formatArchiveBytes(inspection.archiveBytes)}")
-                inspection.totalUncompressedBytes?.let {
-                    Text("Expanded size: ${formatArchiveBytes(it)}")
+                Text(if (summary.hasEncryptedEntries) "$family, encrypted" else family)
+                Text(
+                    buildString {
+                        append("${summary.fileCount} files · ${summary.directoryCount} folders")
+                        if (summary.linkCount > 0) append(" · ${summary.linkCount} links")
+                    },
+                )
+                Text("Archive size: ${formatArchiveBytes(summary.archiveBytes)}")
+                if (summary.totalUncompressedBytes >= 0L) {
+                    Text("Expanded size: ${formatArchiveBytes(summary.totalUncompressedBytes)}")
                 }
-                inspection.temporarySpaceRequiredBytes?.let { required ->
-                    Text("Temporary space required: ${formatArchiveBytes(required)}")
+                result.temporarySpace?.let { required ->
+                    Text("Temporary space required: ${formatArchiveBytes(required.temporaryBytes)}")
                 }
-                inspection.temporarySpaceAvailableBytes?.let { available ->
+                result.temporarySpaceAvailable?.let { available ->
                     Text("Temporary space available: ${formatArchiveBytes(available)}")
+                }
+                if (result.staged) {
+                    Text(
+                        "Copied to temporary storage first: this location could not be read in place.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (summary.hasLossyNames) {
+                    Text(
+                        "Some entry names use a legacy encoding and are shown with replacement characters.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 if (!allowed) {
                     Text(
-                        inspection.extractionDecision.reason ?: "This archive failed safety checks.",
+                        summary.policyReason ?: "This archive failed safety checks.",
                         color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (extractable) {
+                    Text(
+                        "Extraction creates a new folder and rolls it back if copying fails.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } else {
                     Text(
-                        "Extraction creates a new folder and rolls it back if copying fails.",
+                        "Fylz can inspect this format; extracting it arrives with a later update.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -343,11 +379,13 @@ private fun ArchiveInspectionDialog(
             }
         },
         confirmButton = {
-            Button(onClick = onExtract, enabled = allowed && !busy) {
-                Text(if (inspection.encrypted) "Enter password" else "Choose destination")
+            if (extractable) {
+                Button(onClick = onExtract, enabled = allowed && !busy) {
+                    Text(if (summary.hasEncryptedEntries) "Enter password" else "Choose destination")
+                }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(if (extractable) "Cancel" else "Close") } },
     )
 }
 
@@ -358,8 +396,21 @@ private fun formatArchiveBytes(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
-private val ZIP_MIME_TYPES = arrayOf(
+/**
+ * What Inspect offers to open (M3.2): the ZIP family the picker always offered, plus every family
+ * the decoder process reads through a seekable descriptor -- this is what makes "7z and ISO are
+ * read with seeks" reachable from the UI. Extract is still ZIP-only (`fylz.extract`'s own
+ * `enabledWhen` is unchanged).
+ */
+private val INSPECTABLE_ARCHIVE_MIME_TYPES = arrayOf(
     "application/zip",
     "application/x-zip-compressed",
     "application/octet-stream",
+    "application/x-7z-compressed",
+    "application/x-iso9660-image",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-xz",
+    "application/zstd",
+    "application/x-bzip2",
 )

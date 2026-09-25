@@ -152,7 +152,7 @@ Previewing a file is active processing and should be treated as untrusted input.
 
 ## Archive boundary
 
-The foundation contains a provider-neutral Zip4j service for ordinary or AES-256 ZIP creation and password-protected ZIP extraction. It stages data only in app-private cache and validates canonical extraction paths before writing.
+The foundation contains a provider-neutral Zip4j service for ordinary or AES-256 ZIP creation and password-protected ZIP extraction. It stages data only in app-private cache and validates canonical extraction paths before writing. Since M3.2, *inspecting* an archive no longer stages anything: `archive.ArchiveSource` resolves the `Uri` to a seekable descriptor (the provider's own, whenever `statSize >= 0`) and only a provider that can merely stream is copied to app-private cache first, after a space check, with the copy released as soon as the summary is in hand; the listing itself is done by `fylz-archive` in the isolated decoder process (see below). Extraction still stages the whole archive until M3.4 moves it onto the same engine.
 
 Before exposing it as a finished feature:
 
@@ -288,11 +288,31 @@ native parsers (archives, disk images, fonts, media) route through this same pro
 running in-process, closing the Preview safety section's own "isolated behind renderer interfaces"
 requirement one format at a time.
 
+The first real format landed in M3.2: `inspectArchive(archive, limits, maxRows)` hands the process
+a `ParcelFileDescriptor` and gets back an `ArchiveInspection` Parcelable -- the archive's format
+family, counts, sizes, encryption flags, the Rust extraction policy's verdict and at most `maxRows`
+listing rows (500 by default, about 50 KB, because the Binder transaction buffer is 1 MB per
+process and a full listing would overflow it around ten thousand entries; M3.3 designs the
+full-listing transport). The engine (`fylz-archive`, over libarchive) reads through that
+descriptor with seeks -- the ZIP central directory, a 7z's trailing header and pack streams, an
+ISO's directory extents -- so **the descriptor must refer to a regular file**: the engine `fstat`s
+it, refuses anything else as `NOT_SEEKABLE`, and rewinds it to byte 0 first (libarchive seeks
+absolutely but treats the first byte read as offset 0, and a Binder dup shares the file offset).
+`archive.ArchiveSource` is what upholds that rule on the UI side: it opens the `Uri`'s own
+descriptor when the provider gives a seekable one and stages to cache only when it does not.
+Errors travel as data (`outcome` + the engine's message), never as exceptions across Binder; a
+Kotlin exception in the service maps to `INTERNAL` with the class name. The process runs the
+engine under section 4.4's 30 s "structure" budget (`DecoderClient.STRUCTURE_TIMEOUT_MILLIS`),
+distinct from the 5 s the two quick calls get, and the client's `DecoderCall { Ok, TimedOut,
+Failed }` lets the UI say "took too long to read" for a multi-GB compressed tarball rather than
+"could not be read safely" for a dead process. The client and the `archive.ArchiveInspector` that
+drives it are application-scoped (`FylzApplication.archiveInspector`): the binding lives for the
+app process, with no idle unbind yet (M3.3 measures and decides).
+
 `decoder.DecoderClient` owns the other half of the contract section 4.4 asks for: a per-call
-timeout (`DecoderClient`'s own default, distinct from section 4.4's stated 5 s/30 s per-purpose
-budgets, which a real caller should pass explicitly once one exists), and dropping the connection
-on either a timeout or a crash so the next call rebinds fresh rather than reusing a connection to
-a process that may already be gone. The timeout abandons the call rather than waiting it out: each
+timeout (5 s for `ping`/`sniff`, the 30 s structure budget for `inspectArchive`), and dropping the
+connection on either a timeout or a crash so the next call rebinds fresh rather than reusing a
+connection to a process that may already be gone. The timeout abandons the call rather than waiting it out: each
 Binder transaction runs in a client-owned job outside the caller's coroutine scope, so when the
 deadline passes the caller gets its failure value and the client unbinds immediately, while the
 hung transaction is left to return on its own (normally with `DeadObjectException` once the process

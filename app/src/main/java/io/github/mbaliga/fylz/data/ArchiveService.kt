@@ -30,21 +30,13 @@ import java.nio.file.Files
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
-data class ArchiveInspection(
-    val encrypted: Boolean,
-    val archiveBytes: Long,
-    val entryCount: Int,
-    val fileCount: Int,
-    val directoryCount: Int,
-    val totalUncompressedBytes: Long?,
-    val visibleEntries: List<ArchiveEntryMetadata>,
-    val entriesTruncated: Boolean,
-    val extractionDecision: ArchiveExtractionDecision,
-    val temporarySpaceRequiredBytes: Long? = null,
-    val temporarySpaceAvailableBytes: Long? = null,
-)
-
-/** Provider-neutral, bounded ZIP creation, inspection, and extraction. */
+/**
+ * Provider-neutral, bounded ZIP creation and extraction with zip4j. Inspection left this class in
+ * M3.2: every path that looks inside an archive now goes through `archive.ArchiveInspector` and
+ * the isolated decoder process, without copying the archive. [extractZip] and [createZip] keep
+ * zip4j and their own staging until M3.4 moves extraction onto the Rust engine through the
+ * transfer queue (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 0).
+ */
 class ArchiveService(
     private val context: Context,
     private val extractionLimits: ArchiveExtractionLimits = ArchiveExtractionLimits(),
@@ -141,44 +133,13 @@ class ArchiveService(
         }
     }
 
-    suspend fun inspectZip(
-        archiveUri: Uri,
-        maxVisibleEntries: Int = DEFAULT_VISIBLE_ENTRY_LIMIT,
-    ): ArchiveInspection = withContext(Dispatchers.IO) {
-        require(maxVisibleEntries in 1..extractionLimits.maxEntries) {
-            "Invalid archive preview entry limit."
-        }
-        val workspace = newWorkspace()
-        try {
-            val archive = stageArchive(archiveUri, workspace)
-            val zipFile = ZipFile(archive)
-            val metadata = readMetadata(zipFile)
-            val decision = ArchiveExtractionPolicy.evaluate(
-                archiveBytes = archive.length(),
-                entries = metadata,
-                limits = extractionLimits,
-            )
-            val files = metadata.filterNot(ArchiveEntryMetadata::directory)
-            val uncompressed = metadata.sumKnownUncompressedBytes()
-            val requirements = uncompressed?.let { ArchiveSpacePolicy.requirements(archive.length(), it) }
-            ArchiveInspection(
-                encrypted = zipFile.isEncrypted,
-                archiveBytes = archive.length(),
-                entryCount = metadata.size,
-                fileCount = files.size,
-                directoryCount = metadata.size - files.size,
-                totalUncompressedBytes = uncompressed,
-                visibleEntries = metadata.take(maxVisibleEntries),
-                entriesTruncated = metadata.size > maxVisibleEntries,
-                extractionDecision = decision,
-                temporarySpaceRequiredBytes = requirements?.temporaryBytes,
-                temporarySpaceAvailableBytes = availableCacheBytes(),
-            )
-        } finally {
-            workspace.deleteRecursively()
-        }
-    }
-
+    /**
+     * Still zip4j, still staged: the whole archive is copied to cache first and the Kotlin
+     * [ArchiveExtractionPolicy] re-evaluated. M3.4 replaces this with the Rust engine reading the
+     * seekable descriptor `archive.ArchiveSource` resolves, through the transfer queue with
+     * progress and cancellation; until then Inspect (Rust rules) and this (Kotlin rules) can
+     * disagree on the same ZIP.
+     */
     suspend fun extractZip(
         archiveUri: Uri,
         destinationTreeUri: Uri,
@@ -342,6 +303,11 @@ class ArchiveService(
         error("Unable to find an available extraction folder name.")
     }
 
+    /**
+     * The whole-archive copy M3.2 removed from inspection and M3.4 removes from extraction; kept
+     * only for [extractZip], because zip4j reads a `File`. (`archive.ArchiveSource` is the
+     * seek-or-stage replacement.)
+     */
     private fun stageArchive(archiveUri: Uri, workspace: File): File {
         val archive = File(workspace, "input.zip")
         context.contentResolver.openInputStream(archiveUri)?.use { input ->
@@ -482,7 +448,6 @@ class ArchiveService(
     }
 
     private companion object {
-        const val DEFAULT_VISIBLE_ENTRY_LIMIT = 500
         const val MIN_PASSWORD_LENGTH = 8
         const val MAX_PASSWORD_LENGTH = 256
     }

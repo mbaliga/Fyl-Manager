@@ -50,8 +50,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.data.ArchiveInspection
-import io.github.mbaliga.fylz.data.ArchiveService
+import io.github.mbaliga.fylz.FylzApplication
+import io.github.mbaliga.fylz.archive.ArchiveFormatFamily
+import io.github.mbaliga.fylz.archive.ArchiveInspectionResult
+import io.github.mbaliga.fylz.decoder.ArchiveEntryInfo
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.preview.FileFormatDescriptor
 import kotlinx.coroutines.Dispatchers
@@ -179,30 +181,34 @@ private fun thumbnailIndexes(pageCount: Int, selected: Int): List<Int> {
     return indexes.sorted()
 }
 
+/**
+ * The ZIP-family preview (`PreviewPane` mounts it for `ZIP_CONTAINER_EXTENSIONS`). Since M3.2 it
+ * asks the isolated decoder process through the application-scoped `ArchiveInspector`, which
+ * reads the archive through a seekable descriptor: gaining preview focus on a ZIP or APK no
+ * longer copies the whole file to cache (it did, on every focus, before). Each way the inspection
+ * can fail renders through [UniversalInspectorPreview] with its own message.
+ */
 @Composable
 fun ZipArchivePreview(entry: FileEntry, descriptor: FileFormatDescriptor, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val inspection by produceState<Result<ArchiveInspection>?>(initialValue = null, entry.uri) {
-        value = runCatching { ArchiveService(context.applicationContext).inspectZip(entry.uri) }
+    val inspection by produceState<ArchiveInspectionResult?>(initialValue = null, entry.uri) {
+        value = (context.applicationContext as FylzApplication).archiveInspector.inspect(entry.uri)
     }
     when (val result = inspection) {
         null -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        else -> result.fold(
-            onSuccess = { details -> ArchiveInspectionContent(details, modifier) },
-            onFailure = {
-                UniversalInspectorPreview(
-                    entry,
-                    descriptor,
-                    modifier,
-                    it.message ?: "This archive format is not handled by the ZIP inspector.",
-                )
-            },
+        is ArchiveInspectionResult.Ready -> ArchiveInspectionContent(result, modifier)
+        else -> UniversalInspectorPreview(
+            entry,
+            descriptor,
+            modifier,
+            result.failureMessage() ?: "This archive could not be inspected.",
         )
     }
 }
 
 @Composable
-private fun ArchiveInspectionContent(details: ArchiveInspection, modifier: Modifier = Modifier) {
+private fun ArchiveInspectionContent(result: ArchiveInspectionResult.Ready, modifier: Modifier = Modifier) {
+    val details = result.summary
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -210,50 +216,60 @@ private fun ArchiveInspectionContent(details: ArchiveInspection, modifier: Modif
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(36.dp))
             Column {
-                Text("ZIP-compatible archive", style = MaterialTheme.typography.titleMedium)
+                Text(ArchiveFormatFamily.label(details.formatCode, details.filters), style = MaterialTheme.typography.titleMedium)
                 Text(
                     "${details.entryCount} entries · ${formatSpecializedBytes(details.archiveBytes)} compressed",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        if (details.encrypted) {
+        if (details.hasEncryptedEntries) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Lock, contentDescription = null)
                 Text("Password protected")
             }
         }
-        val decision = details.extractionDecision
         Surface(
-            color = if (decision.allowed) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer,
+            color = if (details.policyAllowed) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer,
             shape = MaterialTheme.shapes.medium,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
-                Icon(if (decision.allowed) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber, contentDescription = null)
+                Icon(if (details.policyAllowed) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber, contentDescription = null)
                 Column {
-                    Text(if (decision.allowed) "Extraction preflight passed" else "Extraction blocked", style = MaterialTheme.typography.titleSmall)
-                    Text(decision.reason ?: "Paths and expansion metadata are within configured limits.", style = MaterialTheme.typography.bodySmall)
+                    Text(if (details.policyAllowed) "Extraction preflight passed" else "Extraction blocked", style = MaterialTheme.typography.titleSmall)
+                    Text(details.policyReason ?: "Paths and expansion metadata are within configured limits.", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
             ArchiveMetric("Files", details.fileCount.toString())
             ArchiveMetric("Folders", details.directoryCount.toString())
-            ArchiveMetric("Expanded", details.totalUncompressedBytes?.let(::formatSpecializedBytes) ?: "Unknown")
+            if (details.linkCount > 0) ArchiveMetric("Links", details.linkCount.toString())
+            ArchiveMetric("Expanded", details.totalUncompressedBytes.takeIf { it >= 0L }?.let(::formatSpecializedBytes) ?: "Unknown")
+        }
+        if (result.staged || details.hasLossyNames) {
+            Text(
+                buildString {
+                    if (result.staged) append("Copied to temporary storage to be read; the copy has been released. ")
+                    if (details.hasLossyNames) append("Some entry names use a legacy encoding and are shown with replacement characters.")
+                }.trim(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         HorizontalDivider()
         Text("Contents", style = MaterialTheme.typography.titleSmall)
-        details.visibleEntries.forEach { archiveEntry ->
+        details.rows.forEach { archiveEntry ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (archiveEntry.directory) Icons.Outlined.Archive else Icons.Outlined.InsertDriveFile, null, Modifier.size(20.dp))
-                Text(archiveEntry.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (!archiveEntry.directory && archiveEntry.uncompressedBytes >= 0L) {
+                Icon(if (archiveEntry.isDirectory) Icons.Outlined.Archive else Icons.Outlined.InsertDriveFile, null, Modifier.size(20.dp))
+                Text(archiveEntry.path, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (archiveEntry.kind == ArchiveEntryInfo.KIND_FILE && archiveEntry.uncompressedBytes >= 0L) {
                     Text(formatSpecializedBytes(archiveEntry.uncompressedBytes), style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
-        if (details.entriesTruncated) Text("Only the first ${details.visibleEntries.size} entries are shown.")
+        if (details.rowsTruncated) Text("Only the first ${details.rows.size} entries are shown.")
     }
 }
 

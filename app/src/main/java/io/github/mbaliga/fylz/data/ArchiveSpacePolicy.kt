@@ -14,10 +14,23 @@ data class ArchiveSpaceDecision(
     val reason: String? = null,
 )
 
-/** Pure, overflow-safe storage estimates used before ZIP extraction. */
+/** Pure, overflow-safe storage estimates used before ZIP extraction and archive staging. */
 object ArchiveSpacePolicy {
-    private const val MIN_TEMPORARY_HEADROOM = 16L * 1024L * 1024L
+    /** The least free cache an archive staging or extraction may leave behind (M3.2's
+     * `ArchiveSource` re-checks against exactly this while copying a stream of unknown size). */
+    const val MIN_TEMPORARY_HEADROOM = 16L * 1024L * 1024L
     private const val MIN_DESTINATION_HEADROOM = 8L * 1024L * 1024L
+
+    /**
+     * What staging a non-seekable archive to cache needs before a byte is copied
+     * (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.3): the provider's declared size, or the
+     * whole input limit when it declares none, plus the minimum headroom. Saturates rather than
+     * overflowing.
+     */
+    fun stagingRequirement(declaredBytes: Long?, maxArchiveBytes: Long): Long {
+        val body = (declaredBytes ?: maxArchiveBytes).coerceAtLeast(0L)
+        return safeAdd(body, MIN_TEMPORARY_HEADROOM) ?: Long.MAX_VALUE
+    }
 
     fun requirements(archiveBytes: Long, uncompressedBytes: Long): ArchiveSpaceRequirements? {
         if (archiveBytes < 0L || uncompressedBytes < 0L) return null

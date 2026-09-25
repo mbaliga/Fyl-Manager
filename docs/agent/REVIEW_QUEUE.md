@@ -253,3 +253,87 @@ target); (this commit) -- part 3b (`extract()`, `inspect()`, the seekable open p
 - Lossy names: a wrong choice here shows up as garbled entry names in the Inspect dialog and
   preview for legacy ZIPs from M3.2 until M3.7, or as a spurious "duplicate paths" refusal on an
   archive whose names differ only in bytes the replacement character erases.
+
+---
+
+## M3.2 — a seekable descriptor into the decoder process, no whole-archive staging
+
+**Milestone:** M3.2 (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` rev 2; per-commit detail in
+`docs/agent/PROGRESS.md`'s `M3.2` row; device checks in `docs/agent/DEVICE_CHECKS.md` section
+17). Not a gate: log-and-continue. Commits `8e35497` (a, fixtures and seek-discriminating Rust
+tests), `1983c0c` (b, `archive_inspect` over uniffi, `DecoderService.inspectArchive`,
+`DecoderClient.inspectArchive`/`DecoderCall`, the two GATE-M2 points closed) and the M3.2c
+commit (`ArchiveSource`, `ArchiveInspector`, the three call sites off zip4j).
+
+**What was decided, and needs a second read** (the design's section 3 list, then what
+implementation added):
+
+1. **The engine refuses non-seekable input outright** (section 2.1) instead of streaming what it
+   can. The pipe-fed negative controls in `seek_tests.rs` are the evidence for what streaming
+   would lose: a streamed ZIP lists with no sizes at all (the policy then refuses it as "unknown
+   size"), a 7z's data always fails with "Seek error" and an encoded-header 7z cannot even list,
+   while an in-order ISO -- honestly recorded -- lists and reads through a pipe too.
+2. **The Kotlin policy copy's deletion moves to M3.4** (section 0). Until then Inspect (the Rust
+   rules, via `:decoders`) and Extract (`ArchiveService.extractZip`'s Kotlin rules) can disagree
+   on the same ZIP; the Inspect dialog shows the Rust verdict and the Extract button re-checks
+   with the Kotlin one.
+3. **`compressed` stays `None` for good**: libarchive has no per-entry compressed size, so once
+   M3.4 deletes the Kotlin copy, ZIP loses the per-entry ratio rule part 3 decision 1 assumed it
+   would keep; the archive-level ratio and the runtime caps are the defence.
+4. **Non-UTF-8 names are decoded lossily and flagged** rather than failing (section 2.4), until
+   M3.7; the UI shows replacement characters and a one-line note.
+5. **The link rule and link skipping in `extract()`** (part 3 section 6): a rule the Kotlin policy
+   never had, now reachable from the UI through every non-ZIP family Inspect accepts.
+6. **No 256 MB address-space enforcement**; `max_listing_entries` (200,000, measured at
+   +27,232 KiB peak RSS for exactly that many entries, about 139 B each) is the only memory bound
+   in `:decoders`.
+7. **Section 4.4's kill-and-restart on timeout did not work before `c9b184a`**; corrected under
+   GATE-M2 as well, where M3.2b's closure of the two remaining points is recorded.
+8. **"Remote streams stage to cache" is structural only**: the staging path exists and is tested
+   with a pipe-backed provider, but no remote (SFTP/SMB/WebDAV) archive opens after M3.2 -- they
+   have no `Uri` yet.
+9. **Inspect is widened beyond the ZIP family** (7z, ISO, tar and the five compressed-tar MIME
+   types in the picker); Extract is not (ZIP-only button, `fylz.extract`'s `enabledWhen` unchanged).
+10. **Extraction still stages whole archives** until M3.4.
+11. **Full-listing transport deferred to M3.3**; M3.2 carries the first 500 rows in the Parcelable
+    (measured under 256 KB for 500 long-ish paths).
+12. **No idle-unbind policy** for the application-scoped `DecoderClient`: once used, `:decoders`
+    lives as long as the app process; M3.3 measures and decides.
+13. **`inspect`/`extract` drop libarchive's synthesized root entry** (`is_archive_root`, M3.2a): an
+    ISO image's root is listed as a directory named `.`, which the Kotlin-parity `.`-segment rule
+    refused, so every ISO would have shown "unsafe path segment". Entries *under* such a root
+    (`./file` from `tar -C dir -cf x.tar .`) are still refused by that rule -- a policy question
+    for M3.3/M3.4: should `./`-prefixed paths be normalised before the rules run?
+14. **`ArchiveEngineError::Internal`** exists beyond the design's four variants so the `From`
+    conversion is total without calling an engine bug "corrupt"; it maps to `OUTCOME_INTERNAL`.
+15. **`total_uncompressed` sums non-directory entries only**; an ISO directory's extent length is
+    not bytes an extraction writes.
+16. **A provider whose stream disagrees with its declared `COLUMN_SIZE` in either direction is a
+    `SizeMismatch`** (the design names only over-sending). A stale size on a changed file therefore
+    refuses staging rather than copying a file the provider misdescribed; worth confirming that is
+    the wanted strictness.
+17. **`DecoderClient` also turns a `RuntimeException` into `Failed`** (a `bindService` that throws
+    `SecurityException`, a service-side exception AIDL re-throws), and `ArchiveSource` turns a
+    provider stream's `RuntimeException` mid-copy into `Unreadable`: the contract "a failure
+    value, never a thrown exception" applied one step wider than the design lists.
+18. **`ArchiveInspectionResult.summaryOrNull`** is the one-field accessor `FylzV1App.kt:1012` uses
+    so the Extract action's encryption check stays one line without a new import (the file sits on
+    its 2,287-line ratchet); the design says `Ready.summary.hasEncryptedEntries` inline.
+
+**Relevant commits:** `8e35497`, `1983c0c`, and the M3.2c commit that adds this entry.
+
+**Risk if it turns out wrong:**
+- Refusing pipes (1): a provider the default probe misjudges (a pipe reporting a non-negative
+  `statSize`, or a regular file reporting -1) would either send the engine a pipe (`NOT_SEEKABLE`,
+  logged as a bug, shown as "could not be opened") or stage a file that did not need staging
+  (wasted copy, correct result). Both are visible, neither loses data.
+- Rule-set disagreement (2): a ZIP the dialog calls extractable that `extractZip` then refuses
+  with the Kotlin reason, or the reverse -- confusing, bounded, and gone in M3.4.
+- The root-entry drop (13): if a format ever lists a *real* member named `.`, it is silently
+  omitted from the listing and the policy never sees it; libarchive's readers do not produce one
+  outside the two cases above, but a hostile archive could try (it would then not be extracted
+  either, since `extract()` skips it the same way).
+- No idle unbind (12): one idle isolated process per app process after the first inspection --
+  memory the user pays for a browsing session; measured in M3.3.
+- The 500-row cap (11): a preview that shows 500 rows of an 80,000-entry tarball and a note --
+  by design, but a user may read it as a truncated archive.

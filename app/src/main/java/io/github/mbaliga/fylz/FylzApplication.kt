@@ -2,6 +2,10 @@ package io.github.mbaliga.fylz
 
 import android.app.Application
 import dev.aarso.crashrecovery.CrashRecovery
+import io.github.mbaliga.fylz.archive.ArchiveInspector
+import io.github.mbaliga.fylz.archive.ArchiveSource
+import io.github.mbaliga.fylz.decoder.ArchiveLimits
+import io.github.mbaliga.fylz.decoder.DecoderClient
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationRunner
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +27,22 @@ class FylzApplication : Application() {
      * instead of dying with whatever `rememberCoroutineScope()` started it. */
     val operationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val operationRunner: OperationRunner by lazy { OperationRunner(operationScope, this) }
+
+    /** The app's one set of archive limits (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md` section 2.2). */
+    val archiveLimits: ArchiveLimits = ArchiveLimits()
+
+    /**
+     * Archive inspection through the isolated decoder process (M3.2), application-scoped like
+     * [operationRunner] and for the same reason: `DecoderClient` owns a `ServiceConnection` that
+     * nothing composition-scoped could release, and the binding (and so `:decoders`) should live
+     * for a browsing session rather than per call. Bound with the application context. No idle
+     * unbind in M3.2 -- once used, the isolated process stays until the app process ends; M3.3
+     * measures that cost and decides. Reached as `(context.applicationContext as
+     * FylzApplication).archiveInspector`.
+     */
+    val archiveInspector: ArchiveInspector by lazy {
+        ArchiveInspector(ArchiveSource(this, archiveLimits), DecoderClient(this), archiveLimits)
+    }
 
     override fun onCreate() {
         super.onCreate()

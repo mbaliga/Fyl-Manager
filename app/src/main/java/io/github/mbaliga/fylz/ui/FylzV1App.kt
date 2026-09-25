@@ -1009,7 +1009,7 @@ private fun FylzV1Workspace(
             pendingArchiveUri = archiveUri
             extractPassword = ""
             scope.launch {
-                val encrypted = runCatching { archiveService.inspectZip(archiveUri).encrypted }.getOrDefault(false)
+                val encrypted = (context.applicationContext as FylzApplication).archiveInspector.inspect(archiveUri).summaryOrNull?.hasEncryptedEntries ?: false
                 if (encrypted) {
                     extractPasswordDialog = true
                 } else {
