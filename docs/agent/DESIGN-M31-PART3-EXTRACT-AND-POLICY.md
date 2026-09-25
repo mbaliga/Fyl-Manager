@@ -155,3 +155,109 @@ reason. `validate_path` and `normalized_path_key` are private, as in Kotlin.
   Rust engine is live. `DEVICE_CHECKS.md`: none new (no device-visible change yet).
 - `THIRD_PARTY_NOTICES.md`: unchanged (no new dependency; `arbitrary`/`libfuzzer-sys` already
   serve `core/fuzz`).
+
+## 6. Amendments from the M3.2 design (added 2026-09-25, before implementation)
+
+`DESIGN-M32-SEEKABLE-PFD.md` (rev 2) needs more from `inspect()` than §2.4 above gives it, and its
+review found a rule the policy lacks. Part 3 is implemented **with** these amendments, so nothing
+here is a later change to landed code. Where §2–§5 above conflict with this section, this section
+wins.
+
+### 6.1 Types
+
+```rust
+pub enum EntryKind { File, Directory, Symlink, Hardlink, Other }
+
+pub struct EntryMetadata {
+    pub path: String,
+    /// `true` when the raw name was not UTF-8 and `path` is `String::from_utf8_lossy` of it
+    /// (legacy CP437/GBK ZIPs; M3.7 adds charset detection). Never an error from `inspect`.
+    pub name_lossy: bool,
+    pub kind: EntryKind,                  // replaces `is_directory`; the policy tests `kind == Directory`
+    /// `archive_entry_symlink` for Symlink, `archive_entry_hardlink` for Hardlink, else None.
+    pub link_target: Option<String>,
+    pub uncompressed: Option<u64>,        // archive_entry_size_is_set ? Some : None
+    pub compressed: Option<u64>,          // ALWAYS None: libarchive has no per-entry compressed size (decision 1 stands; the
+                                          // "M3.2 can fill it" remark in decision 4 is withdrawn)
+    pub mtime: Option<i64>,               // archive_entry_mtime_is_set ? Some(widened) : None. `sys` declares `-> c_long`,
+                                          // because time_t is `long` and 32-bit on armv7 bionic; never `-> i64`
+    pub mode: u32,                        // archive_entry_perm (libarchive synthesises one for ZIP/7z/ISO)
+    pub encrypted_data: bool,             // archive_entry_is_data_encrypted
+    pub encrypted_metadata: bool,         // archive_entry_is_metadata_encrypted
+}
+
+pub struct Inspection {
+    pub archive_bytes: u64,               // fstat
+    pub format_code: u32,                 // archive_format(a) & ARCHIVE_FORMAT_BASE_MASK, after the first header
+    pub format_name: Option<String>,      // archive_format_name (NULL for an empty archive -> None); informational only
+    pub filters: Vec<String>,             // filter_names(), "none" dropped
+    pub has_encrypted_entries: Option<bool>, // archive_read_has_encrypted_entries: 1/0 -> Some, UNSUPPORTED/DONT_KNOW -> None
+    pub entries: Vec<EntryMetadata>,
+}
+
+pub struct Limits {
+    // the seven fields of §3, unchanged, plus:
+    pub max_listing_entries: usize,       // default 200_000: a memory bound for the decoder process, NOT a policy rule
+}
+
+pub enum ArchiveError {
+    NotSeekable(String),                  // fstat says not S_ISREG; text names the type ("not seekable (fifo)")
+    Unsupported(String),                  // first archive_read_next_header fails with archive_format(a) == 0, or a 7z
+                                          // whose header is encrypted (message contains "encrypted")
+    Fatal(String),
+    NonUtf8Path,                          // only from read_entry(path) lookups now; inspect never returns it
+    LimitExceeded { entry: String, rule: &'static str },
+}
+
+pub fn inspect(fd: RawFd, limits: &Limits) -> Result<Inspection, ArchiveError>;              // uses only max_listing_entries
+pub fn inspect_with_policy(fd: RawFd, limits: &Limits) -> Result<(Inspection, Decision), ArchiveError>;
+```
+
+- Hardlinks: test `archive_entry_hardlink() != NULL` **before** `archive_entry_filetype`, because
+  libarchive reports a hardlink as `AE_IFREG`.
+- `inspect` is one forward header pass, never `archive_read_data`; past `max_listing_entries` it
+  returns `LimitExceeded { entry, rule: "listing" }`.
+- The open path (shared by every public function) does `fstat` → `NotSeekable` unless `S_ISREG`,
+  then `lseek(fd, 0, SEEK_SET)` — a correctness requirement, since libarchive seeks absolutely
+  (`open_fd.c:210`) but treats the first byte read as offset 0. `#[cfg(test)] Reader::open_unchecked`
+  skips the `S_ISREG` check so tests can feed a pipe (M3.2's negative controls). These two land in
+  M3.2a if part 3 finds them out of scope; either way the `Reader` is the one place they live.
+
+### 6.2 The link rule (a rule the Kotlin policy never had — logged as a deviation)
+
+Extraction writes through SAF, which cannot create a symlink or a hardlink, so `extract()` **never
+materialises a link**: `DestinationProvider::open` is not called for `Symlink`/`Hardlink` entries and
+they are counted in a new `ExtractReport.skipped_links: usize`. The policy additionally **refuses**
+an archive whose link would have escaped if it had been materialised — the M3 acceptance criterion
+"symlink escapes are refused" — with a new rule, evaluated after the path rules for the entry:
+
+- `Symlink` with `link_target` absolute (leading `/`, or a drive-letter prefix by the same two-byte
+  check as the path rule) or whose normalised join of `dirname(path)` and target climbs above the
+  archive root → `Decision { allowed: false, reason: "Archive contains a link that escapes the
+  extraction folder." }`.
+- `Hardlink` whose `link_target` fails `validate_path` (the same checks a path gets) → the same reason.
+- `link_target == None` on a link entry → the same reason (a link with no target is malformed).
+
+The reason string is new (no Kotlin counterpart); `hostile/symlink-escape.tar` (M3.2a) is its
+end-to-end fixture, and `policy_tests.rs` gains cases for: absolute target, `../` climb-out,
+in-tree relative link (allowed), hardlink to a valid path (allowed), hardlink to `../x` (refused).
+`Symlink`, `Hardlink` and `Other` count as **files** for `max_entries` and the totals; their
+`uncompressed` is whatever libarchive reports (usually `Some(0)` or the target length).
+
+### 6.3 Fuzz targets
+
+`policy_evaluate` and `archive_entries` take the amended types from the start (`arbitrary` derives
+for `EntryKind`, `Option<String>` link targets). Because `core/fuzz` is its own Cargo workspace,
+`cargo test --workspace` never compiles it: the gate for 3a/3b (and every later commit touching
+these types) includes `cd core/fuzz && cargo +nightly fuzz build`.
+
+### 6.4 Effect on §2–§5 above
+
+- §2.3's `DestinationProvider` and `extract` signatures are unchanged; `ExtractReport` gains
+  `skipped_links`. `ArchiveEntry` (the simple listing type) is unchanged.
+- §2.4's `inspect(fd)` becomes `inspect(fd, &limits)`; `EntryMetadata` is the §6.1 shape.
+- §3's `Decision`, rule order and reason strings are unchanged; the link rule is appended after the
+  per-entry path rules and before the archive-level ratio check. `evaluate`'s signature is unchanged.
+- §4's parity tests are unaffected in substance (`is_directory: true` → `kind: Directory`); they
+  gain the link cases of §6.2 and the `name_lossy` construction.
+- §5's gate gains the fuzz build; the commit split (3a policy, 3b extract/inspect) stands.

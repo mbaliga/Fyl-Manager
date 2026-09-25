@@ -1,10 +1,12 @@
 # M3.2 design: a seekable descriptor into the decoder process, no whole-archive staging
 
-Design for MASTER_PLAN M3.2. Written 2026-09-25 from `SURVEY-M32-SEEKABLE-PFD.md` (the read-only
-fact sheet; every "today" claim below is verified there with file:line evidence) and from
-`DESIGN-M31-PART3-EXTRACT-AND-POLICY.md` (part 3 is designed and precedes M3.2 in implementation
-order). Paths are relative to the repository root. `UNVERIFIED` marks a claim the implementing
-agent must confirm and record.
+**Rev 2** (2026-09-25), after the architecture review of rev 1 (commit `282f377`). The review's
+findings and what changed are listed in §6. Design for MASTER_PLAN M3.2, written from
+`SURVEY-M32-SEEKABLE-PFD.md` (the read-only fact sheet; every "today" claim below is verified there
+with file:line evidence, with the corrections in §1) and from
+`DESIGN-M31-PART3-EXTRACT-AND-POLICY.md`, whose §6 now carries the type amendments this design
+needs (part 3 is implemented before M3.2). Paths are relative to the repository root.
+`UNVERIFIED` marks a claim the implementing agent must confirm and record.
 
 The plan's text, in full:
 
@@ -16,41 +18,64 @@ The plan's text, in full:
 
 **In:** (a) the `fylz-archive` engine reads through a seekable descriptor and states that contract;
 (b) `fylz-ffi-android` exposes archive inspection over uniffi; (c) `DecoderService` gains an archive
-inspection call over AIDL that takes the archive descriptor and returns the archive's structure;
-(d) a Kotlin `ArchiveSource` turns a `Uri` into a seekable descriptor, staging to cache only when the
-provider hands back something that cannot seek, with a space check; (e) the app's **archive
-inspection** path (`ArchiveToolsOverlay`'s Inspect and the Extract action's encryption check) moves
-off zip4j onto this path, so inspecting an archive no longer copies it; (f) ZIP, 7z and ISO fixtures
-and tests that prove seeks are used.
+inspection call over AIDL that takes the archive descriptor and returns a Parcelable summary with
+the first rows of the listing; (d) `DecoderClient`'s timeout is made to actually abandon a hung
+call (a pre-existing M2.4 defect that M3.2, the first real caller, would otherwise ship on);
+(e) a Kotlin `ArchiveSource` turns a `Uri` into a seekable descriptor, staging to cache only when
+the provider hands back something that cannot seek, with a space check; (f) **every** app path that
+inspects an archive today — `ArchiveToolsOverlay`'s Inspect dialog, the Extract action's encryption
+check in `FylzV1App`, and `ZipArchivePreview` in `SpecializedDocumentPreview.kt` (the worst staging
+site: a full copy of the archive every time a ZIP or APK gains preview focus) — moves off zip4j
+onto this path, so inspecting an archive no longer copies it; (g) ZIP, 7z and ISO fixtures and tests
+that prove seeks are used, with negative controls.
 
 **Out (and where it goes):** extraction through the transfer queue, progress and cancellation
 (M3.4 — `ArchiveService.extractZip` keeps zip4j and its own staging until then); browsing entries
-as folders and previewing them (M3.3); deleting the Kotlin `ArchiveExtractionPolicy` copy (part 3
-decision 2 placed it in "the commit that moves `ArchiveService`'s read path onto the Rust engine";
-that is now **M3.4**, because `extractZip` still evaluates the Kotlin policy until extraction moves
-— this design changes the schedule, not the rule); AES/ZipCrypto/7z-encrypted reading (M5 and the
-7-Zip pack); remote (SFTP/SMB/WebDAV) archives, which have no `Uri` or stream API today (survey §4)
-and stay unopenable until the network milestone gives them one (they will stage through §2.3's
-`Staged` path when they do — that is the "remote streams" clause of the plan text, and the
-staging path is built now so nothing in M3.2 has to change then).
+as folders, previewing entry contents, and **transporting a full listing** out of `:decoders` (M3.3
+— see §2.2 for why M3.2 carries only the first 500 rows); deleting the Kotlin
+`ArchiveExtractionPolicy` copy (part 3 decision 2 placed it in "the commit that moves
+`ArchiveService`'s read path onto the Rust engine"; that is now **M3.4**, because `extractZip`
+still evaluates the Kotlin policy until extraction moves — this changes the schedule, not the rule);
+AES/ZipCrypto/7z-encrypted reading (M5 and the 7-Zip pack); filename charset detection for legacy
+ZIPs (M3.7; §2.4 says what M3.2 does with non-UTF-8 names meanwhile); remote (SFTP/SMB/WebDAV)
+archives, which have no `Uri` and only a `download(path, File)` API today (survey §4) — they stay
+unopenable until the network milestone gives them an entry point, and that entry point will hand
+`ArchiveSource` a downloaded file (already seekable) or a stream (staged by §2.3). The plan's
+"remote streams stage to cache" is therefore **structural** in M3.2: the staging path exists and is
+tested with a pipe-backed provider, but no remote archive opens after M3.2.
 
-## 1. What today's code does (short; the survey has the evidence)
+## 1. What today's code does (short; the survey has the evidence, with two corrections)
 
 - `IDecoderService` has `ping()` and `sniff(pfd)`; results are `Boolean`/`String`; no error
-  channel; `DecoderClient` times every call out at 5 s and treats timeout and crash alike (drop the
-  binding, return `null`). Nothing in `app/src/main` constructs a `DecoderClient` yet.
+  channel; `DecoderClient` wraps each call in `withTimeoutOrNull(5 s) { withContext(IO) { … } }`.
+  **Correction (review finding 1):** that timeout does not abandon a hung call. `withContext`
+  waits for its blocking body under structured concurrency, so `withTimeoutOrNull` returns `null`
+  only *after* the Binder transaction returns — measured: a 1,500 ms blocking body under a 20 ms
+  timeout returns after 1,520 ms. `dropConnection()` (the unbind that lets the platform reap
+  `:decoders`) therefore never runs while the process is hung; a libarchive spin would freeze the
+  calling coroutine indefinitely. The existing hang tests pass because the fake sleeps 500 ms and
+  nothing measures elapsed time. Nothing in `app/src/main` constructs a `DecoderClient` yet.
 - `fylz-ffi-android` depends only on `fylz-sniff`; `sniff` wraps the caller's fd in
   `ManuallyDrop<File>` so Rust never closes it.
 - `ArchiveService.inspectZip` and `extractZip` each copy the whole archive into
-  `cacheDir/archive-work/<uuid>/` first (`stageArchive`), then read it with zip4j; an extract flow
-  therefore stages the archive twice and writes the output twice.
+  `cacheDir/archive-work/<uuid>/` first (`stageArchive`), then read it with zip4j. Three callers
+  inspect: `ArchiveToolsOverlay.kt:146`, `FylzV1App.kt:1012` (the Extract action's `.encrypted`
+  check) and `SpecializedDocumentPreview.kt:186` (`ZipArchivePreview`, mounted from
+  `PreviewPane.kt:156` for the ZIP family). The `data.ArchiveInspection` class carries
+  `visibleEntries` capped at `DEFAULT_VISIBLE_ENTRY_LIMIT = 500` plus `entriesTruncated`.
 - `fylz-archive` opens with `archive_read_open_fd`, which seeks when `fstat` says regular file and
   otherwise reads-and-discards; on a pipe libarchive still *attempts* seeks and gets `ARCHIVE_FAILED`.
-  ZIP central directories, 7z pack streams and out-of-order ISO extents need those seeks (survey §5).
-- The fd's offset is shared with every Binder dup; `archive_read_open_fd` starts at the current
-  offset and never rewinds.
-- Nothing in the app calls `ParcelFileDescriptor.getStatSize()`; seekable-fd precedents exist in the
-  previews (`openFileDescriptor(uri, "r")`).
+  **Correction (finding 20):** survey §5's "7z can be listed on a pipe" is wrong — for fd input
+  `can_seek` is always 1 (`archive_read.c:520`), so 7z's `seek_compat` calls the real seek and
+  fails on a pipe (`7zip.c:4631`). 7z needs a seekable descriptor for listing *and* data.
+- libarchive treats the first byte it reads as offset 0 (`archive_read.c:522`) but `file_seek`
+  issues an absolute `lseek(fd, request, whence)` (`open_fd.c:210`): with a non-zero starting
+  offset, the seekable ZIP reader and 7z's `seek_pack` read the wrong bytes. The fd's offset is
+  shared with every Binder dup.
+- ISO9660 is read as a single forward walk of directory extents in sector order (`iso9660.c:70-80`);
+  the only backward seek is for out-of-order file extents (`iso9660.c:1406`). libarchive does not
+  read ISO path tables. For ISO, "read with seeks" means lseek-backed forward skips
+  (`open_fd.c:161-167`) instead of read-and-discard.
 
 ## 2. Decisions
 
@@ -59,84 +84,76 @@ staging path is built now so nothing in M3.2 has to change then).
 `fylz-archive`'s open path (the `Reader` behind `entries`, `read_entry`, `filter_names`, and part
 3's `inspect`/`extract`) gains two steps before `archive_read_open_fd`:
 
-1. `fstat(fd)`; unless `S_ISREG`, return the new `ArchiveError::NotSeekable`. (Pipes, sockets,
-   character devices. A regular file on any filesystem seeks.)
-2. `lseek(fd, 0, SEEK_SET)`. The dup that arrives over Binder shares its offset with the UI
-   process's descriptor; whatever position the caller left it at, the engine starts from byte 0.
-   Because a Binder call is synchronous and the service closes its dup on return, nothing else
-   reads the same open file description while the engine runs, so the moving shared offset is not
-   a race — but the engine must not *depend* on the initial offset, and this makes that a tested
-   property rather than a convention.
+1. `fstat(fd)`; unless `S_ISREG`, return `ArchiveError::NotSeekable(String)` whose text names the
+   file type (`"not seekable (fifo)"`, `"(socket)"`, `"(character device)"`).
+2. `lseek(fd, 0, SEEK_SET)`. **This is a correctness requirement, not hygiene** (§1): libarchive
+   seeks absolutely, so the engine must start at byte 0 whatever offset the caller left the shared
+   open file description at. The code comment says so. A Binder call is synchronous and the
+   service closes its dup on return, so nothing else reads the same open file description while the
+   engine runs; the moving shared offset is not a race, and the test
+   `inspect_ignores_the_descriptors_initial_offset` (on `sample-cd.zip`, whose central directory is
+   found by an absolute seek from the end) pins the property.
 
 **Why refuse pipes instead of streaming them:** libarchive can stream tar/gz/xz/zst/lz4 and the
-streaming ZIP reader, but with sizes unknown until data descriptors, no 7z data, no ISO out-of-order
-extents, and no way to tell the caller which of those it got. The plan's own rule is "only
-non-seekable streams stage to cache", so the streaming case never reaches the engine; making that a
-hard contract (a typed error, a test) is cheaper than a second code path whose behaviour differs by
-format. **Alternative not taken:** custom `archive_read_set_*_callback`s over `pread` so the
-shared offset never moves. It is cleaner in theory, but it replaces libarchive's tested
-`open_fd.c` with our own read/skip/seek trio for no behaviour the caller can observe (the UI closes
-its descriptor after the call). Revisit only if a later milestone keeps one descriptor open across
-several engine calls concurrently.
+streaming ZIP reader, but with sizes unknown until data descriptors, no 7z at all (§1), no ISO
+out-of-order extents, and no way to tell the caller which of those it got. The plan's own rule is
+"only non-seekable streams stage to cache", so the streaming case never reaches the engine; making
+that a hard contract (a typed error, a test) is cheaper than a second code path whose behaviour
+differs by format. **Alternative not taken:** custom `archive_read_set_*_callback`s over `pread` so
+the shared offset never moves — it replaces libarchive's tested `open_fd.c` with our own
+read/skip/seek trio for no behaviour the caller can observe. Revisit only if a later milestone
+keeps one descriptor open across several concurrent engine calls.
 
-`NotSeekable` also carries the `fstat` mode's file-type bits in its message so a device log says
-*what* arrived (`"not seekable (fifo)"`).
+For tests only, `#[cfg(test)] Reader::open_unchecked(fd)` skips step 1 (and step 2's `lseek`
+failure is ignored) so the same fixtures can be fed through `std::io::pipe()` (stable since Rust
+1.87; the toolchain is 1.94.1) to show what the seekable path buys — §2.8.
 
-### 2.2 Inspection over AIDL: a small Parcelable summary plus a listing sink
+### 2.2 Inspection over AIDL: a Parcelable summary carrying the first rows
 
 `IDecoderService` gains:
 
 ```aidl
-// Both descriptors are caller-owned. `archive` is read-only and must be seekable (the client
-// guarantees that -- section 2.3); `listingSink` is write-only and receives the entry table in
-// ArchiveListingCodec's format. Neither stays valid after this call returns.
-ArchiveInspection inspectArchive(in ParcelFileDescriptor archive,
-                                 in ParcelFileDescriptor listingSink,
-                                 in ArchiveLimits limits);
+// `archive` is read-only, caller-owned, and seekable (the client guarantees that -- section 2.3);
+// it is not valid after this call returns. The result carries the archive's structure and at most
+// `maxRows` entries (MASTER_PLAN section 4.4: "structure as Parcelables").
+ArchiveInspection inspectArchive(in ParcelFileDescriptor archive, in ArchiveLimits limits, int maxRows);
 ```
 
-with two Parcelables (`kotlin-parcelize` plugin added to `app/build.gradle.kts`; `@Parcelize` data
+with two Parcelables (`kotlin-parcelize` plugin: `id("org.jetbrains.kotlin.plugin.parcelize")
+version "2.1.20" apply false` in the root `build.gradle.kts`, applied in `app/`; `@Parcelize` data
 classes in `decoder/`, declared to AIDL with `parcelable ArchiveLimits;` / `parcelable
 ArchiveInspection;` files):
 
-- `ArchiveLimits` mirrors `fylz-archive`'s `policy::Limits` field for field (the same seven numbers
-  `ArchiveExtractionLimits` has today, plus `maxListingEntries: Int` — §2.4).
-- `ArchiveInspection` is the **summary only**: `outcome` (`OK`, `NOT_SEEKABLE`, `UNSUPPORTED`,
-  `CORRUPT`, `LIMIT_EXCEEDED`, `INTERNAL`), `message: String?` (the engine's error text, never a
-  stack trace), `format: String?` (libarchive's `archive_format_name`, e.g. `"ZIP 2.0 (deflation)"`,
-  `"7-Zip"`, `"ISO9660"`), `filters: List<String>` (`archive_filter_name` per filter, `"none"`
-  dropped), `archiveBytes: Long`, `entryCount: Int`, `directoryCount: Int`,
-  `totalUncompressedBytes: Long` (-1 when any entry's size is unknown), `hasEncryptedEntries:
-  Boolean`, `hasEncryptedMetadata: Boolean`, `policyAllowed: Boolean`, `policyReason: String?`,
-  `listingEntries: Int` (how many rows were written to the sink, so the reader can detect a
-  truncated file).
+- `ArchiveLimits` mirrors `fylz-archive`'s `policy::Limits` field for field: the seven numbers
+  `ArchiveExtractionLimits` has today plus `maxListingEntries` (part 3 §6). It is the app's one
+  limits type from M3.2 on; `ArchiveExtractionLimits` stays only for `extractZip` until M3.4.
+- `ArchiveInspection`: `outcome: Int` (`OK`, `NOT_SEEKABLE`, `UNSUPPORTED`, `CORRUPT`,
+  `LIMIT_EXCEEDED`, `INTERNAL` — full mapping in §2.4), `message: String?` (the engine's error text,
+  never a stack trace), `formatCode: Int` (`archive_format() & ARCHIVE_FORMAT_BASE_MASK`; the
+  family — ZIP, 7ZIP, ISO9660, TAR, … — which is what UI decisions key on), `formatName: String?`
+  (libarchive's `archive_format_name`, informational; for ZIP it names the *current entry's*
+  compression method, so it is never used for decisions), `filters: List<String>`
+  (`archive_filter_name` per filter, `"none"` dropped), `archiveBytes: Long`, `entryCount: Int`,
+  `fileCount: Int`, `directoryCount: Int`, `linkCount: Int`, `totalUncompressedBytes: Long` (-1 when
+  any entry's size is unknown), `hasEncryptedEntries: Boolean`, `hasEncryptedMetadata: Boolean`,
+  `hasLossyNames: Boolean`, `policyAllowed: Boolean`, `policyReason: String?`,
+  `rows: List<ArchiveEntryInfo>` (the first `maxRows` entries in archive order), `rowsTruncated:
+  Boolean`.
+- `ArchiveEntryInfo` (`@Parcelize`): `path`, `kind: Int` (FILE, DIRECTORY, SYMLINK, HARDLINK,
+  OTHER), `linkTarget: String?`, `uncompressedBytes: Long` (-1 unknown), `mtimeEpochSeconds: Long`
+  (`Long.MIN_VALUE` unknown), `mode: Int`, `encryptedData: Boolean`, `encryptedMetadata: Boolean`,
+  `nameLossy: Boolean`.
 
-**The entry table does not travel inside the Parcelable.** The Binder transaction buffer is 1 MB per
-process, shared by every in-flight transaction; at roughly 100 bytes per entry a listing overflows
-it around ten thousand entries — a Linux source tarball has eighty thousand, and M3.3 has to browse
-those. So the service writes the entries into `listingSink`, a write descriptor the **UI process**
-opened on a file it created (`cacheDir/archive-listings/<uuid>.fzl`), and the UI reads it back
-lazily. This is a deviation from MASTER_PLAN §4.4's "structure as Parcelables" and is logged in
-`REVIEW_QUEUE.md`; the summary *is* a Parcelable, the table is not.
-
-`ArchiveListingCodec` (`archive/ArchiveListingCodec.kt`, Kotlin on both sides, so the format cannot
-drift between two implementations) writes with `DataOutputStream` over a `BufferedOutputStream`:
-magic `FZL1`, then per entry — UTF-8 path (u16 length prefix; paths over 65,535 bytes are already
-rejected by `maxNameLength`, but the codec must not overflow: it writes `0xFFFF` and the first
-65,535 bytes and sets a `TRUNCATED_PATH` flag), a flags byte (`DIRECTORY`, `SYMLINK`, `HARDLINK`,
-`ENCRYPTED_DATA`, `ENCRYPTED_METADATA`, `SIZE_UNKNOWN`, `TRUNCATED_PATH`), `uncompressed: Long`
-(0 when unknown, see flag), `mtimeEpochSeconds: Long` (`Long.MIN_VALUE` = unknown), `mode: Int`
-(the permission bits, 0 when the format carries none) — and a trailer `0xFFFFFFFF` + entry count. The reader is a `Sequence<ArchiveListingEntry>`
-that validates the trailer against `ArchiveInspection.listingEntries` and throws
-`ArchiveListingTruncated` otherwise. No `compressed` field: libarchive has no public per-entry
-compressed size (part 3 decision 1), and this design does not add one — the part-3 remark that
-"M3.2's seekable ZIP reader can fill it" is **withdrawn**; the archive-level ratio check and the
-runtime caps are the defence, as part 3 already decided.
-
-**Encoding in the service, not in Rust:** the Rust side returns the entry table to Kotlin *inside
-`:decoders`* as a uniffi `Vec<ArchiveEntryRecord>` (a `RustBuffer` copy — for eighty thousand
-entries about 10 MB, well inside the isolated process's budget), and `DecoderService` runs the
-codec. Rust stays free of the file format and of any serialisation dependency.
+**Why only the first rows, and why 500.** The Binder transaction buffer is 1 MB per process,
+shared by every in-flight transaction; at roughly 100 bytes per entry a full listing overflows it
+around ten thousand entries, and M3.3 has to browse eighty-thousand-entry tarballs. But no M3.2
+consumer needs more than today's `DEFAULT_VISIBLE_ENTRY_LIMIT = 500` (`ZipArchivePreview` lists
+`visibleEntries`; the overlay and the Extract check use only the summary). So M3.2 carries up to
+500 rows (about 50 KB) inside the Parcelable — §4.4's "structure as Parcelables", literally — and
+**M3.3 designs the full-listing transport** (a UI-owned listing file the service writes through a
+passed descriptor, `SharedMemory`, or paged calls) with the browsing requirements in hand. Rev 1's
+listing-sink file and `ArchiveListingCodec` are withdrawn from M3.2; the `maxRows` parameter is
+what lets M3.3 add a second transport without changing this call.
 
 ### 2.3 `ArchiveSource`: one `Uri` in, one seekable descriptor out
 
@@ -146,9 +163,10 @@ plumbing, `data/ArchiveService` keeps the zip4j code that M3.4–M3.10 retire).
 ```kotlin
 class ArchiveSource(
     private val context: Context,
-    private val limits: ArchiveExtractionLimits = ArchiveExtractionLimits(),
-    private val isSeekable: (ParcelFileDescriptor) -> Boolean = ::fstatIsRegularFile,
-    private val availableCacheBytes: () -> Long? = { StatFs(context.cacheDir.path)... },
+    private val limits: ArchiveLimits,
+    private val isSeekable: (ParcelFileDescriptor) -> Boolean = { it.statSize >= 0L },
+    private val availableCacheBytes: () -> Long? = { StatFs(context.cacheDir.path).availableBytes },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     sealed class Resolved : Closeable {
         abstract val pfd: ParcelFileDescriptor
@@ -157,283 +175,416 @@ class ArchiveSource(
     }
     suspend fun resolve(uri: Uri): Resolved   // throws ArchiveSourceException
 }
+sealed class ArchiveSourceException(message: String) : IOException(message) {
+    class Unreadable(cause: Throwable) ; class InsufficientSpace(required: Long, available: Long?)
+    class ArchiveTooLarge(limit: Long) ; class SizeMismatch(declared: Long, actual: Long)
+}
 ```
 
 Resolution, in order:
 
-1. `contentResolver.openFileDescriptor(uri, "r")`. If it throws (`FileNotFoundException`,
-   `UnsupportedOperationException`, `SecurityException`) → step 3 with `openInputStream`.
-2. `isSeekable(pfd)`: default `Os.fstat(pfd.fileDescriptor)` + `OsConstants.S_ISREG(st_mode)`;
-   `getStatSize() >= 0` is *not* used as the primary test because it is documented to return the
-   size for "regular files and other seekable types" without saying which. Seekable → `Direct(pfd)`.
-   Not seekable → close that pfd, step 3 with `openInputStream`. (`UNVERIFIED`: whether
-   `Os.fstat` works under Robolectric. The lambda is injectable precisely so unit tests do not
-   depend on it; the agent records which default worked in the PROGRESS row.)
+1. `contentResolver.openFileDescriptor(uri, "r")`. If it throws (`FileNotFoundException` — which
+   is also what a provider raises for a sub-range asset, "Not a whole file";
+   `UnsupportedOperationException`; `SecurityException`) → step 3 through `openInputStream`; if
+   that throws too → `Unreadable`.
+2. `isSeekable(pfd)`: default `pfd.statSize >= 0L` — AOSP's `getStatSize()` is exactly
+   `S_ISREG(st_mode) ? st_size : -1`, so it is the `fstat` test without `android.system.Os`.
+   Seekable → `Direct(pfd)`. Not seekable → close that pfd, step 3. (The lambda is injectable
+   because Robolectric's `createPipe()` is file-backed and would report a size; tests inject
+   `{ false }` for the pipe provider.)
 3. **Stage, with the space check first.** Declared size: `DocumentsContract.Document.COLUMN_SIZE`
-   from a one-column query on `uri` (null when the provider does not say). Required bytes =
+   from a one-column query on `uri` (`null` when the provider does not say). If `declared >
+   limits.maxArchiveBytes` → `ArchiveTooLarge` before copying anything. Required bytes =
    `(declared ?: limits.maxArchiveBytes) + MIN_TEMPORARY_HEADROOM` (the 16 MiB constant already in
    `ArchiveSpacePolicy`; expose it as `ArchiveSpacePolicy.stagingRequirement(declaredBytes: Long?,
-   maxArchiveBytes: Long)`), checked against `availableCacheBytes()` through the existing
+   maxArchiveBytes: Long): Long`), checked against `availableCacheBytes()` through the existing
    `ArchiveSpacePolicy.evaluate(required, available, label = "temporary storage")`. Not enough →
-   `ArchiveSourceException.InsufficientSpace(required, available)` and **nothing is copied**. Then
-   copy into `cacheDir/archive-work/<uuid>/input` (today's directory, today's `copyBounded` shape)
-   with a hard cap at `limits.maxArchiveBytes` → `ArchiveSourceException.ArchiveTooLarge`, workspace
-   deleted. Success → `ParcelFileDescriptor.open(file, MODE_READ_ONLY)` → `Staged(pfd, workspace)`.
-   `close()` closes the pfd and `deleteRecursively()`s the workspace.
-   Also sweep `cacheDir/archive-work/` for entries older than 24 h on first `resolve()` (a process
-   death between staging and `close()` leaves the directory behind; today's code has the same leak
-   with no sweep — `UNVERIFIED`, the agent greps for one before adding it).
+   `InsufficientSpace` and **nothing is copied**. Then copy into `cacheDir/archive-work/<uuid>/input`
+   (today's directory) with: a hard cap at `min(declared ?: MAX, limits.maxArchiveBytes)` — a
+   provider that under-declares and keeps sending past `declared` is a `SizeMismatch`, past the
+   limit an `ArchiveTooLarge`; and, when the size was unknown, a re-check of
+   `availableCacheBytes() >= MIN_TEMPORARY_HEADROOM` after every 64 MiB copied → `InsufficientSpace`.
+   Any failure deletes the workspace. Success → `ParcelFileDescriptor.open(file, MODE_READ_ONLY)` →
+   `Staged(pfd, workspace)`. `close()` closes the pfd and `deleteRecursively()`s the workspace.
+4. Sweep: on the first `resolve()` per process, delete entries under `cacheDir/archive-work/`
+   older than 24 h (a process death between staging and `close()` leaves them; today's code has the
+   same leak and — `UNVERIFIED`, grep before adding — no sweep).
 
 Everything the UI process can open by `Uri` reaches Rust only through `resolve()`, so the engine's
-`NotSeekable` (§2.1) is unreachable from the app in practice; if it ever comes back it is reported as
-`outcome = INTERNAL` with the message, not as a retry.
+`NotSeekable` (§2.1) is unreachable from the app in practice; if it ever comes back, the outcome is
+reported as `NOT_SEEKABLE` (the engine's answer, shown as "could not be opened") and logged at
+`Log.w` as a bug, not retried.
 
-### 2.4 The Rust side: `inspect()` gets what a listing needs
+### 2.4 The Rust side
 
-Part 3 defines `inspect(fd) -> Inspection { archive_bytes, entries: Vec<EntryMetadata> }` and
-`EntryMetadata { path, is_directory, uncompressed: Option<u64>, compressed: Option<u64> }`. Part 3
-has not been implemented yet, so this design **amends part 3's types** rather than adding a second
-listing call (the part-3 brief must carry these when it is dispatched):
+Part 3 §6 defines the amended types; the ones this design relies on:
 
 ```rust
-pub enum EntryKind { File, Directory, Symlink, Hardlink, Other }   // from archive_entry_filetype / hardlink()
-pub struct EntryMetadata {
-    pub path: String,
-    pub kind: EntryKind,                 // replaces `is_directory`; policy tests `kind == Directory`
-    pub uncompressed: Option<u64>,       // archive_entry_size_is_set ? Some(size) : None
-    pub compressed: Option<u64>,         // always None (2.2); kept so the policy signature is stable
-    pub mtime: Option<i64>,              // archive_entry_mtime_is_set
-    pub mode: u32,                       // archive_entry_perm (0 when the format carries none; libarchive has no is_set for it)
-    pub encrypted_data: bool,            // archive_entry_is_data_encrypted
-    pub encrypted_metadata: bool,        // archive_entry_is_metadata_encrypted
-}
-pub struct Inspection {
-    pub archive_bytes: u64,              // fstat
-    pub format: String,                  // archive_format_name after the first header
-    pub filters: Vec<String>,            // filter_names(), reused
-    pub has_encrypted_entries: Option<bool>,   // archive_read_has_encrypted_entries: 1/0 -> Some, ARCHIVE_READ_FORMAT_ENCRYPTION_UNSUPPORTED/DONT_KNOW -> None
-    pub entries: Vec<EntryMetadata>,
-}
-pub struct Limits { /* part 3's seven fields */ pub max_listing_entries: usize /* default 1_000_000 */ }
+pub enum EntryKind { File, Directory, Symlink, Hardlink, Other }
+pub struct EntryMetadata { path: String, name_lossy: bool, kind: EntryKind, link_target: Option<String>,
+                           uncompressed: Option<u64>, compressed: Option<u64> /* always None */,
+                           mtime: Option<i64>, mode: u32, encrypted_data: bool, encrypted_metadata: bool }
+pub struct Inspection { archive_bytes: u64, format_code: u32, format_name: Option<String>, filters: Vec<String>,
+                        has_encrypted_entries: Option<bool>, entries: Vec<EntryMetadata> }
+pub struct Limits { /* the seven policy fields */ max_listing_entries: usize /* default 200_000 */ }
+pub enum ArchiveError { NotSeekable(String), Unsupported(String), Fatal(String), NonUtf8Path, LimitExceeded { entry: String, rule: &'static str } }
+pub fn inspect(fd: RawFd, limits: &Limits) -> Result<Inspection, ArchiveError>;
+pub fn inspect_with_policy(fd: RawFd, limits: &Limits) -> Result<(Inspection, Decision), ArchiveError>;
 ```
 
-`inspect` is one forward header pass (`archive_read_next_header`, never `archive_read_data`) and
-stops with `ArchiveError::LimitExceeded { entry, rule: "listing" }` past `max_listing_entries` — a
-memory bound for `:decoders`, distinct from the policy's `max_entries` (10,000), which stays an
-*extraction* rule evaluated afterwards on the collected table. With a seekable descriptor this pass
-is cheap for the three formats the plan names: ZIP's seekable bidder jumps to the central directory;
-7z's header lives at the end and `seek_compat` becomes a real `lseek`; ISO reads its path tables at
-the front. The policy `evaluate(archive_bytes, &entries, &limits)` runs inside `inspect_with_policy`
-(the function the FFI calls), so the decision is computed once, in Rust, and the listing the UI shows
-and the decision it shows come from the same pass.
+Notes that are M3.2's rather than part 3's:
+
+- **Non-UTF-8 entry names do not fail inspection.** zip4j decoded legacy (CP437 etc.) names and
+  never failed; libarchive passes them through as raw bytes off Windows (`zip.c:1127-1190`), and
+  rev 1 would have failed the whole inspection with `NonUtf8Path` — a regression for Inspect, the
+  Extract check and Preview on every legacy ZIP until M3.7. So `inspect` decodes with
+  `String::from_utf8_lossy` and sets `name_lossy = true` on that entry; the policy validates the
+  lossy string (its structural rules — depth, length, `..`, absolute — are unaffected by
+  replacement characters). `read_entry(fd, path)` keeps `NonUtf8Path` (an exact-match lookup on a
+  lossy name is ambiguous; M3.7 gives both a real charset). Logged as a deviation.
+- **`mtime` is `time_t`**, which is `long` — 32 bits on armv7 bionic. The `sys` declaration is
+  `-> c_long`, widened to `i64` (the same hazard `lib.rs` already documents for `mode_t`). The
+  M3.2a gate therefore includes a three-ABI `cargo ndk … -p fylz-archive` build, because
+  `fylz-ffi-android` does not depend on `fylz-archive` until M3.2b.
+- `format_name` is `Option<String>` (`archive_format_name` is NULL for an empty archive).
+- **Memory bound:** `max_listing_entries` defaults to 200,000 — about 30 MB of `EntryMetadata` in
+  Rust — a bound for `:decoders` distinct from the policy's `max_entries` (10,000), which stays an
+  *extraction* rule evaluated afterwards on the collected table (browsing in M3.3 must still list
+  archives the policy would refuse to extract). Rev 1's 1,000,000 implied ~150 MB and breached
+  §4.4's 256 MB target. The implementing agent measures peak RSS of `inspect` on a synthetic
+  200,000-entry tar (built with `tarfile` in the fixture script, not committed) and records it in
+  the PROGRESS row; if it exceeds 64 MB the default drops until it fits.
+- **Hardlinks** are detected with `archive_entry_hardlink() != NULL` *before* `archive_entry_filetype`
+  (libarchive reports them as `AE_IFREG`).
 
 `fylz-ffi-android` adds `fylz-archive` as a dependency and exports, **synchronously**:
 
 ```rust
-#[derive(uniffi::Record)] pub struct ArchiveLimits { ... }          // mirrors, From<> both ways
-#[derive(uniffi::Record)] pub struct ArchiveEntryRecord { path, kind: ArchiveEntryKind, uncompressed: Option<u64>, mtime: Option<i64>, mode: u32, encrypted_data: bool, encrypted_metadata: bool }
-#[derive(uniffi::Record)] pub struct ArchiveInspectionRecord { archive_bytes, format, filters, has_encrypted_entries: Option<bool>, policy_allowed: bool, policy_reason: Option<String>, entries: Vec<ArchiveEntryRecord> }
-#[derive(uniffi::Error, Debug, thiserror::Error)] pub enum ArchiveFfiError { NotSeekable{message}, Fatal{message}, NonUtf8Path, LimitExceeded{entry, rule} }
-#[uniffi::export] pub fn archive_inspect(fd: i32, limits: ArchiveLimits) -> Result<ArchiveInspectionRecord, ArchiveFfiError>;
+#[derive(uniffi::Record)] pub struct ArchiveLimitsRecord { max_entries: u32, max_archive_bytes: u64, max_file_bytes: u64,
+    max_total_uncompressed_bytes: u64, max_compression_ratio: f64, max_path_depth: u32, max_name_length: u32, max_listing_entries: u32 }
+#[derive(uniffi::Enum)]   pub enum ArchiveEntryKindRecord { File, Directory, Symlink, Hardlink, Other }
+#[derive(uniffi::Record)] pub struct ArchiveEntryRecord { path: String, name_lossy: bool, kind: ArchiveEntryKindRecord, link_target: Option<String>,
+    uncompressed: Option<u64>, mtime: Option<i64>, mode: u32, encrypted_data: bool, encrypted_metadata: bool }
+#[derive(uniffi::Record)] pub struct ArchiveInspectionRecord { archive_bytes: u64, format_code: u32, format_name: Option<String>, filters: Vec<String>,
+    entry_count: u32, file_count: u32, directory_count: u32, link_count: u32, total_uncompressed: Option<u64>,
+    has_encrypted_entries: bool, has_encrypted_metadata: bool, has_lossy_names: bool,
+    policy_allowed: bool, policy_reason: Option<String>, rows: Vec<ArchiveEntryRecord>, rows_truncated: bool }
+#[derive(uniffi::Error, Debug)] pub enum ArchiveEngineError { NotSeekable { detail: String }, Unsupported { detail: String },
+    Corrupt { detail: String }, LimitExceeded { entry: String, rule: String } }   // manual Display impl; no thiserror
+#[uniffi::export] pub fn archive_inspect(fd: i32, limits: ArchiveLimitsRecord, max_rows: u32) -> Result<ArchiveInspectionRecord, ArchiveEngineError>;
 ```
 
-Synchronous because the call runs on a Binder thread that has nothing else to do; `sniff` is `async`
-without an `.await` and `DecoderService` wraps it in `runBlocking` — that is harmless but a pattern
-not to copy. Errors cross uniffi as `ArchiveFfiException` subclasses in Kotlin; `DecoderService`
-catches them and maps to `ArchiveInspection.outcome` + `message` (AIDL propagates only a fixed set of
-exception types; anything else kills the Binder thread and shows up client-side as a crash). The fd
-is used as a plain `i32`, never wrapped in an owning `File` (the `ManuallyDrop` rule from `sniff`
-applies to any wrapper the archive code creates). `thiserror` is not in the workspace today: use a
-manual `Display` impl instead, as `fylz-archive` does — no new dependency for one enum.
+- Names end in `Record` because uniffi generates Kotlin classes with the Rust names in package
+  `io.github.mbaliga.fylz.core`, and `DecoderService` imports both those and the `decoder.*`
+  Parcelables; the field is `detail`, never `message`, because uniffi's generated error class
+  `class X(val message: String) : ArchiveEngineException()` conflicts with `Throwable.message`
+  and does not compile. uniffi has no `usize`, hence the `u32`/`u64` fields; `From` conversions
+  both ways are total (exhaustive `match`, so a new `EntryKind` variant fails to compile rather
+  than silently mapping). `has_encrypted_entries = (engine Some(true)) || any entry
+  encrypted_data`; `has_encrypted_metadata = any entry encrypted_metadata`. `rows` are the first
+  `max_rows` entries, taken **in Rust**, so a large listing is never copied across uniffi.
+- Synchronous because the call runs on a Binder thread that has nothing else to do; `sniff` is
+  `async` without an `.await` and `DecoderService` wraps it in `runBlocking` — harmless, but a
+  pattern not to copy. The fd is used as a plain `i32`, never wrapped in an owning `File`.
+
+**Outcome table** (engine → `ArchiveInspection.outcome`):
+
+| Engine result | Outcome | Notes |
+|---|---|---|
+| `Ok` | `OK` | |
+| `NotSeekable` | `NOT_SEEKABLE` | unreachable via `ArchiveSource`; logged as a bug |
+| `Unsupported` | `UNSUPPORTED` | first `archive_read_next_header` fails with `archive_format(a) == 0` ("Unrecognized archive format", `archive_read.c:781`), or a 7z with an encrypted header (`7zip.c:1644-1655`, message contains "encrypted") |
+| `Fatal` | `CORRUPT` | any other libarchive `ARCHIVE_FATAL` |
+| `LimitExceeded` | `LIMIT_EXCEEDED` | `max_listing_entries`; `message` = rule + entry |
+| `NonUtf8Path` | never from `inspect` (lossy names) | if it appears, `INTERNAL` |
+| Kotlin `Throwable` in the service | `INTERNAL` | exception class name as `message` |
 
 Build consequences to record: the host `cargo build -p fylz-ffi-android` that Gradle runs for
 bindgen now compiles libarchive plus all five companions on the host (it already does for `cargo
 test`); the three shipped `.so`s grow by the static libarchive + companions. Record per-ABI
 `libfylz_ffi_android.so` sizes before and after in the PROGRESS row against REPORT-M2's 12 MB/ABI
-budget (M3.1 part 2's row already tracks the companion deltas).
+budget.
 
 ### 2.5 `DecoderService` and `DecoderClient`
 
-`DecoderService.inspectArchive`: `archive.use { a -> listingSink.use { sink -> ... } }`; call
-`FylzCore.inspectArchive(a.fd, limits)`; on success run `ArchiveListingCodec.write(entries,
-FileOutputStream(sink.fileDescriptor))` and return the summary with `listingEntries = entries.size`;
-on `ArchiveFfiException` return a summary with the matching `outcome`, `listingEntries = 0`; catch
-`Throwable` (an OOM on a pathological listing, a codec I/O error) → `outcome = INTERNAL` with the
-exception's class name, so the client sees a *result* and not a dead process for engine-level
-failures. `runBlocking` is not needed for a synchronous uniffi function. The service writes through a
-received descriptor for the first time here: an isolated process may not *open* files but may
-write to a descriptor it was handed (the same mechanism ashmem and pipes use) — `UNVERIFIED` on a
-real device with SELinux enforcing; DEVICE_CHECKS §17 covers it.
+`DecoderService.inspectArchive(archive, limits, maxRows)`: `archive.use { a -> engine(a.fd,
+limits.toRecord(), maxRows) }` where `engine` is a constructor-injected lambda defaulting to
+`FylzCore::inspectArchive` (so the **mapping** — each `ArchiveEngineException` subclass to its
+outcome, `Throwable` to `INTERNAL`, the record-to-Parcelable conversion — is unit-tested on the JVM
+without a native library; the generated exception classes are plain Kotlin). `runBlocking` is not
+needed for a synchronous uniffi function.
 
-`DecoderClient`: `call` takes a `timeoutMillis` parameter (the constructor default stays 5 s for
-`ping`/`sniff`); new `suspend fun inspectArchive(archive, listingSink, limits, timeoutMillis =
-STRUCTURE_TIMEOUT_MILLIS /* 30_000, section 4.4's structure budget */): ArchiveInspection?`. `null`
-keeps its meaning (no connection, timeout, crash) and is what makes the UI say "could not be read
-safely" rather than showing a possibly-corrupt result; a returned summary with a non-`OK` outcome
-is an *engine* answer and is shown as such. The client still never closes the caller's descriptors.
-Binding lifetime: the client is constructed once next to `ArchiveService` in `FylzV1App`'s
-`remember { }` block (line ~382), so the binding lives for the composition, not per call — the
-cold-start cost of spawning `:decoders` and registering JNA is paid once per browsing session
-(survey risk 7).
+`DecoderClient` — two changes:
+
+1. **The timeout abandons the call** (finding 1, a fix to M2.4's contract). `call` runs the Binder
+   transaction in a job that is *not* a child of the timeout scope — `CoroutineScope(Dispatchers.IO
+   + SupervisorJob()).async { block(service) }` held by the client — and the timeout wraps only
+   `deferred.await()`. On timeout: `dropConnection()` (unbind → the platform reaps `:decoders` →
+   the orphaned transaction returns with `DeadObjectException`, which the job swallows). The thread
+   is occupied until then, which is what `Dispatchers.IO`'s elastic pool is for. Tests assert
+   **elapsed time**: a stub that sleeps 1,500 ms under a 100 ms timeout returns `null` in under
+   1,000 ms and `unbind` has been called.
+2. **Per-call timeout and a distinguishable result.** `call` takes `timeoutMillis`; the class
+   default stays 5 s for `ping`/`sniff`. New `suspend fun inspectArchive(archive, limits, maxRows,
+   timeoutMillis = STRUCTURE_TIMEOUT_MILLIS /* 30_000, section 4.4's structure budget */):
+   DecoderCall<ArchiveInspection>` with `sealed class DecoderCall<T> { Ok(value), TimedOut, Failed }`
+   — a compressed tarball's header pass decompresses the whole stream, so a multi-GB `.tar.xz`
+   *will* hit 30 s, and the UI must say "took too long to read" rather than "could not be read
+   safely" (a crash). `ping`/`sniff` keep their nullable API by mapping `Ok(v) → v`, else `null`.
+   The client never closes the caller's descriptor.
+
+**Lifetime.** `DecoderClient` has no close method and `remember { }` disposes nothing, so a
+composition-scoped client bound with an Activity context leaks the `ServiceConnection`; and
+`FylzV1App.kt` sits exactly on its 2,287-line ratchet, so nothing can be added there. The client
+and the `ArchiveInspector` (§2.6) are therefore **application-scoped**: `FylzApplication` gains
+`val archiveInspector: ArchiveInspector by lazy { … }` bound with the application context, the same
+pattern as `operationRunner`. Call sites reach it with `(context.applicationContext as
+FylzApplication).archiveInspector`. Idle policy for M3.2: **none** — once used, the binding (and so
+`:decoders`) lives as long as the app process, which is what survey risk 7 asks for during a
+browsing session; the cost is one idle isolated process, and M3.3 decides an idle-unbind after
+measuring it (recorded in REVIEW_QUEUE).
 
 ### 2.6 `ArchiveInspector`: what the UI calls
 
 ```kotlin
-class ArchiveInspector(context, source: ArchiveSource, client: DecoderClient, limits) {
-    suspend fun inspect(uri: Uri): ArchiveInspectionResult
+class ArchiveInspector(private val source: ArchiveSource, private val client: DecoderClient, private val limits: ArchiveLimits) {
+    suspend fun inspect(uri: Uri, maxRows: Int = 500): ArchiveInspectionResult
 }
 sealed class ArchiveInspectionResult {
-    data class Ready(val summary: ArchiveInspection, val staged: Boolean, val listing: ArchiveListing) : ...   // listing lazily reads the .fzl
-    data class Refused(val outcome, val message: String?) : ...      // engine error, e.g. CORRUPT
-    data class Unavailable(val reason: String) : ...                 // decoder null: timeout/crash/bind failure
-    data class SourceFailed(val cause: ArchiveSourceException) : ... // InsufficientSpace, ArchiveTooLarge, unreadable Uri
+    data class Ready(val summary: ArchiveInspection, val staged: Boolean,
+                     val temporarySpace: ArchiveSpaceRequirements?, val temporarySpaceAvailable: Long?) : ...
+    data class Refused(val outcome: Int, val message: String?) : ...        // engine answer: UNSUPPORTED, CORRUPT, LIMIT_EXCEEDED, NOT_SEEKABLE, INTERNAL
+    data object TimedOut : ...                                              // "took too long to read"
+    data object Unavailable : ...                                           // decoder crashed / bind failed: "could not be read safely"
+    data class SourceFailed(val cause: ArchiveSourceException) : ...        // InsufficientSpace, ArchiveTooLarge, SizeMismatch, Unreadable
 }
 ```
 
-`inspect`: `source.resolve(uri).use { resolved -> create listing file; open write pfd; client.inspectArchive(...) }`;
-the listing file is owned by the returned `ArchiveListing` (`Closeable`, deletes on close; the
-overlay closes it when the dialog is dismissed). `staged` is surfaced so the overlay can show
-"copied to temporary storage" for the non-seekable case — a user-visible statement of the plan's
-rule. `ArchiveListing` exposes `sequence()`, `count`, and `firstEncrypted()`; the overlay's dialog
-lists the first N rows as today and M3.3 builds paging on the same file.
+`inspect`: `source.resolve(uri).use { resolved -> client.inspectArchive(resolved.pfd, limits,
+maxRows) }`, then map. Nothing outlives the call: the staged copy (if any) is deleted when
+`resolve(...).use` ends, i.e. as soon as the summary is in hand — the dialog shows the summary, not
+the archive, so there is nothing to hold (rev 1's device check said otherwise; corrected in §2.9).
+`temporarySpace` is `ArchiveSpacePolicy.requirements(archiveBytes, totalUncompressedBytes)` computed
+in Kotlin, because **extraction still stages until M3.4** and the dialog's "Temporary space
+required/available" rows stay truthful.
 
-Call-site changes: `ArchiveToolsOverlay.kt:146` (`service.inspectZip(uri)` → `inspector.inspect(uri)`;
-the dialog reads `format`, `entryCount`, `policyAllowed`/`policyReason`, `hasEncryptedEntries`;
-its "Encrypted ZIP"/"Standard ZIP" label becomes the format name plus an "encrypted" suffix);
-`FylzV1App.kt:1011` (`archiveService.inspectZip(archiveUri).encrypted` → the inspector's
-`hasEncryptedEntries`, `false` on anything but `Ready`, same one line — `FylzV1AppSizeTest`'s
-ratchet at 2287 lines must not move up). `ArchiveService.inspectZip` and the `data.ArchiveInspection`
-class are deleted; `stageArchive` stays for `extractZip`/`createZip` with a header comment naming
-M3.4 as its removal. `fylz.extract`'s `enabledWhen` (ZIP family only) is **unchanged** — extraction is
-still zip4j — and `fylz.archive.inspect` may now be offered for every format libarchive reads; widen
-`ArchiveToolsOverlay`'s picker MIME list for Inspect only (`*/*` with the sniffer deciding is M3.3's
-call; here: the ZIP list plus `application/x-7z-compressed`, `application/x-iso9660-image`,
-`application/x-tar`, `application/gzip`, `application/x-xz`, `application/zstd`, `application/x-bzip2`).
+Call-site changes (M3.2c), all three:
+
+- `ArchiveToolsOverlay.kt:55,146,306-352`: `service.inspectZip(uri)` → `inspector.inspect(uri)`;
+  the dialog shows the format **family** (from `formatCode`: "ZIP archive", "7-Zip archive",
+  "ISO 9660 image", "tar archive" + filters, …) with an "encrypted" suffix, the counts, sizes,
+  space rows and verdict as today, plus "copied to temporary storage first" when `staged`.
+  **The confirm button is shown only when `formatCode` is ZIP** (extraction is still zip4j) and
+  its enabled state is `policyAllowed`. Because Inspect's verdict now comes from the Rust rules and
+  `extractZip` re-checks with the Kotlin rules, the two can disagree until M3.4 — a logged
+  deviation, not something to paper over.
+- `FylzV1App.kt:1012`: `archiveService.inspectZip(archiveUri).encrypted` → the app-scoped
+  inspector's `Ready.summary.hasEncryptedEntries`, `false` on any other result — inline, on the same
+  line count; `FylzV1AppSizeTest` stays at 2,287.
+- `SpecializedDocumentPreview.kt:183-258` (`ZipArchivePreview`): `produceState` calls the inspector;
+  `ArchiveInspectionContent` reads `rows`/`rowsTruncated`, `fileCount`/`directoryCount`/
+  `linkCount`, `totalUncompressedBytes`, the policy fields and the family label; `TimedOut`,
+  `Unavailable`, `Refused`, `SourceFailed` each render through the existing
+  `UniversalInspectorPreview` fallback with their own message. `PreviewPane.kt:156`'s format gate is
+  unchanged in M3.2 (M3.3 widens preview to every libarchive format).
+- Inspect's picker MIME list in the overlay widens from the ZIP family to add
+  `application/x-7z-compressed`, `application/x-iso9660-image`, `application/x-tar`,
+  `application/gzip`, `application/x-xz`, `application/zstd`, `application/x-bzip2` — this is what
+  makes "7z and ISO are read with seeks" reachable from the UI; logged.
+- Deleted: `ArchiveService.inspectZip`, `data.ArchiveInspection`, `readMetadata`'s inspection-only
+  callers; `stageArchive` stays for `extractZip`/`createZip` with a header comment naming M3.4.
+  `fylz.extract`'s `enabledWhen` (ZIP family only) is unchanged.
 
 ### 2.7 Fixtures
 
-`tools/fixtures/make_archive_fixtures.py` (stdlib `zipfile`, plus pip `py7zr` and `pycdlib`, both
-available; document the pip line as `make_compression_fixtures.py` does), outputs in
-`core/fixtures/archives/`, all small (< 64 KiB) and deterministic (fixed timestamps, sorted names):
+`tools/fixtures/make_archive_fixtures.py` (stdlib `zipfile`/`tarfile`, plus pip `py7zr` and
+`pycdlib` — both pip-installable, neither preinstalled; document the pip line as
+`make_compression_fixtures.py` does). Outputs in `core/fixtures/archives/`, each under 128 KiB,
+**deterministic**: fixed source-file mtimes via `os.utime` (py7zr `writestr` stamps the current
+time otherwise), `time.time` patched for pycdlib, sorted names. The script asserts its own
+determinism by building twice and comparing bytes.
 
 | File | Made how | Proves |
 |---|---|---|
 | `sample-cd.zip` | `zipfile` normal write, 5 files in 2 dirs, deflate | baseline ZIP with central directory |
-| `sample-streamed.zip` | `zipfile` writing to a file object **without `seek`/`tell`** → bit-3 data descriptors, local-header sizes zero | the seekable reader reads sizes from the central directory; a stream reader would report unknown |
-| `sample-copy.7z` | `py7zr` with `FILTER_COPY` | 7z listing via end-of-file header and entry data via a backward pack seek, without LZMA |
-| `sample-lzma2.7z` | `py7zr` default (LZMA2) | 7z with liblzma (part 2e); `UNVERIFIED`: py7zr may compress *headers* with LZMA2 even for the COPY archive — if so, both 7z fixtures need part 2e and the row says so |
-| `sample.iso` | `pycdlib` ISO9660 level 3 + Joliet + Rock Ridge, nested dir, one file placed out of directory order if pycdlib allows (`UNVERIFIED`) | ISO listing with seeks; Rock Ridge names |
-| `hostile/zip-slip.zip`, `hostile/absolute-path.zip`, `hostile/symlink-escape.tar` | `zipfile` with a hand-set filename; `tarfile` with a symlink to `/etc/passwd` | `inspect` collects them and the Rust policy refuses them (part 3's tests already cover the *rules* on synthetic metadata; this is the end-to-end file → refusal) |
+| `sample-streamed.zip` | `zipfile` writing to a file object **without `seek`/`tell`** → bit-3 data descriptors, local-header sizes zero (verified) | the seekable reader reads sizes from the central directory; the stream reader reports none |
+| `sample-copy.7z` | `py7zr` with `FILTER_COPY` **and `set_encoded_header_mode(False)`** (verified: py7zr otherwise writes an LZMA2-encoded header even for COPY) | 7z listing via the end-of-file header and entry data via a backward pack seek, without liblzma |
+| `sample-lzma2.7z` | `py7zr` default (LZMA2, encoded header) | 7z with liblzma (part 2e) |
+| `sample.iso` | `pycdlib` ISO9660 level 3 + Joliet + Rock Ridge, nested dir (about 69,632 B) | ISO listing with lseek-backed skips; Rock Ridge names. pycdlib has no API for extent placement, so **no out-of-order fixture**: the row records that ISO listing needs no backward seek for in-order images |
+| `hostile/zip-slip.zip`, `hostile/absolute-path.zip` | `zipfile` with hand-set names `../evil`, `/etc/passwd` (kept verbatim; verified) | end-to-end file → policy refusal with the Kotlin-identical reason string |
+| `hostile/symlink-escape.tar` | `tarfile` symlink member → `/etc/passwd` | the **new link rule** (part 3 §6) refuses it |
+| `hostile/many-entries.tar` | `tarfile`, 10,001 zero-length members (about 5 MB uncompressed → shipped as `.tar.zst`, a few KB) | `max_entries` refusal on a real file |
 
-The full M3 acceptance corpus (one of every format, bombs, oversized headers) is **not** M3.2's; it
-lands with M3 acceptance. Fixtures used by Rust tests only; Kotlin unit tests never load native code
-today and this design keeps that (they drive fakes through the `bind`/`unbind` and `isSeekable`
-seams).
+The full M3 acceptance corpus lands with M3 acceptance. Fixtures are used by Rust tests only;
+Kotlin unit tests never load native code (they drive fakes through the `bind`/`unbind`,
+`isSeekable` and `engine` seams).
 
 ### 2.8 Tests
 
-Rust (`fylz-archive`):
-- `open_refuses_a_socket_with_not_seekable` (`std::os::unix::net::UnixStream::pair()`; no new
-  dependency) and `open_refuses_a_pipe` if `libc` is already a dependency, else the socket test alone.
-- `inspect_ignores_the_descriptors_initial_offset` (seek to the middle, inspect, compare with a
-  fresh open).
-- `streamed_zip_gets_sizes_from_the_central_directory` (every `uncompressed` is `Some`; the same
-  archive fed through the crate's `ar` builder is not usable here — the point is the real file).
-- `seven_zip_entry_data_needs_a_backward_seek` (`read_entry` on `sample-copy.7z` returns the bytes).
-- `iso_lists_nested_directories_with_rock_ridge_names`.
-- `hostile_fixtures_are_refused` (three files → `policy_allowed == false` with the Kotlin-identical
-  reason strings).
-- `filter_names` and `format` are asserted for each fixture (`"ZIP 2.0 (deflation)"` etc. — copy
-  the strings libarchive actually returns; do not guess them).
-- `max_listing_entries` → `LimitExceeded` on a synthetic tar built with the existing `ar` helper.
+Rust (`fylz-archive`) — the point is to **discriminate** seekable from not, so each positive has a
+pipe-fed negative control through `open_unchecked` + `std::io::pipe()`:
+- `open_refuses_a_pipe_and_a_socket_with_not_seekable` (`std::io::pipe()`,
+  `UnixStream::pair()`; the message names the type).
+- `inspect_ignores_the_descriptors_initial_offset` (`sample-cd.zip`; seek the fd to the middle,
+  inspect, compare with a fresh open).
+- `streamed_zip_sizes_come_from_the_central_directory_only_when_seekable`: file → every
+  `uncompressed` is `Some`; the same bytes through a pipe → the streaming reader yields `None`s.
+- `seven_zip_entry_data_needs_a_backward_seek`: file → `read_entry` returns the bytes; pipe →
+  an `Err` (seek failure), never a panic.
+- `iso_lists_nested_directories_with_rock_ridge_names` (file only; the row records why there is no
+  negative control).
+- `hostile_fixtures_are_refused` (four files → `policy_allowed == false`, each with its reason).
+- `lossy_names_are_flagged_not_fatal` (a ZIP built in-test with a CP437 byte in a name).
+- `format_code_and_filters_per_fixture` (copy the strings/codes libarchive returns; do not guess).
+- `max_listing_entries_stops_the_pass` (a synthetic tar built with `tarfile` at test time is not
+  possible in Rust; use the existing in-test `ar` archive builder — it builds `ar`, not tar — with
+  the limit set below its member count).
 
-Rust (`fylz-ffi-android`): `archive_inspect` on `sample-cd.zip` round-trips the records; a negative
-fd → `NotSeekable`, not a panic; `From` conversions are total (an exhaustive `match`, so a new
-`EntryKind` variant fails to compile rather than silently mapping).
+Rust (`fylz-ffi-android`): `archive_inspect` on `sample-cd.zip` round-trips the records with
+`max_rows = 2` → `rows.len() == 2`, `rows_truncated`; a negative fd → `NotSeekable`, not a panic;
+conversions total.
+
+Fuzz (`core/fuzz`, its own workspace — `cargo test --workspace` never builds it): part 3's
+`policy_evaluate` and `archive_entries` targets are updated for the amended types in the same
+commit as the types, and `cargo +nightly fuzz build` joins the M3.2a gate so a type change cannot
+silently break them; the new fixtures seed `archive_entries`' corpus. No new target.
 
 Kotlin (Robolectric, `app/src/test`):
-- `ArchiveSourceTest`: a `FylzFilesDocumentsProvider` file `Uri` → `Direct` and **no** entry appears
-  under `cacheDir/archive-work` (the "no whole-archive staging" assertion); a pipe-backed provider
-  (adapt `FaultyDocumentsProvider`'s `createPipe()`-fed `openDocument` for read mode, with
-  `isSeekable = { false }` injected because Robolectric's pipes are file-backed) → `Staged`, bytes
-  identical, workspace gone after `close()`; `availableCacheBytes` too small → `InsufficientSpace`
-  and no workspace created; a pipe longer than `maxArchiveBytes` (set to 4 KiB for the test) →
-  `ArchiveTooLarge` and no workspace left.
-- `ArchiveListingCodecTest`: round trip with non-ASCII and 300-byte paths, unknown size/mtime/mode,
-  every flag; 100,000 entries write+read under a generous bound (assert correctness, log the time);
-  a stream cut before the trailer → `ArchiveListingTruncated`.
-- `ArchiveParcelablesTest`: `ArchiveInspection` and `ArchiveLimits` survive `Parcel` write/read.
-- `DecoderClientTest` gains: `inspectArchive` hang → `null` after the injected timeout and the
-  binding is dropped; a stub that throws `DeadObjectException` → `null` and the next call rebinds;
-  a stub that returns `outcome = CORRUPT` → the summary is returned unchanged (not `null`).
-- `ArchiveInspectorTest`: with a fake `IDecoderService.Stub` that writes a known listing through the
-  sink and returns a summary → `Ready` with the entries readable and the listing file deleted on
-  close; a fake returning `null` path (bind returns `false`) → `Unavailable`; the source throwing
-  `InsufficientSpace` → `SourceFailed` and the decoder is never called.
+- `ArchiveSourceTest`: a `FylzFilesDocumentsProvider` file `Uri` → `Direct` and **no** entry under
+  `cacheDir/archive-work` (the "no whole-archive staging" assertion); a pipe-backed provider
+  (adapt `FaultyDocumentsProvider`'s `createPipe()`-fed `openDocument` for read mode, `isSeekable =
+  { false }`) → `Staged`, bytes identical, workspace gone after `close()`; `availableCacheBytes`
+  too small → `InsufficientSpace`, no workspace created; declared size over the limit →
+  `ArchiveTooLarge` before any copy; a provider sending more than it declared → `SizeMismatch`, no
+  workspace left; unknown size with the space vanishing mid-copy (inject a counter-driven
+  `availableCacheBytes`) → `InsufficientSpace`; a stale workspace older than 24 h is swept.
+- `ArchiveParcelablesTest`: `ArchiveInspection` (with 500 rows), `ArchiveEntryInfo`,
+  `ArchiveLimits` survive `Parcel` write/read.
+- `DecoderServiceMappingTest`: through the `engine` lambda — each `ArchiveEngineException`
+  subclass → its outcome; `Throwable` → `INTERNAL`; record → Parcelable field for field.
+- `DecoderClientTest`: existing anonymous `Stub`s implement the new AIDL method; **elapsed-time**
+  hang test (§2.5); `inspectArchive` timeout → `TimedOut` and unbind called; `DeadObjectException`
+  → `Failed` and the next call rebinds; a stub returning `outcome = CORRUPT` → `Ok(summary)`.
+- `ArchiveInspectorTest`: fake client → `Ready` with space rows computed; `TimedOut`/`Failed`
+  mapped; `InsufficientSpace` → `SourceFailed` and the client never called; `staged = true` for the
+  pipe provider and the workspace deleted after `inspect` returns.
 - `NoHardCodedMenusTest`/`ActionResolverGoldenTest`/`FylzV1AppSizeTest` unchanged and green.
-
-Fuzz: part 3's `archive_entries` target already exercises `inspect()`; add the new fixtures to its
-seed corpus. No new target.
 
 ### 2.9 Device checks (`DEVICE_CHECKS.md` §17, "M3.2 — seekable descriptors into `:decoders`")
 
-1. Inspect a ZIP, a 7z and an ISO from `Downloads` (local `FylzFilesDocumentsProvider`): the dialog
-   shows the format, counts and sizes; `adb shell ls /data/data/<pkg>/cache/archive-work` stays
-   empty during and after.
+1. Inspect a ZIP, a 7z and an ISO from `Downloads` (local provider), and preview-focus an APK:
+   format family, counts and sizes appear; `adb shell ls /data/data/<pkg>/cache/archive-work`
+   stays empty throughout.
 2. Inspect the same ZIP through a third-party provider that streams (Google Drive with a
-   non-downloaded file, or a "Media" provider): the dialog says it was copied to temporary storage,
-   the `archive-work` directory holds it during the dialog and is empty after dismissal.
-3. A ZIP with 100,000 entries (script in the checklist) inspects without `TransactionTooLargeException`
-   in logcat; the listing file appears under `cache/archive-listings/` and is removed on dismissal.
-4. SELinux: `adb logcat | grep avc` shows no denial for `isolated_app` writing the listing sink or
-   reading the archive descriptor.
-5. Kill `:decoders` mid-inspect (`adb shell am kill`): the dialog reports "could not be read safely";
-   the next inspect works (rebind).
+   non-downloaded file): the dialog says it was copied to temporary storage first;
+   `archive-work` is empty again once the dialog is up (the copy is released when the summary is
+   in hand).
+3. A ZIP with 100,000 entries (script in the checklist) inspects without
+   `TransactionTooLargeException` in logcat; the dialog shows 500 rows and "only the first 500".
+4. SELinux: `adb logcat | grep avc` shows no denial for `isolated_app` reading the archive descriptor.
+5. Hang: a debug-only `inspectArchive` variant is not added; instead use §14's existing
+   test-only hang command against the new client — the coroutine returns `TimedOut` within
+   about 30 s, `:decoders` disappears from `adb shell ps`, and the next inspect works.
+6. Kill `:decoders` mid-inspect (`adb shell am kill`): "could not be read safely"; the next
+   inspect works (rebind).
+7. A legacy ZIP with CP437 names inspects (names shown with replacement characters), not "unsupported".
 
 ## 3. Sequencing and gates
 
-Three commits, each green on the full gate (`./gradlew --no-daemon :app:testDebugUnitTest
+Four commits, each green on the full gate (`./gradlew --no-daemon :app:testDebugUnitTest
 :app:lintDebug :app:assembleDebug`; `cd core && cargo test --workspace && cargo clippy --workspace
---all-targets -- -D warnings && cargo fmt --check && cargo deny check`; `cargo ndk --platform 31 -t
-arm64-v8a -t armeabi-v7a -t x86_64 build --release -p fylz-ffi-android` — note the crate is now
-the ffi one, since it links libarchive from this milestone on):
+--all-targets -- -D warnings && cargo fmt --check && cargo deny check && (cd fuzz && cargo +nightly
+fuzz build)`; `cargo ndk --platform 31 -t arm64-v8a -t armeabi-v7a -t x86_64 build --release -p
+fylz-archive -p fylz-ffi-android`):
 
-- **M3.2a (Rust):** `NotSeekable` + rewind in the open path; the amended `EntryMetadata`/`Inspection`
-  (if part 3 landed with the unamended shapes, this commit changes them — part 3's own tests are
-  updated in the same commit); `max_listing_entries`; `make_archive_fixtures.py` and the fixtures;
-  the Rust tests of §2.8. PROGRESS row: fixture SHA-256s, libarchive format strings observed, the
-  py7zr header question answered.
-- **M3.2b (FFI + IPC):** `fylz-ffi-android` depends on `fylz-archive`; `archive_inspect`; parcelize
-  plugin; `ArchiveLimits`/`ArchiveInspection` Parcelables; the AIDL method; `ArchiveListingCodec`;
-  `DecoderService.inspectArchive`; `DecoderClient.inspectArchive` with the 30 s structure budget;
-  the codec, parcel and client tests. PROGRESS row: per-ABI `.so` sizes before/after.
+- **M3.2a (Rust):** `NotSeekable` + rewind + `open_unchecked`; `Unsupported`; lossy names;
+  `inspect(fd, &limits)`/`inspect_with_policy`; `max_listing_entries` + the RSS measurement; the
+  fuzz targets updated; `make_archive_fixtures.py` and the fixtures; the Rust tests of §2.8.
+  (Part 3 §6's type amendments land with part 3 itself; if part 3 landed without them, this commit
+  adds them and updates part 3's tests.) PROGRESS row: fixture SHA-256s, libarchive format
+  codes/strings observed, RSS figure, the ISO negative-control note.
+- **M3.2b (client fix + FFI + IPC):** the `DecoderClient` timeout fix with its elapsed-time test
+  (its own paragraph in the row and a REVIEW_QUEUE correction under GATE-M2, since M2.4's
+  "kill-and-restart on timeout" was not true); `fylz-ffi-android` depends on `fylz-archive`;
+  `archive_inspect`; parcelize plugin; the Parcelables; the AIDL method; `DecoderService.inspectArchive`
+  with the `engine` seam; `DecoderClient.inspectArchive` + `DecoderCall`; the mapping, parcel and
+  client tests. PROGRESS row: per-ABI `.so` sizes before/after.
 - **M3.2c (app):** `ArchiveSource`, `ArchiveSpacePolicy.stagingRequirement`, `ArchiveInspector`,
-  `ArchiveListing`; the overlay and Extract-handler call sites; delete `ArchiveService.inspectZip`
-  and `data.ArchiveInspection`; header comments on `stageArchive`/`extractZip` and on
-  `ArchiveExtractionPolicy.kt` (M3.4 deletes it); `ARCHITECTURE.md` (the "Isolated decoder process"
-  section describes `inspectArchive`, the listing sink and the seekable-descriptor rule; line 155's
-  "stages data only in app-private cache" is amended for inspection); `DEVICE_CHECKS.md` §17;
-  `REVIEW_QUEUE.md` entry (below); PROGRESS row. PR #19's description gets the M3.2 line.
+  `FylzApplication.archiveInspector`; the three call sites; the overlay's ZIP-only Extract button
+  and widened Inspect MIME list; delete `inspectZip`/`data.ArchiveInspection`; header comments on
+  `stageArchive`/`extractZip` and on `ArchiveExtractionPolicy.kt` (M3.4 deletes it);
+  `ARCHITECTURE.md` (the decoder section describes `inspectArchive`, the seekable-descriptor rule
+  and the corrected timeout; line 155's "stages data only in app-private cache" is amended for
+  inspection); `DEVICE_CHECKS.md` §17; the `REVIEW_QUEUE.md` entry; PROGRESS row; PR #19's
+  description gets the M3.2 line.
 
-`REVIEW_QUEUE.md` entry for M3.2 (log-and-continue): (1) the listing sink instead of "structure as
-Parcelables" (§2.2) — the Binder limit makes the plan's wording unimplementable for real archives;
-(2) the engine refuses non-seekable input outright (§2.1) instead of streaming what it can;
-(3) the Kotlin policy copy's deletion moves from "M3.2/M3.3" to M3.4 (§0); (4) `compressed` stays
-`None` for good (§2.2), amending part 3's expectation; (5) an isolated process writing through a
-received descriptor is device-unverified until §17 runs.
+`REVIEW_QUEUE.md` entry for M3.2 (log-and-continue):
+1. The engine refuses non-seekable input outright (§2.1) instead of streaming what it can; the
+   pipe-fed negative controls are the evidence for what streaming would lose.
+2. The Kotlin policy copy's deletion moves from "M3.2/M3.3" to M3.4 (§0). Until then Inspect
+   (Rust rules) and Extract (Kotlin rules) can disagree on the same ZIP (§2.6).
+3. `compressed` stays `None` for good: libarchive has no per-entry compressed size, so once M3.4
+   deletes the Kotlin copy, **ZIP loses the per-entry ratio rule** that part 3 decision 1 assumed it
+   would keep; the archive-level ratio check and the runtime caps are the defence.
+4. Non-UTF-8 names are decoded lossily and flagged rather than failing (§2.4), until M3.7.
+5. The new link rule and link skipping in `extract()` (part 3 §6): a rule the Kotlin policy never had.
+6. MASTER_PLAN §4.4's 256 MB address-space target is not enforced; `max_listing_entries` (default
+   200,000, measured) is the only memory bound in `:decoders`.
+7. §4.4's kill-and-restart on timeout did not work before M3.2b (`withContext` inside
+   `withTimeoutOrNull`); corrected under GATE-M2 as well.
+8. "Remote streams stage to cache" is structural only: no remote archive opens after M3.2 (§0).
+9. Inspect is widened beyond the ZIP family (§2.6); Extract is not.
+10. Extraction still stages whole archives until M3.4.
+11. Full-listing transport deferred to M3.3 (§2.2); M3.2 carries the first 500 rows in the
+    Parcelable, as §4.4 says.
+12. No idle-unbind policy for the application-scoped `DecoderClient` (§2.5); M3.3 measures and decides.
 
 ## 4. Risks
 
-- **SELinux on a real device** for the write descriptor into `isolated_app` (§2.5). If denied, the
-  fallback is a `SharedMemory` sized by a first counting pass — a second `:decoders` call per
-  inspect. Nothing in the UI-side API changes; `ArchiveListing` would read from ashmem instead.
-- **`Os.fstat` under Robolectric** (§2.3) — mitigated by injection; only the default's own test may
-  need `@Ignore` with a reason if Robolectric cannot run it, and then §17 item 1 is its coverage.
-- **py7zr header compression** (§2.7) — worst case both 7z fixtures depend on part 2e, which lands
-  before M3.2 starts.
+- **`isolated_app` and the passed descriptor** — reading through a Binder-passed fd is how `sniff`
+  already works and §14 exercised it; §17 item 4 re-checks with the larger reads.
+- **Compressed tarballs and the 30 s budget** — a multi-GB `.tar.xz` header pass decompresses
+  everything and times out with "took too long"; honest, and M3.3 (which needs incremental
+  listing anyway) revisits the budget.
 - **Partial results in `:decoders`** — a corrupt archive after 50,000 valid headers returns
-  `CORRUPT` with no listing. Acceptable for M3.2 (the policy would need the full table anyway);
-  M3.3 may want "list what was readable" and can add a `partial` flag to the summary then.
-- **Binding lifetime** — a `remember { }`-scoped `DecoderClient` is unbound when the composition
-  leaves; that is the same lifetime `ArchiveService` has today, and M3.3 can lift it to the
-  `Application` if browsing needs the process to outlive a configuration change.
+  `CORRUPT` with no rows. Acceptable for M3.2; M3.3 may add a `partial` flag.
+- **py7zr/pycdlib versions** — the generator pins `py7zr==1.1.3`, `pycdlib==1.20.0` in its header
+  comment; a different version may produce different bytes, which the determinism assertion is
+  there to catch.
+
+## 5. Amendments this design makes to part 3
+
+All in `DESIGN-M31-PART3-EXTRACT-AND-POLICY.md` §6 (added with this rev): `EntryKind` replacing
+`is_directory`; `name_lossy`, `link_target`, `mtime` (`c_long`), `mode`, `encrypted_data`,
+`encrypted_metadata` on `EntryMetadata`; `Inspection.format_code`/`format_name`/`filters`/
+`has_encrypted_entries`; `Limits.max_listing_entries`; `ArchiveError::NotSeekable`/`Unsupported`;
+`inspect(fd, &limits)` and `inspect_with_policy`; the link rule; links skipped by `extract()`
+with `ExtractReport.skipped_links`; hardlink detection order; `policy_evaluate`/`archive_entries`
+fuzz targets take the amended types.
+
+## 6. Review findings and disposition (rev 1 → rev 2)
+
+Blockers, all adopted: (1) the timeout that never abandoned a hung call → §2.5 item 1, fixed in
+M3.2b with an elapsed-time test; (2) uniffi error field named `message` does not compile → `detail`;
+(9) `ZipArchivePreview` was an unlisted caller of `inspectZip` → in scope, §2.6; (10) the 2,287-line
+ratchet, the overlay's own `ArchiveService`, and `remember` not disposing → application-scoped
+inspector in `FylzApplication`, §2.5; (11) no rule could refuse `symlink-escape.tar` → link rule
+and link skipping added to part 3 §6.
+
+Should-fix, adopted: (3) `time_t` is 32-bit on armv7 → `c_long`, three-ABI build of `fylz-archive`
+in the 3.2a gate; (12) Extract button only for ZIP, `formatCode` for decisions, space rows
+recomputed in Kotlin, the rule-set disagreement logged; (15) signatures and the outcome table
+written out, `Unsupported` added; (16) `max_listing_entries` 1,000,000 → 200,000 with a measured
+RSS; (17) fuzz targets in the gate, hardlink detection order; (21) listing sink deferred to M3.3
+and the first 500 rows carried in the Parcelable — which made (13) codec framing and (14) listing
+file lifetimes moot; (22) pipe-fed negative controls via `open_unchecked`, ISO recorded honestly;
+(23) service mapping behind an `engine` seam, elapsed-time asserts, cleanup tests; (24) the
+REVIEW_QUEUE list expanded, including the lossy-name deviation.
+
+Nits, adopted: (4) ISO wording, (5) rewind is correctness, (6) `std::io::pipe()` and the `ar`
+helper, (7) `Record` suffix / `u32` fields / no `thiserror`, (8) `set_encoded_header_mode(False)`,
+determinism, 128 KiB bound, (18) declared-size cap, incremental space check, `statSize` as the
+default probe, `ArchiveLimits` as the one type, (19) wording and `format_name: Option`, (20) survey
+correction on 7z, (25) root plugin line and the `:1012` citation.
+
+Not adopted: none.
