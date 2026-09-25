@@ -1,13 +1,13 @@
 # M3.3 design: archive browsing as folders
 
-**Rev 1** (2026-09-25), for architecture review. Design for MASTER_PLAN M3.3, written from
-`SURVEY-M33-ARCHIVE-BROWSING.md` (the read-only fact sheet; every "today" claim below is verified
-there with file:line evidence) and on top of `DESIGN-M32-SEEKABLE-PFD.md` rev 2 (M3.2: the
-application-scoped `ArchiveInspector`, `ArchiveSource`, `inspectArchive(pfd, limits, maxRows)` with at
-most 500 rows, `DecoderCall`, the corrected `DecoderClient` timeout) and
-`DESIGN-M31-PART3-EXTRACT-AND-POLICY.md` §6 (`inspect`, `extract()`, `EntryKind`, the link rule).
-Paths are relative to the repository root. `UNVERIFIED` marks a claim the implementing agent must
-confirm and record.
+**Rev 2** (2026-09-25), after the architecture review of rev 1 (commit `14b6dee`); §7 lists the
+findings and their disposition. Design for MASTER_PLAN M3.3, written from
+`SURVEY-M33-ARCHIVE-BROWSING.md` (the read-only fact sheet; "today" claims are verified there with
+file:line evidence) on top of `DESIGN-M32-SEEKABLE-PFD.md` rev 2 (M3.2: the application-scoped
+`ArchiveInspector`, `ArchiveSource`, `inspectArchive(pfd, limits, maxRows)`, `DecoderCall`, the
+corrected `DecoderClient` timeout) and `DESIGN-M31-PART3-EXTRACT-AND-POLICY.md` §6 as landed in
+`a849282` (`inspect`, `extract`, `EntryKind`, the link rule). Paths are relative to the repository
+root. `UNVERIFIED` marks a claim the implementing agent must confirm and record.
 
 The plan's text, in full:
 
@@ -22,417 +22,552 @@ The plan's text, in full:
 further locations, and the existing breadcrumb shows `Downloads / photos.zip / 2024`; (b) entries
 list, sort, filter, select, preview (every renderer, including the two that need a seekable
 descriptor), share, "Open with…" and copy out (clipboard copy → paste, Copy to…) exactly as files do;
-(c) nested archives open the same way to depth 4, with the inner archive materialised to cache;
-(d) the full listing of an archive leaves `:decoders` through a channel that is not bounded by the
-Binder transaction buffer (the transport M3.2 deferred here); (e) entry bytes leave `:decoders` the
-same way; (f) write actions are disabled inside an archive, through the registry, with the golden
-test updated in lockstep; (g) preview of archive files widens from the ZIP family to every format
-libarchive reads.
+(c) nested archives open the same way to depth 4 (four archive levels), the inner archive
+materialised to cache; (d) the full listing of an archive leaves `:decoders` through a channel not
+bounded by the Binder transaction buffer (the transport M3.2 deferred here), and entry bytes leave
+the same way; (e) write actions are disabled inside an archive through the registry, with the golden
+test updated in lockstep; (f) preview of archive files widens to every format libarchive reads here.
 
 **Out (and where it goes):** extracting selections through the transfer queue with progress and
-cancel (M3.4 — copy-out in M3.3 goes through the existing copy path and is correct but not
-optimised: the entry is materialised to cache, then copied); creating, editing, testing,
-passwords (M3.5–M3.9; encrypted entries list but cannot be opened, with a message naming M3.9);
-filename charset detection (M3.7; lossy names show as M3.2 leaves them); **drag-out** — the plan
-names it, but the app has no drag substrate at all today (no `dragAndDropSource`, `ClipData` or
-`DragEvent` anywhere; the plan itself assigns drag and drop to M12.2). M3.3 gives every entry the
-one thing drag needs, a grantable `content://` Uri; the gesture lands with M12.2. Logged as a
-deviation, not silently dropped. Search inside an archive (the recursive search engine walks
-`DocumentsContract` trees; the archive location is not a tree) — M8's query layer; disabled inside
-archives meanwhile, logged. An idle-unbind policy for `:decoders` (M3.2 left it to M3.3): decided
-in §2.9.
+cancel, and bulk copy-out in one pass (M3.4 — M3.3's copy-out is correct but per entry, §2.5);
+creating, editing, testing, passwords (M3.5–M3.9; encrypted entries list but do not open, with a
+message naming M3.9); filename charset detection (M3.7); thumbnails inside archives (icons instead,
+§2.8; logged); **drag-out** — the plan names it, but there is no drag substrate: no
+`dragAndDropSource`, `ClipData` or `DragEvent` anywhere, `ITEM_LONG_PRESS` is already bound to
+`fylz.select.toggle`, `GestureId` has no drag, and the plan itself assigns drag and drop to M12.2.
+M3.3 gives every entry the one thing drag needs, a grantable `content://` Uri; the gesture lands
+with M12.2 (logged). Search inside an archive (the recursive search engine walks `DocumentsContract`
+trees; an archive location is not a tree) — M8's query layer; forced off inside archives meanwhile
+(logged). Single-file compressed streams (`notes.txt.gz`) are not "browsable": libarchive's `raw`
+format is not in `support_format_all`, so they keep today's preview (logged against the plan's
+table). RAR/CBR wait for the RAR fixture corpus (logged).
 
 ## 1. The constraints that decide the shape (short; survey §1–§10 has the evidence)
 
 - A location **is** a `Uri` everywhere: `FolderLocation(uri, name)`, `FolderTab(treeUri, locations)`,
   `FileEntry.uri`, `selectedUris`, LazyColumn keys, the clipboard, `OperationItem.source`,
   `TransferWorker`'s `String[]`, `DocNode.load(resolver, uri)`, favourites, the session codec, every
-  preview (`openInputStream`/`openFileDescriptor(entry.uri)`), share (`ACTION_SEND` + `EXTRA_STREAM`
-  + `FLAG_GRANT_READ_URI_PERMISSION`) and Open with (`ACTION_VIEW` on `entry.uri`). Anything that is
-  not a `content://` Uri a `ContentResolver` can service fails at each of those consumers.
-- The app already chose this once: the File backend was built as a `DocumentsProvider` "because every
-  service speaks `DocumentsContract` and `FileEntry` is keyed by `Uri`" (`FylzFilesDocumentsProvider.kt:29-41`).
-- `FylzV1App.kt` is at its 2,287-line ratchet; every hook M3.3 needs (`openEntry`, the listing
-  effect, the `BrowserState` snapshot, `ActionContext`, breadcrumb, share) lives there. New UI goes in
-  new files; lines added there must be paid for by lines removed.
-- `:decoders` has no storage and returns at most ~1 MB per transaction; it can read and write
-  descriptors it is handed. `PdfRenderer` and `Typeface.Builder` need a **seekable** descriptor; a
-  pipe cannot feed them.
-- Nothing pops the location stack on system Back; Up is a registry action. The breadcrumb is a
-  joined `Text` of the stack's names — pushing locations with the right names *is* the breadcrumb.
-- `BrowserState` has no `location.kind`; MC.0's design deferred it to MC.2, and the golden test
-  pins every `enabledWhen`.
+  preview, share and Open with. The app already chose a `DocumentsProvider` for the File backend for
+  exactly this reason (`FylzFilesDocumentsProvider.kt:29-41`).
+- A `DocumentsProvider` **must** be exported, grant Uri permissions, and be protected by
+  `MANAGE_DOCUMENTS` — `DocumentsProvider.attachInfo` throws otherwise, at process start
+  (`ProviderTestSupport.kt:11-13` records the same). "Non-exported provider" is not an option.
+- `DocumentsContract`'s tree-form helpers (`buildChildDocumentsUriUsingTree`,
+  `buildDocumentUriUsingTree`, `getTreeDocumentId`) throw on a non-tree Uri; `DocNode.children`
+  (`DocNode.kt:36,43`) and `DocumentRepository.listChildren`'s row Uris (`DocumentRepository.kt:129`)
+  use them today.
+- `listChildren` runs one query, closes the cursor, emits `complete = true`; it reads no extras and
+  registers no observer (`DocumentRepository.kt:116-153`). `DocumentsProvider.query` swallows a
+  `FileNotFoundException` into a null cursor. The listing effect toasts any exception the flow throws
+  (`FylzV1App.kt:862-865`).
+- `FylzV1App.kt` is at its 2,287-line ratchet. New UI goes in new files; lines added there are paid
+  for by lines removed.
+- `:decoders` has no storage, returns at most ~1 MB per transaction, and can read and write
+  descriptors it is handed. `PdfRenderer`, `Typeface.Builder` and ExoPlayer need a **seekable**
+  descriptor; a pipe (`statSize == -1`) serves none of them.
+- Part 3's `extract(fd, Selection::Paths, …)` matches through `normalized_path_key` (lower-cased,
+  trailing `/` trimmed), hands the descriptor to the **first** match, walks every header to the end,
+  and reports a missing path in `ExtractReport.missing`, not as an error (`lib.rs:931-983`,
+  `policy.rs:221-223`). Real archives carry `./a`, `dir/`, `/abs`, `a//b`, backslashes (ZIP),
+  duplicate members (`tar -r`) and case collisions; `inspect` returns libarchive's raw pathname.
+- LazyColumn rows are keyed by `entry.uri.toString()` (`FylzV1App.kt:1868,1874`); two entries with
+  one Uri crash the list.
+- Robolectric pipes are file-backed: `read()` returns -1 before the first write and never signals
+  close (`FaultyDocumentsProvider.kt:46-59,174-181`).
 
 ## 2. Decisions
 
 ### 2.1 An archive is a `DocumentsProvider` tree: `ArchiveDocumentsProvider`
 
-New `storage/ArchiveDocumentsProvider.kt`, authority `${applicationId}.archives`, declared
-`exported="false"` with `grantUriPermissions="true"` (the `FileProvider` pattern: no other app can
-query it, but a Uri handed out with `FLAG_GRANT_READ_URI_PERMISSION` — share, Open with — works).
-Same-UID callers (the app, its `TransferWorker`) need no grant.
+New `storage/ArchiveDocumentsProvider.kt`, declared exactly like the File provider
+(`AndroidManifest.xml:68-73`): `exported="true"`, `grantUriPermissions="true"`,
+`permission="android.permission.MANAGE_DOCUMENTS"`, and **no** `DOCUMENTS_PROVIDER` intent filter, so
+DocumentsUI never lists it. Authority hard-coded as `io.github.mbaliga.fylz.archives` (as
+`FylzFilesDocumentsProvider.kt:422` does; never `${applicationId}`). Other apps cannot query it
+(signature permission); a Uri handed out with `FLAG_GRANT_READ_URI_PERMISSION` — share, Open with —
+works because Uri grants bypass the provider permission. Same-UID callers need no grant.
 
-Every archive location and entry is a document of this provider, so **every consumer in §1 works
-unchanged**: `FileEntry.uri` is a real content Uri; previews open it; share and Open with grant it;
-`DocNode.load` queries it; `DocumentsTransfer.streamCopy` reads it; the session codec persists it;
-LazyColumn keys and selection sets hold it. The tab's `treeUri` stays the outer tree (so restore's
-persisted-grant filter and "one tab per tree" are untouched); only the location stack holds archive
-Uris.
+Every archive location and entry is a document of this provider, so every consumer in §1 works
+unchanged. The tab's `treeUri` stays the outer tree (restore's persisted-grant filter and "one tab
+per tree" untouched); only the location stack holds archive Uris.
 
-**Document id** = URL-safe base64 (no padding) of a compact JSON `{"v":1,"src":"<content Uri of
-the archive file>","p":"<entry path, "" for the archive root>"}`. The `src` of a nested archive is
-itself an archive-provider document Uri, so nesting is representable without a second scheme; depth
-= the number of times `src` unwraps to another archive document, and **ids with depth > 4 are refused
-at construction** (`IllegalArgumentException` → the open action shows "Archives nested deeper than 4
-levels cannot be browsed"). Ids are opaque to callers; `ArchiveDocumentId.parse`/`encode` live in
-one file with tests. Entry paths in ids are the engine's normalised paths (forward slashes, no
-leading `/`, no `.`/`..` segments — the policy has already refused anything else before the archive
-lists).
+**Document id** = URL-safe base64 (no padding) of one **flat** JSON:
 
-Provider surface (read-only):
+```json
+{"v":1,"src":"content://…/document/photos.zip","n":["inner1.zip","d/inner2.zip"],"o":1234,"p":"2024/a.jpg"}
+```
+
+`src` is the outermost *file* Uri (never an archive-provider Uri); `n` is the chain of nested
+archive entry paths from `src` inward (empty for a top-level archive); `o` is the **ordinal** of the
+entry among the archive's headers (-1 for the archive root and for implicit directories, §2.3);
+`p` is the normalised entry path (`""` for the root). Growth is linear in depth, nothing parses ids
+recursively, and depth = `n.size + 1` archive levels, **at most 4** (`nested-depth-4.zip` opens to its
+innermost file; the fifth level is refused at id construction with "Archives nested deeper than 4
+levels cannot be browsed"). `ArchiveDocumentId.parse/encode` live in one file with tests; hostile
+ids (bad base64, wrong version, unnormalised `p`, `o` out of range) are refused. An id identifies
+an entry by **position**, so duplicate paths and case collisions are distinct documents and
+`extract_entry_at` (§2.2) fetches exactly the header the user clicked.
+
+Every entry Uri is the non-tree form `content://io.github.mbaliga.fylz.archives/document/<id>`;
+`DocNode.children` and `listChildren`'s row builder gain the one branch §2.5 describes so non-tree
+Uris work through the whole engine. Uri length is ~250 characters at depth 1 and grows ~50 per
+level, so an 80,000-entry folder's `FileEntry`s hold ~20 MB of Uri strings — inherent to Uri-keyed
+entries, recorded.
+
+Provider surface (read-only; **every method blocks on the catalog**, §2.3 — there is no loading
+protocol):
 
 | Method | Behaviour |
 |---|---|
-| `queryRoots` | empty cursor — archives are never SAF roots; they are reached only through a tab |
-| `queryDocument(id)` | root: `DISPLAY_NAME` = archive file name, `MIME_TYPE_DIR`, `SIZE` = archive bytes, `FLAGS` = 0. Entry: name = last path segment, MIME = `MIME_TYPE_DIR` for `Directory` kind else `MimeTypeMap` by extension (`application/octet-stream` fallback), `SIZE` = uncompressed (null when unknown), `LAST_MODIFIED` = mtime × 1000 (null when unknown), `FLAGS` = 0 (nothing writable, no thumbnails in M3.3) |
-| `queryChildDocuments(parentId, projection, sort)` | the catalog's children of `p` (§2.3), one row each, cursor order = archive order; `EXTRA_LOADING` when the catalog is still listing (§2.3); notification Uri set so a finished listing refreshes the cursor |
-| `openDocument(id, mode, signal)` | `"r"` only (`UnsupportedOperationException` otherwise); returns a **regular-file** descriptor of the materialised entry (§2.4) |
-| `isChildDocument(parent, child)` | path-prefix check within the same `src` |
-| everything else | `UnsupportedOperationException` — M3.6 (edit in place) decides what becomes writable |
+| `queryRoots` | empty cursor — archives are never SAF roots |
+| `queryDocument(id)` | root: `DISPLAY_NAME` = archive file name, `MIME_TYPE_DIR`, `SIZE` = archive bytes, `FLAGS = 0`. Entry: name = last path segment, MIME = `MIME_TYPE_DIR` for directories else `MimeTypeMap` by extension (`application/octet-stream` fallback), `SIZE` = uncompressed (null when unknown), `LAST_MODIFIED` = mtime × 1000 (null when unknown), `FLAGS = 0` |
+| `queryChildDocuments(parentId, …)` | the tree's children of `p`, cursor order = archive order, one row each; on a catalog failure the cursor carries `DocumentsContract.EXTRA_ERROR` = the message (§2.3) and no rows |
+| `openDocument(id, mode, signal)` | `"r"` only; a **regular-file** descriptor of the materialised entry (§2.4); refusals are `FileNotFoundException(message)` |
+| `isChildDocument(parent, child)` | same `src`/`n` and `p` prefix |
+| everything else | `UnsupportedOperationException` — M3.6 decides what becomes writable |
 
-### 2.2 Bulk data leaves `:decoders` through pipes, drained in the UI process
+The provider reaches its `ArchiveCatalog` through `FylzApplication` with an `@VisibleForTesting`
+override (the `volumeOverride` pattern, `FylzFilesDocumentsProvider.kt:56-57`), and a debug-only
+"not on the main looper" check that is injectable so Robolectric (main looper) can run it. In-process
+`ContentResolver` calls run the provider on the caller's thread through the local transport; every
+existing caller (`listChildren` on IO, `FileOperationService` off-main, previews via `produceState`
++ IO, `TransferWorker`) is already off the main thread.
 
-Two new AIDL methods:
+### 2.2 Bulk data leaves `:decoders` through pipes owned by the client
+
+Two AIDL methods:
 
 ```aidl
-// Both descriptors caller-owned. `archive` is seekable (ArchiveSource guarantees it); `sink` is the
-// write end of a pipe the caller drains concurrently. The service writes the full entry table into
-// `sink` in ArchiveListingCodec's format and returns the summary with `rows` empty.
+// `archive` is caller-owned and seekable (ArchiveSource guarantees it). `sink` is the write end of a
+// pipe the client created; the service takes ownership of its dup and closes it when done. The full
+// entry table is written into `sink` in the ArchiveListingCodec format; the summary comes back with
+// `rows` empty (and `partial = true` if the pass stopped on a damaged header after some entries).
 ArchiveInspection listArchive(in ParcelFileDescriptor archive, in ArchiveLimits limits, in ParcelFileDescriptor sink);
-// Streams one entry's bytes into `sink`. Returns bytes written, or a failure outcome in the result.
-ArchiveExtractResult extractEntry(in ParcelFileDescriptor archive, String entryPath, in ArchiveLimits limits, in ParcelFileDescriptor sink);
+// Streams the bytes of the entry at header `ordinal` (whose raw path must equal `expectedPath`
+// byte for byte) into `sink`. Stops reading the archive as soon as the entry is written.
+ArchiveExtractResult extractEntry(in ParcelFileDescriptor archive, int ordinal, String expectedPath, in ArchiveLimits limits, in ParcelFileDescriptor sink);
 ```
 
-**Why pipes, not a cache-file descriptor or `SharedMemory`:** a pipe passed over Binder is the one
-channel an isolated process is unquestionably allowed to write (it is how the platform's own
-isolated renderers move data); a write descriptor to an app-private file relies on an SELinux
-`isolated_app` → `app_data_file` allowance that is plausible but `UNVERIFIED`, and a descriptor to a
-foreign provider's file (M3.4's destinations: `fuse`/`sdcardfs`) would be a different question again.
-One channel for listings, entry bytes and (M3.4) extraction keeps the SELinux surface at "pipes",
-at the cost of one drain thread and one memcpy per stream in the UI process. `SharedMemory` needs
-the size in advance (two passes) and fits bitmaps, not tables.
+**Why pipes:** a pipe passed over Binder is the one channel an isolated process is certainly allowed
+to write. Reading *and* writing an app-private file through a passed descriptor both depend on the
+same SELinux allowance for `isolated_app` on `app_data_file` — M3.2's staged path and nested archives
+already rely on the read half — and that allowance is `UNVERIFIED` until §18 item 7 runs on a device.
+Pipes cost a drain thread and a copy per stream; if §18 confirms the file rule, a cache-file sink
+for entry bytes is the recorded upgrade (§6), not a design change. `SharedMemory` needs the size in
+advance and fits bitmaps.
 
-The drain is the liveness signal. `DecoderClient` gains
-`suspend fun <T> callStreaming(sink: ParcelFileDescriptor /* read end */, drain: (InputStream) -> Unit,
-inactivityMillis = STREAM_INACTIVITY_MILLIS /* 30_000 */, block): DecoderCall<T>`: the Binder
-transaction runs in the client-owned job (M3.2's fix); the drain runs on `Dispatchers.IO` and stamps
-`lastByteAt` on every read; a watchdog abandons the call (unbind → the platform reaps `:decoders` →
-the pipe's write end closes → the drain sees EOF) when **no byte has arrived for
-`inactivityMillis`**. A multi-GB `.tar.xz` whose header pass takes minutes therefore lists fine as
-long as entries keep flowing; a genuinely hung process is still killed in 30 s. This replaces the
-flat 30 s structure budget for streaming calls only; `inspectArchive` keeps M3.2's budget. Both
-budgets are stated in `ARCHITECTURE.md` as the section 4.4 numbers *as applied*.
-
-Rust: no new engine function for listing — `archive_inspect(fd, limits, max_rows =
-limits.max_listing_entries)` already returns every row (up to the memory bound) into `:decoders`,
-where Kotlin encodes them into the pipe. One new FFI function for entry bytes:
+**Rust does the listing write** (no Kotlin re-encoding, no per-record objects in `:decoders`):
 
 ```rust
-#[uniffi::export] pub fn archive_extract_entry(fd: i32, path: String, sink_fd: i32, limits: ArchiveLimitsRecord) -> Result<u64, ArchiveEngineError>;
+#[uniffi::export] pub fn archive_list_into(fd: i32, limits: ArchiveLimitsRecord, sink_fd: i32) -> Result<ArchiveInspectionRecord, ArchiveEngineError>;
+#[uniffi::export] pub fn archive_extract_entry_at(fd: i32, ordinal: u32, expected_path: String, limits: ArchiveLimitsRecord, sink_fd: i32) -> Result<u64, ArchiveEngineError>;
 ```
 
-over part 3's `extract(fd, &Selection::Paths(vec![path]), &limits.into(), &mut SingleSink { fd })`
-where `SingleSink` is a `DestinationProvider` that hands out `sink_fd` once and returns `Ok(None)`
-for anything else. A missing path is `ArchiveEngineError::Corrupt { detail: "no such entry" }`... no:
-a **new** variant `NotFound { path }` (uniffi flat enum variant), mapped to `ArchiveExtractResult.outcome
-= NOT_FOUND`. The runtime caps of part 3 apply (`max_file_bytes` stops a lying header).
+`archive_list_into` is `inspect`'s header pass with a codec writer attached: each header is encoded
+and written to `sink_fd` **as it is read** (bytes flow during the pass, which is the liveness
+signal §2.2's client needs) while the `Vec<EntryMetadata>` is kept only for the policy decision (the
+~30 MB M3.2 measured, and nothing else — no `RustBuffer`, no Kotlin records). A damaged header after
+≥ 1 entry writes the trailer with `partial = 1` and returns `Ok` with `outcome = CORRUPT`-equivalent
+fields (`partial: true`, `message`) so the catalog can show what was readable (M3.2 §4's hand-off).
+`archive_extract_entry_at` (new in `fylz-archive`: `extract_entry_at(fd, ordinal, expected_path,
+limits, dest)`) walks to header `ordinal` (`archive_read_next_header` skips bodies; on a seekable ZIP
+this is a central-directory walk), compares the raw pathname byte-exact, streams that one entry
+under part 3's runtime caps, and **returns without reading further**. Mismatch → `ArchiveEngineError::
+NotFound { ordinal, path }` (a field-carrying variant of M3.2's error enum; uniffi `flat_error`
+would drop fields, so it is not flat). Part 3's `extract(Selection::Paths)` is not used for this
+(case-folded first match, full pass).
 
-`ArchiveListingCodec` (`archive/ArchiveListingCodec.kt`, Kotlin on both sides; rev 1 of M3.2 sketched
-it, the review's points are applied): magic `FZL1`; **entry count up front** (`Int`, written before
-the first record — Kotlin in `:decoders` has the full list); per record a tag byte `0x01`; path as
-`Int`-length-prefixed UTF-8 bytes (no truncation — anything the policy allowed fits; the codec
-never splits a code point because it never truncates); `kind: Byte`; `flags: Byte` (`ENCRYPTED_DATA`,
-`ENCRYPTED_METADATA`, `SIZE_UNKNOWN`, `MTIME_UNKNOWN`, `NAME_LOSSY`, `HAS_LINK_TARGET`); `uncompressed:
-Long`; `mtimeEpochSeconds: Long`; `mode: Int`; optional link target (same encoding as path). Trailer
-tag `0xFF` + the same count. `write(entries, OutputStream)` flushes and **never closes** (the caller
-owns the descriptor); `read(InputStream): ArchiveListing` validates magic and count eagerly, reads
-every record, and checks the trailer — a short or corrupt stream is `ArchiveListingCorrupt` and the
-catalog **rebuilds** rather than shows a partial tree.
+`ArchiveListingCodec` (writer in Rust `fylz-archive/src/listing.rs`, reader in Kotlin
+`archive/ArchiveListingCodec.kt`, with a **cross-language golden-bytes test**: a committed `.fzl`
+under `app/src/test/resources/fixtures/archives/` produced by the Rust writer from `sample-cd.zip`
+and asserted byte-identical by a Rust test, then decoded by the Kotlin test): magic `FZL1`; per
+record a tag `0x01`, `ordinal: u32`, raw path (`u32` length + bytes, **as libarchive gave it**; the
+tree normalises on read, §2.3), `kind: u8`, `flags: u8` (`ENCRYPTED_DATA`, `ENCRYPTED_METADATA`,
+`SIZE_UNKNOWN`, `MTIME_UNKNOWN`, `NAME_LOSSY`, `HAS_LINK_TARGET`), `uncompressed: u64`,
+`mtime: i64`, `mode: u32`, optional link target (same encoding); trailer tag `0xFF`, `count: u32`,
+`partial: u8`. All integers little-endian. The Kotlin reader treats the file as **untrusted** (a
+compromised `:decoders` wrote it): count ≤ `maxListingEntries`, each path and link target ≤ 64 KiB,
+cumulative bytes ≤ file length, tree depth ≤ 1,024 segments; a violation or a missing trailer is
+`ArchiveListingCorrupt`. Hostile-listing tests feed each violation.
 
-### 2.3 `ArchiveCatalog`: one listing per archive, on disk and in memory
+`DecoderClient.callStreaming`:
 
-`archive/ArchiveCatalog.kt`, application-scoped next to `ArchiveInspector` (§2.9).
+```kotlin
+suspend fun <T> callStreaming(
+    archive: ParcelFileDescriptor, inactivityMillis: Long = STREAM_INACTIVITY_MILLIS /* 30_000 */,
+    drain: suspend (InputStream) -> Unit,
+    block: (IDecoderService, writeEnd: ParcelFileDescriptor) -> T,
+): DecoderCall<T>
+```
 
-- **Key:** `sha256(src.toString() + "|" + size + "|" + lastModified)` where size/mtime come from
-  `queryDocument(src)` (or, for a nested `src`, from the inner entry's listing row). A changed
-  archive gets a new key; the old listing is garbage.
-- **Listing file:** `cacheDir/archive-listings/<key>.fzl`, produced by
-  `ArchiveSource.resolve(src).use { client.callStreaming(pipe, drain = copy into the file) {
-  it.listArchive(pfd, limits, writeEnd) } }`. Written to `<key>.fzl.part` and renamed on success
-  (the codec's eager validation on read is the second line of defence).
-- **In-memory tree:** `ArchiveTree` built from the listing: entries in archive order plus a
-  `HashMap<parentPath, IntArray of indices>`; implicit directories (a `dir/file` with no `dir/` row —
-  common in ZIPs) are synthesised as `Directory` rows with unknown mtime. Bounded: an LRU of **2**
-  trees in memory (`max_listing_entries` 200,000 × ~100 B ≈ 20 MB each at the bound; the survey's
-  eighty-thousand-entry tarball is ~8 MB), everything else re-read from its `.fzl` on demand
-  (~50 ms for 10 MB; measured and recorded).
-- **Cache budget:** `archive-listings/` is capped at 64 MB, LRU by file mtime; swept together with
-  M3.2's 24 h sweep of `archive-work/`, both in one `ArchiveCacheSweeper` that M3.2c introduces the
-  first half of (§3 says how the two milestones share it).
-- **API:** `suspend fun open(src: Uri): ArchiveHandle` (lists if needed; `ArchiveHandle.summary`,
-  `children(path): List<ArchiveTreeEntry>`, `entry(path)`, `depth`); `fun peek(src): ArchiveHandle?`
-  (no I/O, for the provider's synchronous `queryDocument`). The provider's `queryChildDocuments`
-  uses `peek`; on a miss it returns an empty cursor with `EXTRA_LOADING = true`, kicks off `open` on
-  the application scope, and calls `notifyChange` on the children Uri when done — the same
-  loading→notify contract `DocumentRepository.listChildren`'s cursor already follows for slow
-  providers (`UNVERIFIED`: that `listChildren` re-queries on the notification rather than treating
-  the first empty cursor as final; if it does not, the repository gains that behaviour for the
-  archive authority only, since a `Flow<ListingBatch>` can emit a second batch).
-- **Failure surface:** `open` maps `DecoderCall.TimedOut` → `ArchiveCatalogException.TookTooLong`,
-  `Failed` → `Unavailable`, a non-`OK` outcome → `Refused(outcome, message)`, `ArchiveSourceException`
-  → `SourceFailed`, and the provider turns these into `FileNotFoundException(message)` from
-  `queryChildDocuments`/`openDocument`, which `DocumentRepository.listChildren` surfaces as an empty
-  `complete` batch plus a one-line `Log.w` (today's behaviour for a vanished folder) — the location
-  stays on the stack and Up still works. The overlay/preview show the message (§2.7).
+- The client **creates the pipe** (`ParcelFileDescriptor.createPipe()`), hands `(service, writeEnd)`
+  to `block` (which runs in the client-owned transaction job, M3.2's fix), and closes **its own**
+  write end in that job's `finally` and on abandon — a real pipe reports EOF only when every write
+  end is closed, and the service closes its dup with `use`. The drain runs on the client's streaming
+  executor and reads until EOF; on cancel or abandon the client closes the read end
+  (`FileInputStream.close` wakes a blocked `read`).
+- **Drain rule** (Robolectric's file-backed pipes return -1 before the first write): EOF is final
+  only once the client has closed its write end *and* the transaction has returned or been
+  abandoned; an earlier -1 sleeps 10 ms and retries. Real pipes never take the retry path.
+- **Liveness** = sink bytes arriving **or** the archive descriptor's shared file offset advancing:
+  the watchdog polls `Os.lseek(archive.fileDescriptor, 0, SEEK_CUR)` on the UI process's own copy
+  every second (the offset is shared with the Binder dup — DESIGN-M32 §1); it abandons the call when
+  neither has changed for `inactivityMillis`. A multi-GB `.tar.xz` header pass, a solid-7z lead-in,
+  a skip over a large body — all move the offset; a hung process moves nothing and is killed in 30 s.
+  `inspectArchive` keeps M3.2's flat budget.
+- **Executor:** transactions and drains run on a dedicated fixed pool of 4 threads (not
+  `Dispatchers.IO`, whose 64 threads Coil/previews/`TransferWorker` can fill while waiting on fills
+  that themselves need threads); concurrent fills are capped at 2 (§2.4).
+- **Concurrency correctness (M3.3 makes the client concurrent for the first time):** an in-flight
+  counter under a lock; `dropConnection` guarded by a **generation number** so a stale victim never
+  unbinds a newer connection; a call whose connection was dropped by another call's timeout retries
+  once on a fresh binding; the idle timer (§2.9) arms only at zero in flight and is cancelled at
+  every call start. Tests: overlapping calls, one timing out while another streams, the idle timer
+  racing a new call.
+
+### 2.3 `ArchiveCatalog`: one listing per archive, on disk and in memory, always blocking
+
+`archive/ArchiveCatalog.kt`, application-scoped next to `ArchiveInspector`.
+
+- **Key:** top level `sha256(src | size | mtime)` from `queryDocument(src)`; nested
+  `sha256(key(outer) | entryPath | uncompressed | mtime)`, so a changed outer archive invalidates
+  every inner key.
+- **`open(src, chain): ArchiveHandle` is single-flight and blocking:** one `Deferred` per key; the
+  first caller lists, the rest await. Order: the in-memory LRU (2 trees) → the `.fzl` on disk (read
+  and validated, ~50 ms for 10 MB, measured) → `:decoders` via `ArchiveSource.resolve(source).use {
+  client.callStreaming(pfd, drain = copy into <key>.<nonce>.part) { s, w -> s.listArchive(pfd,
+  limits, w) } }`, then rename to `<key>.fzl`. `queryDocument`, `queryChildDocuments` and
+  `openDocument` all call `open` and block; there is no `peek`, no `EXTRA_LOADING`, no `notifyChange`
+  protocol. A cold process (`TransferWorker` resuming, another app opening a granted Uri, session
+  restore) therefore gets the full listing, never an empty folder.
+- **Failures are memoised per key** (`TookTooLong`, `Unavailable`, `Refused(outcome, message)`,
+  `SourceFailed`) until `fylz.refresh` or the key changes, so the provider never loops against
+  `:decoders`; `queryChildDocuments` returns a rowless cursor carrying `EXTRA_ERROR` = the message,
+  and `DocumentRepository.listChildren` reads `EXTRA_ERROR` and throws `IOException(message)` — the
+  listing effect already toasts it (`FylzV1App.kt:862-865`), so no line in `FylzV1App` changes for
+  this. `openDocument` throws `FileNotFoundException(message)`.
+- **Pinned sources:** a handle pins one `ArchiveSource.Resolved` for its lifetime — a staged
+  (non-seekable) source is copied **once** per open archive, not once per entry fill; a materialised
+  inner archive is pinned in the entry cache while any handle on it is open. Handles close on LRU
+  eviction and on process death (the disk copies survive; staging does not, by M3.2's rules).
+- **`ArchiveTree`** (from the listing, in archive order, with `HashMap<parentPath, IntArray of
+  ordinals>`) **normalises** every raw path: strip a leading `./` (repeatedly), leading `/`,
+  trailing `/`; collapse `//` and `.` segments; ZIP only: `\` → `/`; a path whose `..` climbs above
+  the root is **quarantined** (dropped from the tree, counted in `ArchiveHandle.quarantined`, shown
+  in the inspection view); an empty result is quarantined. Duplicates after normalisation: **last
+  member wins** (tar semantics) and earlier ordinals are hidden. A file and a directory with the same
+  normalised path: the directory wins and the file is quarantined. Implicit directories (`a/b/c.txt`
+  with no `a/` row) are synthesised with `o = -1`, unknown mtime. Children of `p` are therefore
+  unique by path, and every row Uri is unique. Fixtures cover each case (§2.10).
+- **Bounds:** an in-memory LRU of 2 trees; `archive-listings/` capped at 64 MB, LRU by file mtime;
+  the sweeper (`ArchiveCacheSweeper`, which 3a **moves out of** `ArchiveSource.resolve()` where
+  M3.2c put the 24 h `archive-work/` sweep) skips keys with a `Deferred` in flight and `.part` files
+  younger than an hour.
 
 ### 2.4 Entry bytes: materialise to cache, return a regular-file descriptor
 
-`openDocument(entryId, "r")` must return a descriptor synchronously, and two previews need it
-seekable. So `ArchiveEntryCache` (`archive/ArchiveEntryCache.kt`, application-scoped):
+`openDocument(entryId, "r")` must return a descriptor synchronously and seekable. `ArchiveEntryCache`
+(`archive/ArchiveEntryCache.kt`, application-scoped):
 
-- **Path:** `cacheDir/archive-entries/<listingKey>/<sha256(entry path)>` (`.part` while writing).
-- **Fill:** `ArchiveSource.resolve(src).use { client.callStreaming(pipe, drain = copy into the .part
-  file) { it.extractEntry(pfd, path, limits, writeEnd) } }`; on `Ok(result)` with `outcome == OK`
-  and `bytes == file length` → rename; anything else → delete `.part` and throw
-  `FileNotFoundException(message)`. Concurrent opens of the same entry share one fill (a
-  `Mutex`-guarded `Deferred` per key).
-- **Bounds:** an entry larger than `min(limits.maxFileBytes /* 1 GiB */, ENTRY_CACHE_BUDGET /* 512
-  MiB */)` or larger than `ArchiveSpacePolicy` says fits in the cache volume with headroom is refused
-  before any byte moves: `FileNotFoundException("This entry is too large to open in place. Extract
-  it instead.")` (M3.4's extract path has no such cap). The directory is LRU-evicted to
-  `ENTRY_CACHE_BUDGET` by mtime, never while a descriptor was handed out in the last 60 s (`UNVERIFIED`
-  whether a simpler "never evict entries younger than 60 s" suffices; the agent measures).
-- **Return:** `ParcelFileDescriptor.open(file, MODE_READ_ONLY)` — seekable; `PdfRenderer`,
-  `Typeface.Builder`, ExoPlayer and Coil all read it as an ordinary document.
-- **Encrypted entries** (`ENCRYPTED_DATA` flag): refused before extraction with
-  `FileNotFoundException("This entry is password protected. Opening protected entries arrives with
-  the password prompt (M3.9).")`.
+- **Refusals first,** before any byte moves, each a `FileNotFoundException` with the message shown:
+  the archive's **policy decision is `refused`** ("This archive failed safety checks: <reason>" —
+  browsing a refused archive is allowed, opening or copying out of it is not, so a flat bomb that
+  passes the per-entry cap is still stopped by `max_total_uncompressed_bytes`/`max_entries`);
+  `Symlink`/`Other` kinds ("Links and special files cannot be opened"); `ENCRYPTED_DATA` ("This
+  entry is password protected. Opening protected entries arrives with the password prompt (M3.9).");
+  size over `min(limits.maxFileBytes, ENTRY_CACHE_BUDGET = 512 MiB)` or over what
+  `ArchiveSpacePolicy` says fits the cache volume with headroom ("This entry is too large to open in
+  place. Extract it instead." — M3.4's extract has no such cap). A `Hardlink` resolves to its target's
+  ordinal (the tree keeps `path → ordinal`) and opens that.
+- **Fill:** `cacheDir/archive-entries/<listingKey>/<ordinal>` (`.<nonce>.part` while writing), via
+  the handle's pinned source: `client.callStreaming(pfd, drain = copy into .part) { s, w ->
+  s.extractEntry(pfd, ordinal, rawPath, limits, w) }`; success = `Ok(result)` with `outcome == OK`
+  and `bytes == file length` **and** `bytes == declared uncompressed` when known → rename; anything
+  else deletes the `.part` and throws. Concurrent opens of the same entry share one fill through a
+  per-key `Deferred` with **reference-counted waiters**: a caller's cancel detaches that caller and
+  only the last one's cancel aborts the fill. At most 2 fills run at once (§2.2's executor).
+- **Return** `ParcelFileDescriptor.open(file, MODE_READ_ONLY)`: seekable; `PdfRenderer`,
+  `Typeface.Builder`, ExoPlayer and Coil read it as an ordinary document. Eviction is LRU to
+  `ENTRY_CACHE_BUDGET` by mtime; an open descriptor stays valid after unlink, so no time guard is
+  needed; the materialised inner archive of an open handle is pinned (§2.3).
+- `CancellationSignal` is honoured when a caller passes one (`openFileDescriptor(uri, mode, signal)`);
+  `openInputStream`, `readText`, Coil and `FileOperationService` pass none, so their fills run to
+  completion or failure.
 
-`openDocument` runs on a Binder thread of the app process (or in-process through
-`localContentProvider`), never the main thread; it blocks for the fill, which is what providers that
-fetch on demand do. The `CancellationSignal` is honoured: it abandons the streaming call (unbind)
-and deletes the `.part`.
+**Cost model, stated honestly:** one fill = one `extract_entry_at` pass to the entry. On a seekable
+ZIP or non-solid 7z that is a central-directory walk plus one seek (cheap); on `tar.*` and solid 7z
+it decompresses the stream up to the entry, so copying N files out of a `tar.gz` costs about N/2
+full decompressions. M3.3 accepts this (§18 item 6 records the time for a 1,000-file `tar.gz`
+folder); M3.4 routes bulk extraction through one `extract(Selection)` pass. Thumbnails would
+otherwise trigger a fill per visible image (`EntryThumbnail` falls back to Coil over `entry.uri`,
+`EntryThumbnail.kt:69-93`), so `EntryThumbnail` shows the kind icon for archive-authority Uris (no
+thumbnails inside archives; logged). `fylz.find-duplicates` hashes every entry and is disabled inside
+archives (§2.6).
 
-**Copy-out** (Copy → Paste into a real folder; Copy to…) needs nothing new: `FileOperationService.copy`
-→ `DocNode.load(entryUri)` (the provider's `queryDocument` supplies name/MIME/size/flags) →
-`TransferEngines.forPair` picks `DocumentsTransfer` (`fileFor` is null for the archive authority) →
-`streamCopy(openInputStream(entryUri))` → the materialised file. A directory entry copies
-recursively through `DocNode.children` → `queryChildDocuments`. Verification (SHA-256 on the
-`VerifySettings` path) re-reads the cache file. Cut/Move are disabled (§2.6). M3.4 replaces this
-double write with direct extraction through the queue.
+**Upgrade recorded for M3.4, not built now:** `StorageManager.openProxyFileDescriptor` (API 26+,
+minSdk 31) gives a seekable descriptor immediately whose `onRead` blocks only until the background
+fill has passed the requested range, backed by the same cache file, whenever the size is known from
+the listing. It removes the materialisation latency without changing this cache.
 
-**Nested archives:** `ArchiveSource.resolve(innerEntryUri)` → `openFileDescriptor` → the provider
-materialises the inner archive (§2.4 bounds apply: an inner archive over 512 MiB says "extract it
-first") → a regular file → `Direct` → `:decoders` lists it. Depth is enforced at id construction
-(§2.1); the cache key chain means a changed outer archive invalidates the inner listing too.
-
-### 2.5 Opening and navigating
+### 2.5 Opening, listing, navigating, copying out
 
 - `openEntry(entry)` (`FylzV1App.kt:919-930`): the push branch becomes `if (entry.isDirectory ||
-  entry.isBrowsableArchive)` where `FileEntry.isBrowsableArchive` (new extension in `model/`) is
-  `kind == ARCHIVE && FileFormatRegistry.archives.contains(ext) && ext !in NOT_YET_BROWSABLE` with
-  `NOT_YET_BROWSABLE = setOf("rar", "cbr")` until the RAR fixture corpus exists (M3 acceptance;
-  libarchive does read RAR4/5 unencrypted — the exclusion is about untested formats, logged). The
-  pushed `FolderLocation` is `(ArchiveDocumentsProvider.rootUri(entry.uri), entry.name)`. Inside an
-  archive, a `Directory` entry pushes `(entry.uri /* already an archive document */, entry.name)`.
-  Net line change in `FylzV1App.kt`: zero (the condition changes on its line).
-- **Single tap opens the archive as a folder** (this is what the plan's "opening an archive pushes a
-  virtual location" says). The archive's *inspection* view (M3.2's widened `ArchivePreview`) is still
-  reachable: select the archive and open the preview pane — `focusedEntry` is set by selection, not
-  only by tap. `fylz.open-with` on an archive still offers the external chooser.
-- `DocumentRepository.listChildren(treeUri, folderUri)`: when `folderUri.authority ==
-  ArchiveDocumentsProvider.AUTHORITY` it builds `DocumentsContract.buildChildDocumentsUri(authority,
-  docId)` (the non-tree form; same UID, no grant needed) instead of the tree form; the rest of the
-  pipeline (projection, batches of 500/5,000, `FileType.classify`) is unchanged. `FileEntry.kind`
-  for entries therefore comes from the same classifier as files; `FileEntry.flags` = 0.
-- Breadcrumb: unchanged code, now reads `Downloads / photos.zip / 2024` because the names pushed
-  are the archive's and the folder's. (The plan writes `›`; the app writes `/`. Not changed here.)
-- Up (`fylz.navigate.up`) pops as today. Leaving an archive is popping past its root.
-- Location-keyed effects skip archive locations: legacy-bin lookup and `FileObserver` already key on
-  the *tree* Uri's authority (no change); `currentFolderIsFavourite` compares Uris (an archive Uri is
-  never a favourite; `fylz.favourite.toggle` is disabled inside archives, §2.6); recursive search
-  (`searchRecursive`) is forced off while the current location is an archive (one condition in the
-  search effect, paid for by §2.8's extraction).
-- Session restore: `SessionCodec` round-trips any Uri string, so archive locations persist and
-  restore; the catalog re-lists lazily on first query. A vanished source → §2.3's failure surface.
+  entry.isBrowsableArchive)`; for an archive the pushed location is
+  `(ArchiveDocumentsProvider.rootUri(entry), entry.name)` wrapped in `runCatching` whose failure (the
+  depth refusal) toasts through the existing error channel (+2 lines, paid for by §2.8). Inside an
+  archive a directory entry pushes `(entry.uri, entry.name)`. `fylz.open`/`fylz.open-with`'s double-tap
+  split (`BuiltInActions.kt:265,278`) uses the same predicate, so a double-tap on an archive browses
+  it instead of opening the external chooser.
+- `FileEntry.isBrowsableArchive` (new, `model/`): `BrowsableArchiveFormats.matches(name)` — an
+  **explicit, tested set matched on `FileFormatRegistry.compoundExtension`**, with no `kind`
+  precondition (many of these classify as `OTHER` today): `zip zipx jar apk cbz 7z cb7 tar tgz tbz
+  tbz2 txz tzst tar.gz tar.bz2 tar.xz tar.zst tar.lz4 iso cpio ar deb rpm cab lha lzh warc`. Excluded
+  with a reason in the file: `rar cbr` (fixtures pending), `arj img dmg wim` (no libarchive reader
+  in `format_all`), `xar` (needs libxml2/expat, both OFF in `build.rs`), single-file `gz bz2 xz zst
+  lz4` (`raw` not registered). `FileFormatRegistry.archives` stays private; the preview gate (§2.7)
+  becomes `ZIP_CONTAINER_EXTENSIONS ∪ BrowsableArchiveFormats`.
+- `DocumentRepository.listChildren(treeUri, folderUri)`: when `!DocumentsContract.isTreeUri(folderUri)`
+  — true for every archive Uri — the children Uri is `buildChildDocumentsUri(authority, docId)` and
+  each **row** Uri is `buildDocumentUri(authority, childId)` (today both use the outer tree form);
+  it reads `EXTRA_ERROR` and throws `IOException`. Everything else (projection, 500/5,000 batches,
+  `FileType.classify`) is unchanged. `DocNode.children` (`DocNode.kt:34-48`) gains the same
+  non-tree branch, which is what makes directory copy-out and the preflight size walk work.
+- **Copy-out** needs nothing else new: `FileOperationService.copy` → `DocNode.load(entryUri)` →
+  `TransferEngines.forPair` picks `DocumentsTransfer` → `streamCopy(openInputStream(entryUri))` →
+  the materialised file; directories recurse through `DocNode.children`; verification re-reads the
+  cache file; the journal records Uris as for any copy. One refused child (a link, an encrypted
+  entry) fails the whole directory copy, as today for any unreadable child
+  (`FileOperationService.kt:445-447`); logged. Cut/Move are disabled (§2.6).
+- **Destination chooser:** `DestinationChooserSheet` lists every open tab's current location
+  (`DestinationChooserSheet.kt:69-75`); tabs whose current location is an archive are **filtered
+  out** there (they are not writable), with a test.
+- Breadcrumb: unchanged code now reads `Downloads / photos.zip / 2024` (the plan writes `›`; not
+  changed). Up pops as today; leaving an archive is popping past its root. Recursive search is
+  forced off while the current location is an archive (one condition in the search effect).
+- Session restore: `SessionCodec` round-trips any Uri string; the catalog re-lists lazily and
+  blocking on the first query. A vanished source → §2.3's memoised failure → toast, location stays,
+  Up works. A restored `SessionCodecTest` case lists a restored archive location through the
+  provider with a fake decoder, not just the string round trip.
 
 ### 2.6 Actions inside an archive: read-only, through the registry
 
-`BrowserState` gains `locationKind: LocationKind = LocationKind.FOLDER` (enum `FOLDER`, `ARCHIVE`;
-defaulted, so `BrowserStateFixtures` stay byte-identical — MC.0's rule). It is `ARCHIVE` when
-`activeTab.current.uri.authority == ArchiveDocumentsProvider.AUTHORITY`. This is the
-`location.kind` predicate the Addendum's MC.2 lists; M3.3 introduces the field, MC.2 exposes it to
-customisation.
-
-`enabledWhen` changes (all in `BuiltInActions.kt`, each `&& it.locationKind != ARCHIVE` unless said):
+`BrowserState` gains `locationKind: LocationKind = LocationKind.FOLDER` (defaulted, so
+`BrowserStateFixtures` stay byte-identical). `LocationKind` is Addendum §C3's `location.kind` value
+set **as far as M3.3 can tell it**: `FOLDER` (any tree location; MC.2 refines it to
+internal/sd/usb/network/recycle-bin when it wires the condition evaluator) and `ARCHIVE`;
+`disk-image` arrives with M4. The mapping is documented on the enum. `ARCHIVE` when
+`activeTab.current.uri.authority == ArchiveDocumentsProvider.AUTHORITY`.
 
 | Action | Inside an archive | Why |
 |---|---|---|
-| `fylz.cut`, `fylz.move-to`, `fylz.recycle`, `fylz.rename`, `fylz.rename.batch`, `fylz.tags` | disabled | they write the source; the archive is read-only until M3.6 |
+| `fylz.cut`, `fylz.move-to`, `fylz.recycle`, `fylz.rename`, `fylz.rename.batch`, `fylz.tags` | disabled | they write the source; read-only until M3.6 |
 | `fylz.paste`, `fylz.new-folder`, `fylz.new-file`, `fylz.scan-to-pdf` | disabled | they write into the current location |
-| `fylz.favourite.toggle`, `fylz.ai.organize` | disabled | favourites are tree folders; organise moves files |
-| `fylz.copy`, `fylz.copy-to`, `fylz.share`, `fylz.compress`, `fylz.find-duplicates`, `fylz.pdf.tools`, `fylz.select.*`, `fylz.open`, `fylz.open-with`, sort/view, `fylz.navigate.up`, `fylz.refresh` | unchanged | read-only or navigation; compress/pdf.tools read entries through the provider |
-| `fylz.extract` | unchanged (ZIP family, one selected archive file) | inside an archive it applies to a nested archive file entry; "Extract selected entries" is M3.4 |
+| `fylz.favourite.toggle`, `fylz.ai.organize`, `fylz.find-duplicates` | disabled | favourites are tree folders; organise moves files; duplicates hashes (materialises) every entry |
+| `fylz.copy`, `fylz.copy-to`, `fylz.share`, `fylz.compress`, `fylz.pdf.tools`, `fylz.select.*`, `fylz.open`, `fylz.open-with`, sort/view, `fylz.navigate.up`, `fylz.refresh` | unchanged | read-only or navigation |
+| `fylz.extract` | unchanged | applies to a nested archive file entry; "Extract selected entries" is M3.4 |
 
 `ActionResolverGoldenTest`: `LegacyOracle` gains the read-only rule as a named function, every
-`expected*` row that changes takes it, and `BrowserStateFixtures` gains three fixtures
-(`archiveRootNoSelection`, `archiveFolderWithSelection`, `archiveWithClipboard`) — lockstep, as MC.0
-requires. `NoHardCodedMenusTest` unchanged. `ShortcutTableTest`'s "no problems" assertion unchanged.
+`expected*` row that changes takes it, and `BrowserStateFixtures` gains `archiveRootNoSelection`,
+`archiveFolderWithSelection`, `archiveWithClipboard` — lockstep, as MC.0 requires.
+`NoHardCodedMenusTest`, `ShortcutTableTest` unchanged.
 
 ### 2.7 Preview and the inspection view
 
-- `PreviewPane.kt:156`'s gate widens from `ZIP_CONTAINER_EXTENSIONS` to `FileFormatRegistry.archives`
-  (minus `NOT_YET_BROWSABLE`); `ZipArchivePreview` is renamed `ArchivePreview` (M3.2 already made it
-  format-agnostic through the inspector). `SEMANTIC_ZIP_DOCUMENTS` (OOXML/ODF/EPUB) keep
-  `ZipDocumentPreview` — they are documents, not archives, in the plan's own table ("as containers").
-- Previewing an **entry** needs no new renderer: the entry's Uri is a document, so `PreviewPane`
-  dispatches on `FileFormatRegistry.describe(name, mime, kind)` as for any file and the renderer
-  opens the Uri → §2.4 materialises. Text previews read through `repository.readText(uri)` (512 KiB
-  bound, unchanged). A refused open (§2.4) surfaces as the existing `UniversalInspectorPreview`
-  fallback with the `FileNotFoundException` message.
-- The catalog's failure messages (§2.3) reach the user through the listing effect's empty batch plus
-  a snackbar from the existing `report`/error channel (`UNVERIFIED`: which channel `FylzV1App` uses
-  for listing failures today; if none, the archive root shows an empty folder and the message is
-  logged — recorded as a gap for M3.4's progress UI to close).
+- `PreviewPane.kt:156`'s gate becomes `ZIP_CONTAINER_EXTENSIONS ∪ BrowsableArchiveFormats` (so APK,
+  JAR, CBZ and 3MF inspection stay); `ZipArchivePreview` is renamed `ArchivePreview` (M3.2 made it
+  format-agnostic). `SEMANTIC_ZIP_DOCUMENTS` keep `ZipDocumentPreview`.
+- `ArchivePreview` shows the catalog's `quarantined` count and `partial` flag when present ("N
+  entries with unsafe paths are hidden"; "damaged after N entries; showing what could be read").
+- Previewing an **entry** needs no new renderer: the Uri is a document, `PreviewPane` dispatches on
+  `FileFormatRegistry.describe` as for any file, and the renderer opens the Uri → §2.4. A refusal
+  surfaces as the existing `UniversalInspectorPreview` fallback with the exception's message.
 
 ### 2.8 Paying for the `FylzV1App.kt` ratchet
 
-Lines M3.3 adds to `FylzV1App.kt`: one condition in the search effect (§2.5), one named argument in
-the `BrowserState` snapshot (§2.6). Lines it removes: the `BrowserState` construction
-(`FylzV1App.kt:1131-1157`, ~27 lines) moves to `actions/BrowserStateBuilder.kt` as
-`fun buildBrowserState(...)` taking the same inputs; `FylzV1App` keeps a one-line call.
-`FylzV1AppSizeTest`'s ratchet is lowered to the new count (it never goes up).
+Added: +2 in `openEntry` (§2.5), +1 in the search effect, +1 named argument in the snapshot call.
+Removed: the `BrowserState` construction (`FylzV1App.kt:1131-1157`) moves to
+`actions/BrowserStateBuilder.kt` as `buildBrowserState(inputs: BrowserStateInputs)` with a small
+input holder (about 18 inputs; positional arguments of the same types would be a bug farm); the
+`remember(...)` key list stays. Net saving about 10 lines; `FylzV1AppSizeTest`'s ratchet is lowered
+to the new count.
 
 ### 2.9 Decoder-process lifetime (the M3.2 hand-off)
 
-`DecoderClient` gains an **idle unbind after 60 s** without a call in flight: a single
-`Job` on the client's scope, restarted on every call's completion, that calls `dropConnection()`
-(the platform then reaps `:decoders`; the next call rebinds, paying the ~cold-start cost survey risk
-7 describes once per idle gap rather than per call). Tested through the existing seam with an
-injected idle time. Recorded in `ARCHITECTURE.md`. M3.2's REVIEW_QUEUE item 12 is closed by this.
+`DecoderClient` idle-unbinds after **60 s with nothing in flight**: the timer arms only when the
+in-flight counter reaches zero, is cancelled at every call start, and its `dropConnection()` carries
+the generation it was armed for (a call that began meanwhile has bumped it, so the stale timer is a
+no-op). Tested through the seam with an injected idle time and the two races of §2.2. Recorded in
+`ARCHITECTURE.md`; closes M3.2's REVIEW_QUEUE item 12.
 
 ### 2.10 Fixtures and tests
 
-Fixtures: M3.2's `core/fixtures/archives/*` are reused. M3.3 adds to `make_archive_fixtures.py`:
-`nested-depth-4.zip` (a zip in a zip in a zip in a zip, each one file), `nested-depth-5.zip`
-(refused), `implicit-dirs.zip` (`a/b/c.txt` with no directory rows), `sample-entries.zip`
-(a PDF, a TTF, a PNG, a `.txt`, a 3 MB zero-filled `.bin` — for the seekable-preview and cache
-tests), `mixed-links.tar` (a relative in-tree symlink and a hardlink — listed, not openable). Kotlin
-tests do not load native code: the `:decoders` side is faked by an `IDecoderService.Stub` that writes
-a known listing / known bytes into the sink (Robolectric pipes are file-backed and sequential
-write-then-read works; `UNVERIFIED` that a concurrent drain sees bytes before the writer closes — if
-not, the fake writes fully before returning, which is also how the real service behaves for small
-inputs).
+Fixtures added to `make_archive_fixtures.py` (deterministic, each under 128 KiB): `nested-depth-4.zip`
+(four archive levels; opens), `nested-depth-5.zip` (refused), `implicit-dirs.zip`, `sample-entries.zip`
+(a PDF, a TTF, a PNG, a `.txt`, a 3 MB zero-filled `.bin`), `mixed-links.tar` (in-tree symlink,
+hardlink, fifo), `messy-paths.tar` (`./a`, `dir/`, `/abs`, `a//b`, a `..` climb-out, a duplicate
+member appended with `tarfile` in append mode, `README`/`readme`), `backslash.zip` (a `\`-separated
+name), `damaged-after-3.tar` (three good headers then garbage). The Rust listing writer produces
+`app/src/test/resources/fixtures/archives/sample-cd.fzl` (golden bytes) and the hostile listings for
+the reader's bounds tests are built in-test. Kotlin tests never load native code: `:decoders` is an
+`IDecoderService.Stub` fake that writes a known listing / known bytes into the sink **before
+returning** (the drain rule of §2.2 makes file-backed pipes deterministic).
 
 Kotlin (Robolectric):
-- `ArchiveDocumentIdTest`: encode/parse round trip, depth counting, depth-5 refusal, hostile ids
-  (not base64, wrong version, `..` paths) refused.
-- `ArchiveListingCodecTest`: round trip with every flag, lossy names, link targets, 200,000 entries
-  (time recorded), truncated stream → `ArchiveListingCorrupt`, `write` does not close the stream.
-- `ArchiveCatalogTest`: listing produced through a fake stub and the pipe drain into `.fzl`; key
-  changes with size/mtime; second `open` reads the file without calling the stub; corrupt file →
-  rebuilt; LRU of 2 trees; 64 MB cap eviction; implicit directories synthesised; `peek` semantics.
-- `ArchiveEntryCacheTest`: fill through a fake stub, seekable descriptor returned (read at an
-  offset), concurrent opens share one fill, oversize refused before any byte, encrypted refused,
-  `.part` cleaned on failure, LRU eviction with the 60 s guard, cancellation deletes `.part`.
-- `ArchiveDocumentsProviderTest` (registered via the existing `ProviderTestSupport`): `queryDocument`
-  root and entries (columns), `queryChildDocuments` with a warm catalog and the `EXTRA_LOADING`
-  path with `notifyChange` (`UNVERIFIED` that Robolectric delivers the notification; else the test
-  asserts the second query is warm), `openDocument` for `"r"` and refusal for `"w"`,
+- `ArchiveDocumentIdTest`: encode/parse round trip; depth = `n.size + 1`, level 5 refused; hostile ids.
+- `ArchiveListingCodecTest`: decodes the golden `.fzl`; every flag; lossy names; link targets;
+  200,000 entries (time recorded); each bounds violation and a missing trailer → `ArchiveListingCorrupt`;
+  `partial` read back.
+- `ArchiveTreeTest`: every normalisation case from `messy-paths.tar`/`backslash.zip`, last-member-
+  wins, file-vs-directory collision, implicit directories, quarantine count, unique children.
+- `ArchiveCatalogTest`: single-flight (two concurrent opens → one listing); disk-first on a warm
+  `.fzl`; key changes with size/mtime and nested keys chain; corrupt file → rebuilt once; failure
+  memoised until refresh; LRU of 2; 64 MB cap; pinned source reused across two fills (the fake
+  counts `resolve` calls).
+- `ArchiveEntryCacheTest`: fill via fake; descriptor seekable (read at an offset through
+  `contentResolver.openFileDescriptor(entryUri)`); shared fill with refcounted cancel; the four
+  refusals; hardlink resolves to target; `.part` cleaned on failure; eviction under budget; pinned
+  inner archive not evicted.
+- `ArchiveDocumentsProviderTest`: **attach with the manifest's `ProviderInfo`**
+  (`packageManager.resolveContentProvider(AUTHORITY, 0)`), so the exported/permission contract is
+  exercised; `queryDocument` root/entries; `queryChildDocuments` cold (no tree in memory → full
+  listing) and with `EXTRA_ERROR`; `openDocument("r")`, `"w"` refused, every write method refused;
   `isChildDocument`.
-- `DocumentRepositoryArchiveListingTest`: `listChildren` over the archive authority yields
-  `FileEntry`s in archive order with `kind` classified and `isDirectory` for directory rows; a
-  failing catalog → empty complete batch.
-- **`ArchiveCopyOutTest`** (the end-to-end proof): `FileOperationService.copy(listOf(entryUri,
-  dirEntryUri), realFolderTree)` through the real `DocumentsTransfer` path against the archive
-  provider with a fake stub → files byte-identical, directory recursed, journal entries as for any
-  copy.
-- `DecoderClientTest`: `callStreaming` — a stub writing a byte every 100 ms for 2 s under a 500 ms
-  inactivity budget succeeds; a stub silent for longer than the budget → `TimedOut`, unbind called,
-  drain sees EOF; idle unbind fires after the injected idle and the next call rebinds.
-- `BrowserStateBuilderTest` (moved logic, same outputs on the fixtures), `ActionResolverGoldenTest`
-  with the three archive fixtures, `SessionCodecTest` round-trips an archive location,
-  `FylzV1AppSizeTest` at the lowered ratchet.
+- `DocumentRepositoryArchiveListingTest`: non-tree rows in archive order with `kind` classified;
+  `EXTRA_ERROR` → `IOException`.
+- **`ArchiveCopyOutTest`**: `FileOperationService.copy(listOf(entryUri, nestedDirUri), realTree)`
+  through the real `DocumentsTransfer` path with the fake decoder → byte-identical files, nested
+  directory recursed, journal as for any copy; the same after the tree was evicted from memory.
+- `DecoderClientTest` additions: `callStreaming` success with the drain rule; inactivity abandon
+  with unbind and a closed read end; offset-progress keeps a silent sink alive; overlapping calls;
+  one call's timeout does not kill another (generation); idle timer arms only at zero and loses the
+  race to a new call.
+- `DestinationChooserSheetTest`: archive tabs excluded. `BrowserStateBuilderTest`; the golden test
+  with three archive fixtures; `SessionCodecTest` restore-and-list; `FylzV1AppSizeTest` lowered.
 
-Rust: `archive_extract_entry` round-trips bytes into a temp-file fd; a missing path → `NotFound`;
-`max_file_bytes` smaller than the entry → `LimitExceeded` and the partial sink is the caller's to
-delete (as part 3 says).
+Rust: `extract_entry_at` returns the bytes and **stops after the match** (assert the fd offset is
+before the end for a multi-member tar); exact-case match (`README` vs `readme` by ordinal);
+mismatched path → `NotFound`; `archive_list_into` golden bytes; `partial` on `damaged-after-3.tar`;
+caps still enforced.
 
 ### 2.11 Device checks (`DEVICE_CHECKS.md` §18, "M3.3 — archive browsing")
 
-1. Tap `photos.zip` in Downloads: the list shows its entries; the breadcrumb reads `Downloads /
-   photos.zip`; enter `2024`; Up twice returns to Downloads. Repeat for a `.7z`, an `.iso`, a
-   `.tar.gz`.
-2. Preview a PDF and a font inside the zip (seekable path); play a short video entry; view a PNG.
-3. Share a text entry to another app; "Open with…" a PDF entry in an external viewer (grant on the
-   non-exported provider).
-4. Copy a folder out of the archive into Downloads: files identical (`sha256sum` on both sides).
-5. `nested-depth-4.zip`: open to the innermost file; `nested-depth-5.zip`: the fifth level is refused
-   with the message.
-6. A tarball with 80,000 entries: listing completes; note the time and `:decoders` peak RSS
-   (`adb shell dumpsys meminfo <pkg>:decoders`); the tab stays responsive during listing.
-7. `adb logcat | grep avc`: no SELinux denials for `isolated_app` on pipe writes.
-8. Kill `:decoders` during a listing: the folder shows empty with the message; re-enter the archive:
-   it lists. Wait 60 s idle: `:decoders` is gone from `ps`; the next open brings it back.
-9. Rotate and background the app inside an archive (Don't keep activities on): the location restores.
-10. Cache: `cache/archive-listings` and `cache/archive-entries` stay under their budgets after
-    opening twenty archives and thirty entries.
+1. Tap `photos.zip` in Downloads: entries list; breadcrumb `Downloads / photos.zip`; enter `2024`;
+   Up twice returns. Repeat for `.7z`, `.iso`, `.tar.gz`, a `.deb`.
+2. Preview a PDF and a font inside the zip; play a short video entry; view a PNG.
+3. Share a text entry to another app; "Open with…" a PDF entry in an external viewer (Uri grant
+   through the `MANAGE_DOCUMENTS`-protected provider).
+4. Copy a folder out of the archive into Downloads: `sha256sum` identical on both sides.
+5. `nested-depth-4.zip` opens to the innermost file; `nested-depth-5.zip`'s fifth level is refused.
+6. A `tar.gz` with a 1,000-file folder: copy the folder out; record the time (the per-entry cost
+   model, §2.4). A tarball with 80,000 entries: listing time and `:decoders` peak RSS
+   (`dumpsys meminfo <pkg>:decoders`); the tab stays responsive.
+7. `adb logcat | grep avc`: no SELinux denials for `isolated_app` on the pipe writes **or** on
+   reading the staged/materialised cache files (nested archive listing).
+8. Kill `:decoders` during a listing: the toast names the failure; re-enter: it lists. Idle 60 s:
+   `:decoders` gone from `ps`; the next open brings it back.
+9. Rotate and background inside an archive (Don't keep activities on): the location restores and lists.
+10. Caches stay under budget after twenty archives and thirty entries; `.part` files never linger.
+11. `messy-paths.tar` browses without a crash; the inspection view shows the quarantined count.
 
 ## 3. Sequencing and gates
 
 Four commits, each green on the full gate (`./gradlew --no-daemon :app:testDebugUnitTest
-:app:lintDebug :app:assembleDebug`; the `core` gate incl. `cargo +nightly fuzz build`; the three-ABI
-`cargo ndk` build of `fylz-ffi-android`):
+:app:lintDebug :app:assembleDebug`; the `core` gate incl. `cargo +nightly fuzz build`; the
+three-ABI `cargo ndk` build of `fylz-archive` and `fylz-ffi-android`):
 
-- **M3.3a (transport):** `ArchiveListingCodec`, `DecoderClient.callStreaming` + idle unbind, AIDL
-  `listArchive`/`extractEntry` + `ArchiveExtractResult` Parcelable, `DecoderService` mapping through
-  the `engine` seam, Rust `archive_extract_entry` (+ `NotFound`), `ArchiveCatalog`,
-  `ArchiveEntryCache`, `ArchiveCacheSweeper` (absorbing M3.2c's sweep), their tests. No UI change.
-- **M3.3b (provider):** `ArchiveDocumentId`, `ArchiveDocumentsProvider` + manifest entry,
-  `DocumentRepository` archive listing, `ArchiveCopyOutTest`, provider/repository tests.
-- **M3.3c (UI and registry):** `isBrowsableArchive`, `openEntry`, `BrowserStateBuilder` extraction +
-  `locationKind` + `enabledWhen` changes + golden fixtures, search-off-in-archive, `ArchivePreview`
-  rename and the widened preview gate, the ratchet lowered.
-- **M3.3d (docs):** `ARCHITECTURE.md` (a new "Archives as documents" section: provider, caches,
-  pipes, budgets), `DEVICE_CHECKS.md` §18, `REVIEW_QUEUE.md` entry, PROGRESS row, PR #19 description.
-  (Folded into 3c if small.)
+- **M3.3a (transport and catalog):** Rust `listing.rs` writer, `extract_entry_at`, `archive_list_into`,
+  `archive_extract_entry_at`, `NotFound`; Kotlin `ArchiveListingCodec` reader + golden `.fzl`;
+  `ArchiveDocumentId`; `DecoderClient.callStreaming`, executor, generation/in-flight/idle logic;
+  AIDL `listArchive`/`extractEntry` + `ArchiveExtractResult`; `DecoderService` mapping;
+  `ArchiveCatalog`, `ArchiveTree`, `ArchiveEntryCache`, `ArchiveCacheSweeper` (moving M3.2c's sweep
+  out of `ArchiveSource.resolve()`); fixtures; all their tests. No UI change.
+- **M3.3b (provider):** `ArchiveDocumentsProvider` + manifest entry; `DocumentRepository` and
+  `DocNode` non-tree branches + `EXTRA_ERROR`; provider, repository and copy-out tests.
+- **M3.3c (UI and registry):** `BrowsableArchiveFormats`, `isBrowsableArchive`, `openEntry`, the
+  double-tap split, `BrowserStateBuilder` + `locationKind` + `enabledWhen` + golden fixtures,
+  search-off, `EntryThumbnail` icons, `DestinationChooserSheet` filter, `ArchivePreview` rename and
+  gate, the ratchet lowered.
+- **M3.3d (docs):** `ARCHITECTURE.md` ("Archives as documents": provider contract, ids, catalog,
+  caches, pipes, budgets, liveness), `DEVICE_CHECKS.md` §18, `REVIEW_QUEUE.md`, PROGRESS row, PR #19.
 
 `REVIEW_QUEUE.md` entry for M3.3 (log-and-continue):
-1. Drag-out deferred to M12.2 (§0) — the plan lists it under M3.3.
-2. Search inside archives disabled until M8 (§0, §2.5).
-3. RAR/CBR not browsable until the RAR fixtures exist (§2.5).
-4. Copy-out is a double write (materialise, then copy) until M3.4 (§2.4).
-5. Entries over 512 MiB cannot be opened in place (§2.4); M3.4's extract has no such cap.
-6. Encrypted entries list but do not open until M3.9 (§2.4).
-7. Pipes as the one bulk channel out of `:decoders` (§2.2); the SELinux question for file
-   descriptors is left unanswered rather than answered on a device.
-8. Inactivity-based liveness for streaming calls instead of §4.4's flat 30 s (§2.2).
-9. Idle unbind after 60 s (§2.9) — closes M3.2's item 12.
-10. The breadcrumb separator stays `/` (the plan writes `›`).
-11. A vanished archive behind a restored location shows an empty folder plus a log line (§2.3, §2.7).
+1. Drag-out deferred to M12.2 (§0). 2. In-archive search off until M8. 3. RAR/CBR, `arj img dmg
+wim xar`, and single-file compressed streams not browsable (§2.5) — the plan's table says "read: yes"
+for several. 4. Copy-out is per-entry (materialise, then copy; N/2 decompressions for `tar.*`) until
+M3.4 (§2.4). 5. Entries over 512 MiB cannot be opened in place. 6. Encrypted entries, links and
+special files do not open (§2.4). 7. Pipes as the one bulk channel; SELinux for passed *file*
+descriptors (read and write alike) unanswered until §18 item 7 (§2.2). 8. Inactivity+offset
+liveness instead of §4.4's flat 30 s for streaming calls (§2.2). 9. §4.4's "read-only descriptors,
+structure as Parcelables": `:decoders` now receives a writable pipe and structure crosses in a codec
+(§2.2). 10. `location.kind` arrives before MC.2 with a two-value set (§2.6). 11. No thumbnails
+inside archives (§2.4). 12. Archives over 200,000 entries are not browsable; damaged archives list
+partially (§2.2). 13. Listing memory in `:decoders` is the Rust `Vec` only (~30 MB at the bound),
+inside §4.4's target (§2.2). 14. Opening entries of a policy-refused archive is refused; browsing is
+not (§2.4). 15. Idle unbind after 60 s (§2.9). 16. Breadcrumb separator `/`. 17. A vanished
+archive behind a restored location toasts and stays (§2.5). 18. Ids carry no listing key: a
+clipboard entry pasted after the archive was replaced copies the new archive's entry at that
+position (as a replaced file would). 19. `ACTION_SEND_MULTIPLE` of thousands of ~250-character
+Uris can hit the transaction limit and today's `runCatching` swallows it (`FylzV1App.kt:1030`).
+20. `.iso` browsing overlaps M4.3 / §C3's `disk-image` kind. 21. Fixtures live under
+`core/fixtures/archives/` and the golden `.fzl` under `app/src/test/resources/fixtures/archives/`
+(MASTER_PLAN §3.4 asks for both trees).
 
 ## 4. Risks
 
-- **`EXTRA_LOADING` re-query** (§2.3 `UNVERIFIED`): if `DocumentRepository.listChildren` does not
-  re-query on `notifyChange`, the first entry into a cold archive shows empty until refresh. The
-  fallback is stated (the repository re-queries for the archive authority).
-- **Materialisation latency:** opening a 300 MB video entry blocks its `openDocument` for the
-  extraction time; ExoPlayer shows a spinner. Acceptable for M3.3; M3.4 can add a progress surface.
-- **Provider on the main thread:** `localContentProvider` calls from Compose code would run
-  `openDocument` on the caller's thread; every existing caller opens documents off the main thread
-  already (previews use `produceState`/IO). The provider asserts `Looper.myLooper() !=
-  Looper.getMainLooper()` in debug builds to catch a regression.
-- **Memory in the UI process:** two trees at the 200,000-entry bound ≈ 40 MB. If the device check
-  shows pressure, the LRU drops to 1 and the on-disk read path carries the rest.
-- **Robolectric pipes** are file-backed: the drain tests prove the codec and the file, not pipe
-  semantics; §18 items 6–8 are the real-device coverage.
+- **The `.fzl` write is a pipe drain in the UI process**; a process death mid-listing leaves a
+  `.part` the sweeper removes after an hour and a memoised nothing — the next open re-lists.
+- **Materialisation latency:** a 300 MB video entry blocks its `openDocument` for the extraction;
+  ExoPlayer shows a spinner. Acceptable; §2.4's recorded upgrade removes it.
+- **UI-process memory:** two trees at the 200,000-entry bound ≈ 40 MB plus Uri strings for the
+  visible folder. If §18 item 6 shows pressure, the LRU drops to 1.
+- **Robolectric** proves the codec, the tree, the provider contract and the copy-out path, not pipe
+  or SELinux semantics; §18 items 6–8 are the real-device coverage.
+
+## 5. Amendments this design makes to earlier designs
+
+- M3.2 (§2.3 step 4 / §3): the 24 h `archive-work/` sweep moves from `ArchiveSource.resolve()` into
+  `ArchiveCacheSweeper` in M3.3a; M3.2's `ArchiveEngineError` gains `NotFound { ordinal, path }`;
+  M3.2's REVIEW_QUEUE item 12 (idle unbind) is closed by §2.9; M3.2 §4's `partial` hand-off is taken.
+- Part 3 (§6): `fylz-archive` gains `extract_entry_at` and `listing.rs`; `extract(Selection::Paths)`
+  is unchanged and stays for M3.4's bulk path.
+
+## 6. Recorded upgrades (not in M3.3)
+
+- Cache-file sink for entry bytes and listings if §18 item 7 confirms the `isolated_app` file rule:
+  removes the drain thread, the copy and the pipe-close protocol; the client API stays.
+- `openProxyFileDescriptor`-backed entries (M3.4) for immediate seekable descriptors.
+- One-pass bulk copy-out (M3.4).
+
+## 7. Review findings and disposition (rev 1 → rev 2)
+
+Blockers, all adopted: (1) a `DocumentsProvider` cannot be non-exported → exported +
+`MANAGE_DOCUMENTS`, no `DOCUMENTS_PROVIDER` filter, hard-coded authority, attach test (§2.1);
+(2) tree-form helpers throw on archive Uris → non-tree branches in `DocNode.children` and
+`listChildren`'s rows (§2.5); (8) `peek` + `EXTRA_LOADING` silently copied empty folders → every
+provider method blocks on a single-flight `open`, failures memoised, `EXTRA_ERROR` for messages
+(§2.3); (9) liveness and pipe ownership → the client owns the pipe, closes its write end, drains with
+a Robolectric-safe rule, and liveness includes the archive descriptor's offset (§2.2); (10) raw,
+duplicate paths crashed the list → `ArchiveTree` normalisation, quarantine, last-member-wins,
+ordinals in ids (§2.1, §2.3).
+
+Should-fix, adopted: (3) `EXTRA_LOADING` unanswered → answered, dropped; (4) lost messages →
+`EXTRA_ERROR` → `IOException` → existing toast; (5) `Selection::Paths` semantics → `extract_entry_at`
+by ordinal with byte-exact path, early exit, `NotFound` with fields; (11) links as empty files →
+refused / hardlinks resolved; (12) copy-out bypassing the policy → refused archives cannot be opened
+or copied out, `find-duplicates` disabled; (13) quadratic cost → stated, thumbnails disabled, M3.4
+bulk path, §18 timing; (14) thread starvation → dedicated pool, fill cap, refcounted waiters;
+(15) idle-unbind races → in-flight counter, generation, retry-once; (16) `:decoders` listing memory →
+Rust writes the codec, `Vec` only; (17) untrusted listing → bounds; (18) id size/depth → flat ids,
+depth = levels ≤ 4; (19) cache lifetimes → single-flight listings, pinned sources and inner archives,
+no time guard, chained nested keys; (20) what opens → explicit `BrowsableArchiveFormats`, preview gate
+union; (21) destination sheet → archive tabs filtered; (22) test injection → catalog override, looper
+check injectable; (23) commit split → `ArchiveDocumentId` in 3a, 3c's files listed; (31) Robolectric
+pipe tests → the drain rule; (32) coverage → added; (34–40) → REVIEW_QUEUE items 3, 9–14, 21.
+
+Nits, adopted: (6) SELinux read/write symmetry and §18 wording; (7) threading wording;
+(24) ratchet arithmetic; (25) sweeper hand-off; (26) double-tap split; (27) partial flag taken,
+stale-clipboard and send-multiple logged; (28) ISO overlap logged; (29) `LocationKind` mapping
+documented; (30) drag-out reasons; (33) seekable proof through `openFileDescriptor`.
+
+Alternatives (41, 42): the provider and materialise-to-cache stand, with the `openProxyFileDescriptor`
+and cache-file-sink upgrades recorded (§6). Not adopted: none.
