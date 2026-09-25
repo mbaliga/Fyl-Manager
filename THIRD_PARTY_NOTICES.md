@@ -57,6 +57,13 @@ Notable dependencies as of M2.2:
   Regents copyright; `archive_parse_date.c` is public domain; the BLAKE2 sources
   (`archive_blake2*.{h,c}`) are triple-licensed CC0-1.0/OpenSSL/Apache-2.0; the build scripts carry
   varying terms of their own. See `docs/agent/REPORT-M2.md` section 6 for the full breakdown.
+- lz4 1.10.0 (`core/third_party/lz4`, a git submodule pinned to release tag `v1.10.0`, commit
+  `ebb370ca83af193212df4dcbadcc5d87bc0de2f0`, M3.1 part 2a) — statically linked into `fylz-archive`
+  as libarchive's lz4 filter backend, never a Cargo dependency. Only `lib/` is compiled (`lz4.c`,
+  `lz4hc.c`, `lz4frame.c`, `lz4file.c`, `xxhash.c`), and per the root `LICENSE` everything under
+  `lib/` is **BSD-2-Clause** (`core/third_party/lz4/lib/LICENSE`, Copyright (c) 2011-2020, Yann
+  Collet). The GPL-2.0-or-later `programs/` tree (`programs/COPYING`) is never built
+  (`LZ4_BUILD_CLI=OFF`); `build/cmake/CMakeLists.txt` is CC0 and only drives the build.
 - `cmake`, `cc`, `shlex` and `find-msvc-tools` (`fylz-archive`'s build-time-only dependencies,
   M3.1) are covered by `cargo deny` and never linked into the APK.
 
