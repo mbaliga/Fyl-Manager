@@ -210,13 +210,21 @@ note); until then nothing user-visible changes.
   `ExtractReport.skipped_links` instead. The question for review is the *refuse-the-archive*
   choice: a tarball with one stray `/etc/passwd` symlink becomes unextractable rather than
   extracted-minus-the-link. The design chose refusal to meet M3's acceptance criterion "symlink
-  escapes are refused" literally; a per-entry skip-with-warning would be the alternative.
-- **Lossy names (section 6.1; lands with 3b's `inspect`).** A non-UTF-8 entry name (legacy
-  CP437/GBK ZIPs) is decoded with `String::from_utf8_lossy` and flagged `name_lossy = true`
-  instead of failing the whole inspection with `NonUtf8Path`; the policy validates the lossy
-  string (its structural rules read the same through replacement characters). `read_entry(fd,
-  path)` keeps `NonUtf8Path`, since an exact-match lookup on a lossy name is ambiguous; M3.7 gives
-  both a real charset. Worth confirming that a lossy name reaching the UI in M3.2 is acceptable as
+  escapes are refused" literally; a per-entry skip-with-warning would be the alternative. Related
+  3b choice the design does not make: `Other`-kind entries (device nodes, fifos, sockets) are
+  never offered to the `DestinationProvider` either -- `ArchiveEntry` carries no kind, so the
+  provider could not decline them itself, and SAF cannot create them -- and are counted in
+  `ExtractReport.skipped`; the alternative (offer them as empty regular files, as some unzip
+  tools do) was not taken.
+- **Lossy names (section 6.1; 3b's `inspect` and, beyond the design's text, `extract`).** A
+  non-UTF-8 entry name (legacy CP437/GBK ZIPs) is decoded with `String::from_utf8_lossy` and
+  flagged `name_lossy = true` instead of failing the whole inspection with `NonUtf8Path`; the
+  policy validates the lossy string (its structural rules read the same through replacement
+  characters). `extract` names entries the same way, so a `Selection::Paths` taken from an
+  `Inspection` selects its own entry -- the design says this only for `inspect`, and 3b applied it
+  to `extract` because the two would otherwise disagree on the one name the caller has.
+  `entries()`/`read_entry(fd, path)` keep `NonUtf8Path`, since an exact-match lookup on a lossy
+  name is ambiguous; M3.7 gives both a real charset. Worth confirming that a lossy name reaching the UI in M3.2 is acceptable as
   an interim display, and that two distinct raw names collapsing to the same lossy string (both
   then refused as duplicates by the policy) is the intended conservative outcome.
 - Smaller ported-semantics choices, made for parity rather than taste: name lengths are measured in
@@ -225,8 +233,9 @@ note); until then nothing user-visible changes.
   "blank" uses Java's whitespace set, not Unicode `White_Space` (they differ only at U+0085 and
   U+001C..U+001F).
 
-**Relevant commits:** (this commit) -- M3.1 part 3a (policy, parity tests, `policy_evaluate` fuzz
-target); part 3b (`extract()`, `inspect()`, `archive_entries` fuzz target) follows.
+**Relevant commits:** `1f0a9a6` -- M3.1 part 3a (policy, parity tests, `policy_evaluate` fuzz
+target); (this commit) -- part 3b (`extract()`, `inspect()`, the seekable open path,
+`archive_entries` fuzz target).
 
 **Risk if it turns out wrong:**
 - Ratio adaptation: too lax, and a ZIP whose one bomb member sits inside an otherwise ordinary

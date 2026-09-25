@@ -40,3 +40,10 @@ path = "fuzz_targets/policy_evaluate.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "archive_entries"
+path = "fuzz_targets/archive_entries.rs"
+test = false
+doc = false
+bench = false
