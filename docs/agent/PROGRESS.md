@@ -94,6 +94,21 @@ and this run stops there (M2.1-M2.3 -- the Rust core workspace/FFI-skeleton/Grad
 explicitly allowed to start before that gate closes, since they "don't touch app behaviour"; M3
 onward waits for it).
 
+**Addendum 1** (`docs/agent/MASTER_PLAN_ADDENDUM_1.md`, 25 Sep 2026) amends the above and wins where
+the two conflict. Its own section A replaces the master plan's single-gate-stops-everything policy
+(section 0.3) with two kinds of gate: **review gates** (GATE-M1, GATE-M2, GATE-M4, GATE-M8's
+technical parts) now log-and-continue -- write the milestone report, add device checks, append an
+entry to the new `docs/agent/REVIEW_QUEUE.md`, and keep going, rather than stopping the run; **hard
+gates** (GATE-A, GATE-M8's model choice, GATE-M10, GATE-D-cloud, GATE-UT, D5, GATE-C1, GATE-C2)
+still never pass without Madhav -- build up to the point of no return, record it in
+`REVIEW_QUEUE.md`, and continue with other independent work rather than publishing, submitting or
+enabling anything. It also adds a large customisation program (sections B-E: three-tier
+customisation, an Action registry, Steps/rules/scripts/bundles) and a new milestone **MC**, with
+**MC.0** (the action registry) inserted to run **before M3.2** and MC.1-MC.9 after M9/before M10.
+Section A's own "Housekeeping before continuing" list -- committing the uncommitted M3.1 work and
+logging it, writing `REPORT-M1.md`/`REPORT-M2.md`, and renaming/updating PR #19 -- is what the
+commits immediately following this one carry out.
+
 ## Deviations
 
 - Branch name substitution (above), forced by the harness's fixed per-repo branch assignment.
