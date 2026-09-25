@@ -117,6 +117,18 @@ reproduces it; the Kotlin reader test decodes it. Regenerate, after a deliberate
 with `FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-ffi-android golden` from `core/`, and update the Kotlin
 test in the same commit.
 
+### Golden created archive -- `created/tree.zip.created` (M3.5a)
+
+The write engine (`fylz-archive/src/write.rs`) is pinned the same way as the two golden listings
+above: a small tree (two directories, two files, one empty file), fixed mtimes
+(`2020-01-01T00:00:00Z`), fixed mode, `zip` at level 6, the locale pinned, written with
+`write_frames_io` and committed byte-exact as `tree.zip.created`. Every name is ASCII on purpose --
+ZIP's UTF-8 name flag is only ever set for a non-ASCII pathname, so this fixture's bytes never
+depend on the ambient locale of whichever host or CI runner regenerates it.
+`cargo test -p fylz-archive golden_zip` asserts the writer still reproduces it; regenerate, after a
+deliberate writer change only, with `FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-archive golden_zip`
+from `core/`.
+
 Both directories also seed the `archive_entries` fuzz target (`core/fuzz/README.md`): libFuzzer
 reads a seed directory recursively, so passing `fixtures` covers `archives/` and
 `archives/hostile/` too.

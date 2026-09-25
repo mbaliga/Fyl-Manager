@@ -374,8 +374,10 @@ fn strip_dot_prefix(name: &str) -> &str {
 /// Kotlin's `validatePath`, rule for rule, with the one M3.3a amendment (module doc): a leading
 /// `./` is stripped repeatedly and `.` segments are dropped before the remaining checks, so
 /// `./a` is judged as `a` and `.//abs` as the absolute path it is. Returns the reason string of
-/// the first failing rule.
-fn validate_path(name: &str, limits: &Limits) -> Option<&'static str> {
+/// the first failing rule. `pub(crate)` since M3.5: `write.rs` runs this over every outgoing
+/// entry path too (design section 2.5), defence in depth against a manifest built from a stale
+/// plan -- the same rule, not a copy of it.
+pub(crate) fn validate_path(name: &str, limits: &Limits) -> Option<&'static str> {
     if is_blank(name)
         || utf16_len(name) > limits.max_name_length.saturating_mul(limits.max_path_depth)
     {

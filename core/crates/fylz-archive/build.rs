@@ -265,8 +265,14 @@ fn main() {
         .define("ENABLE_ICONV", "OFF")
         // Crypto/hash backends: libarchive's own built-in digest implementations (used for
         // mtree/xar checksums, never for AES) cover what this crate needs without an external
-        // library; AES for encrypted ZIP/7z entries is handled by libarchive's own bundled
-        // implementation, not one of these.
+        // library. Corrected (M3.5, SURVEY-M35-CREATE.md section 2.2): libarchive bundles no AES
+        // of its own -- `archive_cryptor.c`'s `ARCHIVE_CRYPTOR_STUB` compiles in whenever none of
+        // these four is enabled, and every one of its functions (`aes_ctr_init` included) simply
+        // returns failure. With every backend below OFF, `encryption=aes128`/`aes256` fails
+        // outright ("encryption not supported") for both writing and reading a ZIP; only
+        // `encryption=zipcrypt` (PKWARE traditional, weak) works, since it needs nothing but
+        // `archive_random`. AES for encrypted ZIP/7z stays zip4j's job (`data.ArchiveService`)
+        // until a real backend is enabled here.
         .define("ENABLE_OPENSSL", "OFF")
         .define("ENABLE_MBEDTLS", "OFF")
         .define("ENABLE_NETTLE", "OFF")

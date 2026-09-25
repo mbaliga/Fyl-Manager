@@ -47,3 +47,10 @@ path = "fuzz_targets/archive_entries.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "write_frames"
+path = "fuzz_targets/write_frames.rs"
+test = false
+doc = false
+bench = false

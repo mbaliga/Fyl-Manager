@@ -31,6 +31,15 @@ per `docs/agent/MASTER_PLAN.md` section 3.4.
   **Limitation:** libarchive and its companions are built by cmake, not by rustc, so they carry no
   sanitizer instrumentation -- a C memory-safety bug is caught here only if it faults outright
   (SIGSEGV/SIGABRT), never as an ASan report at the first bad byte.
+- **`write_frames`** (M3.5a) — `fylz_archive::write::write_frames_io`, the create engine's own
+  frame parser, over the `io` entry point rather than the fd one (no real pipe needed, so this one
+  runs at full libFuzzer speed): the raw input bytes are the whole `FZW1` stream, written into
+  `std::io::sink()`. Fixed at `zip`/`store` (level 0) so the per-iteration cost is bounded by what
+  the frame data itself declares, never `tar.xz`'s own ~93 MiB encoder setup -- kept out of this
+  default loop deliberately (design section 2.8). No seed corpus: the frame grammar is small enough
+  that libFuzzer's own coverage-guided search finds the magic and every tag byte unaided (confirmed
+  locally -- the recommended dictionary it prints after a run already contains `"FZW1"` and every
+  option-string literal `write.rs` builds, `"store"`/`"hdrcharset"`/`"encryption"` included).
 
 Needs a nightly toolchain (`rustup toolchain install nightly`) and `cargo install cargo-fuzz` --
 neither is part of `core/rust-toolchain.toml`'s pinned stable channel, since nothing else in this
@@ -44,6 +53,7 @@ cargo +nightly fuzz run sniff -- -max_total_time=60
 cargo +nightly fuzz run policy_evaluate -- -max_total_time=60
 mkdir -p fuzz/corpus/archive_entries    # `corpus/archive_entries` from inside fuzz/
 cargo +nightly fuzz run archive_entries fuzz/corpus/archive_entries fixtures -- -max_total_time=60
+cargo +nightly fuzz run write_frames -- -max_total_time=60
 ```
 
 (libFuzzer writes new inputs to the first corpus directory and reads the rest as seeds; the

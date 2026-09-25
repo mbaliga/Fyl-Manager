@@ -19,8 +19,9 @@ jobs:
     name: Test, lint, and build debug APK
     runs-on: ubuntu-latest
     # 40 -> 50 (M3.1 part 3a): the fuzz build now compiles libarchive and its five companions
-    # under nightly, and each new fuzz target adds a fixed 60 s run.
-    timeout-minutes: 50
+    # under nightly, and each new fuzz target adds a fixed 60 s run. 50 -> 55 (M3.5a): the
+    # write_frames target adds one more 60 s run (design section 2.8).
+    timeout-minutes: 55
 
     steps:
       - name: Check out source
@@ -101,6 +102,7 @@ jobs:
           cargo +nightly fuzz run policy_evaluate -- -max_total_time=60
           mkdir -p fuzz/corpus/archive_entries
           cargo +nightly fuzz run archive_entries fuzz/corpus/archive_entries fixtures -- -max_total_time=60
+          cargo +nightly fuzz run write_frames -- -max_total_time=60
 
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4

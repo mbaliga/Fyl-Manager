@@ -29,6 +29,7 @@
 
 pub mod listing;
 pub mod policy;
+pub mod write;
 
 #[cfg(test)]
 mod blocks_tests;
@@ -40,6 +41,8 @@ mod listing_tests;
 mod policy_tests;
 #[cfg(test)]
 mod seek_tests;
+#[cfg(test)]
+mod write_tests;
 
 pub use policy::Decision;
 pub use policy::EntryKind;

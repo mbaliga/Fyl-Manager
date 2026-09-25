@@ -607,6 +607,92 @@ pub fn archive_extract_ranges(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Create (M3.5a, docs/agent/DESIGN-M35-CREATE.md section 2.5).
+// ---------------------------------------------------------------------------------------------
+
+/// `fylz_archive::write::WriteFormat` over uniffi: the format/filter pair `write_frames`
+/// configures, resolved by the caller's own Fast/Normal/Best mapping into the numeric
+/// `WriteOptionsRecord::level` -- this record only names *which* writer, never the level's own
+/// meaning per format (that table lives in `CompressPlanner.kt`/design section 2.4, not here).
+#[derive(uniffi::Enum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteFormatRecord {
+    Zip,
+    TarGz,
+    TarXz,
+    TarZstd,
+    TarBzip2,
+    TarLz4,
+}
+
+impl From<WriteFormatRecord> for fylz_archive::write::WriteFormat {
+    fn from(format: WriteFormatRecord) -> Self {
+        match format {
+            WriteFormatRecord::Zip => fylz_archive::write::WriteFormat::Zip,
+            WriteFormatRecord::TarGz => fylz_archive::write::WriteFormat::TarGz,
+            WriteFormatRecord::TarXz => fylz_archive::write::WriteFormat::TarXz,
+            WriteFormatRecord::TarZstd => fylz_archive::write::WriteFormat::TarZstd,
+            WriteFormatRecord::TarBzip2 => fylz_archive::write::WriteFormat::TarBzip2,
+            WriteFormatRecord::TarLz4 => fylz_archive::write::WriteFormat::TarLz4,
+        }
+    }
+}
+
+/// `fylz_archive::write::FormatOptions` over uniffi (design section 2.5's own naming).
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteOptionsRecord {
+    pub format: WriteFormatRecord,
+    pub level: u32,
+}
+
+/// `fylz_archive::write::WriteReport` over uniffi: what one `archive_write_frames` call actually
+/// wrote, for the drain's own `Σ bytesOut` integrity check (design section 2.3 step 6) and the
+/// journal's progress arithmetic.
+#[derive(uniffi::Record, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArchiveWriteReportRecord {
+    pub entries: u32,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+}
+
+/// One create pass (design section 2.3 steps 4-5): parses `FZW1` frames from `in_fd` (the
+/// feeder's own pipe, caller-owned and never closed here) and streams the resulting archive into
+/// `out_fd` (the drain's pipe, likewise caller-owned), pinning the calling thread's locale to
+/// `C.UTF-8` for the call's whole duration so a non-ASCII pathname does not fail its header
+/// outright (`write.rs`'s own module doc). Every [ArchiveError] variant [write_frames] can return
+/// already has a total `From` mapping onto [ArchiveEngineError] (added for M3.4a's extraction
+/// pair): `Unsupported` for a locale that will not pin, `Failed`/`Corrupt` for a protocol
+/// violation or a fatal libarchive error, `Cancelled` for `ABORT` or a broken sink pipe -- no new
+/// error variant is needed here. Synchronous, like every other archive export.
+#[uniffi::export]
+pub fn archive_write_frames(
+    in_fd: i32,
+    out_fd: i32,
+    options: WriteOptionsRecord,
+) -> Result<ArchiveWriteReportRecord, ArchiveEngineError> {
+    ignore_sigpipe();
+    if in_fd < 0 {
+        return Err(ArchiveEngineError::Internal {
+            detail: format!("invalid input descriptor {in_fd}"),
+        });
+    }
+    if out_fd < 0 {
+        return Err(ArchiveEngineError::Internal {
+            detail: format!("invalid output descriptor {out_fd}"),
+        });
+    }
+    let format_options = fylz_archive::write::FormatOptions {
+        format: options.format.into(),
+        level: options.level,
+    };
+    let report = fylz_archive::write::write_frames(in_fd, out_fd, &format_options)?;
+    Ok(ArchiveWriteReportRecord {
+        entries: report.entries,
+        bytes_in: report.bytes_in,
+        bytes_out: report.bytes_out,
+    })
+}
+
 /// One header pass over the archive open at `fd` (a caller-owned, read-only descriptor to a
 /// regular file; used as a plain integer, never wrapped in anything that would close it), the
 /// extraction policy over what it found, and the first `max_rows` entries. Synchronous on
@@ -1638,6 +1724,114 @@ mod tests {
             ArchiveEngineError::Failed { detail: "d".into() }.to_string(),
             "d"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M3.5a: archive_write_frames.
+    // -----------------------------------------------------------------------------------------
+
+    /// A minimal, valid `FZW1` stream: one ten-byte file named `hello.txt`, built by hand from
+    /// `fylz_archive::write`'s own public tag/kind constants -- the same ones the real Kotlin
+    /// feeder's frame writer would use, so this test exercises the exact wire format
+    /// `archive_write_frames` parses, not a paraphrase of it.
+    fn hello_frames() -> Vec<u8> {
+        let mut bytes = fylz_archive::write::MAGIC.to_vec();
+        bytes.push(fylz_archive::write::TAG_ENTRY);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.push(fylz_archive::write::KIND_FILE);
+        bytes.extend_from_slice(&11i64.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&0o644u32.to_le_bytes());
+        let name = b"hello.txt";
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name);
+        bytes.push(fylz_archive::write::TAG_DATA);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&11u32.to_le_bytes());
+        bytes.extend_from_slice(b"hello world");
+        bytes.push(fylz_archive::write::TAG_END);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&11u64.to_le_bytes());
+        bytes.push(fylz_archive::write::TAG_FINISH);
+        bytes
+    }
+
+    #[test]
+    fn archive_write_frames_writes_a_real_archive_and_reports_its_own_counts() {
+        let in_path = scratch("write-in.fzw");
+        std::fs::write(&in_path, hello_frames()).unwrap();
+        let out_path = scratch("write-out.zip");
+        let in_file = File::open(&in_path).unwrap();
+        let out_file = File::create(&out_path).unwrap();
+        let report = archive_write_frames(
+            in_file.as_raw_fd(),
+            out_file.as_raw_fd(),
+            WriteOptionsRecord {
+                format: WriteFormatRecord::Zip,
+                level: 6,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.entries, 1);
+        assert_eq!(report.bytes_in, 11);
+        assert!(report.bytes_out > 0);
+        drop(out_file);
+        let readback = File::open(&out_path).unwrap();
+        let inspection = archive_inspect(readback.as_raw_fd(), limits(), 10).unwrap();
+        assert_eq!(inspection.entry_count, 1);
+        assert_eq!(inspection.rows[0].path, "hello.txt");
+        assert_eq!(inspection.rows[0].uncompressed, Some(11));
+    }
+
+    #[test]
+    fn archive_write_frames_rejects_bad_descriptors_before_touching_the_engine() {
+        let options = WriteOptionsRecord {
+            format: WriteFormatRecord::Zip,
+            level: 6,
+        };
+        assert!(matches!(
+            archive_write_frames(-1, 0, options),
+            Err(ArchiveEngineError::Internal { .. })
+        ));
+        assert!(matches!(
+            archive_write_frames(0, -1, options),
+            Err(ArchiveEngineError::Internal { .. })
+        ));
+    }
+
+    #[test]
+    fn archive_write_frames_maps_a_protocol_violation_to_a_failure_never_a_panic() {
+        let in_path = scratch("write-bad.fzw");
+        // No magic at all -- the simplest protocol violation the engine names.
+        std::fs::write(&in_path, b"not a frame stream").unwrap();
+        let in_file = File::open(&in_path).unwrap();
+        let out_file = File::create(scratch("write-bad-out.zip")).unwrap();
+        let result = archive_write_frames(
+            in_file.as_raw_fd(),
+            out_file.as_raw_fd(),
+            WriteOptionsRecord {
+                format: WriteFormatRecord::Zip,
+                level: 6,
+            },
+        );
+        assert!(
+            matches!(result, Err(ArchiveEngineError::Failed { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn write_format_record_conversions_are_total() {
+        for format in [
+            WriteFormatRecord::Zip,
+            WriteFormatRecord::TarGz,
+            WriteFormatRecord::TarXz,
+            WriteFormatRecord::TarZstd,
+            WriteFormatRecord::TarBzip2,
+            WriteFormatRecord::TarLz4,
+        ] {
+            let _: fylz_archive::write::WriteFormat = format.into();
+        }
     }
 
     #[test]
