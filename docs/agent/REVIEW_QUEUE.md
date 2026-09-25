@@ -172,3 +172,75 @@ real edge-drag through `SpatialShell`; `DEVICE_CHECKS.md` §16 is what still nee
 Secondary risk: the recycle-without-confirmation gap, if left unresolved, means a bulk recycle from
 the selection bar or a shortcut (Delete) has the same one-keystroke blast radius it always had —
 not a regression, but not improved by this refactor either.
+
+---
+
+## M3.1 part 3 — extraction policy in Rust: three behaviour deviations from the Kotlin policy
+
+**Milestone:** M3.1 part 3 (`docs/agent/DESIGN-M31-PART3-EXTRACT-AND-POLICY.md`, decision 1 and
+section 6; full per-commit detail in `docs/agent/PROGRESS.md`'s `M3.1 (part 3)` row). Not a gate:
+the Rust policy is green against every ported Kotlin test case, but three of its rules are
+deliberately **not** what `ArchiveExtractionPolicy.kt` does today, and they decide which archives
+the app will accept once the Rust engine is the one inspecting (M3.2) and extracting (M3.4). The
+Kotlin copy stays, with a header line pointing at `policy.rs`, until M3.4 moves `ArchiveService`'s
+read path onto the engine (design decision 2, rescheduled from M3.2/M3.3 by the M3.2 design's scope
+note); until then nothing user-visible changes.
+
+**What was decided, and needs a second read:**
+- **Ratio rule adaptation (decision 1).** zip4j reported a per-entry compressed size for every
+  ZIP member; libarchive reports none for any format, so `EntryMetadata::compressed` is
+  `Option<u64>` and **always `None` from the engine**. The two per-entry rules that need it
+  ("implausibly compressed entry", "suspicious compression ratio") run only when it is `Some`, and
+  an **archive-level** ratio (sum of declared uncompressed sizes over the archive's own byte
+  length, against the same `max_compression_ratio`, same reason string; a zero-length archive
+  declaring bytes counts as infinite) runs for every format in their place. Consequences: for ZIP
+  the Rust rule set is a strict subset of Kotlin's (a single member compressed 500:1 inside an
+  archive whose overall ratio is under 200:1 now passes preflight -- `extract()`'s runtime byte
+  caps in 3b are the defence against a header that lies); for tar/gz/xz/zst/lz4 streams, which the
+  app never opened before, the archive-level rule is the only ratio rule. Two Kotlin test cases
+  (`negative-compressed` in the fuzz test, `unknown.bin` with compressed -1 in the unit test)
+  flip from refused to allowed in the port; `policy_tests.rs` says so at each one, next to the
+  twin case the archive-level rule does refuse. An unknown *uncompressed* size is still refused.
+- **The link rule (section 6.2), a rule Kotlin never had.** A `Symlink` whose target is absolute
+  (leading `/` or `\`, or a drive letter) or whose `..` segments climb above the extraction root
+  when joined onto the link's own directory, a `Hardlink` whose target fails the path rules, or
+  either with no target at all, refuses the whole archive with a new reason string ("Archive
+  contains a link that escapes the extraction folder."). In-tree relative links are allowed and
+  (3b) `extract()` never materialises any link -- SAF cannot create one -- counting them in
+  `ExtractReport.skipped_links` instead. The question for review is the *refuse-the-archive*
+  choice: a tarball with one stray `/etc/passwd` symlink becomes unextractable rather than
+  extracted-minus-the-link. The design chose refusal to meet M3's acceptance criterion "symlink
+  escapes are refused" literally; a per-entry skip-with-warning would be the alternative.
+- **Lossy names (section 6.1; lands with 3b's `inspect`).** A non-UTF-8 entry name (legacy
+  CP437/GBK ZIPs) is decoded with `String::from_utf8_lossy` and flagged `name_lossy = true`
+  instead of failing the whole inspection with `NonUtf8Path`; the policy validates the lossy
+  string (its structural rules read the same through replacement characters). `read_entry(fd,
+  path)` keeps `NonUtf8Path`, since an exact-match lookup on a lossy name is ambiguous; M3.7 gives
+  both a real charset. Worth confirming that a lossy name reaching the UI in M3.2 is acceptable as
+  an interim display, and that two distinct raw names collapsing to the same lossy string (both
+  then refused as duplicates by the policy) is the intended conservative outcome.
+- Smaller ported-semantics choices, made for parity rather than taste: name lengths are measured in
+  UTF-16 code units (Kotlin's `String.length`), not bytes -- a filesystem's `NAME_MAX` is in
+  bytes, so a 255-character non-ASCII name that passes here could still fail at SAF; and
+  "blank" uses Java's whitespace set, not Unicode `White_Space` (they differ only at U+0085 and
+  U+001C..U+001F).
+
+**Relevant commits:** (this commit) -- M3.1 part 3a (policy, parity tests, `policy_evaluate` fuzz
+target); part 3b (`extract()`, `inspect()`, `archive_entries` fuzz target) follows.
+
+**Risk if it turns out wrong:**
+- Ratio adaptation: too lax, and a ZIP whose one bomb member sits inside an otherwise ordinary
+  archive passes preflight -- bounded, not unbounded, because `extract()` stops at
+  `max_file_bytes`/`max_total_uncompressed_bytes` while writing, so the exposure is wasted I/O up
+  to those caps, not disk exhaustion. Too strict (the archive-level rule), and a legitimately
+  highly compressible archive (logs, sparse database dumps, a tar of empty files) is refused with a
+  message that blames compression -- a usability defect the old ZIP-only policy did not have for
+  streams, and a real one for `.tar.xz` source tarballs whose overall ratio can exceed 200.
+- Link rule: too strict, and common Unix tarballs (anything with a `latest -> v1.2` or
+  `/usr/share`-style symlink) are refused outright; too lax (if the depth arithmetic is wrong for
+  some shape), and M3's "symlink escapes are refused" criterion is not met -- though with
+  `extract()` never writing a link, the escape could only ever be a policy-reporting error, never a
+  file written outside the destination.
+- Lossy names: a wrong choice here shows up as garbled entry names in the Inspect dialog and
+  preview for legacy ZIPs from M3.2 until M3.7, or as a spurious "duplicate paths" refusal on an
+  archive whose names differ only in bytes the replacement character erases.

@@ -1,5 +1,6 @@
 [package]
-name = "fylz-sniff-fuzz"
+# Renamed from `fylz-sniff-fuzz` (M2.6) once it grew targets for more than one crate (M3.1 part 3).
+name = "fylz-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -15,14 +16,27 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+# `arbitrary-derive` turns on the `arbitrary` crate's derive macro (already in this workspace's
+# graph as libfuzzer-sys's own dependency), so structured targets can derive `Arbitrary` for
+# their input types instead of hand-decoding bytes.
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 
 [dependencies.fylz-sniff]
 path = "../crates/fylz-sniff"
 
+[dependencies.fylz-archive]
+path = "../crates/fylz-archive"
+
 [[bin]]
 name = "sniff"
 path = "fuzz_targets/sniff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_evaluate"
+path = "fuzz_targets/policy_evaluate.rs"
 test = false
 doc = false
 bench = false

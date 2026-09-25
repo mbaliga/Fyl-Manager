@@ -1,3 +1,4 @@
+// Source of truth: core/crates/fylz-archive/src/policy.rs (M3.1 part 3). This copy stays only until ArchiveService reads through the Rust engine.
 package io.github.mbaliga.fylz.data
 
 import java.util.Locale

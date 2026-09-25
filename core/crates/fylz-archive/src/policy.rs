@@ -1,0 +1,335 @@
+//! The archive extraction policy: pure preflight rules over untrusted archive metadata, the source
+//! of truth from M3.1 part 3 on. Ported rule-for-rule, in the same order and with the same reason
+//! strings, from `app/src/main/java/io/github/mbaliga/fylz/data/ArchiveExtractionPolicy.kt`
+//! (whose tests are this module's parity oracle -- `policy_tests.rs` carries every one of them),
+//! with exactly the adaptations `docs/agent/DESIGN-M31-PART3-EXTRACT-AND-POLICY.md` decides:
+//!
+//! - **Per-entry compressed size is optional** (decision 1). zip4j reported one for every ZIP
+//!   member; libarchive has no portable per-entry compressed size for any format, so
+//!   [EntryMetadata::compressed] is `Option<u64>` and the two per-entry ratio rules ("implausibly
+//!   compressed", "suspicious compression ratio") run only when it is `Some`. In its place an
+//!   **archive-level** ratio rule runs for every format after the loop: the sum of declared
+//!   uncompressed sizes over the archive's own byte length, refused with the existing "suspicious
+//!   compression ratio" reason. Headers that lie are then caught at runtime by `extract()`'s own
+//!   byte caps, which this policy only pre-screens. An unknown *uncompressed* size is still a
+//!   refusal, exactly as a negative one was in Kotlin.
+//! - **A link rule the Kotlin policy never had** (section 6.2): extraction writes through SAF,
+//!   which cannot materialise a symlink or hardlink, so `extract()` never writes one -- but an
+//!   archive whose link *would* have escaped the extraction folder is refused outright, the M3
+//!   acceptance criterion "symlink escapes are refused". Evaluated per entry after its path rules.
+//!
+//! Everything else is literal: `Long.MAX_VALUE` overflow guard -> `checked_add`, a negative
+//! `archiveBytes` is unrepresentable in `u64`, `lowercase(Locale.ROOT)` -> `str::to_lowercase`,
+//! the drive-letter regex -> a two-byte check, and Kotlin's `String.length`/`isBlank` semantics
+//! reproduced where they differ from Rust's defaults (see [utf16_len] and [is_blank]).
+
+use std::collections::HashSet;
+
+/// The limits [evaluate] enforces. [Limits::default] is the Kotlin `ArchiveExtractionLimits`
+/// defaults field for field, plus [Limits::max_listing_entries], which is not a policy rule at
+/// all but a memory bound for the decoder process (`inspect` stops collecting metadata past it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Limits {
+    pub max_entries: usize,
+    pub max_archive_bytes: u64,
+    pub max_file_bytes: u64,
+    pub max_total_uncompressed_bytes: u64,
+    pub max_compression_ratio: f64,
+    pub max_path_depth: usize,
+    pub max_name_length: usize,
+    /// How many entries `inspect` will collect before giving up with
+    /// `ArchiveError::LimitExceeded { rule: "listing" }`. Deliberately far above
+    /// [Limits::max_entries]: browsing (M3.3) must still list an archive the policy would refuse
+    /// to extract. 200,000 entries is roughly 30 MB of [EntryMetadata] -- inside the decoder
+    /// process's 256 MB budget (`docs/agent/MASTER_PLAN.md` section 4.4) with room to spare.
+    pub max_listing_entries: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_entries: 10_000,
+            max_archive_bytes: 2 * 1024 * 1024 * 1024,
+            max_file_bytes: 1024 * 1024 * 1024,
+            max_total_uncompressed_bytes: 4 * 1024 * 1024 * 1024,
+            max_compression_ratio: 200.0,
+            max_path_depth: 64,
+            max_name_length: 255,
+            max_listing_entries: 200_000,
+        }
+    }
+}
+
+/// What kind of object an archive entry describes. Replaces Kotlin's `directory: Boolean`; the
+/// policy's size rules treat everything but [EntryKind::Directory] as a file (a link's declared
+/// size counts toward the totals, whatever it is), and the link rule applies to
+/// [EntryKind::Symlink]/[EntryKind::Hardlink] only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryKind {
+    File,
+    Directory,
+    Symlink,
+    Hardlink,
+    /// Anything else libarchive can describe (device nodes, fifos, sockets). Never extracted.
+    Other,
+}
+
+/// One entry's metadata as the policy sees it: what `inspect` collects from a header pass, or
+/// what a test constructs directly. Only [EntryMetadata::path], [EntryMetadata::kind],
+/// [EntryMetadata::link_target], [EntryMetadata::uncompressed] and [EntryMetadata::compressed]
+/// take part in a decision; the rest is carried for the listing (`docs/agent/DESIGN-M32-SEEKABLE-PFD.md`
+/// section 2.4 is its consumer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryMetadata {
+    pub path: String,
+    /// `true` when the raw name was not UTF-8 and `path` is `String::from_utf8_lossy` of it
+    /// (legacy CP437/GBK ZIPs; M3.7 adds charset detection). The policy validates the lossy
+    /// string: every structural rule (depth, length, `..`, absolute) reads the same through
+    /// replacement characters.
+    pub name_lossy: bool,
+    pub kind: EntryKind,
+    /// `archive_entry_symlink` for [EntryKind::Symlink], `archive_entry_hardlink` for
+    /// [EntryKind::Hardlink], else `None`. `None` on a link entry is malformed and refused.
+    pub link_target: Option<String>,
+    /// The declared uncompressed size; `None` when the header does not say
+    /// (`archive_entry_size_is_set` == 0). Unknown is a refusal, as a negative size was in Kotlin.
+    pub uncompressed: Option<u64>,
+    /// The declared compressed size, when the reader can report one. **Always `None` from
+    /// `inspect`**: libarchive has no per-entry compressed size. The field exists so the two
+    /// per-entry ratio rules keep their exact Kotlin semantics for any caller that does know it.
+    pub compressed: Option<u64>,
+    /// Modification time as seconds since the epoch, `None` when unset. Widened from `time_t`
+    /// (which is 32-bit on armv7 bionic) by the reader, never narrowed.
+    pub mtime: Option<i64>,
+    /// `archive_entry_perm`: the permission bits, which libarchive synthesises for formats that
+    /// carry none (ZIP, 7z, ISO).
+    pub mode: u32,
+    pub encrypted_data: bool,
+    pub encrypted_metadata: bool,
+}
+
+/// The policy's verdict. `reason` is `Some` exactly when `allowed` is `false`; every reason string
+/// is one of the Kotlin `ArchiveExtractionPolicy` literals, plus the one new link-rule string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decision {
+    pub allowed: bool,
+    pub reason: Option<&'static str>,
+}
+
+impl Decision {
+    fn allowed() -> Self {
+        Decision {
+            allowed: true,
+            reason: None,
+        }
+    }
+
+    fn refused(reason: &'static str) -> Self {
+        Decision {
+            allowed: false,
+            reason: Some(reason),
+        }
+    }
+}
+
+/// The reason string of the link rule (section 6.2) -- the one rule without a Kotlin counterpart.
+const LINK_ESCAPES: &str = "Archive contains a link that escapes the extraction folder.";
+
+/// Decides whether an archive of `archive_bytes` bytes whose headers describe `entries` may be
+/// extracted under `limits`. Pure: no I/O, no allocation beyond the duplicate-path set. Rules run
+/// in the Kotlin order -- archive size, entry count, then per entry: path, duplicate key, link,
+/// unknown size, file size, running total (with overflow guard), per-entry ratio -- and finally
+/// the archive-level ratio. The first failing rule's reason is the decision's.
+pub fn evaluate(archive_bytes: u64, entries: &[EntryMetadata], limits: &Limits) -> Decision {
+    // Kotlin: `archiveBytes < 0L || archiveBytes > limits.maxArchiveBytes`. A negative archive
+    // size is not representable in `u64`, so only the upper bound remains.
+    if archive_bytes > limits.max_archive_bytes {
+        return Decision::refused("Archive exceeds the allowed input size.");
+    }
+    if entries.len() > limits.max_entries {
+        return Decision::refused("Archive contains too many entries.");
+    }
+
+    let mut total_uncompressed: u64 = 0;
+    let mut normalized_paths: HashSet<String> = HashSet::new();
+    for entry in entries {
+        if let Some(reason) = validate_path(&entry.path, limits) {
+            return Decision::refused(reason);
+        }
+        if !normalized_paths.insert(normalized_path_key(&entry.path)) {
+            return Decision::refused("Archive contains duplicate or colliding paths.");
+        }
+        if let Some(reason) = validate_link(entry, limits) {
+            return Decision::refused(reason);
+        }
+        // Kotlin: `entry.compressedBytes < 0L || entry.uncompressedBytes < 0L`. An unknown
+        // compressed size is no longer a refusal (decision 1: libarchive never reports one); an
+        // unknown uncompressed size still is.
+        let Some(uncompressed) = entry.uncompressed else {
+            return Decision::refused("Archive contains an entry with unknown size.");
+        };
+        let is_directory = entry.kind == EntryKind::Directory;
+        if !is_directory && uncompressed > limits.max_file_bytes {
+            return Decision::refused("Archive contains a file larger than the extraction limit.");
+        }
+        // Kotlin: `Long.MAX_VALUE - totalUncompressed < entry.uncompressedBytes`.
+        total_uncompressed = match total_uncompressed.checked_add(uncompressed) {
+            Some(total) => total,
+            None => return Decision::refused("Archive size metadata overflowed."),
+        };
+        if total_uncompressed > limits.max_total_uncompressed_bytes {
+            return Decision::refused("Archive expands beyond the total extraction limit.");
+        }
+
+        if !is_directory && uncompressed > 0 {
+            match entry.compressed {
+                Some(0) => {
+                    return Decision::refused("Archive contains an implausibly compressed entry.");
+                }
+                Some(compressed) => {
+                    let ratio = uncompressed as f64 / compressed as f64;
+                    if ratio > limits.max_compression_ratio {
+                        return Decision::refused(
+                            "Archive contains a suspicious compression ratio.",
+                        );
+                    }
+                }
+                // Decision 1: the per-entry ratio rules need a compressed size; without one they
+                // are skipped for this entry and the archive-level rule below stands in.
+                None => {}
+            }
+        }
+    }
+
+    // Decision 1's archive-level ratio: the declared expansion of the whole archive against its
+    // own length, for every format. Declared bytes out of a zero-length archive is an infinite
+    // ratio, refused like any other ratio over the limit; an archive declaring nothing at all
+    // (every entry empty) has no ratio to judge.
+    if total_uncompressed > 0
+        && (archive_bytes == 0
+            || total_uncompressed as f64 / archive_bytes as f64 > limits.max_compression_ratio)
+    {
+        return Decision::refused("Archive contains a suspicious compression ratio.");
+    }
+    Decision::allowed()
+}
+
+/// Kotlin's `normalizedPathKey`: backslashes to slashes, trailing slashes trimmed, lower-cased.
+/// `lowercase(Locale.ROOT)` and `str::to_lowercase` are both the locale-independent Unicode
+/// default case mapping, so two names collide here exactly when they did in Kotlin. Crate-visible
+/// (not public, as in Kotlin) because `extract()`'s `Selection::Paths` matches by the same key.
+pub(crate) fn normalized_path_key(name: &str) -> String {
+    name.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+/// Kotlin's `validatePath`, rule for rule. Returns the reason string of the first failing rule.
+fn validate_path(name: &str, limits: &Limits) -> Option<&'static str> {
+    if is_blank(name)
+        || utf16_len(name) > limits.max_name_length.saturating_mul(limits.max_path_depth)
+    {
+        return Some("Archive contains an invalid path.");
+    }
+    if name.contains('\0') || name.starts_with('/') || name.starts_with('\\') {
+        return Some("Archive contains an absolute or invalid path.");
+    }
+    let normalized = name.replace('\\', "/");
+    let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        return Some("Archive contains an invalid path.");
+    }
+    if segments.len() > limits.max_path_depth {
+        return Some("Archive path nesting is too deep.");
+    }
+    if segments
+        .iter()
+        .any(|s| *s == "." || *s == ".." || utf16_len(s) > limits.max_name_length)
+    {
+        return Some("Archive contains an unsafe path segment.");
+    }
+    if is_drive_letter(segments[0]) {
+        return Some("Archive contains a drive-qualified path.");
+    }
+    None
+}
+
+/// Section 6.2's link rule, evaluated after the entry's own path rules. Not a link: no opinion.
+fn validate_link(entry: &EntryMetadata, limits: &Limits) -> Option<&'static str> {
+    match entry.kind {
+        EntryKind::Symlink => match entry.link_target.as_deref() {
+            None => Some(LINK_ESCAPES),
+            Some(target) if symlink_escapes(&entry.path, target) => Some(LINK_ESCAPES),
+            Some(_) => None,
+        },
+        // A hardlink's target is another entry's path: it gets every check a path gets, and the
+        // link reason rather than the path reason, because the entry's own path already passed.
+        EntryKind::Hardlink => match entry.link_target.as_deref() {
+            None => Some(LINK_ESCAPES),
+            Some(target) if validate_path(target, limits).is_some() => Some(LINK_ESCAPES),
+            Some(_) => None,
+        },
+        EntryKind::File | EntryKind::Directory | EntryKind::Other => None,
+    }
+}
+
+/// Whether a symlink at `path` (already validated: no `.`/`..` segments) pointing at `target`
+/// would resolve outside the extraction root: an absolute target (leading slash after backslash
+/// normalisation, or a drive-letter first segment), or a relative one whose `..` segments climb
+/// above the root when joined onto `dirname(path)`. Only depth is tracked -- the names of the
+/// segments never matter, and a target that merely re-enters the tree (`../sibling`) is fine.
+fn symlink_escapes(path: &str, target: &str) -> bool {
+    let target = target.replace('\\', "/");
+    if target.starts_with('/') {
+        return true;
+    }
+    let mut target_segments = target.split('/').filter(|s| !s.is_empty()).peekable();
+    if target_segments
+        .peek()
+        .is_some_and(|first| is_drive_letter(first))
+    {
+        return true;
+    }
+    let normalized_path = path.replace('\\', "/");
+    // dirname(path): every segment but the link's own name.
+    let mut depth = normalized_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .count()
+        .saturating_sub(1);
+    for segment in target_segments {
+        match segment {
+            "." => {}
+            ".." => {
+                if depth == 0 {
+                    return true;
+                }
+                depth -= 1;
+            }
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+/// Kotlin's `Regex("^[A-Za-z]:$")` on a segment, as the explicit two-byte check the design asks
+/// for: exactly one ASCII letter followed by a colon.
+fn is_drive_letter(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Kotlin's `String.length` counts UTF-16 code units, so the Kotlin rules measured a name of N
+/// non-BMP characters as 2N. The two length rules use this rather than `str::len` (bytes) or
+/// `chars().count()` (scalar values) so a name is exactly as long here as it was there.
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/// Kotlin's `CharSequence.isBlank()`: every char satisfies `Char.isWhitespace()`, which on the
+/// JVM is `Character.isWhitespace(c) || Character.isSpaceChar(c)` -- Unicode Zs/Zl/Zp plus
+/// `\t \n \u000B \f \r` and `\u001C`..`\u001F`. That is Rust's `char::is_whitespace` (Unicode
+/// `White_Space`) minus U+0085 (NEL, a control in Java's view) plus the four ASCII separators.
+/// The empty string is blank in both.
+fn is_blank(s: &str) -> bool {
+    s.chars()
+        .all(|c| ('\u{1c}'..='\u{1f}').contains(&c) || (c.is_whitespace() && c != '\u{85}'))
+}
