@@ -444,3 +444,26 @@ registered; the explicit exclusion list; Alt+Left/Alt+Backspace/preview-toggle d
 into three commits; the size test made a ratchet; the menu scan widened; `FylzV1AppLogicTest` left
 alone. The inventory's two factual errors (an "orphaned" activity a launcher shortcut opens; the
 Recovery room in `FylzAppShell.kt` not surveyed) are why §1 was re-verified line by line.
+
+## 9. As built
+
+Six commits: `ed9e61b` (types/registry/resolver/dispatcher/legacy oracle), `432c552` (selection
+bar), `71e6b84` (top app bar/overflow/browser row/sort/palette, moved up from MC.0e), `d3c3e9d`
+(rooms), `959e696` (shortcuts/gestures/Problems row), and MC.0f (this commit: policies retired,
+oracle frozen, size ratchet, log). Deviations from a literal reading of this design, one sentence
+each: the command palette and `paletteVisible` landed in MC.0c instead of MC.0e, since `fylz.commands`
+became clickable there and a dead menu entry for two more commits was worse; nine built-ins shipped
+with a documented no-op `run` in MC.0a until their surface existed to give them a real hook;
+`fylz.customisation.problems`'s `visibleWhen` was `{ false }` until MC.0e supplied
+`registryProblemCount` from outside `BrowserState`; `Routed` is a sealed type (`Dispatch`/
+`ClearFocus`), not the single return type a literal reading of "`route(...): Routed?`" suggests;
+the root re-focus rule is one `LaunchedEffect` on window/text-field focus rather than per-dialog
+hooks, since every dialog here is its own Android window; two built-in icon names the inventory
+never verified were wrong (`fylz.protect`: "Lock" → the real "Archive"; the three `fylz.theme.*`
+rows: "Brightness" → "None", drawn text-only as they always were) and were fixed in MC.0d. Final
+numbers: `ui/FylzV1App.kt` 2529 → 2287 lines; `ui/FylzAppShell.kt` 251 → 112 lines; Kotlin unit
+tests 393 → 425; `fylz-actions` gained 3 Rust tests. `KeyboardShortcutPolicy.kt`,
+`DesktopWorkspacePolicy.kt` and their test are deleted (grep-verified); `WorkspacePane` lives in
+`DualPaneModels.kt`; `actions/legacy/LegacyAvailability.kt` is deleted, its expressions inlined
+into `BuiltInActions.kt`/`FylzV1App.kt` and frozen as a private `LegacyOracle` inside
+`ActionResolverGoldenTest.kt`.

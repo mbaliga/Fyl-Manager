@@ -1,11 +1,12 @@
 package io.github.mbaliga.fylz.actions
 
 import androidx.compose.ui.input.key.Key
-import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import io.github.mbaliga.fylz.browse.SortField
+import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.ui.clipboardChipLabel
+import io.github.mbaliga.fylz.ui.isZipFamilyArchive
 
 private val ALWAYS: (BrowserState) -> Boolean = { true }
 private val HAS_SELECTION: (BrowserState) -> Boolean = { it.selectionCount > 0 }
@@ -82,7 +83,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.rename", "Rename", "Edit", listOf(Placement.SelectionBar(60), Placement.Shortcut(KeyChord(Key.F2)))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = { LegacyAvailability.canRename(it.selection) },
+            enabledWhen = { it.selection.size == 1 },
             run = { ctx, _, _ -> ctx.rename() },
         ),
         BuiltInBinding(
@@ -100,7 +101,11 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.extract", "Extract", "FolderOpen", listOf(Placement.SelectionBar(90))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = { LegacyAvailability.canExtract(it.selection) },
+            enabledWhen = { state ->
+                state.selection.size == 1 &&
+                    state.selection.first().kind == EntryKind.ARCHIVE &&
+                    isZipFamilyArchive(state.selection.first().name)
+            },
             run = { ctx, _, _ -> ctx.extract() },
         ),
         BuiltInBinding(
@@ -112,7 +117,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.pdf.tools", "PDF tools", "PictureAsPdf", listOf(Placement.SelectionBar(110))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = { LegacyAvailability.canPdfTools(it.selection) },
+            enabledWhen = { state -> state.selection.isNotEmpty() && state.selection.all { it.kind == EntryKind.PDF } },
             run = { ctx, _, _ -> ctx.pdfTools() },
         ),
         BuiltInBinding(
@@ -133,7 +138,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.paste", "Paste", "ContentPaste", listOf(Placement.Toolbar(Bar.TOP_APP_BAR, 10), Placement.Shortcut(KeyChord(Key.V, ctrl = true)))),
             visibleWhen = { it.clipboard != null },
-            enabledWhen = { LegacyAvailability.clipboardChipEnabled(it.hasActiveTab) },
+            enabledWhen = { it.hasActiveTab },
             label = { state -> state.clipboard?.let(::clipboardChipLabel) ?: "Paste" },
             run = { ctx, _, _ -> ctx.paste() },
         ),
@@ -167,31 +172,31 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.new-folder", "New folder", "CreateNewFolder", listOf(Placement.Menu(MenuId.OVERFLOW, 10), Placement.Shortcut(KeyChord(Key.N, ctrl = true, shift = true)))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.newFolderEnabled(it.hasActiveTab) },
+            enabledWhen = { it.hasActiveTab },
             run = { ctx, _, _ -> ctx.newFolder() },
         ),
         BuiltInBinding(
             def = def("fylz.new-file", "New text file", "TextSnippet", listOf(Placement.Menu(MenuId.OVERFLOW, 20), Placement.Shortcut(KeyChord(Key.N, ctrl = true)))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.newFileEnabled(it.hasActiveTab) },
+            enabledWhen = { it.hasActiveTab },
             run = { ctx, _, _ -> ctx.newFile() },
         ),
         BuiltInBinding(
             def = def("fylz.scan-to-pdf", "Scan to PDF", "PictureAsPdf", listOf(Placement.Menu(MenuId.OVERFLOW, 30))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.scanToPdfEnabled(it.hasActiveTab) },
+            enabledWhen = { it.hasActiveTab },
             run = { ctx, _, _ -> ctx.scanToPdf() },
         ),
         BuiltInBinding(
             def = def("fylz.find-duplicates", "Find duplicates", "FindReplace", listOf(Placement.Menu(MenuId.OVERFLOW, 40))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.findDuplicatesEnabled(it.entries) },
+            enabledWhen = { state -> state.entries.count { !it.isDirectory } > 1 },
             run = { ctx, _, _ -> ctx.findDuplicates() },
         ),
         BuiltInBinding(
             def = def("fylz.ai.organize", "AI organize proposal", "AutoAwesome", listOf(Placement.Menu(MenuId.OVERFLOW, 50))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.aiOrganizeEnabled(it.focused) },
+            enabledWhen = { it.focused != null },
             run = { ctx, _, _ -> ctx.aiOrganize() },
         ),
         BuiltInBinding(
@@ -209,8 +214,8 @@ object BuiltInActions {
                 listOf(Placement.Toolbar(Bar.BROWSER_ROW, 10), Placement.Shortcut(KeyChord(Key.DirectionUp, alt = true)), Placement.Shortcut(KeyChord(Key.Backspace))),
             ),
             visibleWhen = ALWAYS,
-            // BrowserState.canNavigateUp is itself LegacyAvailability.canNavigateUp(activeTab?.locations),
-            // computed once where BrowserState is built.
+            // BrowserState.canNavigateUp is (activeTab?.locations?.size ?: 0) > 1, computed once
+            // where BrowserState is built.
             enabledWhen = { it.canNavigateUp },
             run = { ctx, _, _ -> ctx.navigateUp() },
         ),
@@ -224,7 +229,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.select.all", "Select all", "SelectAll", listOf(Placement.Toolbar(Bar.BROWSER_ROW, 20), Placement.Shortcut(KeyChord(Key.A, ctrl = true)))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.selectAllEnabled(it.visibleEntries) },
+            enabledWhen = { it.visibleEntries.isNotEmpty() },
             run = { ctx, _, _ -> ctx.selectAll() },
         ),
         sortAction(SortField.NAME, 10),
@@ -320,7 +325,7 @@ object BuiltInActions {
         BuiltInBinding(
             def = def("fylz.favourite.toggle", "Favourite", "Star", listOf(Placement.Room(RoomId.LIBRARY_RAIL, 20))),
             visibleWhen = ALWAYS,
-            enabledWhen = { LegacyAvailability.favouriteEnabled(it.hasActiveTab) },
+            enabledWhen = { it.hasActiveTab },
             checked = { it.currentFolderIsFavourite },
             run = { ctx, _, _ -> ctx.toggleFavourite() },
         ),

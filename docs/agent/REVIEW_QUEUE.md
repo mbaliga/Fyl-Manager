@@ -118,3 +118,56 @@ Full per-task detail: `docs/agent/PROGRESS.md`'s task table and `docs/agent/REPO
   class of finding the plan says to treat as a gate if a licence turns out to break policy, so it
   stays in this queue for a second read rather than being treated as fully closed by this run's own
   verification alone.
+
+---
+
+## MC.0 — action registry (not a gate; items for the review pass)
+
+**Milestone:** MC.0 (`docs/agent/MASTER_PLAN_ADDENDUM_1.md` §C1/§D; full design in
+`docs/agent/DESIGN-MC0-ACTION-REGISTRY.md`). Not a gate — MC.0 is fully green on this run's own
+gate (`docs/agent/PROGRESS.md`'s MC.0 row) and device checks are logged in
+`docs/agent/DEVICE_CHECKS.md` §16 — but a refactor that touched most of the UI's menus, shortcuts
+and gestures in one pass is exactly the kind of change Madhav's review pass should look at closely,
+so these product/design questions and cross-references are logged here rather than only in the
+design doc.
+
+**What needs reviewing:**
+- `fylz.recycle` still has no confirmation dialog — a product question, not a bug (preserved
+  behaviour, design §6.2/item 2): should Recycle get a typed-phrase or a simple Yes/No confirmation
+  before MC.1 lets a third party register a `confirm: Always` action of its own, or is "recycle is
+  reversible, only permanent delete confirms" the intended product shape going forward?
+- The master plan's own internal conflict, not something MC.0 introduced: §M12.1 says F5/F6 copy
+  and move between dual-pane panes; §M12.3's keyboard map separately says "F5 refresh". MC.0 bound
+  F5 to `fylz.refresh` (alongside Ctrl+R) since no dual pane exists yet to need F5 for anything
+  else (design §2.5's shortcut-table paragraph); `registry.problems`'s `ShortcutConflict` detector
+  is what will flag this the moment M12.1 tries to claim F5 for pane-copy, but the master plan
+  itself should be corrected to say which one wins rather than relying on the conflict detector to
+  surface it at implementation time.
+- The placement-model extensions to `MASTER_PLAN_ADDENDUM_1.md` §C1, each recorded as a deviation
+  in `docs/agent/DESIGN-MC0-ACTION-REGISTRY.md` §2.2/§8 and in this MC.0 row's own Notes: `Room`
+  (the addendum's text already implies room items are registry lookups, but never named the
+  placement type), `Menu` (three distinct menus — overflow, sort, archive-tools — rather than one
+  generic "toolbar" placement), `Toolbar.bar` (two separate bars, top app bar and browser row),
+  `Gesture.targetWhen` (double-tap needs to split into two different actions depending on what was
+  tapped), and `requiresTarget`/`ActionTarget` (several actions act on a specific row/tab that is
+  not part of the `BrowserState` snapshot). Worth folding into the addendum itself so MC.1+ isn't
+  reading a placement model the addendum's own text doesn't describe.
+- Favourite (`fylz.favourite.toggle`), Open root (`fylz.open-root`) and Recycle Bin
+  (`fylz.recycle-bin`) have no placement on a narrow screen at all today — they live only in the
+  Library rail, which draws only when `wide` (§2.6). This is preserved, pre-existing behaviour
+  (design §1's own inventory), not something MC.0 changed, but it is a real phone-user gap MC.3
+  should close rather than carry forward indefinitely.
+- The JNA dead-ABI finding already logged under GATE-M2 above stays there — MC.0 didn't touch it,
+  noted here only so the review pass doesn't look for it under this entry by mistake.
+
+**Relevant commits:** `ed9e61b`, `432c552`, `71e6b84`, `d3c3e9d`, `959e696`, and this commit
+(MC.0f).
+
+**Risk if it turns out wrong:** the main risk is a shortcut or gesture firing on the wrong target,
+or not firing at all, on a real device — the golden test (`ActionResolverGoldenTest`) and the
+keyboard/gesture unit tests (`KeyRouterTest`, `GestureDispatchTest`, `ShortcutTableTest`) all run
+against Robolectric/plain-JVM fixtures, never a real hardware keyboard, a real shake sensor, or a
+real edge-drag through `SpatialShell`; `DEVICE_CHECKS.md` §16 is what still needs a real device.
+Secondary risk: the recycle-without-confirmation gap, if left unresolved, means a bulk recycle from
+the selection bar or a shortcut (Delete) has the same one-keystroke blast radius it always had —
+not a regression, but not improved by this refactor either.

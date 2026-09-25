@@ -342,3 +342,59 @@ only importer), and nothing yet calls `DecoderService` itself either (M2.5's own
 spawned in ordinary use, let alone the native library loaded in the process `am start` measures.
 On paper this means M2 should show a zero cold-start delta for the main process; confirming that on
 a real device, rather than trusting the code-reading argument alone, is this check's own job.
+
+---
+
+## 16. MC.0 — action registry: hardware keyboard, gestures, rooms
+
+`docs/agent/DESIGN-MC0-ACTION-REGISTRY.md` retired the two dead shortcut-policy tables
+(`workspace/KeyboardShortcutPolicy.kt`, `workspace/DesktopWorkspacePolicy.kt` — reachable from
+nothing before MC.0e) and made `actions/ActionRegistry.kt`/`actions/BuiltInActions.kt` the only
+source of shortcuts, gestures and menu content. Everything below was verified only against
+Robolectric/plain-JVM unit tests (`KeyRouterTest`, `GestureDispatchTest`, `ShortcutTableTest`,
+`ActionResolverGoldenTest`) in this sandboxed container, which has no real device, emulator, or
+physical/Bluetooth keyboard to attach. **None of this ran on a device.**
+
+**Steps and expected results, on a device or emulator with a hardware keyboard attached:**
+
+1. With no text field focused, press each chord below once; it must fire the named action exactly
+   once (`ShortcutTableTest`'s own table — 19 chords across 17 actions, two of them doubly bound):
+   Ctrl+X → Cut · Ctrl+C → Copy · Ctrl+V → Paste · Ctrl+A → Select all · Escape → Clear selection ·
+   Delete → Recycle · F2 → Rename · Enter → Open (the focused row/card) · Ctrl+N → New text file ·
+   Ctrl+Shift+N → New folder · Ctrl+T → Add a location · Ctrl+W → Close (the active tab) · Ctrl+F →
+   focus the search field · F5 **and** Ctrl+R → Refresh (both must work) · Alt+Up **and** Backspace
+   → Parent folder (both must work) · Ctrl+K → open Commands · Ctrl+Shift+H → Operation history.
+2. Tap into the search field, then: Delete removes a character (does not recycle a selection),
+   Ctrl+V pastes text into the field (does not paste the Fylz clipboard), Ctrl+A selects the
+   field's text (does not select every visible entry), and Escape leaves the field (clears focus)
+   without closing anything else. This is the `onKeyEvent`-vs-`onPreviewKeyEvent` choice (design
+   §2.6) — a regression here would mean the root key handler is pre-empting the field.
+3. Ctrl+K opens the Commands palette; typing narrows the list by label; Enter runs the highlighted
+   (topmost) entry and closes the palette.
+4. Enter with a row/card focused (not the search field) opens that entry, same as tapping it.
+5. Ctrl+W closes the active tab (the one shown in the Locations room), not whichever tab happens
+   to be focused elsewhere.
+6. A chord not in the table above (e.g. Ctrl+H, Ctrl+P, Ctrl+Shift+P, Shift+Delete, Alt+Left,
+   Alt+Right, Alt+Backspace) does nothing — these are deliberately unregistered (design §2.5's
+   "Shortcut table" paragraph).
+
+**Gestures and touch, on a real device:**
+
+7. Shake the device: the current folder still refreshes (now dispatched through
+   `ActionDispatcher.gesture(SHAKE, ...)` rather than calling `refresh()` directly — same visible
+   result).
+8. Drag in from the left edge, right edge, and bottom edge: the same three rooms open as before
+   MC.0 (Locations, Tools, Recovery respectively) — `registry.edgeRooms()` now supplies this
+   mapping, but the drag itself is still handled entirely inside `SpatialShell` (design §2.6: this
+   is declarative, not an intercepted gesture).
+9. Double-tap a folder row/card: opens the folder. Double-tap a file row/card: opens it in another
+   app (the `fylz.open-with` chooser), not inside Fylz — unchanged from before MC.0.
+10. Long-press a row/card: toggles its checkbox/selection state.
+11. Rotate the device, or send the app to background and forward, while the Commands palette is
+    open: the palette should not crash and should either stay open with its typed filter intact or
+    close cleanly — no stuck dialog, no lost `textFieldFocused` state that would leave hardware
+    shortcuts silently routed to "text field focused" (Escape-only) after the dialog is gone.
+
+**What this verifies:** MC.0 (all six commits, `ed9e61b`..`(MC.0f)`) — the action registry itself,
+`docs/agent/DESIGN-MC0-ACTION-REGISTRY.md` §2.6/§2.7's acceptance bar, and MASTER_PLAN_ADDENDUM_1
+§C1/§D's "registry is the only source of shortcuts."

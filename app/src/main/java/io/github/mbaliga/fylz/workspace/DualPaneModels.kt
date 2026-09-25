@@ -2,6 +2,8 @@ package io.github.mbaliga.fylz.workspace
 
 import android.net.Uri
 
+enum class WorkspacePane { PRIMARY, SECONDARY }
+
 enum class PaneLayout { SINGLE, SPLIT_VERTICAL, SPLIT_HORIZONTAL }
 
 data class PaneLocation(

@@ -1,8 +1,10 @@
 package io.github.mbaliga.fylz.actions
 
-import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import io.github.mbaliga.fylz.browse.SortField
+import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.ThemeMode
+import io.github.mbaliga.fylz.ui.isZipFamilyArchive
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -14,11 +16,54 @@ import org.robolectric.annotation.Config
  * `ActionResolver.resolve(surface, state)` must equal what the legacy availability functions plus
  * the code's literal item order say -- `(id, enabled)` pairs, and `checked` where the built-in
  * table gives one. Nothing here calls [BuiltInActions] to compute the expected side; each
- * `expected*` function re-derives it from [LegacyAvailability] and the raw [BrowserState] fields,
+ * `expected*` function re-derives it from [LegacyOracle] and the raw [BrowserState] fields,
  * transcribed from `FylzV1App.kt`'s/`FylzAppShell.kt`'s own code, so a bug in the registry's
  * wiring (wrong order, wrong placement, a dropped item) is caught even though the *predicates*
  * are the same functions production now runs through.
+ *
+ * `LegacyOracle` is this test's own frozen copy of the pre-refactor expressions (MC.0f, design
+ * §2.7 item 1): `actions/legacy/LegacyAvailability.kt`, which production called through MC.0a-e,
+ * is deleted once the built-in table inlines the same expressions (MC.0f), so the differential
+ * check keeps its independent oracle by holding a private copy here instead of calling production
+ * code.
  */
+private object LegacyOracle {
+    /** `FylzV1App.kt:1133` at `6e3ab3f`. */
+    fun canRename(selection: List<FileEntry>): Boolean = selection.size == 1
+
+    /** `FylzV1App.kt:1134-1136` at `6e3ab3f`. */
+    fun canExtract(selection: List<FileEntry>): Boolean =
+        selection.size == 1 && selection.first().kind == EntryKind.ARCHIVE && isZipFamilyArchive(selection.first().name)
+
+    /** `FylzV1App.kt:1137-1138` at `6e3ab3f`. */
+    fun canPdfTools(selection: List<FileEntry>): Boolean =
+        selection.isNotEmpty() && selection.all { it.kind == EntryKind.PDF }
+
+    /** `FylzV1App.kt:1041` at `6e3ab3f`. */
+    fun clipboardChipEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+
+    /** `FylzV1App.kt:1076` at `6e3ab3f`. */
+    fun newFolderEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+
+    /** `FylzV1App.kt:1082` at `6e3ab3f`. */
+    fun newFileEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+
+    /** `FylzV1App.kt:1088` at `6e3ab3f`. */
+    fun scanToPdfEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+
+    /** `FylzV1App.kt:1099` at `6e3ab3f`. */
+    fun findDuplicatesEnabled(entries: List<FileEntry>): Boolean = entries.count { !it.isDirectory } > 1
+
+    /** `FylzV1App.kt:1121` at `6e3ab3f`. */
+    fun aiOrganizeEnabled(focused: FileEntry?): Boolean = focused != null
+
+    /** `FylzV1App.kt:1752` at `6e3ab3f`: `entries.isNotEmpty()` over the browser's visible entries. */
+    fun selectAllEnabled(visibleEntries: List<FileEntry>): Boolean = visibleEntries.isNotEmpty()
+
+    /** `FylzV1App.kt:1667` at `6e3ab3f`. */
+    fun favouriteEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
+}
+
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class ActionResolverGoldenTest {
@@ -39,12 +84,12 @@ class ActionResolverGoldenTest {
             Triple(id("fylz.copy-to"), true, null),
             Triple(id("fylz.move-to"), true, null),
             Triple(id("fylz.recycle"), true, null),
-            Triple(id("fylz.rename"), LegacyAvailability.canRename(state.selection), null),
+            Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection), null),
             Triple(id("fylz.tags"), true, null),
             Triple(id("fylz.compress"), true, null),
-            Triple(id("fylz.extract"), LegacyAvailability.canExtract(state.selection), null),
+            Triple(id("fylz.extract"), LegacyOracle.canExtract(state.selection), null),
             Triple(id("fylz.rename.batch"), true, null),
-            Triple(id("fylz.pdf.tools"), LegacyAvailability.canPdfTools(state.selection), null),
+            Triple(id("fylz.pdf.tools"), LegacyOracle.canPdfTools(state.selection), null),
             Triple(id("fylz.share"), true, null),
             Triple(id("fylz.select.clear"), true, null),
         )
@@ -53,7 +98,7 @@ class ActionResolverGoldenTest {
     private fun expectedTopAppBar(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
         val result = mutableListOf<Triple<ActionId, Boolean, Boolean?>>()
         if (state.clipboard != null) {
-            result += Triple(id("fylz.paste"), LegacyAvailability.clipboardChipEnabled(state.hasActiveTab), null)
+            result += Triple(id("fylz.paste"), LegacyOracle.clipboardChipEnabled(state.hasActiveTab), null)
             result += Triple(id("fylz.clipboard.clear"), true, null)
         }
         result += Triple(id("fylz.view.toggle"), true, null)
@@ -62,17 +107,17 @@ class ActionResolverGoldenTest {
     }
 
     private fun expectedOverflow(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
-        Triple(id("fylz.new-folder"), LegacyAvailability.newFolderEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.new-file"), LegacyAvailability.newFileEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.scan-to-pdf"), LegacyAvailability.scanToPdfEnabled(state.hasActiveTab), null),
-        Triple(id("fylz.find-duplicates"), LegacyAvailability.findDuplicatesEnabled(state.entries), null),
-        Triple(id("fylz.ai.organize"), LegacyAvailability.aiOrganizeEnabled(state.focused), null),
+        Triple(id("fylz.new-folder"), LegacyOracle.newFolderEnabled(state.hasActiveTab), null),
+        Triple(id("fylz.new-file"), LegacyOracle.newFileEnabled(state.hasActiveTab), null),
+        Triple(id("fylz.scan-to-pdf"), LegacyOracle.scanToPdfEnabled(state.hasActiveTab), null),
+        Triple(id("fylz.find-duplicates"), LegacyOracle.findDuplicatesEnabled(state.entries), null),
+        Triple(id("fylz.ai.organize"), LegacyOracle.aiOrganizeEnabled(state.focused), null),
         Triple(id("fylz.commands"), true, null),
     )
 
     private fun expectedBrowserRow(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
         Triple(id("fylz.navigate.up"), state.canNavigateUp, null),
-        Triple(id("fylz.select.all"), LegacyAvailability.selectAllEnabled(state.visibleEntries), null),
+        Triple(id("fylz.select.all"), LegacyOracle.selectAllEnabled(state.visibleEntries), null),
     )
 
     private fun expectedSort(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
@@ -90,7 +135,7 @@ class ActionResolverGoldenTest {
 
     private fun expectedLibraryRail(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
         Triple(id("fylz.open-root"), true, null),
-        Triple(id("fylz.favourite.toggle"), LegacyAvailability.favouriteEnabled(state.hasActiveTab), state.currentFolderIsFavourite),
+        Triple(id("fylz.favourite.toggle"), LegacyOracle.favouriteEnabled(state.hasActiveTab), state.currentFolderIsFavourite),
         Triple(id("fylz.recycle-bin"), true, null),
     )
 

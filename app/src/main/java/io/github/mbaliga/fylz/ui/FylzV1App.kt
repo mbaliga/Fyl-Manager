@@ -189,7 +189,6 @@ import io.github.mbaliga.fylz.actions.KeyChord
 import io.github.mbaliga.fylz.actions.KeyRouter
 import io.github.mbaliga.fylz.actions.Routed
 import io.github.mbaliga.fylz.actions.RoomId
-import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
 import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
 import io.github.mbaliga.fylz.ui.actions.LocationsRoom
@@ -1136,7 +1135,7 @@ private fun FylzV1Workspace(
     ) {
         BrowserState(
             hasActiveTab = activeTab != null,
-            canNavigateUp = LegacyAvailability.canNavigateUp(activeTab?.locations),
+            canNavigateUp = (activeTab?.locations?.size ?: 0) > 1,
             entries = entries,
             visibleEntries = visibleEntries,
             selection = selectedEntries,
