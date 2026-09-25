@@ -178,10 +178,16 @@ import dev.aarso.cellshell.SpatialShell
 import dev.aarso.cellshell.rememberSpatialController
 import io.github.mbaliga.fylz.actions.ActionContext
 import io.github.mbaliga.fylz.actions.ActionDispatcher
+import io.github.mbaliga.fylz.actions.ActionId
 import io.github.mbaliga.fylz.actions.ActionRegistry
 import io.github.mbaliga.fylz.actions.ActionResolver
+import io.github.mbaliga.fylz.actions.ActionTarget
 import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.actions.BuiltInActions
+import io.github.mbaliga.fylz.actions.GestureId
+import io.github.mbaliga.fylz.actions.KeyChord
+import io.github.mbaliga.fylz.actions.KeyRouter
+import io.github.mbaliga.fylz.actions.Routed
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.actions.legacy.LegacyAvailability
 import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
@@ -189,15 +195,41 @@ import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
 import io.github.mbaliga.fylz.ui.actions.LocationsRoom
 import io.github.mbaliga.fylz.ui.actions.NavigateUpButton
 import io.github.mbaliga.fylz.ui.actions.RecoveryRoom
+import io.github.mbaliga.fylz.ui.actions.RegistryProblemsDialog
 import io.github.mbaliga.fylz.ui.actions.SelectAllButton
 import io.github.mbaliga.fylz.ui.actions.SelectionActionBar
 import io.github.mbaliga.fylz.ui.actions.ToolsRoom
 import io.github.mbaliga.fylz.ui.actions.SortMenuButton
 import io.github.mbaliga.fylz.ui.actions.TopAppBarActions
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
+
+/** `fylz.select.toggle`'s id (design MC.0e, §2.6): the row/grid checkbox's own click, which isn't
+ * itself one of the four `GestureId`s, dispatches straight to this id rather than through
+ * `ActionDispatcher.gesture`. */
+private val SELECT_TOGGLE_ID = ActionId.parse("fylz.select.toggle")
+
+/** The three room-open gesture actions' ids (design §2.6): what `registry.edgeRooms()` maps each
+ * `GestureId.EDGE_*` to, and so the keys `edgeRoomContent` looks its content up by. */
+private val ROOM_LOCATIONS_ID = ActionId.parse("fylz.room.locations")
+private val ROOM_TOOLS_ID = ActionId.parse("fylz.room.tools")
+private val ROOM_RECOVERY_ID = ActionId.parse("fylz.room.recovery")
 
 /** Extensions [io.github.mbaliga.fylz.data.ArchiveService.extractZip] can actually extract
  * (P0.10): it's a ZIP reader (zip4j), so offering Extract for `.7z`/`.rar`/`.tar`/... would fail
@@ -410,6 +442,10 @@ private fun FylzV1Workspace(
     var clipboard by viewModel::clipboard
     var externalDocument by remember { mutableStateOf<FileEntry?>(null) }
     var commandPaletteOpen by remember { mutableStateOf(false) }
+    var showRegistryProblemsDialog by remember { mutableStateOf(false) }
+    // MC.0e (design §2.6): the one flag KeyRouter's `textFieldFocused` guard reads, fed by the
+    // search field's and the command palette's own `onFocusChanged`.
+    var textFieldFocused by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
     var remoteDialog by remember { mutableStateOf(false) }
@@ -1082,6 +1118,8 @@ private fun FylzV1Workspace(
         }
 
         override fun openCommandPalette() { commandPaletteOpen = true }
+
+        override fun showRegistryProblems() { showRegistryProblemsDialog = true }
     }
 
     // Static across the app's lifetime -- BuiltInActions.all()'s `run` lambdas take
@@ -1094,7 +1132,7 @@ private fun FylzV1Workspace(
     val browserState = remember(
         activeTab, entries, visibleEntries, selectedEntries, selectedUris, focusedEntry, clipboard,
         sortSpec, viewMode, previewMode, query, searchRecursive, themeMode, legacyBinNames,
-        operationsNeedingAttention, refreshKey,
+        operationsNeedingAttention, refreshKey, activeTabId, actionRegistry,
     ) {
         BrowserState(
             hasActiveTab = activeTab != null,
@@ -1114,6 +1152,8 @@ private fun FylzV1Workspace(
             currentFolderIsFavourite = activeTab?.current?.uri?.let { uri -> library.favorites().any { it.uri == uri } } ?: false,
             legacyBinCount = legacyBinNames.size,
             operationsNeedingAttention = operationsNeedingAttention,
+            activeTabId = activeTabId,
+            registryProblemCount = actionRegistry.problems.size,
         )
     }
 
@@ -1121,13 +1161,27 @@ private fun FylzV1Workspace(
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
 
-    SpatialShell(
-        controller = shell,
-        accentColor = MaterialTheme.colorScheme.primary,
-        scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-        cardColor = MaterialTheme.colorScheme.surface,
-        modifier = Modifier.fillMaxSize(),
-        left = {
+    // MC.0e (design §2.6): a focusable root so hardware-keyboard chords reach Compose at all in
+    // touch mode, where nothing is focused otherwise. `onKeyEvent`, not `onPreviewKeyEvent`: the
+    // latter runs *before* a focused child (the search field, say) sees the event, which would
+    // turn that field's own Delete/Ctrl+V/Ctrl+A into recycle/paste/select-all.
+    val rootFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val windowFocused = LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(windowFocused, textFieldFocused) {
+        // First composition (nothing focused yet), whenever the tracked text field gives up focus,
+        // and whenever this window regains focus (a dialog -- its own Android window -- just
+        // closed) all land here, so keys keep reaching the root once whatever stole focus is gone.
+        if (windowFocused && !textFieldFocused) rootFocusRequester.requestFocus()
+    }
+
+    // Edge drags are declarative (design §2.6): SpatialShell still owns the drag itself -- it only
+    // asks which content sits on which edge -- but *which* room that is comes from
+    // `registry.edgeRooms()` rather than a hard-coded left/right/bottom assignment, so the registry
+    // stays the one place that says "left = Locations".
+    val edgeRooms = actionRegistry.edgeRooms()
+    val edgeRoomContent: Map<ActionId, @Composable () -> Unit> = mapOf(
+        ROOM_LOCATIONS_ID to {
             LocationsRoom(
                 tabs = tabs,
                 activeTabId = activeTabId,
@@ -1146,19 +1200,50 @@ private fun FylzV1Workspace(
                 },
             )
         },
-        right = {
-            ToolsRoom(actionResolver, actionDispatcher, browserState, actionContext)
-        },
-        bottom = {
-            RecoveryRoom(actionResolver, actionDispatcher, browserState, actionContext)
-        },
+        ROOM_TOOLS_ID to { ToolsRoom(actionResolver, actionDispatcher, browserState, actionContext) },
+        ROOM_RECOVERY_ID to { RecoveryRoom(actionResolver, actionDispatcher, browserState, actionContext) },
+    )
+
+    SpatialShell(
+        controller = shell,
+        accentColor = MaterialTheme.colorScheme.primary,
+        scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+        cardColor = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+            .fillMaxSize()
+            .focusRequester(rootFocusRequester)
+            .focusable()
+            .onKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+                val chord = KeyChord(
+                    key = event.key,
+                    ctrl = event.isCtrlPressed,
+                    shift = event.isShiftPressed,
+                    alt = event.isAltPressed,
+                    meta = event.isMetaPressed,
+                )
+                when (val routed = KeyRouter.route(chord, textFieldFocused, actionRegistry, browserState)) {
+                    is Routed.Dispatch -> {
+                        actionDispatcher.run(routed.id, browserState, routed.target, actionContext)
+                        true
+                    }
+                    Routed.ClearFocus -> {
+                        focusManager.clearFocus()
+                        true
+                    }
+                    null -> false
+                }
+            },
+        left = edgeRoomContent[edgeRooms[GestureId.EDGE_LEFT]],
+        right = edgeRoomContent[edgeRooms[GestureId.EDGE_RIGHT]],
+        bottom = edgeRoomContent[edgeRooms[GestureId.EDGE_BOTTOM]],
     ) {
     // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
     // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
     // off the touch plane entirely — a deliberate shake needs no affordance, no instructional
     // copy, and competes with no scroll. The toolbar button stays for anyone who would rather
     // tap than shake.
-    ShakeToRefresh(onShake = { refresh() })
+    ShakeToRefresh(onShake = { actionDispatcher.gesture(GestureId.SHAKE, null, browserState, actionContext) })
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
@@ -1221,12 +1306,7 @@ private fun FylzV1Workspace(
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
                         onQueryChange = { query = it },
-                        onOpen = ::openEntry,
-                        onOpenExternal = ::openExternal,
-                        onToggleSelection = { entry ->
-                            selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
-                            focusedEntry = entry.takeUnless(FileEntry::isDirectory)
-                        },
+                        onSearchFocusChanged = { focused -> textFieldFocused = focused },
                         listState = listState,
                         gridState = gridState,
                         modifier = Modifier.weight(1f),
@@ -1631,7 +1711,15 @@ private fun FylzV1Workspace(
             dispatcher = actionDispatcher,
             state = browserState,
             ctx = actionContext,
-            onDismiss = { commandPaletteOpen = false },
+            onDismiss = { commandPaletteOpen = false; textFieldFocused = false },
+            onFocusChanged = { focused -> textFieldFocused = focused },
+        )
+    }
+
+    if (showRegistryProblemsDialog) {
+        RegistryProblemsDialog(
+            problems = actionRegistry.problems,
+            onDismiss = { showRegistryProblemsDialog = false },
         )
     }
 }
@@ -1661,9 +1749,7 @@ private fun FileBrowser(
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
     onQueryChange: (String) -> Unit,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
+    onSearchFocusChanged: (Boolean) -> Unit,
     listState: LazyListState,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
@@ -1690,7 +1776,7 @@ private fun FileBrowser(
                 leadingIcon = { Icon(Icons.Outlined.Search, null) },
                 placeholder = { Text(stringResource(R.string.browser_search_placeholder)) },
                 singleLine = true,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).onFocusChanged { onSearchFocusChanged(it.isFocused) },
             )
             SortMenuButton(resolver, dispatcher, state, ctx)
             SelectAllButton(resolver, dispatcher, state, ctx)
@@ -1751,9 +1837,9 @@ private fun FileBrowser(
                 hits = searchHits,
                 selectedUris = selectedUris,
                 focusedEntry = focusedEntry,
-                onOpen = onOpen,
-                onOpenExternal = onOpenExternal,
-                onToggleSelection = onToggleSelection,
+                dispatcher = dispatcher,
+                state = state,
+                ctx = ctx,
             )
             return@Column
         }
@@ -1781,13 +1867,13 @@ private fun FileBrowser(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, dispatcher, state, ctx)
                 }
             }
         } else {
             LazyColumn(state = listState) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, dispatcher, state, ctx)
                 }
             }
         }
@@ -1846,9 +1932,9 @@ private fun SearchResults(
     hits: List<SearchHit>,
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
+    dispatcher: ActionDispatcher,
+    state: BrowserState,
+    ctx: ActionContext,
 ) {
     Column(Modifier.fillMaxSize()) {
         Text(
@@ -1881,9 +1967,9 @@ private fun SearchResults(
                     entry = hit.entry,
                     selected = hit.entry.uri in selectedUris,
                     focused = hit.entry.uri == focusedEntry?.uri,
-                    onOpen = onOpen,
-                    onOpenExternal = onOpenExternal,
-                    onToggleSelection = onToggleSelection,
+                    dispatcher = dispatcher,
+                    state = state,
+                    ctx = ctx,
                     // Where the file lives, plus the matched line for a content hit -- a result
                     // list without a path is unusable once the search leaves one folder.
                     overline = hit.relativePath,
@@ -1901,28 +1987,29 @@ private fun FileRowV1(
     entry: FileEntry,
     selected: Boolean,
     focused: Boolean,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
+    dispatcher: ActionDispatcher,
+    state: BrowserState,
+    ctx: ActionContext,
     overline: String? = null,
     detail: String? = null,
 ) {
     val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
+    val target = ActionTarget.Entry(entry)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 62.dp)
             .combinedClickable(
-                onClick = { onOpen(entry) },
-                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                onLongClick = { onToggleSelection(entry) },
+                onClick = { dispatcher.gesture(GestureId.ITEM_TAP, target, state, ctx) },
+                onDoubleClick = { dispatcher.gesture(GestureId.ITEM_DOUBLE_TAP, target, state, ctx) },
+                onLongClick = { dispatcher.gesture(GestureId.ITEM_LONG_PRESS, target, state, ctx) },
             )
             .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .semantics { contentDescription = label },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = selected, onCheckedChange = { onToggleSelection(entry) })
+        Checkbox(checked = selected, onCheckedChange = { dispatcher.run(SELECT_TOGGLE_ID, state, target, ctx) })
         // Real image/video thumbnails; falls back to a per-type icon. Previously every file in
         // the list rendered the same handful of static vectors.
         EntryThumbnail(entry, size = 40.dp)
@@ -1957,17 +2044,18 @@ private fun FileCard(
     entry: FileEntry,
     selected: Boolean,
     focused: Boolean,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
+    dispatcher: ActionDispatcher,
+    state: BrowserState,
+    ctx: ActionContext,
 ) {
+    val target = ActionTarget.Entry(entry)
     Surface(
         color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier.height(140.dp).combinedClickable(
-            onClick = { onOpen(entry) },
-            onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-            onLongClick = { onToggleSelection(entry) },
+            onClick = { dispatcher.gesture(GestureId.ITEM_TAP, target, state, ctx) },
+            onDoubleClick = { dispatcher.gesture(GestureId.ITEM_DOUBLE_TAP, target, state, ctx) },
+            onLongClick = { dispatcher.gesture(GestureId.ITEM_LONG_PRESS, target, state, ctx) },
         ).semantics { contentDescription = entry.name },
     ) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -1975,7 +2063,7 @@ private fun FileCard(
                 // Grid cells get a larger thumbnail: it is the whole point of grid view.
                 EntryThumbnail(entry, size = 56.dp)
                 Spacer(Modifier.weight(1f))
-                Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
+                Checkbox(selected, onCheckedChange = { dispatcher.run(SELECT_TOGGLE_ID, state, target, ctx) })
             }
             Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }

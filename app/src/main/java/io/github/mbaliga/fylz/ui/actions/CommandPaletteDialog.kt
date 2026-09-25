@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
@@ -32,6 +33,13 @@ import io.github.mbaliga.fylz.actions.BrowserState
  * must not open a dead menu item. A text field filters every resolved, enabled, targetless,
  * palette-visible built-in across all placements ([ActionResolver.paletteCandidates]) by label;
  * Enter or a click dispatches and closes. Minimal by design -- no icons.
+ *
+ * [onFocusChanged] reports this field's own focus into the workspace's shared text-field-focused
+ * flag (design §2.6, MC.0e), the same one the search field reports into, so `KeyRouter` knows to
+ * step aside. In practice [Dialog] opens its own Android window, so the workspace root's
+ * `onKeyEvent` never sees a key while this is open either way -- reporting focus here is cheap
+ * defence in depth, not load-bearing, and keeps this dialog's wiring honest with the design's own
+ * text.
  */
 @Composable
 fun CommandPaletteDialog(
@@ -40,6 +48,7 @@ fun CommandPaletteDialog(
     state: BrowserState,
     ctx: ActionContext,
     onDismiss: () -> Unit,
+    onFocusChanged: (Boolean) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
     val candidates = remember(state, query) {
@@ -54,15 +63,18 @@ fun CommandPaletteDialog(
                     onValueChange = { query = it },
                     singleLine = true,
                     placeholder = { Text("Commands") },
-                    modifier = Modifier.fillMaxWidth().onKeyEvent { event ->
-                        if (event.key == Key.Enter) {
-                            candidates.firstOrNull()?.let { dispatcher.run(it.id, state, null, ctx) }
-                            onDismiss()
-                            true
-                        } else {
-                            false
-                        }
-                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { onFocusChanged(it.isFocused) }
+                        .onKeyEvent { event ->
+                            if (event.key == Key.Enter) {
+                                candidates.firstOrNull()?.let { dispatcher.run(it.id, state, null, ctx) }
+                                onDismiss()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                 )
                 LazyColumn(Modifier.heightIn(max = 320.dp)) {
                     items(candidates, key = { it.id.value }) { item ->

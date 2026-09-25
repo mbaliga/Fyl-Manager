@@ -34,12 +34,11 @@ private fun def(
  * `visibleWhen`/`enabledWhen`, label, `checked` and shortcut. Handler bodies are **not** moved in
  * MC.0a (design §2.8 item 1) -- each `run` calls the matching [ActionContext] method for the
  * actions that already have one named/externally-callable today; `fylz.commands` gained one in
- * MC.0c, once the command palette it opens existed. Several built-ins still have no such thing to
- * delegate to yet (the self-contained Recovery-room overlays and Archive Tools menu, each still
- * triggered by its own embedded FAB with no external "open" hook; the customisation-problems
- * surface; search-field focus, which has no keyboard wiring anywhere in the app today) -- those
- * `run` bodies are documented no-ops rather than invented behaviour, and are wired for real once
- * their surface exists (MC.0d/e).
+ * MC.0c, `fylz.customisation.problems` in MC.0e, once the surface each opens existed. Some
+ * built-ins still have no such thing to delegate to (the self-contained Recovery-room overlays and
+ * Archive Tools menu, each still triggered by its own embedded FAB with no external "open" hook;
+ * search-field focus, which has no keyboard wiring to a `FocusRequester` yet) -- those `run` bodies
+ * stay documented no-ops rather than invented behaviour.
  */
 object BuiltInActions {
     fun all(): List<BuiltInBinding> = selectionBar() + topAppBar() + browserRow() + rowsAndCards() +
@@ -374,16 +373,14 @@ object BuiltInActions {
         themeAction(ThemeMode.DARK, "Dark", 62),
         BuiltInBinding(
             def = def("fylz.customisation.problems", "Customisation problems", "Warning", listOf(Placement.Room(RoomId.TOOLS, 90))),
-            // Meant to read registry.problems.isNotEmpty() (design deviation (c)), but visibleWhen's
-            // signature is (BrowserState) -> Boolean -- it cannot see the registry it is itself part
-            // of. Never mind: the built-in table's own registry.problems is empty by construction
-            // (ShortcutTableTest asserts this), so "never for the shipped built-ins" (design §4) is
-            // exactly what always-false gives here. A user-defined action bundle is what could ever
-            // make this row appear, once MC.1+ lets BrowserState (or a sibling snapshot) carry that.
-            visibleWhen = { false },
+            // MC.0e (design §2.3 clarification): registryProblemCount is supplied when BrowserState
+            // is assembled, once the registry that produced it already exists -- the built-in
+            // table's own registry.problems is empty by construction (ShortcutTableTest asserts
+            // this), so this stays "never for the shipped built-ins" (design §4) until a user-
+            // defined action bundle (MC.1+) can actually conflict with something.
+            visibleWhen = { it.registryProblemCount > 0 },
             enabledWhen = ALWAYS,
-            // No customisation-problems surface exists yet (MC.0e); nothing to delegate to today.
-            run = { _, _, _ -> },
+            run = { ctx, _, _ -> ctx.showRegistryProblems() },
         ),
     )
 

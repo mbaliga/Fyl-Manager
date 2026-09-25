@@ -34,6 +34,10 @@ data class BrowserState(
     val currentFolderIsFavourite: Boolean,
     val legacyBinCount: Int,
     val operationsNeedingAttention: Int,
+    // MC.0e (design §2.3 clarification), both defaulted so BrowserStateFixtures.kt and the golden
+    // test's named-arg `base()` stay byte-identical.
+    val activeTabId: String? = null,
+    val registryProblemCount: Int = 0,
 ) {
     val selectionCount: Int get() = selection.size
     val selectionKinds: Set<EntryKind> get() = selection.mapTo(HashSet()) { it.kind }

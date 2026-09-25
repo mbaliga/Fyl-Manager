@@ -69,4 +69,10 @@ interface ActionContext {
     fun openRoom(room: RoomId)
 
     fun openCommandPalette()
+
+    /** `fylz.customisation.problems`'s handler (MC.0e): a `(BrowserState) -> Boolean` predicate
+     * can't see the registry it belongs to, so the row's own `run` reaches back out through this
+     * method instead, the same way the four self-contained Recovery overlays and Archive Tools
+     * menu each needed their own escape hatch. */
+    fun showRegistryProblems()
 }
