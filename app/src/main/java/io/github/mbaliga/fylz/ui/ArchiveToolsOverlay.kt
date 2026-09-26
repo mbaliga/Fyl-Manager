@@ -9,14 +9,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -24,8 +22,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,10 +30,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.actions.ActionContext
@@ -52,6 +46,7 @@ import io.github.mbaliga.fylz.operations.ArchiveTestEntryResult
 import io.github.mbaliga.fylz.operations.ArchiveTestOutcome
 import io.github.mbaliga.fylz.operations.EntryOutcome
 import io.github.mbaliga.fylz.ui.actions.ArchiveToolsMenuDialog
+import io.github.mbaliga.fylz.ui.components.PasswordPromptDialog
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -74,6 +69,10 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
     val inspector = remember { (context.applicationContext as FylzApplication).archiveInspector }
     // M3.8: "Test archive" runs the same isolated extraction instance a real extraction does.
     val tester = remember { (context.applicationContext as FylzApplication).archiveTester }
+    // M3.9: the one, shared, session-only remembered-password store -- also used by FylzV1App's
+    // legacy-encrypted-ZIP extract flow, so a password remembered through either path is honoured
+    // by both for the rest of this process's life.
+    val passwordSession = remember { (context.applicationContext as FylzApplication).archivePasswordSession }
     var menuOpen by remember { mutableStateOf(false) }
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
@@ -242,14 +241,21 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
         )
     }
 
+    // M3.9: the one shared password prompt, for both CREATE and EXTRACT here -- CREATE offers no
+    // "Remember for this session" tick, since there is no archive identity yet to key it by before
+    // a destination is chosen (`createDestination` runs after this confirms).
     passwordPurpose?.let { purpose ->
-        ArchivePasswordDialog(
-            purpose = purpose,
+        val creating = purpose == ArchivePasswordPurpose.CREATE
+        PasswordPromptDialog(
+            title = if (creating) "Protect archive" else "Archive password",
+            confirmNewPassword = creating,
+            offerRemember = !creating,
+            confirmLabel = "Choose destination",
             onDismiss = {
                 passwordPurpose = null
-                if (purpose == ArchivePasswordPurpose.CREATE) selectedSources = emptyList()
+                if (creating) selectedSources = emptyList()
             },
-            onConfirm = { password ->
+            onConfirm = { password, remember ->
                 passwordPurpose = null
                 when (purpose) {
                     ArchivePasswordPurpose.CREATE -> {
@@ -260,14 +266,15 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
                             ctx.openCompressMenu(sources)
                         } else {
                             // The AES switch is on: zip4j is still the only encrypted-archive path
-                            // (design §2.7's own scoped-down choice, until M3.9 gives every format
-                            // a password prompt through the queue and M3.10 removes zip4j).
+                            // (design §2.7's own scoped-down choice, until the new engine's crypto
+                            // backend is built and M3.10 removes zip4j).
                             pendingCreatePassword = password
                             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
                             createDestination.launch("Fylz-$stamp.zip")
                         }
                     }
                     ArchivePasswordPurpose.EXTRACT -> {
+                        if (remember && password != null) selectedArchive?.let { archive -> passwordSession.remember(archive, password) }
                         pendingExtractPassword = password
                         extractDestination.launch(null)
                     }
@@ -287,7 +294,15 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
             },
             onExtract = {
                 if (value.summary.hasEncryptedEntries) {
-                    passwordPurpose = ArchivePasswordPurpose.EXTRACT
+                    // M3.9: a password already remembered for this archive skips the prompt.
+                    val remembered = selectedArchive?.let(passwordSession::passwordFor)
+                    if (remembered != null) {
+                        pendingExtractPassword = remembered
+                        inspection = null
+                        extractDestination.launch(null)
+                    } else {
+                        passwordPurpose = ArchivePasswordPurpose.EXTRACT
+                    }
                 } else {
                     // M3.4c: a plain archive extracts through the same Extract sheet/flow
                     // `fylz.extract` opens, not the zip4j `extractDestination` picker any more --
@@ -313,91 +328,6 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
 private fun queryDisplayName(context: Context, uri: Uri): String? =
     context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
         ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-
-@Composable
-private fun ArchivePasswordDialog(
-    purpose: ArchivePasswordPurpose,
-    onDismiss: () -> Unit,
-    onConfirm: (CharArray?) -> Unit,
-) {
-    var encrypted by remember { mutableStateOf(purpose == ArchivePasswordPurpose.EXTRACT) }
-    var password by remember { mutableStateOf("") }
-    var confirmation by remember { mutableStateOf("") }
-    val creating = purpose == ArchivePasswordPurpose.CREATE
-    val valid = if (!encrypted) {
-        creating
-    } else if (creating) {
-        password.length in 8..256 && password == confirmation
-    } else {
-        password.isNotEmpty()
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
-        title = { Text(if (creating) "Protect archive" else "Archive password") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (creating) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Encrypt with AES-256")
-                            Text(
-                                "Leave disabled to create a standard ZIP.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(checked = encrypted, onCheckedChange = { encrypted = it })
-                    }
-                }
-                if (encrypted) {
-                    OutlinedTextField(
-                        value = password,
-                        onValueChange = { password = it.take(256) },
-                        label = { Text("Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (creating) {
-                        OutlinedTextField(
-                            value = confirmation,
-                            onValueChange = { confirmation = it.take(256) },
-                            label = { Text("Confirm password") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            supportingText = {
-                                Text(
-                                    when {
-                                        password.length < 8 -> "Use at least 8 characters."
-                                        confirmation.isNotEmpty() && password != confirmation -> "Passwords do not match."
-                                        else -> "Fylz cannot recover a forgotten archive password."
-                                    },
-                                )
-                            },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val result = if (encrypted) password.toCharArray() else null
-                    password = ""
-                    confirmation = ""
-                    onConfirm(result)
-                },
-                enabled = valid,
-            ) {
-                Text(if (creating) "Choose destination" else "Choose destination")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
 
 @Composable
 private fun ArchiveInspectionDialog(

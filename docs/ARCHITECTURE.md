@@ -762,6 +762,39 @@ regardless of where it came from.
 `docs/agent/REVIEW_QUEUE.md`'s M3.8 entry (the cancellation design, the size-limit choice, the
 encrypted-archive call, and the `Warning`/`FailKind` deviation, in full).
 
+## Shared password prompt (M3.9)
+
+Every archive password prompt goes through one composable, `ui/components/PasswordPromptDialog.kt`
+-- pulled out of `ArchiveToolsOverlay.kt`'s own private `ArchivePasswordDialog` and generalised: it
+takes a title, a `confirmNewPassword` flag (the create-side shape, an "Encrypt" switch plus a
+confirmation field) and an `offerRemember` flag, and hands a `(CharArray?, remember: Boolean) ->
+Unit` back on confirm. It never touches session state itself; each call site wires the remember
+choice into `archive/ArchivePasswordSession.kt` on its own.
+
+`ArchivePasswordSession` is the session-only, opt-in remembered-password store the plan asks for:
+one `ConcurrentHashMap<Uri, CharArray>` on `FylzApplication`, the same shape M3.7's own
+`ArchiveEncodingOverrides` established for session-only per-archive state, never persisted, never
+logged. Keyed by the archive's own document `Uri` (both real call sites -- `ArchiveToolsOverlay`'s
+EXTRACT purpose and `FylzV1App`'s legacy-encrypted-ZIP flow -- only ever have that, never a listed
+catalog key). `remember`/`passwordFor` always copy: the session's own stored array is never the
+same object a caller wipes after use, so `ArchiveService.createZip`/`extractZip`'s own pre-existing
+`finally` (`password?.fill('\u0000')`) can never zero out what is remembered for next time. A call
+site checks `passwordFor(uri)` *before* ever composing the dialog, so a remembered password skips
+the prompt entirely rather than flashing it and auto-confirming.
+
+Two real callers today: `ArchiveToolsOverlay.kt`'s own CREATE (no remember offered -- there is no
+archive identity yet before a destination is chosen) and EXTRACT purposes, and `FylzV1App.kt`'s
+legacy-encrypted-ZIP extract flow (the one path that still uses zip4j for a real decrypt, per M3.5's
+own scope note: the new engine's password field stays a disabled stub until a crypto backend is
+compiled into vendored libarchive, which remains out of scope here). Two credential fields
+elsewhere -- an AI provider's API key, a WebDAV login -- are deliberately left untouched: they are
+not archive passwords, and `docs/agent/REVIEW_QUEUE.md`'s M3.9 entry (item 6) records that gap as a
+known inconsistency rather than a silent omission.
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 24;
+`docs/agent/REVIEW_QUEUE.md`'s M3.9 entry (the consolidation decisions, what was and wasn't
+consolidated, and a pre-existing `ArchiveService.queryName` bug found while testing this, in full).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

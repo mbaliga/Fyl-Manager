@@ -7,6 +7,7 @@ import io.github.mbaliga.fylz.archive.ArchiveCatalog
 import io.github.mbaliga.fylz.archive.ArchiveEncodingOverrides
 import io.github.mbaliga.fylz.archive.ArchiveEntryCache
 import io.github.mbaliga.fylz.archive.ArchiveInspector
+import io.github.mbaliga.fylz.archive.ArchivePasswordSession
 import io.github.mbaliga.fylz.archive.ArchiveSource
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.decoder.DecoderClient
@@ -71,6 +72,9 @@ class FylzApplication : Application() {
 
     /** The session-only manual charset override for legacy ZIP filenames (M3.7); never persisted. */
     val archiveEncodingOverrides: ArchiveEncodingOverrides by lazy { ArchiveEncodingOverrides() }
+
+    /** The session-only, opt-in remembered archive passwords (M3.9); never persisted, never logged. */
+    val archivePasswordSession: ArchivePasswordSession by lazy { ArchivePasswordSession() }
 
     /**
      * "Test archive" (M3.8): verifies every entry's CRC without extracting, on the isolated

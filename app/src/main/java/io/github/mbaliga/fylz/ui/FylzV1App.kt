@@ -45,8 +45,6 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -148,6 +146,8 @@ import io.github.mbaliga.fylz.ui.components.DestinationChooserSheet
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
+import io.github.mbaliga.fylz.ui.components.PasswordField
+import io.github.mbaliga.fylz.ui.components.PasswordPromptDialog
 import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
 import io.github.mbaliga.fylz.ui.components.PreflightSheet
 import io.github.mbaliga.fylz.ui.components.PreviewPane
@@ -220,8 +220,6 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 
@@ -378,6 +376,8 @@ private fun FylzV1Workspace(
     val repository = remember { DocumentRepository(context.applicationContext) }
     val recycleBin = remember { RecycleBinService(context.applicationContext) }
     val archiveService = remember { ArchiveService(context.applicationContext, (context.applicationContext as FylzApplication).decoderClient) }
+    // M3.9: shared with ArchiveToolsOverlay.kt's own EXTRACT purpose.
+    val archivePasswordSession = remember { (context.applicationContext as FylzApplication).archivePasswordSession }
     val fileTools = remember { FileTools(context.applicationContext) }
     val library = remember { LibraryStore(context.applicationContext) }
     val aiVault = remember { ApiKeyVault(context.applicationContext) }
@@ -420,7 +420,10 @@ private fun FylzV1Workspace(
     var pendingDestinationAction by remember { mutableStateOf<PendingDestinationAction?>(null) }
     var pendingArchiveUri by remember { mutableStateOf<Uri?>(null) }
     var extractPasswordDialog by remember { mutableStateOf(false) }
-    var extractPassword by remember { mutableStateOf("") }
+    var extractPassword by remember { mutableStateOf<CharArray?>(null) } // M3.9: a CharArray, wiped after use below.
+    // M3.9: a remembered password skips the dialog; a counter, not a flag, so the effect below
+    // re-fires for a second archive chosen while a first auto-launch is still pending.
+    var legacyExtractAutoLaunch by remember { mutableIntStateOf(0) }
     var operationMessage by remember { mutableStateOf<String?>(null) }
     var createDialog by remember { mutableStateOf<String?>(null) }
     var renameDialog by remember { mutableStateOf(false) }
@@ -510,7 +513,19 @@ private fun FylzV1Workspace(
     // M3.4c (design §2.1-2.2): the whole selective-extract flow; a legacy encrypted ZIP still uses the pre-M3.4 password + destination-picker path below (ArchiveService.extractZip, zip4j).
     val extractFlow = rememberExtractFlow(
         context, scope, operationRunner, currentFolder = { activeTab?.current?.uri }, persistTreePermission = repository::persistTreePermission,
-        onLegacyEncryptedZip = { archive -> pendingArchiveUri = archive.source; extractPassword = ""; extractPasswordDialog = true }, onToast = ::toast, onExtracted = { toast("Extracted"); refresh() },
+        onLegacyEncryptedZip = { archive ->
+            pendingArchiveUri = archive.source
+            val remembered = archivePasswordSession.passwordFor(archive.source)
+            if (remembered != null) {
+                extractPassword = remembered
+                pendingDestinationAction = PendingDestinationAction.EXTRACT
+                legacyExtractAutoLaunch += 1
+            } else {
+                extractPassword = null
+                extractPasswordDialog = true
+            }
+        },
+        onToast = ::toast, onExtracted = { toast("Extracted"); refresh() },
     )
 
     // M3.5 (design §2.1-2.2): the whole compress flow; an AES-protected ZIP still uses the
@@ -618,7 +633,7 @@ private fun FylzV1Workspace(
                     archiveService.extractZip(
                         archiveUri = archiveUri ?: error("Choose an archive."),
                         destinationTreeUri = destination,
-                        password = extractPassword.takeIf { it.isNotEmpty() }?.toCharArray(),
+                        password = extractPassword,
                     )
                 }.await()
             }
@@ -632,9 +647,12 @@ private fun FylzV1Workspace(
             )
             selectedUris = emptySet()
             pendingArchiveUri = null
-            extractPassword = ""
+            extractPassword = null // M3.9: already wiped by ArchiveService.extractZip's own finally.
             refresh()
-        }.onFailure { toast(it.message ?: "Operation failed") }
+        }.onFailure {
+            extractPassword = null
+            toast(it.message ?: "Operation failed")
+        }
     }
 
     // P1.6: the second interactive gate, after Preflight -- checked against the POST-preflight
@@ -706,6 +724,11 @@ private fun FylzV1Workspace(
         if (destination == null || action == null) return@rememberLauncherForActivityResult
         repository.persistTreePermission(destination)
         beginTransfer(action, selectedEntries.map { it.uri }, destination, pendingArchiveUri)
+    }
+
+    // M3.9: a remembered password (found by onLegacyEncryptedZip above) skips straight to this.
+    LaunchedEffect(legacyExtractAutoLaunch) {
+        if (legacyExtractAutoLaunch > 0) destinationPicker.launch(null)
     }
 
     // Destination for PDF page extraction / merge. Kept separate from the compress flow so the
@@ -1580,30 +1603,20 @@ private fun FylzV1Workspace(
         )
     }
 
+    // M3.9: the shared prompt ArchiveToolsOverlay's own EXTRACT purpose also uses.
     if (extractPasswordDialog) {
-        AlertDialog(
-            onDismissRequest = { extractPasswordDialog = false; pendingArchiveUri = null },
-            title = { Text("Archive password") },
-            text = {
-                PasswordField(
-                    value = extractPassword,
-                    onValueChange = { extractPassword = it },
-                    label = "Password",
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        extractPasswordDialog = false
-                        pendingDestinationAction = PendingDestinationAction.EXTRACT
-                        destinationPicker.launch(null)
-                    },
-                    enabled = extractPassword.isNotEmpty(),
-                ) { Text("Continue") }
-            },
-            dismissButton = {
-                TextButton(onClick = { extractPasswordDialog = false; pendingArchiveUri = null }) { Text("Cancel") }
+        PasswordPromptDialog(
+            title = "Archive password",
+            confirmNewPassword = false,
+            offerRemember = true,
+            confirmLabel = "Continue",
+            onDismiss = { extractPasswordDialog = false; pendingArchiveUri = null },
+            onConfirm = { password, remember ->
+                extractPasswordDialog = false
+                if (remember && password != null) pendingArchiveUri?.let { archivePasswordSession.remember(it, password) }
+                extractPassword = password
+                pendingDestinationAction = PendingDestinationAction.EXTRACT
+                destinationPicker.launch(null)
             },
         )
     }
@@ -2173,29 +2186,6 @@ private fun RecycleBinDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
-}
-
-/** A masked secret field with a show/hide toggle (P0.10) -- used for anything that shoulder-surfing
- * shouldn't reveal: an AI provider API key, a WebDAV password, an archive password. */
-@Composable
-private fun PasswordField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
-    var visible by remember { mutableStateOf(false) }
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label) },
-        singleLine = true,
-        modifier = modifier,
-        visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = {
-            IconButton(onClick = { visible = !visible }) {
-                Icon(
-                    if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    contentDescription = if (visible) "Hide $label" else "Show $label",
-                )
-            }
-        },
     )
 }
 

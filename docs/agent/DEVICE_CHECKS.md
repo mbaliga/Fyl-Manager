@@ -876,3 +876,59 @@ already established for a real Extract.
 **What this verifies:** M3.8 (this commit) — the brief's own scope: CRCs verified without ever
 writing a file, a bad entry reported without derailing the rest, cancellation leaving nothing
 behind, and an encrypted archive refused rather than silently mishandled.
+
+## 24. M3.9 — Shared, session-only password prompt across formats
+
+M3.9 touches no Rust and adds nothing new at the `:decoders` boundary — it is Kotlin/Compose state
+management (one shared dialog, one in-memory session store) plus zip4j, the same real AES-256/
+ZipCrypto path M3.4c/M3.5c already exercise. Everything below was verified only in this sandbox
+(Robolectric's `ShadowLog`/`ContentResolver`, never a real device); the one thing that cannot be
+faked here is whether "session-only" genuinely means "gone the instant the process dies" versus
+merely "gone until some Android-side cache or crash-report layer holds onto it longer than
+expected.
+
+**Steps and expected results:**
+
+1. From Archive Tools, pick "Create ZIP", add a couple of files, turn on "Encrypt with AES-256",
+   type a password, and create the archive. Expected: the same create flow as before this
+   milestone (no remember checkbox is offered here — there is no archive identity yet before a
+   destination is chosen, per `REVIEW_QUEUE.md`'s M3.9 entry).
+2. Browse to a real, password-protected ZIP (not one this app just created) and choose "Inspect and
+   extract ZIP" / Extract. Expected: the password prompt now shows a "Remember for this session"
+   checkbox, unticked by default. Leave it unticked, enter the correct password, extract. Then
+   extract the *same* archive again. Expected: prompted again — the default (opt-out) behaviour is
+   unchanged from before this milestone.
+3. Repeat step 2, this time ticking "Remember for this session" before extracting. Expected: the
+   extraction succeeds as before; a *second* Extract of the *same* archive skips the password dialog
+   entirely and goes straight to the destination picker.
+4. With that same password remembered (step 3), browse to a *different* encrypted archive and
+   Extract it. Expected: prompted for a password — the remembered one from step 3 is never offered
+   or auto-tried against a different archive.
+5. With a password remembered (step 3), force-stop and relaunch Fylz, then Extract the same archive
+   again. Expected: prompted again — the remembered password did not survive the process, per the
+   brief's own "remember for the session only," device-verifying what a JVM unit test can only
+   assert about the in-memory map's own lifetime, not about the real process.
+6. Trigger the *other* password call site: browse to a folder (not an archive), Extract onto a
+   folder that already contains an encrypted ZIP inside it discovered through the plain `fylz
+   .extract` flow on that whole-archive selection (the `ExtractPlanner.LegacyEncryptedZip` path,
+   `FylzV1App.kt`'s own dialog, not `ArchiveToolsOverlay`'s). Expected: the same shared dialog
+   appears (same title, same "Remember for this session" checkbox) as step 2's — confirming the
+   consolidation actually reached both call sites, not only the one under Archive Tools. Tick
+   remember, extract, then repeat step 3's own "does it skip the second time" check against this
+   call site specifically.
+7. With `adb logcat` running and its buffer cleared, repeat steps 2–3 typing a real, memorable
+   password, then `adb logcat -d | grep -i password` and separately search the captured log text
+   for the literal password string itself. Expected: nothing — this is the one part of
+   `ArchivePasswordSessionTest`'s own "nothing about a password ever reaches `Log`" case that a JVM
+   unit test cannot cover (Android's own Binder/Compose/crash-reporting layers, not just this app's
+   own `Log.*` calls, per `REVIEW_QUEUE.md`'s M3.9 entry, item 9).
+8. Low-memory test: with a password remembered (step 3), open several other memory-heavy apps to
+   pressure Android into reclaiming Fylz's process in the background, then return to Fylz and
+   Extract the same archive again. Expected: prompted again if the process was actually killed and
+   restarted (indistinguishable from step 5 in that case), or skipped if Android merely paused the
+   Activity without killing the process — either is correct; a stale password surviving an actual
+   process restart would not be.
+
+**What this verifies:** M3.9 (this commit) — the brief's own scope: one shared dialog reaching both
+real call sites, the remember tick genuinely opt-in and per-archive, and the remembered password
+never outliving the process it was typed into.

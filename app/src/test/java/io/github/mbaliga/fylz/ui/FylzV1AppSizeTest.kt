@@ -19,8 +19,14 @@ class FylzV1AppSizeTest {
     // the dead `fileIcon` went, paying for archive-location lines in openEntry/refresh/search);
     // lowered again to 2270 in M3.4c (the Extract sheet, the planner's own dialogue and the
     // in-app destination chooser all moved to ui/actions/ExtractFlow.kt -- six new ActionContext
-    // methods and the dead `isZipFamilyArchive`/`ZIP_FAMILY_EXTENSIONS` paid for it).
-    private val fylzV1AppMaxLines = 2270
+    // methods and the dead `isZipFamilyArchive`/`ZIP_FAMILY_EXTENSIONS` paid for it). Lowered again
+    // to 2260 in M3.9: the legacy encrypted-ZIP password dialog now shares
+    // `ui.components.PasswordPromptDialog` (a session-only "remember" tick and a CharArray, not a
+    // String, from entry to wipe) instead of its own ad hoc `AlertDialog`, and the private
+    // `PasswordField` helper moved to `ui.components.PasswordField`, both paying for the small
+    // amount of new wiring this file itself still needs (the remembered-password lookup, and the
+    // one-shot auto-launch past the dialog when a password is already known).
+    private val fylzV1AppMaxLines = 2260
 
     // FylzAppShell.kt must not grow past its MC.0e size (112); lowered to 101 in M3.4b, when the
     // retry dispatch moved to operations/RetryDispatcher.kt.
