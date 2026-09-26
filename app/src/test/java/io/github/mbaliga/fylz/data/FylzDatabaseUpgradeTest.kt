@@ -23,9 +23,10 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * M3.4's schema bump (v2 -> v3, additive): a real `onUpgrade` over a database file that a v2
- * helper created and filled -- the three `extract_*` tables appear, the operation rows survive
- * untouched, and a fresh install gets the same tables from `onCreate`.
+ * M3.4's schema bump (v2 -> v3, additive) and M3.5's (v3 -> v4, additive): a real `onUpgrade` over
+ * a database file that an older helper created and filled -- the three `extract_*` tables (v3) and
+ * the three `create_*` tables (v4) appear, the operation rows survive untouched, and a fresh
+ * install gets every table straight from `onCreate`.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -96,12 +97,15 @@ class FylzDatabaseUpgradeTest {
             assertEquals(setOf("operations", "operation_items"), tables(db) - setOf("android_metadata", "sqlite_sequence"))
         }
 
-        FylzDatabase(context).use { v3 ->
-            val db = v3.writableDatabase
+        FylzDatabase(context).use { upgraded ->
+            val db = upgraded.writableDatabase
             assertEquals(FylzDatabase.DATABASE_VERSION, db.version)
-            assertEquals(3, db.version)
+            assertEquals(4, db.version)
             val names = tables(db)
-            listOf(OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS).forEach { table ->
+            listOf(
+                OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS,
+                OperationsDao.TABLE_CREATE_PLANS, OperationsDao.TABLE_CREATE_PLAN_ITEMS, OperationsDao.TABLE_CREATE_MANIFEST,
+            ).forEach { table ->
                 assertEquals("$table exists after the upgrade", true, table in names)
             }
             assertEquals(listOf(existing), OperationsDao.list(db))
@@ -114,13 +118,99 @@ class FylzDatabaseUpgradeTest {
         }
     }
 
+    /** The v3 shape M3.4 landed: v2's two tables plus the three `extract_*` ones, nothing from M3.5. */
+    private class V3Helper(private val ctx: Context) : SQLiteOpenHelper(ctx, FylzDatabase.DATABASE_NAME, null, 3) {
+        override fun onCreate(db: SQLiteDatabase) {
+            V2Helper(ctx).onCreate(db)
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_EXTRACT_PLANS} (
+                    operation_id TEXT PRIMARY KEY NOT NULL,
+                    archive_uri TEXT NOT NULL,
+                    catalog_key TEXT NOT NULL,
+                    layout TEXT NOT NULL,
+                    folder_name TEXT,
+                    ordinals BLOB NOT NULL,
+                    limits_json TEXT NOT NULL,
+                    consent INTEGER NOT NULL,
+                    sanitize INTEGER NOT NULL,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_EXTRACT_PLAN_ITEMS} (
+                    operation_id TEXT NOT NULL,
+                    item_index INTEGER NOT NULL,
+                    root_path TEXT NOT NULL,
+                    requested_name TEXT NOT NULL,
+                    conflict_policy TEXT NOT NULL,
+                    name_override TEXT,
+                    PRIMARY KEY (operation_id, item_index)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS} (
+                    operation_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    PRIMARY KEY (operation_id, ordinal)
+                )
+                """.trimIndent(),
+            )
+        }
+
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    }
+
     @Test
-    fun `a fresh database is created at v3 with the extract tables`() {
+    fun `a v3 database upgrades to v4 with the create tables added and its operations and extract plan intact`() {
+        val existing = FileOperation(id = "op-v3", type = FileOperationType.MOVE, items = listOf(OperationItem(id = "item-v3", source = Uri.parse("content://x/src"), destination = Uri.parse("content://x/dst"), displayName = "b.txt", state = OperationState.FAILED)), state = OperationState.FAILED)
+        val plan = ExtractPlan("op-v3", Uri.parse("content://io.github.mbaliga.fylz.archives/document/root"), "key", ExtractLayout.HERE, null, OrdinalBitmap.of(0, 1), ArchiveLimits.forExtraction(null, false), consent = false, sanitize = false, items = listOf(ExtractPlanItem(0, "a", "a", ConflictPolicy.SKIP, null)))
+        V3Helper(context).use { v3 ->
+            val db = v3.writableDatabase
+            assertEquals(3, db.version)
+            OperationsDao.put(db, existing)
+            OperationsDao.putWithExtractPlan(db, existing, plan)
+            assertEquals(
+                setOf("operations", "operation_items", OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS),
+                tables(db) - setOf("android_metadata", "sqlite_sequence"),
+            )
+        }
+
+        FylzDatabase(context).use { upgraded ->
+            val db = upgraded.writableDatabase
+            assertEquals(4, db.version)
+            val names = tables(db)
+            listOf(OperationsDao.TABLE_CREATE_PLANS, OperationsDao.TABLE_CREATE_PLAN_ITEMS, OperationsDao.TABLE_CREATE_MANIFEST).forEach { table ->
+                assertEquals("$table exists after the upgrade", true, table in names)
+            }
+            assertEquals(plan, OperationsDao.extractPlan(db, "op-v3"))
+            assertNotNull(OperationsDao.find(db, "op-v3"))
+            // The new tables work: a create plan round trips against the upgraded file.
+            val operation = FileOperation(id = "op-y", type = FileOperationType.ARCHIVE, items = listOf(OperationItem(source = Uri.parse("content://x/src"), destination = Uri.parse("content://x/dst"), displayName = "out")), destination = Uri.parse("content://x/dst"))
+            val createPlan = io.github.mbaliga.fylz.operations.CompressPlan("op-y", io.github.mbaliga.fylz.operations.CompressFormat.ZIP, 6, io.github.mbaliga.fylz.operations.SplitSize.Off, relativeToSelection = true, archiveName = "out.zip", destinationUri = Uri.parse("content://x/dst"), totalEstimate = 100L, entryCount = 1, conflictPolicy = ConflictPolicy.SKIP)
+            val manifest = listOf(io.github.mbaliga.fylz.operations.CompressManifestEntry(0, false, "out.zip", Uri.parse("content://x/src"), 0L, needsSpooling = false))
+            OperationsDao.putWithCreatePlan(db, operation, createPlan, manifest)
+            assertEquals(createPlan, OperationsDao.createPlan(db, "op-y"))
+            assertEquals(manifest, OperationsDao.createManifest(db, "op-y"))
+        }
+    }
+
+    @Test
+    fun `a fresh database is created at v4 with the extract and create tables`() {
         FylzDatabase(context).use { fresh ->
             val db = fresh.writableDatabase
-            assertEquals(3, db.version)
+            assertEquals(4, db.version)
             val names = tables(db)
-            listOf(OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS, "operations", "operation_items").forEach { table ->
+            listOf(
+                OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS,
+                OperationsDao.TABLE_CREATE_PLANS, OperationsDao.TABLE_CREATE_PLAN_ITEMS, OperationsDao.TABLE_CREATE_MANIFEST,
+                "operations", "operation_items",
+            ).forEach { table ->
                 assertEquals("$table exists", true, table in names)
             }
         }

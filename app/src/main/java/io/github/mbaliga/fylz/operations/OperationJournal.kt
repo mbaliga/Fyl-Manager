@@ -141,6 +141,65 @@ class OperationJournal(context: Context) {
     @Synchronized
     fun entryDigests(operationId: String): Map<Int, String> = OperationsDao.entryDigests(database.readableDatabase, operationId)
 
+    // ------------------------------------------------------------------ M3.5: create plans
+
+    @Synchronized
+    fun putWithCreatePlan(operation: FileOperation, plan: CompressPlan, manifest: List<CompressManifestEntry>) {
+        OperationsDao.putWithCreatePlan(database.writableDatabase, operation, plan, manifest)
+        refreshOperations()
+    }
+
+    @Synchronized
+    fun createPlan(operationId: String): CompressPlan? = OperationsDao.createPlan(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun createManifest(operationId: String): List<CompressManifestEntry> = OperationsDao.createManifest(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun spooledPath(operationId: String, ordinal: Int): String? = OperationsDao.spooledPath(database.readableDatabase, operationId, ordinal)
+
+    @Synchronized
+    fun setSpooledPath(operationId: String, ordinal: Int, path: String?) =
+        OperationsDao.setSpooledPath(database.writableDatabase, operationId, ordinal, path)
+
+    @Synchronized
+    fun hasCreatePlan(operationId: String): Boolean = OperationsDao.hasCreatePlan(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun claimCreate(operationId: String, from: Set<OperationState>): Boolean {
+        val claimed = OperationsDao.claimCreate(database.writableDatabase, operationId, from, System.currentTimeMillis())
+        if (claimed) refreshOperations()
+        return claimed
+    }
+
+    @Synchronized
+    fun incrementCreateRestartCount(operationId: String) = OperationsDao.incrementCreateRestartCount(database.writableDatabase, operationId)
+
+    @Synchronized
+    fun createRestartCount(operationId: String): Int = OperationsDao.createRestartCount(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun setCreateCancelRequested(operationId: String) = OperationsDao.setCreateCancelRequested(database.writableDatabase, operationId)
+
+    @Synchronized
+    fun isCreateCancelRequested(operationId: String): Boolean = OperationsDao.isCreateCancelRequested(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun putCreatePlanItem(operationId: String, item: CompressPlanItem, refresh: Boolean = true) {
+        OperationsDao.putCreatePlanItem(database.writableDatabase, operationId, item)
+        if (refresh) refreshOperations()
+    }
+
+    @Synchronized
+    fun createPlanItems(operationId: String): List<CompressPlanItem> = OperationsDao.createPlanItems(database.readableDatabase, operationId)
+
+    @Synchronized
+    fun retryCreate(operationId: String): Boolean {
+        val retried = OperationsDao.retryCreate(database.writableDatabase, operationId, System.currentTimeMillis())
+        if (retried) refreshOperations()
+        return retried
+    }
+
     /** Republishes [operations] from the database (for a caller that wrote with `refresh = false`). */
     @Synchronized
     fun refresh() = refreshOperations()

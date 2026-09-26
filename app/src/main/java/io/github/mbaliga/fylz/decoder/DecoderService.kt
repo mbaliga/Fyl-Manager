@@ -24,6 +24,9 @@ typealias ArchiveExtractEngine = (fd: Int, ordinal: Int, expectedPath: String, l
 /** The engine call behind [DecoderService.extractRanges] (M3.4): the archive fd, the ordinal ranges, the limits, the sink fd. */
 typealias ArchiveExtractRangesEngine = (fd: Int, ranges: List<ArchiveOrdinalRangeRecord>, limits: ArchiveLimitsRecord, sinkFd: Int) -> ArchiveExtractRecord
 
+/** The engine call behind [DecoderService.writeArchive] (M3.5a): the input fd, the output fd, the options. */
+typealias ArchiveWriteEngine = (inFd: Int, outFd: Int, options: io.github.mbaliga.fylz.core.WriteOptionsRecord) -> io.github.mbaliga.fylz.core.ArchiveWriteReportRecord
+
 /**
  * The isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4): parsing untrusted files
  * with native code happens here, in a separate, `android:isolatedProcess="true"` process, never
@@ -51,7 +54,10 @@ typealias ArchiveExtractRangesEngine = (fd: Int, ranges: List<ArchiveOrdinalRang
  * answers with a record, never an exception, so the counts survive a fatal. The same service class
  * serves the browsing process (`:decoders`) and the isolated extraction instance
  * (`:decoders:extract`, `bindIsolatedService`); which one a call lands on is the client's choice.
- * Every engine is a constructor-injected lambda defaulting to the real [FylzCore] call, so the *mapping* -- every
+ * `writeArchive` (M3.5a, `docs/agent/DESIGN-M35-CREATE.md` section 2.5) is the create pass: `FZW1`
+ * frames in from one client-owned pipe, the raw archive stream out through a second -- served by
+ * the same service class, on a third isolated instance (`:decoders:write`) `DecoderClient.writer()`
+ * binds. Every engine is a constructor-injected lambda defaulting to the real [FylzCore] call, so the *mapping* -- every
  * `ArchiveEngineException` subclass to its outcome, any other `Throwable` to `OUTCOME_INTERNAL`,
  * the record-to-Parcelable copy -- is unit-tested on the JVM without a native library
  * (`DecoderServiceMappingTest`). Android instantiates the service through the no-argument
@@ -62,6 +68,7 @@ class DecoderService(
     private val listEngine: ArchiveListEngine = FylzCore::listArchive,
     private val extractEngine: ArchiveExtractEngine = FylzCore::extractEntryAt,
     private val extractRangesEngine: ArchiveExtractRangesEngine = FylzCore::extractRanges,
+    private val writeEngine: ArchiveWriteEngine = FylzCore::writeFrames,
 ) : Service() {
 
     private val binder = object : IDecoderService.Stub() {
@@ -93,6 +100,12 @@ class DecoderService(
             ordinalsBitmap: ByteArray,
             sink: ParcelFileDescriptor,
         ): ArchiveExtractResult = this@DecoderService.extractRanges(archive, limits, ordinalsBitmap, sink)
+
+        override fun writeArchive(
+            input: ParcelFileDescriptor,
+            options: ArchiveWriteOptions,
+            output: ParcelFileDescriptor,
+        ): ArchiveWriteResult = this@DecoderService.writeArchive(input, options, output)
     }
 
     /**
@@ -159,6 +172,27 @@ class DecoderService(
                 extractRangesEngine(open.fd, ranges, limits.toRecord(), out.fd).toResult()
             } catch (failure: Throwable) {
                 failure.toFailedExtraction()
+            }
+        }
+    }
+
+    /**
+     * As [extractRanges]: both descriptors are closed here when the engine returns (M3.5a,
+     * design section 2.5). Runs on the same Binder thread as every other call here -- the
+     * *isolation* of create from browsing/extraction is [DecoderClient.writer]'s own separate
+     * bound instance and dedicated executor, not anything this method does; this class simply
+     * serves whichever process it was started as.
+     */
+    internal fun writeArchive(
+        input: ParcelFileDescriptor,
+        options: ArchiveWriteOptions,
+        output: ParcelFileDescriptor,
+    ): ArchiveWriteResult = input.use { openInput ->
+        output.use { openOutput ->
+            try {
+                writeEngine(openInput.fd, openOutput.fd, options.toRecord()).toResult()
+            } catch (failure: Throwable) {
+                failure.toFailedWrite()
             }
         }
     }

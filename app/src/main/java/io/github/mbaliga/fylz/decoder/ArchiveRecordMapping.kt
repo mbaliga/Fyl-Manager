@@ -7,6 +7,9 @@ import io.github.mbaliga.fylz.core.ArchiveExtractOutcomeRecord
 import io.github.mbaliga.fylz.core.ArchiveExtractRecord
 import io.github.mbaliga.fylz.core.ArchiveInspectionRecord
 import io.github.mbaliga.fylz.core.ArchiveLimitsRecord
+import io.github.mbaliga.fylz.core.ArchiveWriteReportRecord
+import io.github.mbaliga.fylz.core.WriteFormatRecord
+import io.github.mbaliga.fylz.core.WriteOptionsRecord
 
 /**
  * The two-way copy between the uniffi records `fylz-ffi-android` generates into
@@ -129,6 +132,50 @@ private fun Throwable.toOutcome(): Pair<Int, String?> = when (this) {
         is ArchiveEngineException.Cancelled -> ArchiveExtractResult.OUTCOME_CANCELLED to "cancelled"
     }
     else -> ArchiveInspection.OUTCOME_INTERNAL to javaClass.simpleName
+}
+
+// ---------------------------------------------------------------------------------------------
+// Create (M3.5a).
+// ---------------------------------------------------------------------------------------------
+
+internal fun ArchiveWriteOptions.toRecord(): WriteOptionsRecord = WriteOptionsRecord(
+    format = when (format) {
+        ArchiveWriteFormat.ZIP -> WriteFormatRecord.ZIP
+        ArchiveWriteFormat.TAR_GZ -> WriteFormatRecord.TAR_GZ
+        ArchiveWriteFormat.TAR_XZ -> WriteFormatRecord.TAR_XZ
+        ArchiveWriteFormat.TAR_ZSTD -> WriteFormatRecord.TAR_ZSTD
+        ArchiveWriteFormat.TAR_BZIP2 -> WriteFormatRecord.TAR_BZIP2
+        ArchiveWriteFormat.TAR_LZ4 -> WriteFormatRecord.TAR_LZ4
+    },
+    level = level.toUnsigned(),
+)
+
+internal fun ArchiveWriteReportRecord.toResult(): ArchiveWriteResult =
+    ArchiveWriteResult.ok(entries.toClampedInt(), bytesIn.toClampedLong(), bytesOut.toClampedLong())
+
+/**
+ * Engine exception -> (outcome, message) for `writeArchive` (design section 2.5): `Failed` is
+ * this pair's own [ArchiveWriteResult.OUTCOME_PROTOCOL_ERROR] rather than folding into
+ * `OUTCOME_INTERNAL` the way the extraction/inspection mapping does -- a malformed frame from the
+ * app's own feeder is a distinct, loggable bug class `ArchiveCreator` wants to tell apart from a
+ * genuine internal error. `LimitExceeded` and `NotFound` are other entry points' errors, unreachable
+ * from `archive_write_frames`; the `when` stays exhaustive over the sealed class regardless.
+ */
+internal fun Throwable.toFailedWrite(): ArchiveWriteResult {
+    val (outcome, message) = when (this) {
+        is ArchiveEngineException -> when (this) {
+            is ArchiveEngineException.NotSeekable -> ArchiveWriteResult.OUTCOME_NOT_SEEKABLE to detail
+            is ArchiveEngineException.Unsupported -> ArchiveWriteResult.OUTCOME_UNSUPPORTED to detail
+            is ArchiveEngineException.Corrupt -> ArchiveWriteResult.OUTCOME_CORRUPT to detail
+            is ArchiveEngineException.Failed -> ArchiveWriteResult.OUTCOME_PROTOCOL_ERROR to detail
+            is ArchiveEngineException.Cancelled -> ArchiveWriteResult.OUTCOME_CANCELLED to "cancelled"
+            is ArchiveEngineException.LimitExceeded -> ArchiveWriteResult.OUTCOME_INTERNAL to "limit exceeded ($rule) at entry $entry"
+            is ArchiveEngineException.Internal -> ArchiveWriteResult.OUTCOME_INTERNAL to detail
+            is ArchiveEngineException.NotFound -> ArchiveWriteResult.OUTCOME_INTERNAL to "no entry \"$path\" at header $ordinal"
+        }
+        else -> ArchiveWriteResult.OUTCOME_INTERNAL to javaClass.simpleName
+    }
+    return ArchiveWriteResult.failed(outcome, message)
 }
 
 /** A negative limit is meaningless; the engine gets zero, which refuses everything, rather than

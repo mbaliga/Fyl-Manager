@@ -5,6 +5,10 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
+import io.github.mbaliga.fylz.operations.CompressFormat
+import io.github.mbaliga.fylz.operations.CompressManifestEntry
+import io.github.mbaliga.fylz.operations.CompressPlan
+import io.github.mbaliga.fylz.operations.CompressPlanItem
 import io.github.mbaliga.fylz.operations.ConflictPolicy
 import io.github.mbaliga.fylz.operations.ExtractLayout
 import io.github.mbaliga.fylz.operations.ExtractPlan
@@ -14,6 +18,7 @@ import io.github.mbaliga.fylz.operations.FileOperationType
 import io.github.mbaliga.fylz.operations.OperationItem
 import io.github.mbaliga.fylz.operations.OperationState
 import io.github.mbaliga.fylz.operations.OrdinalBitmap
+import io.github.mbaliga.fylz.operations.SplitSize
 
 /**
  * Hand-written DAO (A4: plain SQLite, no Room) backing [FylzDatabase]'s `operations` and
@@ -29,6 +34,9 @@ internal object OperationsDao {
     const val TABLE_EXTRACT_PLANS = "extract_plans"
     const val TABLE_EXTRACT_PLAN_ITEMS = "extract_plan_items"
     const val TABLE_EXTRACT_ENTRY_DIGESTS = "extract_entry_digests"
+    const val TABLE_CREATE_PLANS = "create_plans"
+    const val TABLE_CREATE_PLAN_ITEMS = "create_plan_items"
+    const val TABLE_CREATE_MANIFEST = "create_manifest"
 
     private val FINISHED_STATES = listOf(
         OperationState.SUCCEEDED,
@@ -76,12 +84,15 @@ internal object OperationsDao {
         }
     }
 
-    /** Every row of one operation: its items, its extraction plan and digests, itself. */
+    /** Every row of one operation: its items, its extraction/create plan and digests/manifest, itself. */
     private fun deleteOperationRows(db: SQLiteDatabase, id: String) {
         db.delete("operation_items", "operation_id = ?", arrayOf(id))
         db.delete(TABLE_EXTRACT_PLAN_ITEMS, "operation_id = ?", arrayOf(id))
         db.delete(TABLE_EXTRACT_ENTRY_DIGESTS, "operation_id = ?", arrayOf(id))
         db.delete(TABLE_EXTRACT_PLANS, "operation_id = ?", arrayOf(id))
+        db.delete(TABLE_CREATE_PLAN_ITEMS, "operation_id = ?", arrayOf(id))
+        db.delete(TABLE_CREATE_MANIFEST, "operation_id = ?", arrayOf(id))
+        db.delete(TABLE_CREATE_PLANS, "operation_id = ?", arrayOf(id))
         db.delete("operations", "id = ?", arrayOf(id))
     }
 
@@ -339,6 +350,269 @@ internal object OperationsDao {
         ).use { cursor ->
             buildMap { while (cursor.moveToNext()) put(cursor.getInt(0), cursor.getString(1)) }
         }
+
+    // ------------------------------------------------------------------ M3.5: create plans
+
+    /** The operation, its plan and its manifest, atomically (design section 2.2 step 7's atomic write). */
+    fun putWithCreatePlan(db: SQLiteDatabase, operation: FileOperation, plan: CompressPlan, manifest: List<CompressManifestEntry>) {
+        require(plan.operationId == operation.id) { "plan ${plan.operationId} is not operation ${operation.id}'s" }
+        db.beginTransaction()
+        try {
+            put(db, operation)
+            db.delete(TABLE_CREATE_MANIFEST, "operation_id = ?", arrayOf(operation.id))
+            db.delete(TABLE_CREATE_PLAN_ITEMS, "operation_id = ?", arrayOf(operation.id))
+            db.delete(TABLE_CREATE_PLANS, "operation_id = ?", arrayOf(operation.id))
+            db.insertOrThrow(TABLE_CREATE_PLANS, null, plan.toContentValues())
+            db.insertOrThrow(
+                TABLE_CREATE_PLAN_ITEMS,
+                null,
+                ContentValues().apply {
+                    put("operation_id", plan.operationId)
+                    put("item_index", 0)
+                    put("requested_name", plan.archiveName)
+                    put("state", OperationState.QUEUED.name)
+                },
+            )
+            manifest.forEach { entry ->
+                db.insertOrThrow(
+                    TABLE_CREATE_MANIFEST,
+                    null,
+                    ContentValues().apply {
+                        put("operation_id", plan.operationId)
+                        put("ordinal", entry.ordinal)
+                        put("is_directory", if (entry.isDirectory) 1 else 0)
+                        put("path", entry.archivePath)
+                        put("source_uri", entry.sourceUri.toString())
+                        put("mtime_millis", entry.mtimeEpochMillis)
+                        put("needs_spooling", if (entry.needsSpooling) 1 else 0)
+                    },
+                )
+            }
+            enforceRecordLimit(db)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private fun CompressPlan.toContentValues() = ContentValues().apply {
+        put("operation_id", operationId)
+        put("format", format.name)
+        put("level", level)
+        put("split_bytes", (split as? SplitSize.At)?.bytes)
+        put("relative", if (relativeToSelection) 1 else 0)
+        put("archive_name", archiveName)
+        put("destination_uri", destinationUri?.toString())
+        put("total_estimate", totalEstimate)
+        put("entry_count", entryCount)
+        put("conflict_policy", conflictPolicy.name)
+        put("name_override", nameOverride)
+        put("cancel_requested", if (cancelRequested) 1 else 0)
+        put("restart_count", restartCount)
+    }
+
+    fun createPlan(db: SQLiteDatabase, operationId: String): CompressPlan? =
+        db.rawQuery("SELECT * FROM $TABLE_CREATE_PLANS WHERE operation_id = ?", arrayOf(operationId)).use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            val splitBytesIndex = cursor.getColumnIndexOrThrow("split_bytes")
+            val estimateIndex = cursor.getColumnIndexOrThrow("total_estimate")
+            CompressPlan(
+                operationId = operationId,
+                format = CompressFormat.valueOf(cursor.getString(cursor.getColumnIndexOrThrow("format"))),
+                level = cursor.getInt(cursor.getColumnIndexOrThrow("level")),
+                split = if (cursor.isNull(splitBytesIndex)) SplitSize.Off else SplitSize.At(cursor.getLong(splitBytesIndex)),
+                relativeToSelection = cursor.getInt(cursor.getColumnIndexOrThrow("relative")) != 0,
+                archiveName = cursor.getString(cursor.getColumnIndexOrThrow("archive_name")),
+                destinationUri = cursor.getString(cursor.getColumnIndexOrThrow("destination_uri"))?.let(Uri::parse),
+                totalEstimate = if (cursor.isNull(estimateIndex)) null else cursor.getLong(estimateIndex),
+                entryCount = cursor.getInt(cursor.getColumnIndexOrThrow("entry_count")),
+                conflictPolicy = ConflictPolicy.valueOf(cursor.getString(cursor.getColumnIndexOrThrow("conflict_policy"))),
+                nameOverride = cursor.getString(cursor.getColumnIndexOrThrow("name_override")),
+                cancelRequested = cursor.getInt(cursor.getColumnIndexOrThrow("cancel_requested")) != 0,
+                restartCount = cursor.getInt(cursor.getColumnIndexOrThrow("restart_count")),
+            )
+        }
+
+    fun createManifest(db: SQLiteDatabase, operationId: String): List<CompressManifestEntry> =
+        db.rawQuery(
+            "SELECT * FROM $TABLE_CREATE_MANIFEST WHERE operation_id = ? ORDER BY ordinal ASC",
+            arrayOf(operationId),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        CompressManifestEntry(
+                            ordinal = cursor.getInt(cursor.getColumnIndexOrThrow("ordinal")),
+                            isDirectory = cursor.getInt(cursor.getColumnIndexOrThrow("is_directory")) != 0,
+                            archivePath = cursor.getString(cursor.getColumnIndexOrThrow("path")),
+                            sourceUri = Uri.parse(cursor.getString(cursor.getColumnIndexOrThrow("source_uri"))),
+                            mtimeEpochMillis = cursor.getLong(cursor.getColumnIndexOrThrow("mtime_millis")),
+                            needsSpooling = cursor.getInt(cursor.getColumnIndexOrThrow("needs_spooling")) != 0,
+                        ),
+                    )
+                }
+            }
+        }
+
+    /** The spooled temp file path recorded for manifest row [ordinal], if any -- checked at claim
+     * (design section 2.3 step 1) and re-spooled if the file is missing (`cacheDir` is evictable). */
+    fun spooledPath(db: SQLiteDatabase, operationId: String, ordinal: Int): String? =
+        db.rawQuery(
+            "SELECT spooled_path FROM $TABLE_CREATE_MANIFEST WHERE operation_id = ? AND ordinal = ?",
+            arrayOf(operationId, ordinal.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+
+    fun setSpooledPath(db: SQLiteDatabase, operationId: String, ordinal: Int, path: String?) {
+        db.update(
+            TABLE_CREATE_MANIFEST,
+            ContentValues().apply { put("spooled_path", path) },
+            "operation_id = ? AND ordinal = ?",
+            arrayOf(operationId, ordinal.toString()),
+        )
+    }
+
+    fun hasCreatePlan(db: SQLiteDatabase, operationId: String): Boolean =
+        db.rawQuery("SELECT 1 FROM $TABLE_CREATE_PLANS WHERE operation_id = ?", arrayOf(operationId)).use { it.moveToFirst() }
+
+    /** The worker's claim (design section 2.3 step 1), mirroring [claimExtract]. */
+    fun claimCreate(db: SQLiteDatabase, operationId: String, from: Set<OperationState>, nowMillis: Long): Boolean {
+        db.beginTransaction()
+        try {
+            val placeholders = from.joinToString(",") { "?" }
+            val args = arrayOf(OperationState.RUNNING.name, nowMillis.toString(), operationId) + from.map { it.name }
+            val updated = db.compileStatement(
+                "UPDATE operations SET state = ?, updated_at_millis = ? WHERE id = ? AND state IN ($placeholders)",
+            ).use { statement ->
+                args.forEachIndexed { index, value -> statement.bindString(index + 1, value) }
+                statement.executeUpdateDelete()
+            }
+            if (updated != 1) return false
+            val itemArgs = arrayOf(OperationState.RUNNING.name, operationId) + from.map { it.name } + OperationState.QUEUED.name
+            db.compileStatement(
+                "UPDATE operation_items SET state = ?, error_code = NULL WHERE operation_id = ? AND state IN ($placeholders, ?)",
+            ).use { statement ->
+                itemArgs.forEachIndexed { index, value -> statement.bindString(index + 1, value) }
+                statement.executeUpdateDelete()
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun incrementCreateRestartCount(db: SQLiteDatabase, operationId: String) {
+        db.execSQL("UPDATE $TABLE_CREATE_PLANS SET restart_count = restart_count + 1 WHERE operation_id = ?", arrayOf(operationId))
+    }
+
+    fun createRestartCount(db: SQLiteDatabase, operationId: String): Int =
+        db.rawQuery("SELECT restart_count FROM $TABLE_CREATE_PLANS WHERE operation_id = ?", arrayOf(operationId)).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+
+    fun setCreateCancelRequested(db: SQLiteDatabase, operationId: String, requested: Boolean = true) {
+        db.update(
+            TABLE_CREATE_PLANS,
+            ContentValues().apply { put("cancel_requested", if (requested) 1 else 0) },
+            "operation_id = ?",
+            arrayOf(operationId),
+        )
+    }
+
+    fun isCreateCancelRequested(db: SQLiteDatabase, operationId: String): Boolean =
+        db.rawQuery("SELECT cancel_requested FROM $TABLE_CREATE_PLANS WHERE operation_id = ?", arrayOf(operationId)).use { cursor ->
+            cursor.moveToFirst() && cursor.getInt(0) != 0
+        }
+
+    /** One output document's row, upserted (design section 2.3 step 2: item 0 exists from planning,
+     * a split's further parts are inserted here as the drain opens each one). */
+    fun putCreatePlanItem(db: SQLiteDatabase, operationId: String, item: CompressPlanItem) {
+        db.insertWithOnConflict(
+            TABLE_CREATE_PLAN_ITEMS,
+            null,
+            ContentValues().apply {
+                put("operation_id", operationId)
+                put("item_index", item.itemIndex)
+                put("requested_name", item.requestedName)
+                put("staging_uri", item.stagingUri?.toString())
+                put("sha256", item.sha256)
+                put("bytes_written", item.bytesWritten)
+                put("state", item.state.name)
+            },
+            SQLiteDatabase.CONFLICT_REPLACE,
+        )
+    }
+
+    fun createPlanItems(db: SQLiteDatabase, operationId: String): List<CompressPlanItem> =
+        db.rawQuery(
+            "SELECT * FROM $TABLE_CREATE_PLAN_ITEMS WHERE operation_id = ? ORDER BY item_index ASC",
+            arrayOf(operationId),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        CompressPlanItem(
+                            itemIndex = cursor.getInt(cursor.getColumnIndexOrThrow("item_index")),
+                            requestedName = cursor.getString(cursor.getColumnIndexOrThrow("requested_name")),
+                            stagingUri = cursor.getString(cursor.getColumnIndexOrThrow("staging_uri"))?.let(Uri::parse),
+                            sha256 = cursor.getString(cursor.getColumnIndexOrThrow("sha256")),
+                            bytesWritten = cursor.getLong(cursor.getColumnIndexOrThrow("bytes_written")),
+                            state = OperationState.valueOf(cursor.getString(cursor.getColumnIndexOrThrow("state"))),
+                        ),
+                    )
+                }
+            }
+        }
+
+    /** The retry of a planned create (design section 2.3 step 9's `ReclaimCreate`, mirroring
+     * [retryExtract]): `FAILED | PARTIAL | CANCELLED | NEEDS_ATTENTION | INTERRUPTED -> QUEUED`,
+     * every item back to `QUEUED` with its staging cleared, the restart count and cancel flag
+     * both reset -- a deliberate user retry is a fresh attempt, not one more system-stop restart.
+     */
+    fun retryCreate(db: SQLiteDatabase, operationId: String, nowMillis: Long): Boolean {
+        db.beginTransaction()
+        try {
+            if (!hasCreatePlan(db, operationId)) return false
+            val retryable = listOf(
+                OperationState.FAILED, OperationState.PARTIAL, OperationState.CANCELLED,
+                OperationState.NEEDS_ATTENTION, OperationState.INTERRUPTED,
+            )
+            val placeholders = retryable.joinToString(",") { "?" }
+            val updated = db.compileStatement(
+                "UPDATE operations SET state = ?, updated_at_millis = ? WHERE id = ? AND state IN ($placeholders)",
+            ).use { statement ->
+                val args = arrayOf(OperationState.QUEUED.name, nowMillis.toString(), operationId) + retryable.map { it.name }
+                args.forEachIndexed { index, value -> statement.bindString(index + 1, value) }
+                statement.executeUpdateDelete()
+            }
+            if (updated != 1) return false
+            db.compileStatement(
+                "UPDATE operation_items SET state = ?, error_code = NULL, staging_uri = NULL, completed_bytes = 0 " +
+                    "WHERE operation_id = ? AND state != ?",
+            ).use { statement ->
+                statement.bindString(1, OperationState.QUEUED.name)
+                statement.bindString(2, operationId)
+                statement.bindString(3, OperationState.SUCCEEDED.name)
+                statement.executeUpdateDelete()
+            }
+            db.delete(TABLE_CREATE_PLAN_ITEMS, "operation_id = ? AND item_index != 0", arrayOf(operationId))
+            db.compileStatement(
+                "UPDATE $TABLE_CREATE_PLAN_ITEMS SET state = ?, staging_uri = NULL, sha256 = NULL, bytes_written = 0 WHERE operation_id = ? AND item_index = 0",
+            ).use { statement ->
+                statement.bindString(1, OperationState.QUEUED.name)
+                statement.bindString(2, operationId)
+                statement.executeUpdateDelete()
+            }
+            db.execSQL(
+                "UPDATE $TABLE_CREATE_PLANS SET cancel_requested = 0, restart_count = 0 WHERE operation_id = ?",
+                arrayOf(operationId),
+            )
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     fun clearFinished(db: SQLiteDatabase) {
         val placeholders = FINISHED_STATES.joinToString(",") { "?" }

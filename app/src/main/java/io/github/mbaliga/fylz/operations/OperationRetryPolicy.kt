@@ -24,6 +24,16 @@ sealed interface OperationRetryPlan {
     data class ReclaimExtract(
         val operationId: String,
     ) : OperationRetryPlan
+
+    /**
+     * M3.5: a planned compression is retried the same way -- `OperationJournal.retryCreate` moves
+     * the operation and its single plan item back to `QUEUED` (restart count and cancel flag both
+     * reset: a deliberate retry is a fresh attempt, not one more system-stop restart) and
+     * `OperationRunner.enqueueCreate` runs it again.
+     */
+    data class ReclaimCreate(
+        val operationId: String,
+    ) : OperationRetryPlan
 }
 
 /**
@@ -89,11 +99,21 @@ object OperationRetryPolicy {
             operation.items.isNotEmpty() &&
             operation.items.all { ArchiveDocumentId.isArchiveUri(it.source) }
 
+    /**
+     * M3.5: a planned compression is recognisable from its row alone too -- an ARCHIVE operation
+     * with a top-level destination. The legacy zip4j path ([io.github.mbaliga.fylz.data.ArchiveService.createZip])
+     * never sets one (only each item's own destination), the same distinction [isPlannedExtract]
+     * draws against the same legacy service's `extractZip`.
+     */
+    fun isPlannedCreate(operation: FileOperation): Boolean =
+        operation.type == FileOperationType.ARCHIVE && operation.destination != null
+
     fun plan(operation: FileOperation): OperationRetryPlan? {
         if (operation.state !in retryableStates) return null
         val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
         if (incomplete.isEmpty()) return null
         if (isPlannedExtract(operation)) return OperationRetryPlan.ReclaimExtract(operation.id)
+        if (isPlannedCreate(operation)) return OperationRetryPlan.ReclaimCreate(operation.id)
 
         if (
             isMoveCleanupRetry(
@@ -136,6 +156,7 @@ object OperationRetryPolicy {
         is OperationRetryPlan.FinishMoveCleanup -> "Finish move"
         is OperationRetryPlan.Transfer -> "Retry unfinished"
         is OperationRetryPlan.ReclaimExtract -> "Retry extraction"
+        is OperationRetryPlan.ReclaimCreate -> "Retry compression"
         null -> "Retry unavailable"
     }
 }

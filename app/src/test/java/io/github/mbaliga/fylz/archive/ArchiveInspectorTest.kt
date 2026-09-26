@@ -10,6 +10,8 @@ import io.github.mbaliga.fylz.decoder.ArchiveEntryInfo
 import io.github.mbaliga.fylz.decoder.ArchiveExtractResult
 import io.github.mbaliga.fylz.decoder.ArchiveInspection
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
+import io.github.mbaliga.fylz.decoder.ArchiveWriteOptions
+import io.github.mbaliga.fylz.decoder.ArchiveWriteResult
 import io.github.mbaliga.fylz.decoder.DecoderClient
 import io.github.mbaliga.fylz.decoder.IDecoderService
 import io.github.mbaliga.fylz.storage.FylzDocumentsProviderTestBase
@@ -74,6 +76,7 @@ class ArchiveInspectorTest : FylzDocumentsProviderTestBase() {
         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
         override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
             calls += 1

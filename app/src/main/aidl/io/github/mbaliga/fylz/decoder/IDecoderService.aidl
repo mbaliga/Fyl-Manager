@@ -3,6 +3,8 @@ package io.github.mbaliga.fylz.decoder;
 import io.github.mbaliga.fylz.decoder.ArchiveExtractResult;
 import io.github.mbaliga.fylz.decoder.ArchiveInspection;
 import io.github.mbaliga.fylz.decoder.ArchiveLimits;
+import io.github.mbaliga.fylz.decoder.ArchiveWriteOptions;
+import io.github.mbaliga.fylz.decoder.ArchiveWriteResult;
 
 // A liveness check, content-type sniffing (M2.5's fylz-sniff crate), archive inspection (M3.2's
 // fylz-archive crate) and archive browsing (M3.3: the full listing and single entries, streamed
@@ -45,4 +47,16 @@ interface IDecoderService {
     // and the ordinal the pass stopped at. Ownership as for listArchive. The caller binds this on
     // the isolated extraction instance (`:decoders:extract`), never the browsing one.
     ArchiveExtractResult extractRanges(in ParcelFileDescriptor archive, in ArchiveLimits limits, in byte[] ordinalsBitmap, in ParcelFileDescriptor sink);
+
+    // M3.5a (DESIGN-M35-CREATE.md section 2.5): one write pass. `input` is the read end of a pipe
+    // the client owns, carrying FZW1-framed source bytes; `output` is the write end of a second
+    // pipe the client owns, the raw archive stream. The engine pins its own thread's locale to
+    // C.UTF-8 for the call and poisons its writer before freeing on any abort, so a failed or
+    // cancelled write never quietly ships a well-formed truncated archive. The result is the
+    // authority for the outcome (OK, UNSUPPORTED, CORRUPT, PROTOCOL_ERROR, CANCELLED, ...) and
+    // carries the engine's own entry/byte counts. Ownership as for listArchive: the service takes
+    // ownership of each pfd's dup and closes it when done; the caller's own descriptors are
+    // untouched. The caller binds this on the isolated write instance (`:decoders:write`), never
+    // the browsing or extraction ones (the concurrency invariant design section 2.3 states).
+    ArchiveWriteResult writeArchive(in ParcelFileDescriptor input, in ArchiveWriteOptions options, in ParcelFileDescriptor output);
 }

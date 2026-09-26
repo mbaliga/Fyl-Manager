@@ -54,14 +54,17 @@ class TransferWorker(
     params: WorkerParameters,
     /** How an EXTRACT run gets its extractor; the default needs the real [FylzApplication], tests inject a fake. */
     private val extractorFactory: (Context) -> ArchiveExtractor = ::defaultExtractor,
+    /** How a CREATE run gets its creator (M3.5); the default needs the real [FylzApplication], tests inject a fake. */
+    private val creatorFactory: (Context) -> ArchiveCreator = ::defaultCreator,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         val type = inputData.getString(KEY_TYPE)?.let(FileOperationType::valueOf)
             ?: return Result.failure(errorData("Missing transfer type."))
         if (type == FileOperationType.EXTRACT) return doExtract()
+        if (type == FileOperationType.ARCHIVE) return doCreate()
         if (type != FileOperationType.COPY && type != FileOperationType.MOVE) {
-            return Result.failure(errorData("TransferWorker only handles COPY, MOVE and EXTRACT."))
+            return Result.failure(errorData("TransferWorker only handles COPY, MOVE, EXTRACT and ARCHIVE."))
         }
         val sources = inputData.getStringArray(KEY_SOURCES)?.map(Uri::parse)
             ?.takeIf { it.isNotEmpty() }
@@ -149,6 +152,76 @@ class TransferWorker(
             // not poison the chain.
             Result.success()
         }
+    }
+
+    /**
+     * The CREATE path (M3.5, mirrors [doExtract] exactly). Every outcome the creator journals is
+     * [Result.success]; a missing operation id is the one [Result.failure]; a system stop is
+     * [Result.retry] once the items are `PAUSED_BY_SYSTEM` (bounded to
+     * [ArchiveCreator.MAX_RESTARTS] restarts, checked by the creator itself at claim).
+     */
+    private suspend fun doCreate(): Result {
+        val operationId = inputData.getString(KEY_OPERATION_ID)?.takeIf { it.isNotBlank() }
+            ?: return Result.failure(errorData("Missing operation id."))
+        runCatching { setForeground(createForegroundInfo(operationId, CreateProgress(0L, null, 0, 0))) }
+        return try {
+            val creator = creatorFactory(applicationContext)
+            val outcome = creator.run(
+                operationId = operationId,
+                ownWorkId = id,
+                stopReason = { if (isStopped) stopReason else WorkInfo.STOP_REASON_NOT_STOPPED },
+                onProgress = { progress ->
+                    setProgressAsync(
+                        Data.Builder()
+                            .putLong(KEY_PROGRESS_COMPLETED_BYTES, progress.completedBytes)
+                            .apply { progress.totalBytes?.let { putLong(KEY_PROGRESS_TOTAL_BYTES, it) } }
+                            .build(),
+                    )
+                    setForegroundAsync(createForegroundInfo(operationId, progress))
+                },
+            )
+            when (outcome) {
+                CreateRunOutcome.PausedBySystem -> Result.retry()
+                CreateRunOutcome.NotClaimed, is CreateRunOutcome.Finished -> Result.success()
+            }
+        } catch (cancelled: CancellationException) {
+            if (isStopped && stopReason != WorkInfo.STOP_REASON_CANCELLED_BY_APP) Result.retry() else Result.success()
+        } catch (failure: Throwable) {
+            Result.success()
+        }
+    }
+
+    private fun createForegroundInfo(operationId: String, progress: CreateProgress): ForegroundInfo {
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Transfers", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Progress for copy and move operations"
+            },
+        )
+        val total = progress.totalBytes
+        val text = when {
+            total != null && total > 0L -> "${formatBytes(progress.completedBytes)} of ${formatBytes(total)}"
+            else -> formatBytes(progress.completedBytes)
+        }
+        val cancel = PendingIntent.getBroadcast(
+            applicationContext,
+            operationId.hashCode(),
+            CreateCancelReceiver.intent(applicationContext, operationId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle("Compressing")
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .addAction(0, "Cancel", cancel)
+        if (total == null || total <= 0L) {
+            builder.setProgress(0, 0, true)
+        } else {
+            builder.setProgress(PROGRESS_MAX, permille(progress.completedBytes, total), false)
+        }
+        return ForegroundInfo(NOTIFICATION_ID, builder.build())
     }
 
     private fun extractForegroundInfo(operationId: String, progress: ExtractProgress): ForegroundInfo {
@@ -270,6 +343,22 @@ class TransferWorker(
         /** The EXTRACT input: the operation id only; the plan is in the journal. */
         fun extractInputData(operationId: String): Data = Data.Builder()
             .putString(KEY_TYPE, FileOperationType.EXTRACT.name)
+            .putString(KEY_OPERATION_ID, operationId)
+            .build()
+
+        /** The real creator: every collaborator from the application (M3.5). */
+        private fun defaultCreator(context: Context): ArchiveCreator {
+            val app = context.applicationContext as FylzApplication
+            return ArchiveCreator(
+                context = app,
+                journal = OperationJournal(app),
+                writerClient = { app.decoderClient.writer() },
+            )
+        }
+
+        /** The CREATE input: the operation id only; the plan is in the journal (M3.5). */
+        fun createInputData(operationId: String): Data = Data.Builder()
+            .putString(KEY_TYPE, FileOperationType.ARCHIVE.name)
             .putString(KEY_OPERATION_ID, operationId)
             .build()
 

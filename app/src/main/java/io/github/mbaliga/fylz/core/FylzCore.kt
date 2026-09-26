@@ -47,4 +47,16 @@ object FylzCore {
      */
     fun extractRanges(fd: Int, ranges: List<ArchiveOrdinalRangeRecord>, limits: ArchiveLimitsRecord, sinkFd: Int): ArchiveExtractRecord =
         archiveExtractRanges(fd, ranges, limits, sinkFd)
+
+    /**
+     * One create pass (M3.5a): parses `FZW1` frames from [inFd] and streams the resulting archive
+     * into [outFd] under [options], pinning the calling thread's locale for the call's whole
+     * duration. Throws the generated `ArchiveEngineException` for the engine's own verdicts,
+     * mirroring [inspectArchive]/[extractEntryAt] rather than [extractRanges]'s record-return
+     * shape -- `DecoderService.writeArchive` is what turns either outcome into an
+     * [io.github.mbaliga.fylz.decoder.ArchiveWriteResult], never an exception across Binder.
+     */
+    @Throws(ArchiveEngineException::class)
+    fun writeFrames(inFd: Int, outFd: Int, options: WriteOptionsRecord): ArchiveWriteReportRecord =
+        archiveWriteFrames(inFd, outFd, options)
 }

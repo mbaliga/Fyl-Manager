@@ -83,6 +83,17 @@ class OperationRunner(
             false
         }
     },
+    /** As [cancelExtract], for a planned CREATE (M3.5): `create_plans.cancel_requested`, never
+     * `cancelWorkById`, for the same reason. */
+    private val cancelCreate: (String) -> Boolean = { id ->
+        val journal = context?.let { OperationJournal(it.applicationContext) }
+        if (journal != null && journal.hasCreatePlan(id)) {
+            journal.setCreateCancelRequested(id)
+            true
+        } else {
+            false
+        }
+    },
 ) {
 
     private val _operations = MutableStateFlow<List<RunningOperation>>(emptyList())
@@ -92,6 +103,9 @@ class OperationRunner(
 
     /** EXTRACT operations enqueued through this runner, by operation id. Guarded by [extracts]. */
     private val extracts = mutableSetOf<String>()
+
+    /** CREATE operations enqueued through this runner, by operation id. Guarded by [creates]. */
+    private val creates = mutableSetOf<String>()
 
     /**
      * Launches [block] on the app scope, tracked in [operations] as [type]/[label] until it
@@ -145,10 +159,10 @@ class OperationRunner(
      * request. A no-op once it has already finished (the id is no longer tracked by then). */
     fun cancel(id: String) {
         jobs[id]?.cancel()
-        // M3.4: an extraction is cancelled by a flag the extractor polls, never cancelWorkById
-        // (that would cancel the whole unique chain behind it).
-        val tracked = synchronized(extracts) { id in extracts }
-        if (cancelExtract(id) || tracked) return
+        // M3.4/M3.5: an extraction or a create is cancelled by a flag the runner polls, never
+        // cancelWorkById (that would cancel the whole unique chain behind it).
+        val tracked = synchronized(extracts) { id in extracts } || synchronized(creates) { id in creates }
+        if (cancelExtract(id) || cancelCreate(id) || tracked) return
         val appContext = context ?: return
         val workId = runCatching { UUID.fromString(id) }.getOrNull() ?: return
         WorkManager.getInstance(appContext).cancelWorkById(workId)
@@ -179,6 +193,32 @@ class OperationRunner(
                 .first { it.state.isFinished }
         } finally {
             synchronized(extracts) { extracts -= operationId }
+            _operations.update { list -> list.filterNot { it.id == operationId } }
+        }
+    }
+
+    /**
+     * M3.5: enqueues the planned CREATE operation [operationId] -- already written with its plan by
+     * `OperationJournal.putWithCreatePlan` -- as durable work in the same unique queue, tagged
+     * [createTag]. Mirrors [enqueueExtract] exactly.
+     */
+    suspend fun enqueueCreate(operationId: String, label: String = "Compressing", itemCount: Int = 0) {
+        val appContext = requireNotNull(context) { "OperationRunner needs a context to enqueue durable creates." }
+        val workManager = WorkManager.getInstance(appContext)
+        val request = OneTimeWorkRequestBuilder<TransferWorker>()
+            .setInputData(TransferWorker.createInputData(operationId))
+            .addTag(createTag(operationId))
+            .build()
+        synchronized(creates) { creates += operationId }
+        _operations.update { it + RunningOperation(operationId, FileOperationType.ARCHIVE, label, itemCount = itemCount) }
+        try {
+            workManager.enqueueUniqueWork(TransferWorker.UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+            workManager.getWorkInfoByIdFlow(request.id)
+                .filterNotNull()
+                .onEach { info -> applyWorkInfo(operationId, info) }
+                .first { it.state.isFinished }
+        } finally {
+            synchronized(creates) { creates -= operationId }
             _operations.update { list -> list.filterNot { it.id == operationId } }
         }
     }
@@ -249,6 +289,9 @@ class OperationRunner(
         /** The WorkManager tag of the EXTRACT operation [operationId]'s request (design section 2.2). */
         fun extractTag(operationId: String): String = "op:$operationId"
 
+        /** As [extractTag], for a planned CREATE (`docs/agent/DESIGN-M35-CREATE.md` section 2.2). */
+        fun createTag(operationId: String): String = "op:$operationId"
+
         /**
          * Call once at app start (P0.6), with a [journal] the caller just constructed -- its own
          * constructor synchronously marks every operation a dead process left `RUNNING`,
@@ -300,6 +343,9 @@ class OperationRunner(
             journal.list()
                 .filter { it.type == FileOperationType.EXTRACT && journal.hasExtractPlan(it.id) }
                 .forEach { operation -> reconcileExtract(journal, resolver, workLookup, nowMillis(), operation) }
+            journal.list()
+                .filter { it.type == FileOperationType.ARCHIVE && journal.hasCreatePlan(it.id) }
+                .forEach { operation -> reconcileCreate(journal, resolver, workLookup, nowMillis(), operation) }
         }
 
         private fun reconcileExtract(journal: OperationJournal, resolver: ContentResolver, workLookup: WorkLookup, now: Long, operation: FileOperation) {
@@ -328,6 +374,40 @@ class OperationRunner(
                     }
                     journal.refresh()
                     Log.i(TAG, "Extraction ${operation.id}: queued with no work; marked never run")
+                }
+                else -> Unit
+            }
+        }
+
+        /**
+         * As [reconcileExtract], for a planned CREATE (design section 2.3 step 9, generalised): the
+         * staging documents to delete come from [OperationJournal.createPlanItems] (a create's
+         * `operation.items` are the *source* items, never staged) rather than `operation.items`
+         * itself, and a `NEVER_RAN` create's items are marked failed the same way, once.
+         */
+        private fun reconcileCreate(journal: OperationJournal, resolver: ContentResolver, workLookup: WorkLookup, now: Long, operation: FileOperation) {
+            val alive = workLookup.activeWorkIds(createTag(operation.id)).isNotEmpty()
+            when (operation.state) {
+                OperationState.RUNNING, OperationState.PAUSED_BY_SYSTEM, OperationState.NEEDS_ATTENTION -> {
+                    if (alive) return
+                    if (!journal.updateOperationStateIf(operation.id, operation.state, OperationState.INTERRUPTED)) return
+                    journal.createPlanItems(operation.id).forEach { item ->
+                        item.stagingUri?.let { staging -> DocNode.load(resolver, staging)?.delete(resolver) }
+                    }
+                    operation.items.forEach { item ->
+                        journal.updateItem(operation.id, item.copy(state = OperationState.INTERRUPTED, errorCode = PROCESS_INTERRUPTED), refresh = false)
+                    }
+                    journal.refresh()
+                    Log.i(TAG, "Compress ${operation.id}: its work is gone; marked interrupted")
+                }
+                OperationState.QUEUED -> {
+                    if (alive || now - operation.updatedAtMillis < NEVER_RAN_AGE_MILLIS) return
+                    if (!journal.updateOperationStateIf(operation.id, OperationState.QUEUED, OperationState.FAILED)) return
+                    operation.items.forEach { item ->
+                        journal.updateItem(operation.id, item.copy(state = OperationState.FAILED, errorCode = CreateErrorCodes.NEVER_RAN), refresh = false)
+                    }
+                    journal.refresh()
+                    Log.i(TAG, "Compress ${operation.id}: queued with no work; marked never run")
                 }
                 else -> Unit
             }

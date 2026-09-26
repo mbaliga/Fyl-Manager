@@ -79,6 +79,7 @@ class DecoderClientTest {
         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
         override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = inspection
     }
@@ -93,6 +94,7 @@ class DecoderClientTest {
         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
         override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
 
         override fun sniff(pfd: ParcelFileDescriptor): String {
             Thread.sleep(hangMillis)
@@ -218,6 +220,7 @@ class DecoderClientTest {
             override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
             override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+            override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor): String = throw DeadObjectException()
             override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
         }
@@ -240,6 +243,7 @@ class DecoderClientTest {
                         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
                         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
                         override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+                        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
                         override fun sniff(pfd: ParcelFileDescriptor) = "unreached"
                         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int) = okInspection
                     }
@@ -321,6 +325,7 @@ class DecoderClientTest {
             override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
             override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+            override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor): String {
                 release.await()
                 try {
@@ -374,6 +379,7 @@ class DecoderClientTest {
             override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
             override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
             override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+            override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
             override fun sniff(pfd: ParcelFileDescriptor) = "ok"
             override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection {
                 seen = Triple(archive.fd, limits, maxRows)
@@ -437,6 +443,7 @@ class DecoderClientTest {
                         override fun listArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveInspection = error("not used")
                         override fun extractEntry(archive: ParcelFileDescriptor, ordinal: Int, expectedPath: String, limits: ArchiveLimits, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
                         override fun extractRanges(archive: ParcelFileDescriptor, limits: ArchiveLimits, ordinalsBitmap: ByteArray, sink: ParcelFileDescriptor): ArchiveExtractResult = error("not used")
+                        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("not used")
                         override fun sniff(pfd: ParcelFileDescriptor) = "ok"
                         override fun inspectArchive(archive: ParcelFileDescriptor, limits: ArchiveLimits, maxRows: Int): ArchiveInspection =
                             throw DeadObjectException()

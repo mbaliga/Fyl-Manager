@@ -83,6 +83,7 @@ class FylzDatabase(private val context: Context) :
         createIndexTables(db)
         migrateLegacyIndex(db)
         createExtractTables(db)
+        createCompressTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -92,6 +93,9 @@ class FylzDatabase(private val context: Context) :
         }
         if (oldVersion < 3) {
             createExtractTables(db)
+        }
+        if (oldVersion < 4) {
+            createCompressTables(db)
         }
     }
 
@@ -140,6 +144,69 @@ class FylzDatabase(private val context: Context) :
                 operation_id TEXT NOT NULL,
                 ordinal INTEGER NOT NULL,
                 sha256 TEXT NOT NULL,
+                PRIMARY KEY (operation_id, ordinal)
+            )
+            """.trimIndent(),
+        )
+    }
+
+    /**
+     * M3.5 (schema version 4, additive, no foreign keys): the plan half of a CREATE operation
+     * (`docs/agent/DESIGN-M35-CREATE.md` section 2.2 step 7) -- `create_plans` (one row per
+     * operation, with `restart_count` for the system-stop bound), `create_plan_items` (one row per
+     * *output document*: the archive itself, or one split part -- rows are inserted at plan time
+     * for item 0 and again at runtime as the drain opens each further part), `create_manifest`
+     * (one row per source; **no size column**, read at feed time per design's own rule, and
+     * `spooled_path` for a `tar.*` source of unknown size, spooled to a bounded temp file first).
+     * Deleted with their operation by [OperationsDao]; `spooled_path` files themselves live under
+     * `cacheDir/archive-work/` and are swept by [io.github.mbaliga.fylz.archive.ArchiveCacheSweeper]
+     * -- these rows are not cache and are never subject to that sweep.
+     */
+    private fun createCompressTables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_CREATE_PLANS} (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                format TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                split_bytes INTEGER,
+                relative INTEGER NOT NULL,
+                archive_name TEXT NOT NULL,
+                destination_uri TEXT,
+                total_estimate INTEGER,
+                entry_count INTEGER NOT NULL,
+                conflict_policy TEXT NOT NULL,
+                name_override TEXT,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                restart_count INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_CREATE_PLAN_ITEMS} (
+                operation_id TEXT NOT NULL,
+                item_index INTEGER NOT NULL,
+                requested_name TEXT NOT NULL,
+                staging_uri TEXT,
+                sha256 TEXT,
+                bytes_written INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL,
+                PRIMARY KEY (operation_id, item_index)
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE ${OperationsDao.TABLE_CREATE_MANIFEST} (
+                operation_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                is_directory INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                source_uri TEXT NOT NULL,
+                mtime_millis INTEGER NOT NULL,
+                needs_spooling INTEGER NOT NULL,
+                spooled_path TEXT,
                 PRIMARY KEY (operation_id, ordinal)
             )
             """.trimIndent(),
@@ -434,7 +501,7 @@ class FylzDatabase(private val context: Context) :
 
     companion object {
         const val DATABASE_NAME = "fylz.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 4
 
         internal const val LEGACY_PREFERENCES_NAME = "fylz_operation_journal"
         internal const val LEGACY_RECORDS_KEY = "operations"

@@ -12,6 +12,7 @@ import android.system.OsConstants
 import android.util.Log
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -122,6 +123,8 @@ class DecoderClient(
     private val retryOnDrop: Boolean = true,
     /** Makes the client for the isolated extraction instance; `null` when this client cannot provide one. */
     private val extractionFactory: (() -> DecoderClient)? = null,
+    /** Makes the client for the isolated write instance (M3.5); `null` when this client cannot provide one. */
+    private val writerFactory: (() -> DecoderClient)? = null,
 ) {
     constructor(context: Context, timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS) : this(
         bind = { connection ->
@@ -130,6 +133,7 @@ class DecoderClient(
         unbind = { connection -> context.unbindService(connection) },
         timeoutMillis = timeoutMillis,
         extractionFactory = { forExtraction(context) },
+        writerFactory = { forWriter(context) },
     )
 
     /**
@@ -139,6 +143,17 @@ class DecoderClient(
      * built without a factory (a test client that never asked for one).
      */
     fun extraction(): DecoderClient = checkNotNull(extractionFactory) { "This DecoderClient has no extraction factory." }()
+
+    /**
+     * A fresh client bound to the isolated write instance (`:decoders:write`, M3.5, design section
+     * 2.3 step 3), for one create operation: the caller runs its own [callTwoPipes] on it and then
+     * [unbind]s it. A **third** dedicated instance and executor, distinct from both the browsing
+     * pool ([STREAM_THREADS]) and the extraction client's own (`forExtraction`'s `Dispatchers.IO`)
+     * -- sharing either would let a concurrent browse/extract and a compress starve each other's
+     * liveness watchdog forever (the design's own review finding). Throws when this client was
+     * built without a factory (a test client that never asked for one).
+     */
+    fun writer(): DecoderClient = checkNotNull(writerFactory) { "This DecoderClient has no writer factory." }()
 
     /**
      * Drops the current binding whatever its state -- a pending bind is cancelled, an in-flight
@@ -574,6 +589,235 @@ class DecoderClient(
         }
     }
 
+    /**
+     * A call whose bulk data flows through **two** pipes at once (M3.5, design section 2.3 step
+     * 3): [feed] writes source bytes into the write end of the "in" pipe (the engine reads the
+     * read end as `writeArchive`'s `input`); [drain] reads the archive bytes libarchive produces
+     * from the read end of the "out" pipe (the engine writes the write end as `writeArchive`'s
+     * `output`). Both run concurrently with the Binder transaction, each on this client's own
+     * [transactions] pool -- for the create client returned by [writer], a dedicated executor
+     * distinct from the browsing pool [callStreaming] uses and from the extraction client's own,
+     * never shared with anything that can itself be "busy" waiting on `:decoders` (the deadlock
+     * this design step exists to rule out: two independently-busy calls sharing one small pool
+     * starve each other forever). Neither [feed] nor [drain] ever waits on the other; each closes
+     * its own end when it finishes normally, and every exit path -- success, a cancel, a feeder or
+     * drain failure, a timeout -- closes **all four** client-side pipe ends (its own copies of
+     * both ends of both pipes) from this one function's own `finally`, never from a second thread,
+     * so nothing races the Binder call's own descriptor duplication.
+     *
+     * Liveness pauses while [busy] is true and otherwise counts [inactivityMillis] of neither
+     * [feedProgress] nor [drainProgress] moving. **No transparent retry** (design section 2.3 step
+     * 3(d)): a create call that meets a dropped connection is the caller's failure to handle, never
+     * silently reissued into what would be a second, interleaved `writeArchive` transaction.
+     * [cancelled] is polled each tick and, when true, closes every pipe end (EPIPE for the engine's
+     * next read or write) and returns [DecoderCall.Failed] after a bounded wait for the transaction.
+     * A failure inside [feed]/[drain] itself is **thrown** to the caller once the transaction has
+     * been stopped -- it is the caller's own source/destination failing, not the decoder process,
+     * so the connection is kept.
+     */
+    suspend fun <T : Any> callTwoPipes(
+        inactivityMillis: Long,
+        feed: suspend (OutputStream) -> Unit,
+        drain: suspend (InputStream) -> Unit,
+        busy: () -> Boolean = { false },
+        feedProgress: () -> Long = { 0L },
+        drainProgress: () -> Long = { 0L },
+        cancelled: () -> Boolean = { false },
+        drainFailureWaitMillis: Long = inactivityMillis,
+        block: (IDecoderService, ParcelFileDescriptor, ParcelFileDescriptor) -> T,
+    ): DecoderCall<T> {
+        beginCall()
+        try {
+            return twoPipesOnce(inactivityMillis, feed, drain, busy, feedProgress, drainProgress, cancelled, drainFailureWaitMillis, block)
+        } finally {
+            endCall()
+        }
+    }
+
+    private suspend fun <T : Any> twoPipesOnce(
+        inactivityMillis: Long,
+        feed: suspend (OutputStream) -> Unit,
+        drain: suspend (InputStream) -> Unit,
+        busy: () -> Boolean,
+        feedProgress: () -> Long,
+        drainProgress: () -> Long,
+        cancelled: () -> Boolean,
+        drainFailureWaitMillis: Long,
+        block: (IDecoderService, ParcelFileDescriptor, ParcelFileDescriptor) -> T,
+    ): DecoderCall<T> {
+        val inPipe = ParcelFileDescriptor.createPipe()
+        val inRead = inPipe[0]
+        val inWrite = inPipe[1]
+        val outPipe = ParcelFileDescriptor.createPipe()
+        val outRead = outPipe[0]
+        val outWrite = outPipe[1]
+        var generation = NO_GENERATION
+        var feederJob: Deferred<Unit>? = null
+        var drainJob: Deferred<Unit>? = null
+        var transactionJob: Deferred<T>? = null
+        fun closeAllPipeEnds() {
+            runCatching { inRead.close() }
+            runCatching { inWrite.close() }
+            runCatching { outRead.close() }
+            runCatching { outWrite.close() }
+        }
+        try {
+            val connected = withTimeoutOrNull(inactivityMillis) { ensureConnected() }
+            if (connected == null) {
+                closeAllPipeEnds()
+                return DecoderCall.TimedOut
+            }
+            val (service, gen) = connected
+            generation = gen
+
+            // The drain and the feeder each take their thread before the transaction is started
+            // (streamOnce's own reasoning, doubled): neither may be left queued behind a saturated
+            // pool while the transaction holds a thread waiting for either of them.
+            //
+            // outRead is wrapped exactly as streamOnce's own DrainStream wraps its one pipe: a
+            // read that sees nothing yet retries until transactionDone, rather than treating "no
+            // bytes this instant" as the stream's real end. This is not only a Robolectric-testing
+            // concern (its own pipes report EOF before a concurrent writer's first byte, proven by
+            // RobolectricPipeReadTest) -- on a real device, drain's genuine EOF can only ever come
+            // once EVERY copy of outWrite is closed, and this app's own copy is not closed until
+            // the transaction below actually finishes; without DrainStream's retry, a read that
+            // happens to run before the engine has written anything would see the same false EOF
+            // and drain would quietly give up having read nothing at all.
+            val transactionDone = AtomicBoolean(false)
+            val drainStarted = CompletableDeferred<Unit>()
+            val startedDrain = transactions.async {
+                drainStarted.complete(Unit)
+                DrainStream(ParcelFileDescriptor.AutoCloseInputStream(outRead), AtomicLong(0L), transactionDone).use { stream -> drain(stream) }
+            }
+            drainJob = startedDrain
+            drainStarted.await()
+
+            val feedStarted = CompletableDeferred<Unit>()
+            val startedFeeder = transactions.async {
+                feedStarted.complete(Unit)
+                ParcelFileDescriptor.AutoCloseOutputStream(inWrite).use { stream -> feed(stream) }
+            }
+            feederJob = startedFeeder
+            feedStarted.await()
+
+            val startedTransaction = transactions.async {
+                try {
+                    block(service, inRead, outWrite)
+                } finally {
+                    // This process's OWN copies of the two ends the engine was handed, relinquished
+                    // the instant the transaction itself is done -- not left for closeAllPipeEnds'
+                    // later, single closing pass, which only runs once drain/feed have already
+                    // settled (see the note above: that would be too late for outRead's real EOF).
+                    runCatching { inRead.close() }
+                    runCatching { outWrite.close() }
+                    transactionDone.set(true)
+                }
+            }
+            transactionJob = startedTransaction
+
+            var lastFeed = -1L
+            var lastDrain = -1L
+            var idleMillis = 0L
+            var result: T? = null
+            while (result == null) {
+                result = withTimeoutOrNull(livenessPollMillis) { startedTransaction.await() }
+                if (result != null) break
+                if (cancelled()) {
+                    closeAllPipeEnds()
+                    withTimeoutOrNull(drainFailureWaitMillis) { runCatching { startedTransaction.await() } } ?: abandon(startedTransaction)
+                    startedFeeder.cancel()
+                    startedDrain.cancel()
+                    dropConnection(generation)
+                    return DecoderCall.Failed
+                }
+                val feederFailure = startedFeeder.takeIf { it.isCompleted }?.getCompletionExceptionOrNull()
+                val drainFailure = startedDrain.takeIf { it.isCompleted }?.getCompletionExceptionOrNull()
+                if (feederFailure != null || drainFailure != null) {
+                    // The app's own source read or destination write failed, not the engine: stop
+                    // the transaction (both pipes closed, so the engine's next read/write gets
+                    // EPIPE), bound the wait, then surface whichever side actually failed.
+                    closeAllPipeEnds()
+                    withTimeoutOrNull(drainFailureWaitMillis) { runCatching { startedTransaction.await() } } ?: abandon(startedTransaction)
+                    startedFeeder.cancel()
+                    startedDrain.cancel()
+                    throw (feederFailure ?: drainFailure)!!
+                }
+                val nowFeed = feedProgress()
+                val nowDrain = drainProgress()
+                if (nowFeed != lastFeed || nowDrain != lastDrain) {
+                    lastFeed = nowFeed
+                    lastDrain = nowDrain
+                    idleMillis = 0L
+                } else if (!busy()) {
+                    idleMillis += livenessPollMillis
+                    if (idleMillis >= inactivityMillis) {
+                        closeAllPipeEnds()
+                        startedFeeder.cancel()
+                        startedDrain.cancel()
+                        abandonAndDrop(startedTransaction, generation)
+                        return DecoderCall.TimedOut
+                    }
+                }
+            }
+            // The transaction returned: the feeder and drain finish on whatever remains (the
+            // engine's own EOF/close), the caller's own work now -- a stall here is its own
+            // failure, not the process's, so the connection is kept either way.
+            idleMillis = 0L
+            while (!startedFeeder.isCompleted || !startedDrain.isCompleted) {
+                val settled = withTimeoutOrNull(livenessPollMillis) {
+                    runCatching { startedFeeder.await() }
+                    runCatching { startedDrain.await() }
+                }
+                if (settled != null) break
+                val nowFeed = feedProgress()
+                val nowDrain = drainProgress()
+                if (nowFeed != lastFeed || nowDrain != lastDrain) {
+                    lastFeed = nowFeed
+                    lastDrain = nowDrain
+                    idleMillis = 0L
+                } else if (!busy()) {
+                    idleMillis += livenessPollMillis
+                    if (idleMillis >= inactivityMillis) {
+                        closeAllPipeEnds()
+                        startedFeeder.cancel()
+                        startedDrain.cancel()
+                        throw IOException("The create feeder/drain stopped accepting bytes.")
+                    }
+                }
+            }
+            startedFeeder.await()
+            startedDrain.await()
+            return DecoderCall.Ok(checkNotNull(result))
+        } catch (e: CancellationException) {
+            closeAllPipeEnds()
+            feederJob?.cancel()
+            drainJob?.cancel()
+            transactionJob?.let(::abandon)
+            currentCoroutineContext().ensureActive()
+            return DecoderCall.Failed
+        } catch (e: RemoteException) {
+            closeAllPipeEnds()
+            feederJob?.cancel()
+            drainJob?.cancel()
+            dropConnection(generation)
+            return DecoderCall.Failed
+        } catch (e: IOException) {
+            // Re-thrown from a feeder/drain failure above: the caller's own source/destination,
+            // not the decoder process -- the connection is kept.
+            closeAllPipeEnds()
+            throw e
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Two-pipe decoder call failed with ${e.javaClass.simpleName}")
+            closeAllPipeEnds()
+            feederJob?.cancel()
+            drainJob?.cancel()
+            dropConnection(generation)
+            return DecoderCall.Failed
+        } finally {
+            closeAllPipeEnds()
+        }
+    }
+
     private fun abandonAndDrop(transaction: Deferred<*>, generation: Long) {
         abandon(transaction)
         dropConnection(generation)
@@ -679,6 +923,59 @@ class DecoderClient(
             unbind = { connection -> context.unbindService(connection) },
             idleUnbindMillis = NO_IDLE_UNBIND,
             transactionDispatcher = Dispatchers.IO,
+            retryOnDrop = false,
+        )
+
+        /** The `instanceName` of the isolated write process: `:decoders:write` (M3.5). */
+        const val WRITE_INSTANCE = "write"
+
+        /** How long a create waits for the transaction to return after a cancel or a feeder/drain failure. */
+        const val CREATE_CANCEL_WAIT_MILLIS = 5_000L
+
+        /** The feeder/drain/transaction pool's own size (design section 2.3 step 3): exactly the
+         * three concurrent roles one create needs, plus headroom -- matches [STREAM_THREADS]'s
+         * own sizing rationale, on a pool this client never shares with browsing or extraction. */
+        const val CREATE_THREADS = 4
+
+        private val createThreads = AtomicInteger()
+
+        /** `bindIsolatedService`'s callback executor for the write instance; the callbacks only
+         * complete a deferred, same as [connectionExecutor]. */
+        private val createConnectionExecutor: java.util.concurrent.Executor by lazy {
+            Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "decoder-write-connection").apply { isDaemon = true } }
+        }
+
+        /** The feeder/drain/transaction pool itself, created once and reused by every write client
+         * this process makes -- a fresh [Executors.newFixedThreadPool] per operation would still be
+         * correct but wastefully re-spins [CREATE_THREADS] daemon threads on every compress. */
+        private val createTransactionDispatcher: CoroutineDispatcher by lazy {
+            Executors.newFixedThreadPool(CREATE_THREADS) { runnable ->
+                Thread(runnable, "decoder-create-${createThreads.incrementAndGet()}").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
+        }
+
+        /**
+         * The client of the isolated write instance (M3.5, design section 2.3 step 3): a bind
+         * with `bindIsolatedService(..., "write", ...)`, no idle timer, no transparent retry,
+         * transactions on [createTransactionDispatcher] -- a **third**, dedicated pool distinct
+         * from both the browsing pool ([STREAM_THREADS]) and [forExtraction]'s own `Dispatchers.IO`
+         * use, so a concurrent browse fill, a running extraction, and a compress's own feeder/
+         * drain/transaction can never starve one another's liveness watchdog. One per create
+         * operation; the creator unbinds it when the operation ends.
+         */
+        fun forWriter(context: Context): DecoderClient = DecoderClient(
+            bind = { connection ->
+                context.bindIsolatedService(
+                    Intent(context, DecoderService::class.java),
+                    Context.BIND_AUTO_CREATE,
+                    WRITE_INSTANCE,
+                    createConnectionExecutor,
+                    connection,
+                )
+            },
+            unbind = { connection -> context.unbindService(connection) },
+            idleUnbindMillis = NO_IDLE_UNBIND,
+            transactionDispatcher = createTransactionDispatcher,
             retryOnDrop = false,
         )
 

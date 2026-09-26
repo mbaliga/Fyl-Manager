@@ -44,11 +44,15 @@ fun FylzAppShell(viewUri: Uri? = null) {
     // P1.11: this journal instance, not a second default-constructed one -- see OperationJournal's
     // own KDoc for why retrying through a DIFFERENT instance would leave `operations` below stale.
     val fileOperations = remember { FileOperationService(context.applicationContext, journal = journal) }
-    // M3.4: the retry dispatch (transfer replay, move cleanup, extraction re-claim) lives in
-    // operations/RetryDispatcher.kt; a re-claimed extraction is enqueued through the app's runner.
+    // M3.4/M3.5: retry dispatch (operations/RetryDispatcher.kt); a re-claimed run is re-enqueued.
     val retries = remember {
         val runner = (context.applicationContext as FylzApplication).operationRunner
-        RetryDispatcher(fileOperations, journal) { id -> runner.enqueueExtract(id) }
+        RetryDispatcher(
+            fileOperations = fileOperations,
+            journal = journal,
+            enqueueExtract = { id -> runner.enqueueExtract(id) },
+            enqueueCreate = { id -> runner.enqueueCreate(id) },
+        )
     }
     var showHistory by remember { mutableStateOf(false) }
     // P1.11: journal.operations replaces the old 1-second poll (a plain SQLite read directly on
@@ -85,11 +89,7 @@ fun FylzAppShell(viewUri: Uri? = null) {
                             runCatching { retries.dispatch(plan) }.onSuccess {
                                 Toast.makeText(context, "Recovery action completed.", Toast.LENGTH_LONG).show()
                             }.onFailure { failure ->
-                                Toast.makeText(
-                                    context,
-                                    failure.message ?: "Recovery action failed.",
-                                    Toast.LENGTH_LONG,
-                                ).show()
+                                Toast.makeText(context, failure.message ?: "Recovery action failed.", Toast.LENGTH_LONG).show()
                             }
                         }
                     }

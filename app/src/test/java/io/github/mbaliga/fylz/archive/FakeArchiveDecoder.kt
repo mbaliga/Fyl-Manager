@@ -6,6 +6,8 @@ import io.github.mbaliga.fylz.decoder.ArchiveEntryInfo
 import io.github.mbaliga.fylz.decoder.ArchiveExtractResult
 import io.github.mbaliga.fylz.decoder.ArchiveInspection
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
+import io.github.mbaliga.fylz.decoder.ArchiveWriteOptions
+import io.github.mbaliga.fylz.decoder.ArchiveWriteResult
 import io.github.mbaliga.fylz.decoder.DecoderClient
 import io.github.mbaliga.fylz.decoder.IDecoderService
 import io.github.mbaliga.fylz.operations.OrdinalBitmap
@@ -15,6 +17,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CopyOnWriteArrayList
@@ -338,6 +341,221 @@ class FakeArchiveDecoder(
         return ArchiveExtractResult.ok(written + shortByBytes)
     }
 
+    // ------------------------------------------------------------------ M3.5: writeArchive
+
+    /** One `writeArchive` call as the stub saw it. */
+    class WriteCall(val options: ArchiveWriteOptions)
+
+    val writeCalls = CopyOnWriteArrayList<WriteCall>()
+
+    /** The most recent `writeArchive` call's own result, for a test to inspect a failure's exact message. */
+    @Volatile
+    var lastWriteResult: ArchiveWriteResult? = null
+
+    /** When set, `writeArchive` answers this failure instead of reading any frame -- a decoder
+     * that refuses outright (the real engine's `OUTCOME_NOT_SEEKABLE`/`OUTCOME_UNSUPPORTED`). */
+    var writeFailure: ArchiveWriteResult? = null
+
+    /** Called before each `DATA` frame is applied; returning false stops the read where it is, as
+     * the real engine sees when the app cancels by closing its end of the sink pipe. */
+    var beforeWriteData: (ordinal: Int) -> Boolean = { true }
+
+    /** The `ENTRY` at this ordinal answers a `PROTOCOL_ERROR` instead of being accepted -- a
+     * malformed frame the feeder should never send. */
+    var protocolErrorAtOrdinal: Int? = null
+
+    /**
+     * Reads the `FZW1` frame stream [ArchiveFrameWriter] writes and, on `FINISH`, encodes what it
+     * saw as a fake archive [output] can itself be read back through (`listArchive`/
+     * `inspectArchive`/`extractRanges` above) -- so a create pass's own secondary verification
+     * (design section 2.6) runs end to end against this stub too. `ABORT`, a protocol violation or
+     * [beforeWriteData] returning false all close [output] having written nothing, mirroring the
+     * real engine's poisoning: a truncated result must not parse as a valid archive.
+     */
+    override fun writeArchive(
+        input: ParcelFileDescriptor,
+        options: ArchiveWriteOptions,
+        output: ParcelFileDescriptor,
+    ): ArchiveWriteResult {
+        writeCalls += WriteCall(options)
+        writeFailure?.let { failure ->
+            input.close()
+            output.close()
+            return failure
+        }
+        val entries = ArrayList<FakeArchive.Entry>()
+        var bytesIn = 0L
+        var openOrdinal: Int? = null
+        var openPath = ""
+        var openBody: ByteArrayOutputStream? = null
+        var cancelled = false
+        var protocolError: String? = null
+        var abortMessage: String? = null
+        var finished = false
+        ParcelFileDescriptor.AutoCloseInputStream(input).use { rawIn ->
+            val magic = readFully(rawIn, 4)
+            if (magic == null || String(magic, Charsets.US_ASCII) != "FZW1") {
+                protocolError = "missing FZW1 magic"
+            } else {
+                run loop@{
+                    while (true) {
+                        val tag = pollingReadByte(rawIn)
+                        if (tag < 0) {
+                            protocolError = "input ended before FINISH or ABORT"
+                            return@loop
+                        }
+                        when (tag) {
+                            ArchiveFrameWriter.TAG_ENTRY -> {
+                                if (openOrdinal != null) {
+                                    protocolError = "ENTRY while an entry is still open"
+                                    return@loop
+                                }
+                                val header = readFully(rawIn, 4 + 1 + 8 + 8 + 4 + 4) ?: run { protocolError = "short ENTRY header"; return@loop }
+                                val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                                val ordinal = buffer.int
+                                val kind = buffer.get().toInt()
+                                buffer.long // size: read at feed time by the real engine too, not trusted here
+                                buffer.long // mtime, unused by this fake
+                                buffer.int // mode, unused by this fake
+                                val pathLen = buffer.int
+                                val pathBytes = readFully(rawIn, pathLen) ?: run { protocolError = "short ENTRY path"; return@loop }
+                                val path = String(pathBytes, Charsets.UTF_8)
+                                if (protocolErrorAtOrdinal == ordinal) {
+                                    protocolError = "injected protocol error at ordinal $ordinal"
+                                    return@loop
+                                }
+                                if (kind == ArchiveFrameWriter.KIND_DIRECTORY) {
+                                    entries += FakeArchive.Entry(path = path, kind = ArchiveEntryInfo.KIND_DIRECTORY, declaredSize = 0L)
+                                } else {
+                                    openOrdinal = ordinal
+                                    openPath = path
+                                    openBody = ByteArrayOutputStream()
+                                }
+                            }
+                            ArchiveFrameWriter.TAG_DATA -> {
+                                val header = readFully(rawIn, 4 + 4) ?: run { protocolError = "short DATA header"; return@loop }
+                                val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+                                val ordinal = buffer.int
+                                val length = buffer.int
+                                val chunk = readFully(rawIn, length) ?: run { protocolError = "short DATA body"; return@loop }
+                                if (openOrdinal != ordinal) {
+                                    protocolError = "DATA for ordinal $ordinal with no matching open entry"
+                                    return@loop
+                                }
+                                if (!beforeWriteData(ordinal)) {
+                                    cancelled = true
+                                    return@loop
+                                }
+                                openBody!!.write(chunk)
+                                bytesIn += chunk.size
+                            }
+                            ArchiveFrameWriter.TAG_END -> {
+                                val header = readFully(rawIn, 4 + 8) ?: run { protocolError = "short END header"; return@loop }
+                                val ordinal = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).int
+                                if (openOrdinal != ordinal) {
+                                    protocolError = "END for ordinal $ordinal with no matching open entry"
+                                    return@loop
+                                }
+                                entries += FakeArchive.Entry(path = openPath, body = openBody!!.toByteArray(), kind = ArchiveEntryInfo.KIND_FILE)
+                                openOrdinal = null
+                                openBody = null
+                            }
+                            ArchiveFrameWriter.TAG_FINISH -> {
+                                if (openOrdinal != null) {
+                                    protocolError = "FINISH while an entry is still open"
+                                } else {
+                                    finished = true
+                                }
+                                return@loop
+                            }
+                            ArchiveFrameWriter.TAG_ABORT -> {
+                                if (openOrdinal != null) {
+                                    protocolError = "ABORT while an entry is still open"
+                                    return@loop
+                                }
+                                val lengthBytes = readFully(rawIn, 2) ?: run { protocolError = "short ABORT length"; return@loop }
+                                val messageLength = ByteBuffer.wrap(lengthBytes).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+                                val messageBytes = readFully(rawIn, messageLength) ?: run { protocolError = "short ABORT message"; return@loop }
+                                abortMessage = String(messageBytes, Charsets.UTF_8)
+                                return@loop
+                            }
+                            else -> {
+                                protocolError = "unknown frame tag $tag"
+                                return@loop
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val outcome = when {
+            protocolError != null -> {
+                output.close()
+                ArchiveWriteResult.failed(ArchiveWriteResult.OUTCOME_PROTOCOL_ERROR, protocolError)
+            }
+            cancelled -> {
+                output.close()
+                ArchiveWriteResult.failed(ArchiveWriteResult.OUTCOME_CANCELLED, "cancelled")
+            }
+            abortMessage != null -> {
+                output.close()
+                ArchiveWriteResult.failed(ArchiveWriteResult.OUTCOME_CANCELLED, abortMessage)
+            }
+            finished -> {
+                val bytes = FakeArchive.bytes(FakeArchive(entries))
+                ParcelFileDescriptor.AutoCloseOutputStream(output).use { it.write(bytes) }
+                ArchiveWriteResult.ok(entries.size, bytesIn, bytes.size.toLong())
+            }
+            else -> {
+                output.close()
+                ArchiveWriteResult.failed(ArchiveWriteResult.OUTCOME_PROTOCOL_ERROR, "stream ended without FINISH or ABORT")
+            }
+        }
+        lastWriteResult = outcome
+        return outcome
+    }
+
+    /** Reads exactly [length] bytes, or null on a genuine EOF before that many arrived (a
+     * short/killed feeder) -- through [pollingRead], never a raw [InputStream.read]. */
+    private fun readFully(input: InputStream, length: Int): ByteArray? {
+        val buffer = ByteArray(length)
+        var at = 0
+        while (at < length) {
+            val n = pollingRead(input, buffer, at, length - at)
+            if (n < 0) return null
+            at += n
+        }
+        return buffer
+    }
+
+    /**
+     * [InputStream.read] retried across a real, confirmed Robolectric limitation: its
+     * [ParcelFileDescriptor] pipes report EOF for "nothing written yet" exactly as readily as for
+     * "the writer actually closed its end" -- a real OS pipe never does the former while the write
+     * end stays open (`PipeDiagnosticTest` proves this against a plain pipe with no frame codec
+     * involved at all: a read that returns -1 while a second thread is about to write succeeds on
+     * a retry once that write actually happens). Without this, `writeArchive` below -- run
+     * concurrently against the real feeder through `DecoderClient.callTwoPipes`, exactly as
+     * production code drives it -- sees a spurious `PROTOCOL_ERROR` the instant it is scheduled
+     * even slightly ahead of the feeder, on every call, deterministically. Retries for up to
+     * [POLL_TIMEOUT_MILLIS] before answering a genuine end of stream.
+     */
+    private fun pollingRead(input: InputStream, buffer: ByteArray, offset: Int, length: Int): Int {
+        val deadlineNanos = System.nanoTime() + POLL_TIMEOUT_MILLIS * 1_000_000L
+        while (true) {
+            val n = input.read(buffer, offset, length)
+            if (n >= 0) return n
+            if (System.nanoTime() >= deadlineNanos) return -1
+            Thread.sleep(POLL_INTERVAL_MILLIS)
+        }
+    }
+
+    private fun pollingReadByte(input: InputStream): Int {
+        val single = ByteArray(1)
+        val n = pollingRead(input, single, 0, 1)
+        return if (n < 0) -1 else single[0].toInt() and 0xFF
+    }
+
     /** The listing's `ArchiveEntryInfo.KIND_*` to the frame codec's kind codes (`frames.rs`'s `kind_code`). */
     private fun frameKind(kind: Int): Int = when (kind) {
         ArchiveEntryInfo.KIND_FILE -> ExtractFrameReader.KIND_FILE
@@ -414,6 +632,11 @@ class FakeArchiveDecoder(
 
     companion object {
         val componentName = ComponentName("io.github.mbaliga.fylz", "io.github.mbaliga.fylz.decoder.DecoderService")
+
+        /** [pollingRead]'s own retry budget: generous against real feeder work (a large entry's
+         * many chunks), still bounded so a truly stuck test fails in seconds, not hangs forever. */
+        private const val POLL_TIMEOUT_MILLIS = 5_000L
+        private const val POLL_INTERVAL_MILLIS = 5L
 
         /** A [DecoderClient] bound to [stub] through the test seam, with short budgets. */
         fun client(

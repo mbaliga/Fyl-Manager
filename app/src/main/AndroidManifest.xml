@@ -108,6 +108,16 @@
             android:exported="false" />
 
         <!--
+            M3.5: the compress notification's Cancel action, mirroring ExtractCancelReceiver exactly
+            but against the CREATE plan's own row (`create_plans.cancel_requested`). The two plan
+            kinds live in different tables, so a shared receiver would update the wrong one silently
+            (DESIGN-M35-CREATE.md section 2.3 step 8). Not exported.
+        -->
+        <receiver
+            android:name=".operations.CreateCancelReceiver"
+            android:exported="false" />
+
+        <!--
             M2.4: the isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4). Native
             code parsing untrusted file content runs here, never in the UI process:
             isolatedProcess strips it down to no permissions of its own (it cannot open a file by

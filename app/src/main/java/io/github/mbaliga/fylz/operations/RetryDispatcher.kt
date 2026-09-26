@@ -3,14 +3,15 @@ package io.github.mbaliga.fylz.operations
 /**
  * Runs an [OperationRetryPlan] (M3.4, design section 2.3 step 9): what `FylzAppShell`'s history
  * dialog used to do inline. A transfer replays through [fileOperations] (a new operation), a move
- * cleanup finishes through it, and a planned extraction is **re-claimed**: the journal moves the
- * same operation and its unfinished items back to `QUEUED` in one transaction and the runner
- * enqueues it again. Throws with a user-facing message when a plan cannot be run.
+ * cleanup finishes through it, and a planned extraction or compression is **re-claimed**: the
+ * journal moves the same operation and its unfinished items back to `QUEUED` in one transaction
+ * and the runner enqueues it again. Throws with a user-facing message when a plan cannot be run.
  */
 class RetryDispatcher(
     private val fileOperations: FileOperationService,
     private val journal: OperationJournal,
     private val enqueueExtract: suspend (operationId: String) -> Unit,
+    private val enqueueCreate: suspend (operationId: String) -> Unit = {},
 ) {
     suspend fun dispatch(plan: OperationRetryPlan) {
         when (plan) {
@@ -31,6 +32,10 @@ class RetryDispatcher(
             is OperationRetryPlan.ReclaimExtract -> {
                 check(journal.retryExtract(plan.operationId)) { "This extraction can no longer be retried." }
                 enqueueExtract(plan.operationId)
+            }
+            is OperationRetryPlan.ReclaimCreate -> {
+                check(journal.retryCreate(plan.operationId)) { "This compression can no longer be retried." }
+                enqueueCreate(plan.operationId)
             }
         }
     }

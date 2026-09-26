@@ -54,6 +54,7 @@ class DecoderClientExtractionTest {
             ParcelFileDescriptor.AutoCloseOutputStream(sink).use { it.write(payload) }
             return ArchiveExtractResult.ok(payload.size.toLong())
         }
+        override fun writeArchive(input: ParcelFileDescriptor, options: ArchiveWriteOptions, output: ParcelFileDescriptor): ArchiveWriteResult = error("unused")
     }
 
     private fun client(
