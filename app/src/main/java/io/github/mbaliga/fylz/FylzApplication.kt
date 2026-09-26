@@ -10,6 +10,7 @@ import io.github.mbaliga.fylz.archive.ArchiveInspector
 import io.github.mbaliga.fylz.archive.ArchiveSource
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
 import io.github.mbaliga.fylz.decoder.DecoderClient
+import io.github.mbaliga.fylz.operations.ArchiveTester
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationRunner
 import io.github.mbaliga.fylz.operations.WorkLookup
@@ -70,6 +71,13 @@ class FylzApplication : Application() {
 
     /** The session-only manual charset override for legacy ZIP filenames (M3.7); never persisted. */
     val archiveEncodingOverrides: ArchiveEncodingOverrides by lazy { ArchiveEncodingOverrides() }
+
+    /**
+     * "Test archive" (M3.8): verifies every entry's CRC without extracting, on the isolated
+     * extraction instance -- never the browsing one, same rule [archiveCatalog]'s own listings and
+     * a real extraction both follow.
+     */
+    val archiveTester: ArchiveTester by lazy { ArchiveTester(archiveCatalog, extractionClient = decoderClient::extraction) }
 
     override fun onCreate() {
         super.onCreate()

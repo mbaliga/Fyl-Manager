@@ -822,3 +822,57 @@ on a device.**
 name only, the five real charsets resolving on-device, the auto-detect heuristic's real-world
 behaviour (including its documented limits), the manual override changing display only, and the
 override lasting the session and no longer.
+
+## 23. M3.8 — Test archive (verify CRCs without extracting)
+
+M3.8 adds zero Rust code and no new `:decoders` instance or pipe contract — it reuses M3.4's own
+`extractRanges`/FZX1 frame stream, the same isolated extraction instance a real Extract binds, with
+a Kotlin-side sink that discards every byte instead of writing it. Everything below was verified
+only in this sandbox, against `FakeArchiveDecoder` writing real FZX1 frames, never a real
+libarchive-backed `:decoders:extract` process on a device. The one thing that genuinely cannot be
+faked here is the process-isolation contract itself: whether a hostile or crashing decoder process
+mid-test really is contained and reaped the way `docs/agent/DEVICE_CHECKS.md` section 19 (M3.4)
+already established for a real Extract.
+
+**Steps and expected results:**
+
+1. Pick "Test archive" from the Archive Tools menu (the FAB) and choose a real, clean archive of
+   each vendored format (ZIP, 7z, tar, tar.gz/.xz/.zst, ISO) from actual device storage, including
+   at least one large enough (thousands of entries, hundreds of MB) that the test visibly runs for
+   more than an instant. Expected: a progress dialog showing "`N` of `M` entries tested" that
+   advances smoothly to completion, then a result dialog reporting every entry passed, with no
+   crash, no visible file created anywhere (check the archive's own folder and Downloads/cache
+   before and after), and no `:decoders:extract` process left running afterward (`adb shell ps -A
+   | grep decoders` — a second Test on another archive should show the same isolated-instance
+   binding, not two lingering processes; compare against section 19's own `:decoders:extract`
+   check).
+2. Repeat step 1 against one of this repo's own known-bad fixtures if it can be pushed to the
+   device (`core/fixtures/archives/crc-bad.zip`, `crc-bad.7z`, `inflate-bad.zip`, `solid-bad.7z`) or
+   a hand-corrupted copy of a real archive (flip a byte inside a compressed entry's body with a hex
+   editor, leaving the header alone). Expected: the result dialog reports the corrupted entry as
+   failed with a CRC-mismatch (or decode-failure) reason, every other entry still passes, and —
+   again — nothing was created on disk.
+3. Start a Test on a large archive and tap Cancel partway through. Expected: the progress dialog
+   closes (or shows a "stopped early" result, per whichever the landed UI shows), the archive tools
+   FAB/menu is usable again promptly (not stuck `busy`), and nothing was created on disk. Then
+   confirm `:decoders:extract` is not left running (same `adb shell ps` check as step 1) — this is
+   the one thing sandbox-verified only against a fake stub whose "process" is just a same-process
+   `Stub`, never a real cross-process kill.
+4. Pick "Test archive" on a real password-protected ZIP (created with a real tool's AES or
+   ZipCrypto encryption, not this app's own zip4j create flow, to also exercise a `hasEncryptedMetadata`
+   case if the tool supports encrypting filenames too). Expected: a clear message that the archive
+   is password-protected and cannot be tested (`REVIEW_QUEUE.md`'s M3.8 entry, item 5) — never a
+   password prompt, and never a silent hang.
+5. Pick "Test archive" and choose a file that is not an archive Fylz can browse at all (a plain
+   `.jpg`, or a format `BrowsableArchiveFormats` does not list). Expected: a toast saying Fylz
+   cannot test this format, with no attempt to open a decoder connection at all.
+6. Background the app (or rotate the device) while a large Test is in progress. Expected: the test
+   either continues and the result dialog is there when the app resumes foregrounded, or the
+   composition is torn down cleanly with no crash and no orphaned `:decoders:extract` process --
+   this composable has no `WorkManager`/durable-across-process-death story at all (deliberately: it
+   is a quick, non-queued action, not a queued operation), so "the test silently stops when the
+   screen is put away" is expected behaviour, not a bug, but a hang or a crash is not.
+
+**What this verifies:** M3.8 (this commit) — the brief's own scope: CRCs verified without ever
+writing a file, a bad entry reported without derailing the rest, cancellation leaving nothing
+behind, and an encrypted archive refused rather than silently mishandled.

@@ -203,6 +203,9 @@ class ActionResolverGoldenTest {
         val result = mutableListOf(
             Triple(id("fylz.protect"), true, null),
             Triple(id("fylz.archive.inspect"), true, null),
+            // M3.8: verifies CRCs without extracting -- visible/enabled unconditionally, same as
+            // Inspect just above (its own picker decides per file whether the format can be tested).
+            Triple(id("fylz.archive.test"), true, null),
         )
         // M3.6: "Add files to this archive" is visible only while actually browsing a ZIP-family
         // archive location -- the one item in this menu that is not available from anywhere.

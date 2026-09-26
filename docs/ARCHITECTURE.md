@@ -730,6 +730,38 @@ tells the browser to redraw with a plain `refresh()` once one is picked.
 `docs/agent/REVIEW_QUEUE.md`'s M3.7 entry (the wire-format reasoning, the heuristic's exact limits,
 and every other decision, in full).
 
+## Test archive (M3.8)
+
+"Test archive" verifies every entry's CRC without extracting, by reusing M3.4's whole selective-
+extract engine and pointing a different sink at it — zero new Rust code, and no new `:decoders`
+instance or pipe contract.
+
+`operations/ArchiveTester.kt` opens the archive through the existing `ArchiveCatalog` (disk-first,
+single-flight, so a Test right after a browse or an Inspect costs nothing extra), walks the whole
+tree exactly as `ExtractPlanner.expand` would for a whole-archive selection to build one
+`extractRanges` bitmap, and runs that one pass on the isolated extraction instance
+(`:decoders:extract`, never the browsing one — the same instance a real Extract binds, so a long
+test cannot starve or be starved by a concurrent browse fill's own liveness watchdog). The one
+difference from a real extraction is the sink: `DiscardSink` implements "without extracting" by
+construction — its `data` override drops every byte instead of writing it anywhere, so there is no
+`Uri`, no `DocNode`, no destination document anywhere in the class, and a cancel or a crash mid-test
+has nothing to clean up. `end`/`fail` frames become `EntryOutcome.Passed`/`PassedWithWarning`/
+`Failed(kind, message)` per entry (a CRC mismatch is always `Failed`, for every vendored format —
+see `docs/agent/REVIEW_QUEUE.md`'s M3.8 entry, item 6, for where this actually diverges from the
+brief's own text about 7z).
+
+Read-only and non-queued, like `ArchiveInspector`: no journal row, no `TransferWorker`, no queue
+item — a new `fylz.archive.test` registry action opens its own picker from `ArchiveToolsOverlay`,
+parallel to Inspect and Protect, gated on the same `BrowsableArchiveFormats` set `fylz.extract`
+already uses once a file is picked. An encrypted archive is reported "password required, cannot
+test" rather than prompted: the new engine's password field is still the disabled stub M3.5 left it
+as (see "Compress (M3.5)" above), so a password could not actually be used by `extractRanges`
+regardless of where it came from.
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 23;
+`docs/agent/REVIEW_QUEUE.md`'s M3.8 entry (the cancellation design, the size-limit choice, the
+encrypted-archive call, and the `Warning`/`FailKind` deviation, in full).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

@@ -1239,3 +1239,121 @@ a gate: log-and-continue.
   established.
 - Item 9 (the fully-qualified call site over a new import): purely stylistic, reversible any time
   `FylzV1App.kt` gets headroom again (a future milestone that removes more than it adds).
+
+## M3.8 — Test archive (verify CRCs without extracting)
+
+**Milestone:** M3.8 (`docs/agent/MASTER_PLAN.md`'s own M3.8 text; no separate design document --
+this task's own brief is the design, per its own text; combined with M3.9 in one brief because both
+touch `ArchiveToolsOverlay.kt`/the archive-tools menu; per-commit detail in
+`docs/agent/PROGRESS.md`'s `M3.8` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 23,
+sandbox-verified only). Not a gate: log-and-continue.
+
+**Zero Rust changes; the whole feature is a new sink over M3.4's existing engine:**
+
+1. **`operations/ArchiveTester.kt` (new)** runs one `extractRanges` pass over every ordinal a
+   whole-archive selection would read -- `ArchiveTester.allOrdinals` is `ExtractPlanner.expand`'s
+   own walk for `ExtractSelection.All` (files, non-implicit directories, a hardlink's target;
+   symlinks and special files carry no data and are left out, same as extraction leaves them
+   unwritten), minus the byte/name bookkeeping that walk also does for planning, which this pass
+   has no use for. `DiscardSink` (a private `ExtractFrameSink`) implements "without extracting" by
+   construction: its `data` override drops every byte it is handed instead of writing it anywhere
+   -- no `Uri`, no `DocNode`, no `ContentResolver` call anywhere in the class -- so a cancel or a
+   crash mid-test has nothing to clean up, which is also this milestone's own answer to "assert
+   nothing is left behind": there is no destination to assert about, by construction, and
+   `ArchiveTesterTest`'s three main cases (clean/CRC-bad/cancelled) each assert the hosted root's
+   file listing is unchanged as the actual check.
+2. **Runs on the isolated extraction instance (`:decoders:extract`), never the browsing one** --
+   `FylzApplication.archiveTester` is wired with `extractionClient = decoderClient::extraction`,
+   the exact same factory `ArchiveExtractor` itself is handed, so a long test can never starve or
+   be starved by a concurrent browse fill's own liveness watchdog (design rationale
+   `DESIGN-M34-SELECTIVE-EXTRACT.md` section 2.3 step 3, inherited rather than re-derived).
+3. **Size limits: the same conservative, unconsented-extraction default** --
+   `ArchiveLimits.forExtraction(volume = null, consent = false)` -- rather than either the plain
+   inspection defaults (looser on ratio-bomb protection, meant for a header pass that reads no
+   data) or a bespoke "test" limits set. Test still fully decompresses every entry to check it, so
+   the decompression-bomb ceiling matters exactly as much here as it would if the bytes were
+   written to disk; unlike Extract, there is no consent flow to opt into a larger cap, so a very
+   large legitimate archive is refused with the same message an unconsented Extract would give
+   ("This archive has too many entries to test" / the size-policy refusal), rather than silently
+   hanging. Recorded as a deliberate scope-narrowing, not an oversight: adding Test's own consent
+   sheet was judged not worth the UI weight for what is meant to be a quick, one-tap action, the
+   same way Inspect has never had one either.
+4. **Cancellation is checked twice, deliberately:** `DiscardSink.begin` checks the caller's
+   `cancelled` lambda once per entry and throws a private `TestCancelledException` (carrying
+   whatever `results` had already been recorded) when it is true -- the same granularity and the
+   same "an `IOException`, not a `RuntimeException`, so it crosses `DecoderClient.callStreaming`'s
+   drain unmolested" trick `ArchiveExtractor.ExtractCancelledException` already uses, deliberately
+   copied rather than reused (the two sinks' state shapes don't otherwise overlap enough to share a
+   base type without adding indirection this milestone doesn't need). The *same* `cancelled` lambda
+   is also passed to `client.callStreaming` itself, as a second, coarser net for a header pass that
+   never reaches a single entry (a slow structural pre-pass on a large `tar.xz`, say) -- without it,
+   cancelling during that phase would have no effect until frames start flowing, which might never
+   happen if the header pass itself hangs. `ArchiveTesterTest`'s own cancel case deliberately does
+   not assert *which* entry the cutoff lands on (only that it is early, and that it created
+   nothing): with two independent cancellation checks racing against the fake decoder's own real
+   wall-clock write speed, a test that pinned down the exact cutoff entry was demonstrably flaky in
+   practice (caught during this milestone's own test-writing, not left for a reviewer to find) --
+   the design and the test were both corrected to be robust to that race rather than fighting it.
+5. **The encrypted-archive-test question, decided:** an archive with `hasEncryptedEntries` or
+   `hasEncryptedMetadata` set is reported as `ArchiveTestOutcome.PasswordRequired` -- "password
+   required, cannot test" per the brief's own two options -- **never M3.9's shared prompt.**
+   Prompting would only fail again: M3.5's own scope note (repeated in `data/ArchiveService.kt`'s
+   own class doc) says the new engine's password field is a disabled stub until a crypto backend
+   (OpenSSL/mbedTLS/Nettle) is compiled into vendored libarchive, which this brief explicitly does
+   not authorise, so a password `extractRanges` was given could never actually be used by it. The
+   *only* path in this app that can genuinely decrypt anything is the legacy zip4j
+   `ArchiveService.extractZip`, which has no "verify without writing" mode of its own; wiring one up
+   -- a second, format-specific CRC-testing implementation, parallel to this one -- was judged out
+   of proportion to what M3.8 asks for, and is left as a gap: **an encrypted ZIP cannot be Tested
+   at all today**, only extracted (with its password) or Inspected. If a future milestone does
+   enable the new engine's crypto backend, this is the one call site that would need revisiting.
+6. **A deviation from this brief's own wording, found while implementing, not merely inherited:**
+   the brief's design text says "7z's CRC mismatch surfaces as a `Warning` per M3.4's design." The
+   *landed* M3.4 code (`core/crates/fylz-archive/src/lib.rs`'s own doc comment on `FailKind`, not a
+   design document) says otherwise: "ZIP's 'bad CRC' **and 7-Zip's 'bad CRC'** are `FailKind::Crc`"
+   -- a hard `FAIL`, identical treatment for both formats -- and `Warning` has exactly one variant,
+   `Other(String)`, explicitly documented as "never a CRC mismatch." Per this task's own brief
+   ("the committed code is ground truth"), `ArchiveTester`/`EntryOutcome` follow the landed
+   behaviour: a CRC mismatch in *any* format is `EntryOutcome.Failed(FAIL_CRC, ...)`, never
+   `PassedWithWarning`. `PassedWithWarning` exists in the model and the dialog only for whatever a
+   future non-CRC `Warning::Other` might carry; no currently-vendored format is known to produce
+   one through this engine's own libarchive build, so this path is exercised by neither `blocks_tests.rs`'s
+   own fixtures nor `ArchiveTesterTest` today -- a gap worth noting for whoever adds the first format
+   that does.
+7. **UI placement: a fourth, parallel `ArchiveToolsOverlay` menu entry (`fylz.archive.test`,
+   `Placement.Menu(MenuId.ARCHIVE_TOOLS, 25)`, between Inspect at 20 and "Add files" at 30), with
+   its own file picker, not a button bolted onto the existing Inspect result dialog.** The
+   alternative -- inspect first, then offer "Test" alongside "Extract" in that same dialog -- was
+   considered and rejected: `ArchiveTester.test` already re-derives everything `ArchiveInspector`
+   would have shown (partial/encrypted/policy-allowed, off the same catalog) from its own call to
+   `ArchiveCatalog.open`, so a combined flow would either throw away and redo that work or thread an
+   already-open handle across two composables for no real benefit; a stand-alone entry keeps
+   `ArchiveInspectionDialog` untouched and lets Test read exactly as quick and disposable an action
+   as Inspect already is (one tap, one picker, one result). The registry action itself is
+   `visibleWhen`/`enabledWhen = ALWAYS`, matching Inspect and Protect: the *real* format gate
+   (`BrowsableArchiveFormats.matches`, the same set `fylz.extract`'s own `CAN_EXTRACT` predicate
+   reads) is applied after the file is picked, exactly where Inspect's own Extract button applies
+   it today, not before the menu even opens.
+8. **Progress and result UI is a new, small `ArchiveTestDialog` in `ArchiveToolsOverlay.kt` itself**
+   (a `Testing`/`Done` sealed state, `ArchiveTestUiState`), not a reuse of `ArchiveInspectionDialog`
+   -- the brief's own "reuse `ArchiveInspectionDialog`'s general shape if that exists, or a new
+   small dialog" left this a judgement call, and the two dialogs' actual content (a live progress
+   bar and a per-entry pass/warn/fail list, versus a static structural summary) diverge enough that
+   forcing them into one composable's branches was judged to read worse than two small, focused
+   ones sharing only their `AlertDialog`/icon shell by convention.
+
+**Relevant commit:** the M3.8 commit (this commit).
+
+**Risk if it turns out wrong:**
+- Item 5 (no Test path for an encrypted archive at all): the most visible gap of this milestone.
+  If a reviewer would rather see a clear in-dialog "Enter password" affordance that still ends in
+  the same "cannot test" message (rather than a bare picker-time refusal), that is a small,
+  self-contained follow-up -- nothing in `ArchiveTester`'s own contract would need to change.
+- Item 4's double cancellation check is redundant in the common case (the per-entry check almost
+  always wins the race against the coarser outer poll) but never wrong: whichever fires first stops
+  the same pipe the same way, and `ArchiveTestOutcome.Completed.cancelled` is set from the pass's
+  own `streamEnd`/outcome regardless of which one tripped.
+- Item 6 (the `Warning` deviation): if a later milestone's libarchive build (a new format, a new
+  backend) does start emitting a genuine non-CRC `Warning::Other` through this path, nothing here
+  needs to change -- `PassedWithWarning` and its dialog rendering already exist and are exercised by
+  no test only because nothing currently produces one, not because the plumbing is missing.

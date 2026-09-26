@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Lock
@@ -19,6 +22,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -41,8 +45,12 @@ import io.github.mbaliga.fylz.actions.ActionResolver
 import io.github.mbaliga.fylz.actions.BrowserState
 import io.github.mbaliga.fylz.archive.ArchiveFormatFamily
 import io.github.mbaliga.fylz.archive.ArchiveInspectionResult
+import io.github.mbaliga.fylz.archive.ArchiveRef
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
+import io.github.mbaliga.fylz.operations.ArchiveTestEntryResult
+import io.github.mbaliga.fylz.operations.ArchiveTestOutcome
+import io.github.mbaliga.fylz.operations.EntryOutcome
 import io.github.mbaliga.fylz.ui.actions.ArchiveToolsMenuDialog
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -64,6 +72,8 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
     // M3.2: inspection runs in the isolated decoder process over a seekable descriptor, through
     // the application-scoped inspector (its decoder binding must outlive this composition).
     val inspector = remember { (context.applicationContext as FylzApplication).archiveInspector }
+    // M3.8: "Test archive" runs the same isolated extraction instance a real extraction does.
+    val tester = remember { (context.applicationContext as FylzApplication).archiveTester }
     var menuOpen by remember { mutableStateOf(false) }
     var passwordPurpose by remember { mutableStateOf<ArchivePasswordPurpose?>(null) }
     var selectedSources by remember { mutableStateOf<List<Uri>>(emptyList()) }
@@ -75,6 +85,8 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
     var pendingCreatePassword by remember { mutableStateOf<CharArray?>(null) }
     var pendingExtractPassword by remember { mutableStateOf<CharArray?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var archiveTestState by remember { mutableStateOf<ArchiveTestUiState?>(null) }
+    var testCancelRequested by remember { mutableStateOf(false) }
 
     fun persistRead(uri: Uri) {
         runCatching {
@@ -169,6 +181,45 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
         }
     }
 
+    // M3.8: "Test archive" -- verifies every entry's CRC without extracting. Gated on the same
+    // `BrowsableArchiveFormats` set `fylz.extract`/`fylz.compress` already use for format
+    // detection (`CAN_EXTRACT`'s own rule): a format Fylz cannot yet browse or extract is refused
+    // here too, before the picked file ever reaches the catalog.
+    val testArchivePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        persistRead(uri)
+        val name = queryDisplayName(context, uri).orEmpty()
+        if (!BrowsableArchiveFormats.matches(name)) {
+            Toast.makeText(context, "Fylz cannot test this format yet.", Toast.LENGTH_LONG).show()
+            return@rememberLauncherForActivityResult
+        }
+        testCancelRequested = false
+        archiveTestState = ArchiveTestUiState.Testing(0, 0)
+        scope.launch {
+            busy = true
+            when (val outcome = tester.test(ArchiveRef(uri, emptyList()), onProgress = { tested, total -> archiveTestState = ArchiveTestUiState.Testing(tested, total) }, cancelled = { testCancelRequested })) {
+                is ArchiveTestOutcome.Completed -> archiveTestState = ArchiveTestUiState.Done(outcome.entries, outcome.cancelled)
+                ArchiveTestOutcome.PasswordRequired -> {
+                    archiveTestState = null
+                    // M3.9's own scope note: prompting would only fail again, since the new
+                    // engine's password field is a disabled stub until a crypto backend is built.
+                    Toast.makeText(context, "This archive is password-protected; Fylz cannot test it without extracting it.", Toast.LENGTH_LONG).show()
+                }
+                ArchiveTestOutcome.Unavailable -> {
+                    archiveTestState = null
+                    Toast.makeText(context, "The archive could not be read safely.", Toast.LENGTH_LONG).show()
+                }
+                is ArchiveTestOutcome.Refused -> {
+                    archiveTestState = null
+                    Toast.makeText(context, outcome.reason, Toast.LENGTH_LONG).show()
+                }
+            }
+            busy = false
+        }
+    }
+
     FloatingActionButton(onClick = { menuOpen = true }, modifier = modifier) {
         Icon(Icons.Outlined.Archive, contentDescription = "Open archive tools")
     }
@@ -184,6 +235,7 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
                 when (id.value) {
                     "fylz.protect" -> sourcePicker.launch(arrayOf("*/*"))
                     "fylz.archive.inspect" -> archivePicker.launch(INSPECTABLE_ARCHIVE_MIME_TYPES)
+                    "fylz.archive.test" -> testArchivePicker.launch(INSPECTABLE_ARCHIVE_MIME_TYPES)
                     "fylz.archive.add-entries" -> ctx.addArchiveEntries()
                 }
             },
@@ -246,6 +298,14 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
                     if (archive != null) ctx.openExtractMenu(archive)
                 }
             },
+        )
+    }
+
+    archiveTestState?.let { state ->
+        ArchiveTestDialog(
+            state = state,
+            onCancel = { testCancelRequested = true },
+            onDismiss = { archiveTestState = null },
         )
     }
 }
@@ -427,6 +487,98 @@ private fun formatArchiveBytes(bytes: Long): String = when {
     bytes >= 1024L * 1024L -> "%.1f MiB".format(bytes.toDouble() / (1024L * 1024L))
     bytes >= 1024L -> "%.1f KiB".format(bytes.toDouble() / 1024L)
     else -> "$bytes B"
+}
+
+/** [ArchiveTestDialog]'s own state: running (M3.8's progress numbers) or the finished result. */
+private sealed interface ArchiveTestUiState {
+    data class Testing(val tested: Int, val total: Int) : ArchiveTestUiState
+
+    data class Done(val entries: List<ArchiveTestEntryResult>, val cancelled: Boolean) : ArchiveTestUiState
+}
+
+/**
+ * M3.8's own result dialog, the same general shape as [ArchiveInspectionDialog]: a summary line up
+ * top, a scrollable list of whatever was not a clean pass below. While [ArchiveTestUiState.Testing]
+ * this cannot be dismissed by tapping outside it (`onDismissRequest = {}`, same guard
+ * [ArchiveInspectionDialog] uses for `busy`) -- only "Cancel", which asks the pass to stop rather
+ * than abandoning the dialog while it is still running.
+ */
+@Composable
+private fun ArchiveTestDialog(
+    state: ArchiveTestUiState,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    when (state) {
+        is ArchiveTestUiState.Testing -> AlertDialog(
+            onDismissRequest = {},
+            icon = { Icon(Icons.Outlined.Unarchive, contentDescription = null) },
+            title = { Text("Testing archive") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (state.total > 0) "${state.tested} of ${state.total} entries tested" else "Reading archive…")
+                    LinearProgressIndicator(
+                        progress = { if (state.total > 0) state.tested.toFloat() / state.total else 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+        )
+        is ArchiveTestUiState.Done -> {
+            val failed = state.entries.count { it.outcome is EntryOutcome.Failed }
+            val warned = state.entries.count { it.outcome is EntryOutcome.PassedWithWarning }
+            val passed = state.entries.size - failed - warned
+            val problems = state.entries.filter { it.outcome !is EntryOutcome.Passed }
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                icon = { Icon(Icons.Outlined.Unarchive, contentDescription = null) },
+                title = { Text("Archive test") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            buildString {
+                                append("$passed of ${state.entries.size} entries passed")
+                                if (warned > 0) append(", $warned with a warning")
+                                if (failed > 0) append(", $failed failed")
+                                append(".")
+                            },
+                        )
+                        if (state.cancelled) {
+                            Text(
+                                "Testing was cancelled or the archive could not be read further; not every entry was checked.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (problems.isNotEmpty()) {
+                            LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                                items(problems) { entry ->
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Text(entry.path, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            entry.outcome.describe(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (entry.outcome is EntryOutcome.Failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+            )
+        }
+    }
+}
+
+/** One line for [ArchiveTestDialog]'s problem list. */
+private fun EntryOutcome.describe(): String = when (this) {
+    EntryOutcome.Passed -> "OK"
+    is EntryOutcome.PassedWithWarning -> "Warning: $message"
+    is EntryOutcome.Failed -> "$kindLabel: $message"
 }
 
 /**

@@ -49,7 +49,7 @@ fun ArchiveToolsMenuDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Create standard or AES-256 password-protected ZIP files, or inspect and safely extract an existing ZIP.",
+                    "Create standard or AES-256 password-protected ZIP files, or inspect, test and safely extract an existing archive.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 resolver.resolve(PlacementQuery.Menu(MenuId.ARCHIVE_TOOLS), state).forEach { item ->

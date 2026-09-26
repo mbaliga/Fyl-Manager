@@ -491,6 +491,15 @@ object BuiltInActions {
             run = { _, _, _ -> },
         ),
         BuiltInBinding(
+            // M3.8: verifies CRCs without extracting, over the same picker/format gate Inspect
+            // uses -- ArchiveToolsOverlay's own picker decides per file whether the picked format is
+            // one `BrowsableArchiveFormats` (CAN_EXTRACT's own gate) can actually be tested.
+            def = def("fylz.archive.test", "Test archive", "Unarchive", listOf(Placement.Menu(MenuId.ARCHIVE_TOOLS, 25))),
+            visibleWhen = ALWAYS,
+            enabledWhen = ALWAYS,
+            run = { _, _, _ -> },
+        ),
+        BuiltInBinding(
             // M3.6: "add" is the one edit-in-place action with nothing to select first -- visible
             // only while actually browsing a ZIP-family archive (never the general-purpose slots
             // above, which work from anywhere). Opens the same multi-file picker
