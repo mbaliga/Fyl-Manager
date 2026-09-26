@@ -18,7 +18,10 @@ jobs:
   build:
     name: Test, lint, and build debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 40 -> 50 (M3.1 part 3a): the fuzz build now compiles libarchive and its five companions
+    # under nightly, and each new fuzz target adds a fixed 60 s run. 50 -> 55 (M3.5a): the
+    # write_frames target adds one more 60 s run (design section 2.8).
+    timeout-minutes: 55
 
     steps:
       - name: Check out source
@@ -34,9 +37,72 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # v3 defaults to installing "tools", the standalone legacy package
+          # Google removed from the SDK repository -- that default install
+          # fails outright (sdkmanager: "Failed to find package 'tools'")
+          # before this job ever reaches app code, on every commit, unrelated
+          # to any change in this PR. platform-tools is the one package this
+          # step actually needs to provide; the platform/build-tools versions
+          # this app targets are installed explicitly by the next step.
+          packages: 'platform-tools'
 
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      # From M2 on (docs/agent/MASTER_PLAN.md section 3.1's own preflight): the NDK, cargo-ndk
+      # and the three Android Rust targets, needed by :app:buildCoreDebug (M2.3's Exec task,
+      # wired into preDebugBuild) even for a plain testDebugUnitTest/lintDebug/assembleDebug run.
+      # Runner images ship a Rust toolchain already; rust-toolchain.toml pins the exact version
+      # and re-provisions it (plus rustfmt/clippy) automatically on first use.
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;28.2.13676358'
+
+      - name: Install cargo-ndk and Rust Android targets
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk --locked
+
+      # M2.6 (docs/agent/MASTER_PLAN.md section 5): cargo test, clippy, cargo deny and a fuzz
+      # smoke run, added to this workflow specifically (release-readiness.yml stays as it was --
+      # the plan names "the Android workflow" singular, and duplicating a 60s fuzz run into both
+      # would cost real minutes for no new signal). --all-features matters for clippy/deny here
+      # the same way it does locally: fylz-ffi-android's uniffi-cli-gated bin target and its
+      # dependency tree are otherwise invisible to both.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo test, clippy, fmt and deny check
+        working-directory: core
+        run: |
+          cargo test --workspace
+          cargo clippy --all-features --all-targets --workspace -- -D warnings
+          cargo fmt --check
+          cargo deny check
+
+      # cargo-fuzz needs nightly's -Z sanitizer flags; core/rust-toolchain.toml deliberately pins
+      # only the stable channel everything else in this workspace builds with, so nightly is
+      # fetched here rather than added to that file. See core/fuzz/README.md for what "sniff"
+      # fuzzes and why 60s here is a smoke test, not the real fuzzing run.
+      - name: Install nightly Rust and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      # One 60 s run per target (core/fuzz/README.md lists them). `fuzz build` first: the fuzz
+      # workspace is separate from core/'s, so this is the only place CI compiles the structured
+      # targets against the engine's own types (M3.1 part 3 design, section 6.3). archive_entries
+      # is seeded with the committed core/fixtures/* (libFuzzer reads every corpus directory after
+      # the first as seeds and writes new inputs to the first, which must exist).
+      - name: Fuzz smoke test (60s per target)
+        working-directory: core
+        run: |
+          cargo +nightly fuzz build
+          cargo +nightly fuzz run sniff -- -max_total_time=60
+          cargo +nightly fuzz run policy_evaluate -- -max_total_time=60
+          mkdir -p fuzz/corpus/archive_entries
+          cargo +nightly fuzz run archive_entries fuzz/corpus/archive_entries fixtures -- -max_total_time=60
+          cargo +nightly fuzz run write_frames -- -max_total_time=60
 
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4

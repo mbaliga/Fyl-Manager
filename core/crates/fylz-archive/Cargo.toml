@@ -1,0 +1,17 @@
+[package]
+name = "fylz-archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[build-dependencies]
+# Drives libarchive's own CMakeLists.txt (core/third_party/libarchive, a git submodule -- never
+# a Cargo dependency, see build.rs's own doc comment). MIT/Apache-2.0, already on deny.toml's
+# allow-list.
+cmake = "0.1"
+# Compiles bzip2's seven libbz2 objects directly (core/third_party/bzip2 has no CMake build at
+# its pinned tag). MIT/Apache-2.0, already in the graph as cmake's own dependency.
+cc = "1"

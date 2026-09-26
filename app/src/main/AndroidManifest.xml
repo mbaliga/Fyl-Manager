@@ -2,12 +2,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!--
+        P0.12: without this, Android 11+'s package-visibility rules hide every third-party
+        DocumentsProvider from queryIntentContentProviders, including USB drivers like
+        Paragon's, so SafStorageProvider.providerRoots() silently sees only the platform's own
+        providers no matter what the user has installed.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+        </intent>
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Normal (non-dangerous) permission, no runtime request needed: required for
          HyleTabHaptics.settle()'s direct VibratorManager.vibrate() call. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- P0.12: declared here; P1.2 requests it at runtime for the backup/long-operation
+         foreground notifications. Merely declaring it changes nothing on its own. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
         Fylz is a file manager: full filesystem access is its default posture, not an opt-in
@@ -61,14 +76,72 @@
             </intent-filter>
         </provider>
 
+        <!--
+            M3.3: archives as documents (docs/agent/DESIGN-M33-ARCHIVE-BROWSING.md section 2.1).
+            Every archive location and entry the browser shows is a document of this provider, so
+            previews, share, "Open with…", copy-out and the session codec work on entries unchanged.
+            Declared like the File provider above: a DocumentsProvider cannot be non-exported
+            (attachInfo throws) and the signature-level MANAGE_DOCUMENTS keeps other apps out, while
+            a Uri handed out with FLAG_GRANT_READ_URI_PERMISSION still works. Unlike it, there is NO
+            DOCUMENTS_PROVIDER intent filter, so DocumentsUI never lists it. Read-only.
+        -->
+        <provider
+            android:name="io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider"
+            android:authorities="io.github.mbaliga.fylz.archives"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS" />
+
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!--
+            M3.4: the extraction notification's Cancel action. It sets a flag in the operation's plan
+            row (`extract_plans.cancel_requested`) that the running extractor polls; it never cancels
+            the WorkManager request, which would take the transfers queued behind it down too
+            (DESIGN-M34-SELECTIVE-EXTRACT.md section 2.3 step 8). Not exported.
+        -->
+        <receiver
+            android:name=".operations.ExtractCancelReceiver"
+            android:exported="false" />
+
+        <!--
+            M3.5: the compress notification's Cancel action, mirroring ExtractCancelReceiver exactly
+            but against the CREATE plan's own row (`create_plans.cancel_requested`). The two plan
+            kinds live in different tables, so a shared receiver would update the wrong one silently
+            (DESIGN-M35-CREATE.md section 2.3 step 8). Not exported.
+        -->
+        <receiver
+            android:name=".operations.CreateCancelReceiver"
+            android:exported="false" />
+
+        <!--
+            M2.4: the isolated decoder process (docs/agent/MASTER_PLAN.md section 4.4). Native
+            code parsing untrusted file content runs here, never in the UI process:
+            isolatedProcess strips it down to no permissions of its own (it cannot open a file by
+            path; every input arrives as a ParcelFileDescriptor the caller already holds open),
+            and a separate process means a native crash while decoding a hostile file cannot take
+            the host app down with it. exported="false": only DecoderClient, in this same app,
+            ever binds to it.
+        -->
+        <service
+            android:name=".decoder.DecoderService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":decoders" />
+
+        <!--
+            P0.12: exported="false" on this and its two siblings below (IndexManagerActivity,
+            OperationHistoryActivity). None of the three has an intent-filter another app could
+            target anyway; a launcher shortcut with an explicit targetClass (res/xml/shortcuts.xml)
+            still starts a non-exported activity, because the shortcut is published by this same
+            app, not by the launcher process on its own behalf. See res/xml/shortcuts.xml.
+        -->
         <activity
             android:name=".PostV1ToolsActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
@@ -76,20 +149,16 @@
             IndexManagerActivity was never declared, which made the whole index/ package
             unreachable at runtime — starting it threw ActivityNotFoundException. Declared here
             and reached from the Tools surface and a launcher shortcut.
-
-            exported="true" matches its two sibling tool activities: a static launcher shortcut
-            is started by the launcher process, not by Fylz, so the target must be exported for the
-            shortcut in res/xml/shortcuts.xml to work.
         -->
         <activity
             android:name=".IndexManagerActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
         <activity
             android:name=".OperationHistoryActivity"
-            android:exported="true"
+            android:exported="false"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
 
@@ -99,20 +168,44 @@
             android:launchMode="singleTask"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize">
+            <!-- P0.5's interim android:configChanges line lived here, papering over rotation and
+                 fold/resize by preventing the Activity from ever being recreated for them. P1.10
+                 removed it: BrowserViewModel plus SavedStateHandle/SessionStore now survive a real
+                 recreation (config change or process death), so nothing needs to be suppressed. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- P0.12: widened to the families PreviewPane actually renders (FileFormatRegistry),
+                 not just a handful of text/document types: "Open with Fylz" now shows up for
+                 anything the app can meaningfully preview, down to a generic binary/unknown
+                 fallback via application/octet-stream. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="text/*" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="font/*" />
+                <data android:mimeType="model/*" />
+                <data android:mimeType="application/pdf" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/xml" />
-                <data android:mimeType="application/pdf" />
-                <data android:mimeType="image/svg+xml" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.oasis.opendocument.text" />
+                <data android:mimeType="application/vnd.oasis.opendocument.spreadsheet" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
 
             <meta-data

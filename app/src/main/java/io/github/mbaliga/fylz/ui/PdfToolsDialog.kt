@@ -28,12 +28,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.pdf.PdfPageRef
-import io.github.mbaliga.fylz.pdf.PdfToolService
+import io.github.mbaliga.fylz.pdf.PdfPageReference
+import io.github.mbaliga.fylz.pdf.PdfPageTools
 
 /**
- * PDF page tools: the UI for `pdf/PdfToolService`, `pdf/PdfPageTools` and
- * `pdf/SearchablePdfService`, all of which were fully implemented with **no UI references at all**.
+ * PDF page tools: the UI for `pdf/PdfPageTools` (P1.13 consolidated `pdf/PdfToolService` into it;
+ * `pdf/SearchablePdfService` remains its own separate, still UI-less export-only path).
  *
  * What is exposed:
  *
@@ -44,14 +44,14 @@ import io.github.mbaliga.fylz.pdf.PdfToolService
  * - **Searchable (OCR)** — runs on-device ML Kit text recognition and draws an invisible text layer.
  *   Off by default: it is much slower and it is a processing decision the user should make.
  *
- * All of it runs through the existing services; this file adds no PDF logic of its own.
+ * All of it runs through the existing service; this file adds no PDF logic of its own.
  */
 @Composable
 fun PdfToolsDialog(
     sources: List<Uri>,
-    service: PdfToolService,
+    service: PdfPageTools,
     onDismiss: () -> Unit,
-    onExport: (pages: List<PdfPageRef>, searchableOcr: Boolean) -> Unit,
+    onExport: (pages: List<PdfPageReference>, searchableOcr: Boolean) -> Unit,
     onMerge: (searchableOcr: Boolean) -> Unit,
     onError: (String) -> Unit,
 ) {
@@ -147,7 +147,9 @@ fun PdfToolsDialog(
                     onClick = {
                         val uri = single ?: return@Button
                         onExport(
-                            parsedPages.map { PdfPageRef(uri, it, rotation) },
+                            // `rotation` is degrees (the dialog's own 0/90/180/270 buttons);
+                            // PdfPageReference counts quarter turns, not degrees.
+                            parsedPages.map { PdfPageReference(uri, it, rotation / 90) },
                             searchableOcr,
                         )
                     },

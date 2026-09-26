@@ -11,6 +11,14 @@ data class RecycleRecord(
     val providerAuthority: String?,
     val sizeBytes: Long?,
     val recycledAtMillis: Long,
+    /**
+     * The `<uuid>` transaction folder [recycledUri] lives in, so restore and permanent delete can
+     * remove it directly once empty -- `DocumentFile.fromSingleUri(...).parentFile` is always
+     * null (defect 1), so deriving it from [recycledUri] at cleanup time silently leaked these
+     * folders forever. Null only for records written before this field existed; such a record's
+     * container is left behind exactly as it already was, rather than guessed at.
+     */
+    val containerUri: Uri? = null,
 )
 
 sealed interface DeleteDecision {

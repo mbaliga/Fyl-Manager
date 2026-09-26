@@ -87,6 +87,7 @@ private fun OperationHistoryScreen(
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
+                                it.state == OperationState.PARTIAL ||
                                 it.state == OperationState.CANCELLED
                         },
                     ) {
@@ -142,7 +143,7 @@ private fun OperationHistoryScreen(
             title = { Text("Clear finished activity?") },
             text = {
                 Text(
-                    "Completed, failed, and cancelled records will be removed. " +
+                    "Completed, failed, partially completed, and cancelled records will be removed. " +
                         "Interrupted operations will remain visible until reviewed.",
                 )
             },
@@ -250,6 +251,7 @@ private fun OperationCard(operation: FileOperation) {
 private fun stateColor(state: OperationState) = when (state) {
     OperationState.SUCCEEDED -> MaterialTheme.colorScheme.primary
     OperationState.FAILED,
+    OperationState.PARTIAL,
     OperationState.NEEDS_ATTENTION,
     -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant

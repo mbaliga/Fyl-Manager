@@ -53,4 +53,36 @@ class FileFormatRegistryTest {
         assertEquals(PreviewDepth.INSPECTED, value.depth)
         assertEquals("binary", value.rendererId)
     }
+
+    @Test fun svgAndSvgzResolveToImageNotCad() {
+        // P0.9, defect 8: these used to hit the CAD list before the image list and render as hex.
+        listOf("diagram.svg", "diagram.svgz").forEach { name ->
+            val value = FileFormatRegistry.describe(name, "application/octet-stream", EntryKind.OTHER)
+            assertEquals(PreviewFamily.IMAGE, value.family)
+            assertEquals("image", value.rendererId)
+        }
+    }
+
+    @Test fun undecodableRawImageFormatsAreInspectedNotFalselyRendered() {
+        // P0.9, defect 9: no decoder here actually renders these; RENDERED was a broken promise.
+        listOf("photo.tiff", "scan.jp2", "layers.psd", "raw.cr2", "cursor.cur").forEach { name ->
+            val value = FileFormatRegistry.describe(name, "application/octet-stream", EntryKind.OTHER)
+            assertEquals(name, PreviewFamily.IMAGE, value.family)
+            assertEquals(name, PreviewDepth.INSPECTED, value.depth)
+            assertNotNull(value.notes)
+        }
+    }
+
+    @Test fun modernImageFormatsThePlatformDecodesStayRendered() {
+        listOf("shot.dng", "photo.heic", "photo.heif", "photo.avif").forEach { name ->
+            val value = FileFormatRegistry.describe(name, "application/octet-stream", EntryKind.OTHER)
+            assertEquals(name, PreviewFamily.IMAGE, value.family)
+            assertEquals(name, PreviewDepth.RENDERED, value.depth)
+        }
+    }
+
+    @Test fun luaResolvesToText() {
+        val value = FileFormatRegistry.describe("script.lua", "application/octet-stream", EntryKind.OTHER)
+        assertEquals(PreviewFamily.TEXT, value.family)
+    }
 }

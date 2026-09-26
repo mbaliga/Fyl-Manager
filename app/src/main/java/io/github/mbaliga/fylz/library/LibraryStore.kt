@@ -56,7 +56,11 @@ class LibraryStore(context: Context) {
         val index = current.indexOfFirst { it.uri == uri }
         val added = index < 0
         if (added) current += FavoriteLocation(uri, name.take(200)) else current.removeAt(index)
-        preferences.edit().putString(FAVORITES, encodeFavorites(current).toString()).commit()
+        // P1.11: .apply() -- every caller of this method already discards the boolean success
+        // result .commit() would give, so there is nothing to gain from blocking on the write
+        // landing before returning, only main-thread stalls (this is called directly from a UI
+        // click handler in FylzV1App.kt, never off the main thread) for no benefit.
+        preferences.edit().putString(FAVORITES, encodeFavorites(current).toString()).apply()
         return added
     }
 
@@ -68,7 +72,10 @@ class LibraryStore(context: Context) {
 
     @Synchronized
     fun setTags(uri: Uri, tags: Collection<String>) {
-        preferences.edit().putStringSet(TAG_PREFIX + uri.toString(), normalizeTags(tags)).commit()
+        // P1.11: .apply() -- see toggleFavorite's own comment above. Called once per selected
+        // item from a multi-select tag dialog in FylzV1App.kt, so a multi-hundred-item batch
+        // used to mean that many blocking commit()s in a row on the UI thread.
+        preferences.edit().putStringSet(TAG_PREFIX + uri.toString(), normalizeTags(tags)).apply()
     }
 
     @Synchronized
@@ -79,12 +86,14 @@ class LibraryStore(context: Context) {
         require(search.name.isNotBlank())
         val sanitized = search.copy(name = search.name.trim().take(100), query = search.query.take(1_000))
         val current = savedSearches().filterNot { it.id == search.id } + sanitized
-        preferences.edit().putString(SEARCHES, encodeSearches(current).toString()).commit()
+        preferences.edit().putString(SEARCHES, encodeSearches(current).toString()).apply() // P1.11
     }
 
     @Synchronized
     fun removeSearch(id: String) {
-        preferences.edit().putString(SEARCHES, encodeSearches(savedSearches().filterNot { it.id == id }).toString()).commit()
+        preferences.edit() // P1.11
+            .putString(SEARCHES, encodeSearches(savedSearches().filterNot { it.id == id }).toString())
+            .apply()
     }
 
     @Synchronized
@@ -113,12 +122,14 @@ class LibraryStore(context: Context) {
         require(rule.value.isNotBlank())
         val sanitized = rule.copy(name = rule.name.trim().take(100), value = rule.value.trim().take(500))
         val current = smartRules().filterNot { it.id == rule.id } + sanitized
-        preferences.edit().putString(SMART_RULES, encodeRules(current).toString()).commit()
+        preferences.edit().putString(SMART_RULES, encodeRules(current).toString()).apply() // P1.11
     }
 
     @Synchronized
     fun removeSmartRule(id: String) {
-        preferences.edit().putString(SMART_RULES, encodeRules(smartRules().filterNot { it.id == id }).toString()).commit()
+        preferences.edit() // P1.11
+            .putString(SMART_RULES, encodeRules(smartRules().filterNot { it.id == id }).toString())
+            .apply()
     }
 
     /** Portable metadata only. Persisted SAF grants and secrets are deliberately excluded. */

@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.InsertDriveFile
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -54,6 +55,7 @@ import io.github.mbaliga.fylz.network.RemoteConnection
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.RemoteKind
 import io.github.mbaliga.fylz.network.RemoteObject
+import io.github.mbaliga.fylz.network.SftpProvider
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -165,6 +167,7 @@ fun RemoteConnectionsDialog(
                                 .onSuccess { addingKind = null; editing = null; refresh() }
                                 .onFailure { onError(it.message ?: "That connection is not valid.") }
                         },
+                        onError = onError,
                         modifier = Modifier.weight(1f, fill = false),
                     )
 
@@ -322,8 +325,10 @@ private fun RemoteConnectionForm(
     hasStoredSecret: Boolean,
     onCancel: () -> Unit,
     onSave: (RemoteConnection, CharArray?) -> Unit,
+    onError: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf(existing?.displayName ?: kind.label) }
     var host by remember { mutableStateOf(existing?.host ?: "") }
     var port by remember { mutableStateOf(existing?.port?.takeIf { it > 0 }?.toString() ?: defaultPort(kind)) }
@@ -336,6 +341,8 @@ private fun RemoteConnectionForm(
     var bucket by remember { mutableStateOf(existing?.bucket ?: "") }
     var fingerprint by remember { mutableStateOf(existing?.hostKeyFingerprint ?: "") }
     var writes by remember { mutableStateOf(existing?.writesEnabled ?: false) }
+    var probingFingerprint by remember { mutableStateOf(false) }
+    var probedFingerprint by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier.verticalScroll(rememberScrollState()),
@@ -366,10 +373,25 @@ private fun RemoteConnectionForm(
                     label = { Text("SHA-256 host key fingerprint") },
                     supportingText = {
                         // SftpProviderConfig rejects a config without one, by design.
-                        Text("Required. Run: ssh-keyscan host | ssh-keygen -lf -")
+                        Text("Required. Run: ssh-keyscan host | ssh-keygen -lf -, or detect it below.")
                     },
                     singleLine = true,
                 )
+                TextButton(
+                    onClick = {
+                        probingFingerprint = true
+                        scope.launch {
+                            runCatching { SftpProvider.probeHostKeyFingerprint(host.trim(), port.toIntOrNull() ?: 22) }
+                                .onSuccess { probedFingerprint = it }
+                                .onFailure { onError(it.message ?: "Unable to reach the server.") }
+                            probingFingerprint = false
+                        }
+                    },
+                    enabled = host.isNotBlank() && !probingFingerprint,
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(if (probingFingerprint) "Detecting…" else "Detect fingerprint")
+                }
             }
 
             RemoteKind.SMB -> {
@@ -438,6 +460,31 @@ private fun RemoteConnectionForm(
             TextButton(onClick = onCancel, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
         }
         Spacer(Modifier.height(4.dp))
+    }
+
+    // Trust-on-first-use, steps 2-3 (P0.11): the fingerprint is only ever filled in after the
+    // user explicitly confirms what the server actually presented -- probing alone never pins it.
+    probedFingerprint?.let { detected ->
+        AlertDialog(
+            onDismissRequest = { probedFingerprint = null },
+            title = { Text("Confirm host key") },
+            text = {
+                Text(
+                    "The server presented:\n\n$detected\n\n" +
+                        "Only trust this if you already know it's correct -- from the server's " +
+                        "admin, your own prior connection, or another verified channel. Trusting " +
+                        "a fingerprint you haven't verified defeats the point of pinning it.",
+                )
+            },
+            confirmButton = {
+                Button(onClick = { fingerprint = detected; probedFingerprint = null }) {
+                    Text("Trust and use this fingerprint")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { probedFingerprint = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 

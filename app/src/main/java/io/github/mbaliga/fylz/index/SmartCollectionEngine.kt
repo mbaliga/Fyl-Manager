@@ -25,14 +25,15 @@ object SmartCollectionEngine {
 
     fun matches(file: IndexedFile, rule: SmartRule): Boolean = when (rule.field) {
         RuleField.NAME -> compareText(file.name, rule.operator, rule.value)
-        // The local index does not retain a folder-relative path, only the file name and its
-        // enclosing scope; PATH rules degrade to a name match rather than silently never matching.
-        RuleField.PATH -> compareText(file.name, rule.operator, rule.value)
+        // P1.12: the index now retains a real, scope-relative path (IndexedFile.path), so this no
+        // longer degrades to a name-only match the way it did before that field existed.
+        RuleField.PATH -> compareText(file.path, rule.operator, rule.value)
         RuleField.EXTENSION -> compareText(file.extension, rule.operator, rule.value.trimStart('.'))
         RuleField.MIME -> compareText(file.mimeType, rule.operator, rule.value)
-        // No text-content sampling is captured by this index, so a content rule can never match.
-        // This fails closed (excludes the file) instead of pretending a sample was inspected.
-        RuleField.TEXT_CONTENT -> false
+        // P1.12: matches against IndexedFile.textSnippet, a capped read of text-previewable
+        // files (see LocalIndexScheduler.readTextSnippet) -- null (no sample captured, including
+        // every non-text file and every directory) fails closed rather than matching everything.
+        RuleField.TEXT_CONTENT -> file.textSnippet?.let { compareText(it, rule.operator, rule.value) } ?: false
         RuleField.SIZE -> compareLong(file.sizeBytes, rule.operator, parseSize(rule.value))
         RuleField.MODIFIED -> compareLong(file.modifiedAtMillis, rule.operator, rule.value.toLongOrNull())
         RuleField.DIRECTORY -> compareBoolean(file.directory, rule.operator, parseBoolean(rule.value))

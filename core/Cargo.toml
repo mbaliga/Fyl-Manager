@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fylz-types",
+    "crates/fylz-actions",
+    "crates/fylz-archive",
+    "crates/fylz-sniff",
+    "crates/fylz-rename",
+    "crates/fylz-query",
+    "crates/fylz-index",
+    "crates/fylz-verify",
+    "crates/fylz-usb",
+    "crates/fylz-clean",
+    "crates/fylz-ffi-android",
+    "crates/fylz-ffi-qt",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/mbaliga/Fyl-Manager"
+publish = false
+
+# M2.3: the Android debug build uses this profile for a fast cargo-ndk turnaround.
+[profile.dev-android]
+inherits = "dev"
+opt-level = 1
+
+# M2.3: the Android release build strips symbols and enables LTO for size.
+[profile.release]
+lto = true
+strip = true

@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.operations
 
 import android.net.Uri
+import io.github.mbaliga.fylz.archive.ArchiveDocumentId
 
 sealed interface OperationRetryPlan {
     data class Transfer(
@@ -11,6 +12,26 @@ sealed interface OperationRetryPlan {
     ) : OperationRetryPlan
 
     data class FinishMoveCleanup(
+        val operationId: String,
+    ) : OperationRetryPlan
+
+    /**
+     * M3.4: an EXTRACT operation with a plan is retried by **re-claiming the same operation** --
+     * `OperationJournal.retryExtract` moves it and its unfinished items back to `QUEUED` in one
+     * transaction and `OperationRunner.enqueueExtract` runs it again -- where a copy retry is a
+     * new operation over the unfinished sources.
+     */
+    data class ReclaimExtract(
+        val operationId: String,
+    ) : OperationRetryPlan
+
+    /**
+     * M3.5: a planned compression is retried the same way -- `OperationJournal.retryCreate` moves
+     * the operation and its single plan item back to `QUEUED` (restart count and cancel flag both
+     * reset: a deliberate retry is a fresh attempt, not one more system-stop restart) and
+     * `OperationRunner.enqueueCreate` runs it again.
+     */
+    data class ReclaimCreate(
         val operationId: String,
     ) : OperationRetryPlan
 }
@@ -27,8 +48,13 @@ object OperationRetryPolicy {
 
     private val retryableStates = setOf(
         OperationState.FAILED,
+        // P1.7: a PARTIAL operation's own incomplete items (state != SUCCEEDED) are exactly its
+        // failed items, so the existing plan()/replay-incomplete-items logic below already IS
+        // "Retry failed items" for this state -- no separate plan type needed.
+        OperationState.PARTIAL,
         OperationState.CANCELLED,
         OperationState.NEEDS_ATTENTION,
+        OperationState.INTERRUPTED,
     )
 
     private val retryableTypes = setOf(
@@ -61,10 +87,33 @@ object OperationRetryPolicy {
             allIncompleteItemsHaveDestination &&
             incompleteErrorCodes.all { it == MOVE_SOURCE_DELETE_PENDING }
 
+    /**
+     * M3.4: a planned extraction is recognisable from its row alone -- an EXTRACT with a
+     * destination whose every item's source is an archive document; the legacy zip4j path
+     * (`ArchiveService.extractZip`) writes plain file sources and no destination. The DAO's
+     * `retryExtract` still checks that the plan row exists before anything moves.
+     */
+    fun isPlannedExtract(operation: FileOperation): Boolean =
+        operation.type == FileOperationType.EXTRACT &&
+            operation.destination != null &&
+            operation.items.isNotEmpty() &&
+            operation.items.all { ArchiveDocumentId.isArchiveUri(it.source) }
+
+    /**
+     * M3.5: a planned compression is recognisable from its row alone too -- an ARCHIVE operation
+     * with a top-level destination. The legacy zip4j path ([io.github.mbaliga.fylz.data.ArchiveService.createZip])
+     * never sets one (only each item's own destination), the same distinction [isPlannedExtract]
+     * draws against the same legacy service's `extractZip`.
+     */
+    fun isPlannedCreate(operation: FileOperation): Boolean =
+        operation.type == FileOperationType.ARCHIVE && operation.destination != null
+
     fun plan(operation: FileOperation): OperationRetryPlan? {
         if (operation.state !in retryableStates) return null
         val incomplete = operation.items.filter { it.state != OperationState.SUCCEEDED }
         if (incomplete.isEmpty()) return null
+        if (isPlannedExtract(operation)) return OperationRetryPlan.ReclaimExtract(operation.id)
+        if (isPlannedCreate(operation)) return OperationRetryPlan.ReclaimCreate(operation.id)
 
         if (
             isMoveCleanupRetry(
@@ -106,6 +155,8 @@ object OperationRetryPolicy {
     fun actionLabel(operation: FileOperation): String = when (plan(operation)) {
         is OperationRetryPlan.FinishMoveCleanup -> "Finish move"
         is OperationRetryPlan.Transfer -> "Retry unfinished"
+        is OperationRetryPlan.ReclaimExtract -> "Retry extraction"
+        is OperationRetryPlan.ReclaimCreate -> "Retry compression"
         null -> "Retry unavailable"
     }
 }

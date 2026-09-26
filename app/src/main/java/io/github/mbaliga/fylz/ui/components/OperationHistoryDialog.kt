@@ -124,6 +124,7 @@ fun OperationHistoryDialog(
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
+                                it.state == OperationState.PARTIAL ||
                                 it.state == OperationState.CANCELLED
                         },
                     ) {
@@ -201,6 +202,20 @@ private fun OperationHistoryCard(
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                if (operation.state == OperationState.INTERRUPTED) {
+                    Text(
+                        "Fylz closed before this finished. Any partial copy was safely removed; retry starts it fresh.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (operation.state == OperationState.PARTIAL) {
+                    val failedCount = operation.items.count { it.state == OperationState.FAILED }
+                    Text(
+                        "$failedCount of ${operation.items.size} items failed; the rest completed. " +
+                            "Retry to try the failed items again.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 operation.items.mapNotNull { it.errorCode }.distinct().takeIf { it.isNotEmpty() }?.let { codes ->
                     Text(
                         codes.joinToString(),
@@ -232,10 +247,13 @@ private fun OperationState.presentation(): StatePresentation = when (this) {
     OperationState.PREFLIGHT -> StatePresentation("Checking", Icons.Outlined.Schedule)
     OperationState.RUNNING -> StatePresentation("Running", Icons.Outlined.Schedule)
     OperationState.PAUSED -> StatePresentation("Paused", Icons.Outlined.Schedule)
+    OperationState.PAUSED_BY_SYSTEM -> StatePresentation("Paused by system", Icons.Outlined.Schedule)
     OperationState.SUCCEEDED -> StatePresentation("Completed", Icons.Outlined.CheckCircle)
     OperationState.FAILED -> StatePresentation("Failed", Icons.Outlined.ErrorOutline)
+    OperationState.PARTIAL -> StatePresentation("Partially completed", Icons.Outlined.WarningAmber)
     OperationState.CANCELLED -> StatePresentation("Cancelled", Icons.Outlined.Cancel)
     OperationState.NEEDS_ATTENTION -> StatePresentation("Needs attention", Icons.Outlined.WarningAmber)
+    OperationState.INTERRUPTED -> StatePresentation("Interrupted", Icons.Outlined.WarningAmber)
 }
 
 private fun FileOperationType.label(): String = name
@@ -249,6 +267,8 @@ private fun formatOperationTime(timeMillis: Long): String =
 private val dismissibleStates = setOf(
     OperationState.SUCCEEDED,
     OperationState.FAILED,
+    OperationState.PARTIAL,
     OperationState.CANCELLED,
     OperationState.NEEDS_ATTENTION,
+    OperationState.INTERRUPTED,
 )

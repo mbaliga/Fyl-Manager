@@ -49,6 +49,19 @@ class ArchiveSpacePolicyTest {
     }
 
     @Test
+    fun `staging requirement is the declared size or the whole limit, plus the minimum headroom`() {
+        val headroom = ArchiveSpacePolicy.MIN_TEMPORARY_HEADROOM
+        assertEquals(16L * 1024L * 1024L, headroom)
+        assertEquals(1_000L + headroom, ArchiveSpacePolicy.stagingRequirement(1_000L, 5_000L))
+        // Unknown size: the provider may send anything up to the limit, so that is what is reserved.
+        assertEquals(5_000L + headroom, ArchiveSpacePolicy.stagingRequirement(null, 5_000L))
+        assertEquals(headroom, ArchiveSpacePolicy.stagingRequirement(0L, 5_000L))
+        assertEquals(headroom, ArchiveSpacePolicy.stagingRequirement(-1L, 5_000L))
+        assertEquals(Long.MAX_VALUE, ArchiveSpacePolicy.stagingRequirement(Long.MAX_VALUE, 5_000L))
+        assertEquals(Long.MAX_VALUE, ArchiveSpacePolicy.stagingRequirement(null, Long.MAX_VALUE))
+    }
+
+    @Test
     fun `negative values are rejected`() {
         assertNull(ArchiveSpacePolicy.requirements(-1L, 100L))
         assertFalse(ArchiveSpacePolicy.evaluate(-1L, 100L, "temporary").allowed)

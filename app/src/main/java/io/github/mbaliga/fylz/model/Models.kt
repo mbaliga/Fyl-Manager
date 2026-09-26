@@ -76,3 +76,17 @@ enum class AccentPreset {
     CLAY,
     ELECTRIC,
 }
+
+/** P1.8: whether a [FylzClipboard] resolves at Paste time to a move or a copy. */
+enum class ClipboardMode {
+    CUT,
+    COPY,
+}
+
+/** What Cut/Copy put on the app's own in-memory clipboard (P1.8) -- [entries] is a snapshot taken
+ * at Cut/Copy time, not a live reference to the current selection, so it survives the selection
+ * being cleared or changed by navigating to another folder before Paste happens. */
+data class FylzClipboard(
+    val mode: ClipboardMode,
+    val entries: List<FileEntry>,
+)
