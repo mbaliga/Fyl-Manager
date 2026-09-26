@@ -924,9 +924,19 @@ implementation added):
 30. The M3.5a commit's subject text ("framed archived writing in fylz-archive…") most likely
     should have read "framed archive writing"; left uncorrected once noticed, rather than amending
     a pushed commit.
+31. The design's own `ENTRY` frame grammar box (`docs/agent/DESIGN-M35-CREATE.md` line 270) omits a
+    `size` field entirely, even though the very next paragraph's prose ("ENTRY using the
+    size-at-open-time rule of §2.2 step 3/4 -- unknown size sends no size field at all") only makes
+    sense if one normally exists. `fylz-archive`'s own `write.rs` module doc already caught and
+    resolved this in M3.5a, placing `size:i64(-1 unknown)` right after `kind` -- mirroring where
+    `FZX1`'s sibling `BEGIN` frame puts its own `declared:i64` -- and recording it there as "a
+    design gap filled, not a deviation from anything the design actually specified" rather than as
+    a bug. The Kotlin side (`ArchiveFrameWriter.entry`) places `sizeBytes` in that same slot. Filed
+    here only because the design's literal grammar table itself was never corrected to match; the
+    two implementations already agree with each other and with the design's prose.
 
-**Relevant commits:** the M3.5a commit (`7f2c9db`; the design's 13, 3, 4 and this entry's own
-locale-pin and poisoning proofs as landed); the M3.5b commit (`f83713a`; items 18–25 and the
+**Relevant commits:** the M3.5a commit (`7f2c9db`; the design's 13, 3, 4, item 31, and this entry's
+own locale-pin and poisoning proofs as landed); the M3.5b commit (`f83713a`; items 18–25 and the
 design's 1, 5–7, 9, 11, 14–17 as landed); the M3.5c commit (items 26–30 and the design's 2, 7, 12
 as landed).
 
