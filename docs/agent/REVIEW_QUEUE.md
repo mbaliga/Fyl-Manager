@@ -1488,3 +1488,87 @@ sandbox-verified only). Not a gate: log-and-continue.
 - Item 4's `LaunchedEffect`/counter workaround in `FylzV1App.kt`: purely mechanical, reversible if a
   future refactor moves `destinationPicker`'s declaration earlier in that file for its own reasons
   (at which point `onLegacyEncryptedZip` could call it directly and the effect/counter could go).
+
+---
+
+## M3.10 — Remove zip4j and `ExtendedArchiveBrowserService`, to the extent honestly possible
+
+**Milestone:** M3.10 (`docs/agent/MASTER_PLAN.md`'s own M3.10 text: "Remove zip4j and
+`ExtendedArchiveBrowserService` once the parity tests for create, extract and AES pass" -- no
+separate design document, this task's own brief is the design, per its own text; per-commit detail
+in `docs/agent/PROGRESS.md`'s `M3.10` row). Not a gate: log-and-continue.
+
+**The plan's literal condition was not met, and cannot be met in this build.** The AES parity leg
+of "create, extract and AES" has never passed and cannot pass without a crypto backend:
+`core/crates/fylz-archive/build.rs` builds the vendored libarchive with `ENABLE_OPENSSL`,
+`ENABLE_MBEDTLS`, `ENABLE_NETTLE` and `ENABLE_LIBB2` all `OFF`, so `archive_cryptor.c` compiles in
+only `ARCHIVE_CRYPTOR_STUB` -- the engine can neither write nor read AES-encrypted ZIPs. Every
+milestone from M3.5 onward has recorded this same fact (M3.5's own REVIEW_QUEUE entry, item 2:
+"Password disabled until a real crypto backend exists; the same gap blocks M3.9's AES read, M5, and
+M3.10"; M3.8's entry, item naming the Test-archive gap for an encrypted ZIP; M3.9's entry, item 8's
+closing note that "M3.10 may delete the whole class before it matters" -- referring to
+`ArchiveService.kt`, which this task does **not** delete, precisely because AES still needs it).
+zip4j remains the only thing in this codebase that can create or extract an AES-256 ZIP, so this
+task scopes itself to what removal is actually achievable without breaking that path, rather than
+pretending the plan's literal gate was cleared. **No crypto backend was enabled to close this gap**
+-- that is a real architectural change (a new vendored native dependency, a licence review, a
+`core/deny.toml` allow-list update) this brief does not authorise; `core/deny.toml` today allows
+only Apache-2.0/MIT/BSD-2/3-Clause/ISC/Zlib/CC0-1.0/MPL-2.0/Unicode-3.0 and carries no crypto-library
+entry, and `THIRD_PARTY_NOTICES.md` has no entry for one either, so enabling one is a genuine new
+review item, not a trivial flag flip, and it was left alone rather than attempted.
+
+**What this task did remove, confirmed dead first:**
+
+1. **`ExtendedArchiveBrowserService`**
+   (`app/src/main/java/io/github/mbaliga/fylz/data/ExtendedArchiveBrowserService.kt`, 228 lines) --
+   re-confirmed by grep across `app/src` immediately before deletion to have zero callers anywhere
+   in `app/src/main` or `app/src/test` (only self-references inside the file itself), matching the
+   M3.2/M3.3/M3.4 surveys' own standing finding (`SURVEY-M32-SEEKABLE-PFD.md` §7 item 8,
+   `SURVEY-M33-ARCHIVE-BROWSING.md` item 15, `SURVEY-M34-SELECTIVE-EXTRACT.md` item 7) that this was
+   dead code since before M3 began (P1.13's own progress row already found it and deliberately left
+   it alone, out of that task's own stated scope). No test file existed for it (grep for the class
+   name under `app/src/test` before deletion: zero hits), so there was nothing to delete on that
+   side.
+2. **`org.apache.commons:commons-compress:1.28.0`** and **`org.tukaani:xz:1.12`** removed from
+   `app/build.gradle.kts`. Before removing them, every remaining file under `app/src/main` and
+   `app/src/test` was grepped for `org.apache.commons.compress` and `org.tukaani.xz` imports:
+   `ExtendedArchiveBrowserService.kt` (just deleted) was the only importer of either; nothing else
+   in the app references them, directly or transitively through Kotlin source (xz was only ever
+   commons-compress's own runtime dependency for its XZ/LZMA compressor, never imported by this
+   app's own code).
+3. **zip4j's footprint confirmed already minimal.** Grepped `net.lingala.zip4j` across all of
+   `app/src`: the only importer is `app/src/main/java/io/github/mbaliga/fylz/data/ArchiveService.kt`
+   (`ZipFile`, `ZipException`, `FileHeader`, `ZipParameters`, `AesKeyStrength`, `CompressionLevel`,
+   `CompressionMethod`, `EncryptionMethod`) -- exactly the scope M3.4c/M3.5c/M3.8/M3.9's own prior
+   work already narrowed it to (AES-encrypted-ZIP create/extract only; every plain-ZIP and
+   non-encrypted-format path in the app runs on the new Rust engine). No stray reference found
+   elsewhere, so nothing further to remove or flag. **Neither zip4j nor `ArchiveService.kt` itself
+   was removed** -- the brief is explicit that this task must not touch either, and the AES gap
+   above is exactly why: deleting `ArchiveService.kt` would delete the only working AES ZIP
+   create/extract path in the app with no replacement.
+
+**Recommendation for Madhav, on whether a crypto backend is worth it:** enabling one of libarchive's
+optional crypto backends (most likely OpenSSL or mbedTLS, both already permissively licensed and
+plausible fits for `deny.toml`'s existing allow-list) would let `fylz-archive` write and read
+AES-256 ZIPs itself, letting M3.10 actually clear its stated gate and zip4j be removed entirely --
+but it is a real cost, not a free flag flip: a new vendored native dependency to build for three
+Android ABIs (APK size and build-time cost, similar in kind to what `libarchive`/`lz4`/`xz` already
+added), a licence notice to add to `THIRD_PARTY_NOTICES.md`, and `deny.toml`'s allow-list to extend
+and re-justify. Per `docs/agent/MASTER_PLAN_ADDENDUM_1.md` §A's own gate policy, this is exactly a
+"log and continue" item, not a blocker: the current state (zip4j scoped to one narrow, working,
+already-shipped AES path; everything else on the new engine) is safe and shippable as-is, so there
+is no urgency forcing the decision before M4 or M5. If Madhav wants full parity (one archive engine,
+zip4j gone entirely) it is a real, boundable follow-up task; if the AES ZIP path staying on zip4j
+indefinitely is acceptable, this milestone's scoping is the final state and nothing further is
+owed.
+
+**Relevant commit:** the M3.10 commit (this commit).
+
+**Risk if it turns out wrong:** low. Both removals (`ExtendedArchiveBrowserService`,
+commons-compress/xz) are pure deletions of code with zero remaining callers, re-confirmed by grep
+immediately before deletion, not a behaviour change to anything reachable from the UI -- the worst
+case is that a grep missed a reflection-based or resource-string reference to either dependency,
+which `:app:testDebugUnitTest`/`:app:lintDebug`/`:app:assembleDebug` all green after the removal
+makes unlikely (a missing class or unresolved import fails the Kotlin compile step outright, it does
+not compile quietly). zip4j and `ArchiveService.kt` are untouched, so the AES ZIP path carries no
+new risk from this commit at all.

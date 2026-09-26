@@ -103,9 +103,11 @@ dependencies {
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
+    // zip4j: retained (M3.10) -- the only reader/writer of AES-encrypted ZIPs, since
+    // fylz-archive's vendored libarchive has every crypto backend OFF (core/crates/fylz-archive/
+    // build.rs) and cannot write or read AES ZIPs. Scoped to ArchiveService.kt's encrypted-ZIP
+    // create/extract path only; see docs/agent/REVIEW_QUEUE.md's M3.10 entry.
     implementation("net.lingala.zip4j:zip4j:2.11.5")
-    implementation("org.apache.commons:commons-compress:1.28.0")
-    implementation("org.tukaani:xz:1.12")
     implementation("com.hierynomus:sshj:0.40.0")
     implementation("com.hierynomus:smbj:0.14.0")
     implementation("io.minio:minio:9.0.1")
