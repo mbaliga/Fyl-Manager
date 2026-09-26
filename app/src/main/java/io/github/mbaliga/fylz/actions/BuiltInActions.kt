@@ -21,10 +21,20 @@ private val CAN_EXTRACT: (BrowserState) -> Boolean = { state ->
 }
 private val EXTRACT_VISIBLE: (BrowserState) -> Boolean = { HAS_SELECTION(it) && it.locationKind != LocationKind.ARCHIVE }
 
-/** M3.3 (DESIGN-M33 §2.6): an archive location is read-only until M3.6 -- every action that writes
- * the selection's source or the current location is disabled there. `ActionResolverGoldenTest`'s
- * `LegacyOracle.writableLocation` is this rule's frozen twin. */
+/** M3.3 (DESIGN-M33 §2.6): an archive location is read-only -- every action that writes the
+ * selection's source or the current location is disabled there, except the two M3.6 re-enables
+ * just below. `ActionResolverGoldenTest`'s `LegacyOracle.writableLocation` is this rule's frozen
+ * twin. */
 private val WRITABLE_LOCATION: (BrowserState) -> Boolean = { it.locationKind != LocationKind.ARCHIVE }
+
+/** M3.6: `fylz.rename`/`fylz.recycle` act on a ZIP-family archive's own entries (add/delete/rename
+ * in place) exactly as they act on a folder's; every other archive location -- a non-ZIP format, or
+ * the archive root itself, which is never a selectable entry -- stays read-only under
+ * [WRITABLE_LOCATION]. `ActionResolverGoldenTest`'s `LegacyOracle.archiveEntryWritable` mirrors
+ * this. */
+private val ARCHIVE_ENTRY_WRITABLE: (BrowserState) -> Boolean = { state ->
+    WRITABLE_LOCATION(state) || (state.locationKind == LocationKind.ARCHIVE && state.isZipFamilyArchiveLocation)
+}
 
 private fun def(
     id: String,
@@ -92,13 +102,13 @@ object BuiltInActions {
                 destructive = true,
             ),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = WRITABLE_LOCATION,
+            enabledWhen = ARCHIVE_ENTRY_WRITABLE,
             run = { ctx, _, _ -> ctx.recycleSelection() },
         ),
         BuiltInBinding(
             def = def("fylz.rename", "Rename", "Edit", listOf(Placement.SelectionBar(60), Placement.Shortcut(KeyChord(Key.F2)))),
             visibleWhen = HAS_SELECTION,
-            enabledWhen = { it.selection.size == 1 && WRITABLE_LOCATION(it) },
+            enabledWhen = { it.selection.size == 1 && ARCHIVE_ENTRY_WRITABLE(it) },
             run = { ctx, _, _ -> ctx.rename() },
         ),
         BuiltInBinding(
@@ -479,6 +489,16 @@ object BuiltInActions {
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
             run = { _, _, _ -> },
+        ),
+        BuiltInBinding(
+            // M3.6: "add" is the one edit-in-place action with nothing to select first -- visible
+            // only while actually browsing a ZIP-family archive (never the general-purpose slots
+            // above, which work from anywhere). Opens the same multi-file picker
+            // `CompressPlanner`'s own sources come from.
+            def = def("fylz.archive.add-entries", "Add files to this archive", "Archive", listOf(Placement.Menu(MenuId.ARCHIVE_TOOLS, 30))),
+            visibleWhen = { it.locationKind == LocationKind.ARCHIVE && it.isZipFamilyArchiveLocation },
+            enabledWhen = ALWAYS,
+            run = { ctx, _, _ -> ctx.addArchiveEntries() },
         ),
     )
 

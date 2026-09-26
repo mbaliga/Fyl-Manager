@@ -716,3 +716,55 @@ of this ran on a device.**
 
 **What this verifies:** M3.5 (`7f2c9db` (a), `f83713a` (b) and the M3.5c commit) -- the design's
 section 2.9 list, item for item.
+
+## 21. M3.6 — Edit archives in place
+
+M3.6 adds no new Rust and opens no new `:decoders` instance: an edit is planned in
+`operations/EditPlanner.kt` as a mixed manifest (old entries read back through
+`ArchiveDocumentsProvider`, new entries read from picked Uris) and run through M3.5's own
+`:decoders:write` engine and `ArchiveCreator`, ending with a `RecycleBinService.replaceWithRecycleFallback`
+swap of the new archive for the old one. Everything below was verified only in this sandbox:
+the planner's tree walk and refusal rules, the round-trip byte-for-byte proof, `.fylz-trash`
+recycling, and cancel-mid-edit — all against the real, hosted `ArchiveDocumentsProvider`, not a
+mock, but on the JVM under Robolectric. The Compose surfaces this milestone re-enables or adds
+(Rename/Recycle inside a browsed ZIP entry, the Tools-menu "Add entries" item and its picker, the
+confirm/cancel dialogs) have no unit coverage at all — this project's Compose UI has no test
+harness — so they are entirely unverified until read on a device. **None of this ran on a device.**
+
+**Steps and expected results:**
+
+1. Browse into a plain `.zip` (M3.3) and select a single entry. Expected: Rename and Recycle are
+   now enabled in the selection bar (previously greyed for every archive entry); Rename opens the
+   same rename dialog a normal file uses; confirm it and expect a short pause (an edit is a full
+   archive rewrite, not an in-place patch) followed by "Archive updated" and the entry's new name
+   reflected immediately on re-listing. Repeat inside a `.jar`, `.cbz` and `.apk` (the rest of the
+   zip-family set) and confirm the same. Browse into a `.7z`, `.tar.gz` or `.iso` and confirm
+   Rename/Recycle stay disabled for every entry (7z/tar/iso have no writer; this is the M3.5 scope
+   narrowing, not a bug).
+2. Inside a browsed `.zip`, select 2-3 entries (including one inside a subfolder) and Recycle them
+   together. Expected: a single "Archive updated" toast, not one per entry; re-listing shows them
+   gone; `adb shell` (or a third-party file manager) shows the *old* archive file now sitting inside
+   a `.fylz-trash` folder next to where the archive lives, with its original bytes intact, and the
+   live archive at the original path/name is the newly rewritten one.
+3. Open the archive's Tools menu (`ArchiveToolsOverlay`) on a zip-family archive and confirm a new
+   "Add entries" item is present (and absent for a `.7z`/`.tar.gz`). Tap it, pick 2-3 files (including
+   one whose name collides with an existing entry at the target folder) through the system picker.
+   Expected: the picked files appear as new entries after the edit completes; a name collision is
+   resolved by uniquification (a suffix), never silently overwriting or refusing the whole edit.
+4. Start an edit on a large archive (several hundred MB, many entries) and cancel it mid-way
+   (leave the app, kill the write process if reachable, or use whatever Cancel affordance the running
+   operation exposes). Expected: the original archive is completely untouched afterward — same
+   bytes, same name, same location — and no partial/staged output is left behind at the destination.
+5. Repeat step 1-3 while running `adb logcat | grep avc` continuously. Expected: no denial for
+   `isolated_app` reading the picked-file Uris or writing through `:decoders:write`'s existing pipe
+   (an edit reuses that same isolated instance and pipe contract M3.5 already exercises; a denial
+   here would surface as every edit ending in a generic write failure with no other symptom).
+6. With an edit queued behind an ordinary copy/move on the same destination folder, confirm the
+   queue runs both to completion in order and neither one starves or corrupts the other — an edit is
+   just another `ARCHIVE` operation through the same durable queue, so this should need no special
+   handling, but a queue-ordering bug specific to the new `replaceOriginalUri` finalize step would
+   only show up under real WorkManager scheduling on a device.
+
+**What this verifies:** M3.6 (this commit) — the brief's own scope: Rename/Delete re-enabled for
+zip-family archive entries only, "Add entries" via the Tools menu, the old archive recycled to
+`.fylz-trash`, and cancel-mid-edit leaving the original untouched.

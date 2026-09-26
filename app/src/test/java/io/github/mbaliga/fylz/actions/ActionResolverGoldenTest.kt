@@ -70,9 +70,14 @@ private object LegacyOracle {
     fun favouriteEnabled(hasActiveTab: Boolean): Boolean = hasActiveTab
 
     /** M3.3 (DESIGN-M33 §2.6): inside an archive location every action that writes the selection's
-     * source or the current location is disabled -- read-only until M3.6. The frozen twin of
-     * `BuiltInActions`' `WRITABLE_LOCATION`. */
+     * source or the current location is disabled, except the two M3.6 re-enables just below. The
+     * frozen twin of `BuiltInActions`' `WRITABLE_LOCATION`. */
     fun writableLocation(state: BrowserState): Boolean = state.locationKind != LocationKind.ARCHIVE
+
+    /** M3.6: the frozen twin of `BuiltInActions`' `ARCHIVE_ENTRY_WRITABLE` --
+     * `fylz.rename`/`fylz.recycle` re-enabled for a ZIP-family archive's own entries. */
+    fun archiveEntryWritable(state: BrowserState): Boolean =
+        writableLocation(state) || (state.locationKind == LocationKind.ARCHIVE && state.isZipFamilyArchiveLocation)
 }
 
 @RunWith(RobolectricTestRunner::class)
@@ -96,13 +101,14 @@ class ActionResolverGoldenTest {
         } else {
             Triple(id("fylz.extract"), LegacyOracle.canExtract(state.selection), null)
         }
+        val archiveWritable = LegacyOracle.archiveEntryWritable(state)
         return listOf(
             Triple(id("fylz.cut"), writable, null),
             Triple(id("fylz.copy"), true, null),
             Triple(id("fylz.copy-to"), true, null),
             Triple(id("fylz.move-to"), writable, null),
-            Triple(id("fylz.recycle"), writable, null),
-            Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection) && writable, null),
+            Triple(id("fylz.recycle"), archiveWritable, null),
+            Triple(id("fylz.rename"), LegacyOracle.canRename(state.selection) && archiveWritable, null),
             Triple(id("fylz.tags"), writable, null),
             Triple(id("fylz.compress"), true, null),
             extractSlot,
@@ -193,10 +199,18 @@ class ActionResolverGoldenTest {
         Triple(id("fylz.archive.tools"), true, null),
     )
 
-    private fun expectedArchiveTools(): List<Triple<ActionId, Boolean, Boolean?>> = listOf(
-        Triple(id("fylz.protect"), true, null),
-        Triple(id("fylz.archive.inspect"), true, null),
-    )
+    private fun expectedArchiveTools(state: BrowserState): List<Triple<ActionId, Boolean, Boolean?>> {
+        val result = mutableListOf(
+            Triple(id("fylz.protect"), true, null),
+            Triple(id("fylz.archive.inspect"), true, null),
+        )
+        // M3.6: "Add files to this archive" is visible only while actually browsing a ZIP-family
+        // archive location -- the one item in this menu that is not available from anywhere.
+        if (state.locationKind == LocationKind.ARCHIVE && state.isZipFamilyArchiveLocation) {
+            result += Triple(id("fylz.archive.add-entries"), true, null)
+        }
+        return result
+    }
 
     @Test
     fun `every surface matches the legacy oracle for every fixture`() {
@@ -232,7 +246,7 @@ class ActionResolverGoldenTest {
             )
             assertEquals(
                 "archiveTools/$name",
-                expectedArchiveTools(),
+                expectedArchiveTools(state),
                 resolved(PlacementQuery.Menu(MenuId.ARCHIVE_TOOLS), state),
             )
             assertEquals(

@@ -23,10 +23,11 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
- * M3.4's schema bump (v2 -> v3, additive) and M3.5's (v3 -> v4, additive): a real `onUpgrade` over
- * a database file that an older helper created and filled -- the three `extract_*` tables (v3) and
- * the three `create_*` tables (v4) appear, the operation rows survive untouched, and a fresh
- * install gets every table straight from `onCreate`.
+ * M3.4's schema bump (v2 -> v3, additive), M3.5's (v3 -> v4, additive) and M3.6's (v4 -> v5,
+ * additive): a real `onUpgrade` over a database file that an older helper created and filled --
+ * the three `extract_*` tables (v3), the three `create_*` tables (v4) and
+ * `create_plans.replace_original_uri` (v5) appear, the operation rows survive untouched, and a
+ * fresh install gets every table and column straight from `onCreate`.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -100,7 +101,7 @@ class FylzDatabaseUpgradeTest {
         FylzDatabase(context).use { upgraded ->
             val db = upgraded.writableDatabase
             assertEquals(FylzDatabase.DATABASE_VERSION, db.version)
-            assertEquals(4, db.version)
+            assertEquals(5, db.version)
             val names = tables(db)
             listOf(
                 OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS,
@@ -183,7 +184,7 @@ class FylzDatabaseUpgradeTest {
 
         FylzDatabase(context).use { upgraded ->
             val db = upgraded.writableDatabase
-            assertEquals(4, db.version)
+            assertEquals(5, db.version)
             val names = tables(db)
             listOf(OperationsDao.TABLE_CREATE_PLANS, OperationsDao.TABLE_CREATE_PLAN_ITEMS, OperationsDao.TABLE_CREATE_MANIFEST).forEach { table ->
                 assertEquals("$table exists after the upgrade", true, table in names)
@@ -201,10 +202,10 @@ class FylzDatabaseUpgradeTest {
     }
 
     @Test
-    fun `a fresh database is created at v4 with the extract and create tables`() {
+    fun `a fresh database is created at v5 with the extract and create tables`() {
         FylzDatabase(context).use { fresh ->
             val db = fresh.writableDatabase
-            assertEquals(4, db.version)
+            assertEquals(5, db.version)
             val names = tables(db)
             listOf(
                 OperationsDao.TABLE_EXTRACT_PLANS, OperationsDao.TABLE_EXTRACT_PLAN_ITEMS, OperationsDao.TABLE_EXTRACT_ENTRY_DIGESTS,
@@ -213,6 +214,96 @@ class FylzDatabaseUpgradeTest {
             ).forEach { table ->
                 assertEquals("$table exists", true, table in names)
             }
+            // M3.6's own column is present from a fresh install too, not only after an upgrade.
+            db.rawQuery("SELECT replace_original_uri FROM ${OperationsDao.TABLE_CREATE_PLANS} LIMIT 0", null).use { }
+        }
+    }
+
+    /** The v4 shape M3.5 landed: everything up to and including `create_plans` with no
+     * `replace_original_uri` column yet. */
+    private class V4Helper(private val ctx: Context) : SQLiteOpenHelper(ctx, FylzDatabase.DATABASE_NAME, null, 4) {
+        override fun onCreate(db: SQLiteDatabase) {
+            V3Helper(ctx).onCreate(db)
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_CREATE_PLANS} (
+                    operation_id TEXT PRIMARY KEY NOT NULL,
+                    format TEXT NOT NULL,
+                    level INTEGER NOT NULL,
+                    split_bytes INTEGER,
+                    relative INTEGER NOT NULL,
+                    archive_name TEXT NOT NULL,
+                    destination_uri TEXT,
+                    total_estimate INTEGER,
+                    entry_count INTEGER NOT NULL,
+                    conflict_policy TEXT NOT NULL,
+                    name_override TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    restart_count INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_CREATE_PLAN_ITEMS} (
+                    operation_id TEXT NOT NULL,
+                    item_index INTEGER NOT NULL,
+                    requested_name TEXT NOT NULL,
+                    staging_uri TEXT,
+                    sha256 TEXT,
+                    bytes_written INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL,
+                    PRIMARY KEY (operation_id, item_index)
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                CREATE TABLE ${OperationsDao.TABLE_CREATE_MANIFEST} (
+                    operation_id TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    is_directory INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    source_uri TEXT NOT NULL,
+                    mtime_millis INTEGER NOT NULL,
+                    needs_spooling INTEGER NOT NULL,
+                    spooled_path TEXT,
+                    PRIMARY KEY (operation_id, ordinal)
+                )
+                """.trimIndent(),
+            )
+        }
+
+        override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    }
+
+    @Test
+    fun `a v4 database upgrades to v5 with replace_original_uri added and its create plan intact`() {
+        // Written the way a pre-M3.6 app version actually would have: `OperationsDao` itself now
+        // assumes the v5 shape everywhere, so this test's own "before" state is a raw insert
+        // against the v4 table `V4Helper` creates, exactly as `V2Helper`/`V3Helper` above do for
+        // their own tables.
+        V4Helper(context).use { v4 ->
+            val db = v4.writableDatabase
+            assertEquals(4, db.version)
+            db.execSQL(
+                """
+                INSERT INTO ${OperationsDao.TABLE_CREATE_PLANS}
+                (operation_id, format, level, split_bytes, relative, archive_name, destination_uri, total_estimate, entry_count, conflict_policy, name_override, cancel_requested, restart_count)
+                VALUES ('op-v4', 'ZIP', 6, NULL, 1, 'out.zip', 'content://x/dst', 100, 1, 'SKIP', NULL, 0, 0)
+                """.trimIndent(),
+            )
+        }
+
+        FylzDatabase(context).use { upgraded ->
+            val db = upgraded.writableDatabase
+            assertEquals(5, db.version)
+            val beforeEdit = OperationsDao.createPlan(db, "op-v4")
+            assertNotNull(beforeEdit)
+            assertEquals("a pre-M3.6 plan has no original to replace", null, beforeEdit!!.replaceOriginalUri)
+            // The new column round-trips a real value too, not only its default null.
+            db.execSQL("UPDATE ${OperationsDao.TABLE_CREATE_PLANS} SET replace_original_uri = 'content://x/original.zip' WHERE operation_id = 'op-v4'")
+            assertEquals(Uri.parse("content://x/original.zip"), OperationsDao.createPlan(db, "op-v4")!!.replaceOriginalUri)
         }
     }
 }

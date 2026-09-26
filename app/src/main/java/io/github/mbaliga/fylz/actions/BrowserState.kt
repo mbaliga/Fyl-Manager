@@ -41,6 +41,11 @@ data class BrowserState(
     // M3.3 (DESIGN-M33 §2.6): section C3's `location.kind` as far as M3.3 can tell it; ARCHIVE
     // disables every write action through the registry. Defaulted for the same reason.
     val locationKind: LocationKind = LocationKind.FOLDER,
+    // M3.6: whether the ARCHIVE location being browsed is a ZIP-family archive (never true for
+    // FOLDER) -- the one case `fylz.rename`/`fylz.recycle` are re-enabled for, acting on that
+    // archive's own entries rather than the archive root or another format. Defaulted so every
+    // existing fixture and the golden test's named-arg `base()` stay unchanged.
+    val isZipFamilyArchiveLocation: Boolean = false,
 ) {
     val selectionCount: Int get() = selection.size
     val selectionKinds: Set<EntryKind> get() = selection.mapTo(HashSet()) { it.kind }

@@ -409,6 +409,7 @@ internal object OperationsDao {
         put("name_override", nameOverride)
         put("cancel_requested", if (cancelRequested) 1 else 0)
         put("restart_count", restartCount)
+        put("replace_original_uri", replaceOriginalUri?.toString())
     }
 
     fun createPlan(db: SQLiteDatabase, operationId: String): CompressPlan? =
@@ -430,6 +431,7 @@ internal object OperationsDao {
                 nameOverride = cursor.getString(cursor.getColumnIndexOrThrow("name_override")),
                 cancelRequested = cursor.getInt(cursor.getColumnIndexOrThrow("cancel_requested")) != 0,
                 restartCount = cursor.getInt(cursor.getColumnIndexOrThrow("restart_count")),
+                replaceOriginalUri = cursor.getString(cursor.getColumnIndexOrThrow("replace_original_uri"))?.let(Uri::parse),
             )
         }
 

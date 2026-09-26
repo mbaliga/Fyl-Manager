@@ -119,6 +119,16 @@ data class CompressPlan(
     val nameOverride: String? = null,
     val cancelRequested: Boolean = false,
     val restartCount: Int = 0,
+    /**
+     * M3.6 (edit in place): the archive document this create is rewriting, when this plan is an
+     * edit rather than a fresh compress -- `null` for every M3.5 create. When set,
+     * `ArchiveCreator.Run.finalizeParts` replaces this document with the freshly written one
+     * through `RecycleBinService.replaceWithRecycleFallback` (the old archive lands in the
+     * destination's own `.fylz-trash`) instead of a plain rename; `resolveConflictsAsOneUnit`
+     * stays a no-op for an edit because [conflictPolicy] is always [ConflictPolicy.SKIP] for one --
+     * there is nothing to pre-clear.
+     */
+    val replaceOriginalUri: Uri? = null,
 )
 
 /** One output document of a CREATE operation -- the single archive, or one split part (design

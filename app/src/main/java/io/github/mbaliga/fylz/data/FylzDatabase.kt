@@ -40,6 +40,10 @@ import java.io.File
  * M3.4 (schema version 3, additive, no foreign keys): the extraction plan an EXTRACT operation is
  * written with before it is enqueued -- [createExtractTables]: `extract_plans`,
  * `extract_plan_items`, `extract_entry_digests`; deleted with their operation by [OperationsDao].
+ *
+ * M3.6 (schema version 5, additive): `create_plans.replace_original_uri`, nullable, `null` for
+ * every plan before this version and for every ordinary M3.5 compress -- see
+ * [io.github.mbaliga.fylz.operations.CompressPlan.replaceOriginalUri].
  */
 class FylzDatabase(private val context: Context) :
     SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
@@ -96,6 +100,12 @@ class FylzDatabase(private val context: Context) :
         }
         if (oldVersion < 4) {
             createCompressTables(db)
+        }
+        // Only when `create_plans` already existed without the column: `createCompressTables`
+        // just above (oldVersion < 4) already creates it with the column present, so altering it
+        // again here too would be "duplicate column name".
+        if (oldVersion == 4) {
+            db.execSQL("ALTER TABLE ${OperationsDao.TABLE_CREATE_PLANS} ADD COLUMN replace_original_uri TEXT")
         }
     }
 
@@ -178,7 +188,8 @@ class FylzDatabase(private val context: Context) :
                 conflict_policy TEXT NOT NULL,
                 name_override TEXT,
                 cancel_requested INTEGER NOT NULL DEFAULT 0,
-                restart_count INTEGER NOT NULL DEFAULT 0
+                restart_count INTEGER NOT NULL DEFAULT 0,
+                replace_original_uri TEXT
             )
             """.trimIndent(),
         )
@@ -501,7 +512,7 @@ class FylzDatabase(private val context: Context) :
 
     companion object {
         const val DATABASE_NAME = "fylz.db"
-        const val DATABASE_VERSION = 4
+        const val DATABASE_VERSION = 5
 
         internal const val LEGACY_PREFERENCES_NAME = "fylz_operation_journal"
         internal const val LEGACY_RECORDS_KEY = "operations"

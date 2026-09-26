@@ -635,6 +635,52 @@ working, SELinux on the two pipes); `docs/agent/REVIEW_QUEUE.md`'s M3.5 entry (t
 level ceilings with measured figures, the split read-side gap, and every other logged deviation from
 the design).
 
+## Edit archives in place (M3.6)
+
+Add, delete and rename are the same "write one manifest to one new archive" M3.5's Compress sheet
+already runs — an edit is not a new operation shape, only a different manifest and one extra
+finalise step. ZIP only (7z has no writer yet, M3.5's own scope), and top-level archives only (an
+archive nested inside another one would also need the outer archive rewritten, out of scope here).
+
+**Planning.** `operations.EditPlanner` takes an `ArchiveEditRequest` (entries to delete, at most one
+entry to rename, local sources to add at an in-archive folder) and walks the archive's own
+`archive.ArchiveTree` once: a deleted entry's whole subtree is dropped, a renamed directory's whole
+subtree moves with it, everything else survives at its own path. A survivor that is a symlink,
+hardlink or other special entry refuses the whole edit rather than being silently dropped. A kept
+file becomes a `CompressManifestEntry` whose `sourceUri` is the very same `ArchiveDocumentId` Uri
+`operations.CompressPlanner` already builds for an archive-sourced compress source — resolved by
+`storage.ArchiveDocumentsProvider.openDocument`, which materialises the entry through
+`archive.ArchiveEntryCache`'s existing `extract_entry_at` pass, the same one a browsed archive's own
+preview/copy-out already runs. **No native code changes at all**: `fylz-archive`/`fylz-ffi-android`
+are untouched by this milestone, because the app already treats "a file inside an archive" as an
+ordinary `Uri` source end to end.
+
+**Running and finalising.** The plan is an ordinary `FileOperationType.ARCHIVE` create: the same
+`operations.ArchiveCreator` run M3.5 built, queued through `OperationRunner.enqueueCreate` exactly
+like a fresh compress. The one new field, `CompressPlan.replaceOriginalUri` (schema v5, additive,
+`null` for every ordinary compress), tells `ArchiveCreator.Run.finalizeParts` to replace that
+document — once the write has succeeded and verified — through
+`operations.RecycleBinService.replaceWithRecycleFallback` instead of a plain rename, having first
+made sure the destination folder actually has a `.fylz-trash` to recycle into (unlike an ordinary
+Replace conflict's own best-effort "use one if present, else delete", this is unconditional: the old
+archive always lands in the recycle bin). A cancel or a failure before that finalise step, exactly as
+for any other create, leaves the original completely untouched.
+
+**The UI.** `fylz.rename`/`fylz.recycle` are re-enabled specifically for a ZIP-family archive's own
+entries (`actions.BuiltInActions`'s `ARCHIVE_ENTRY_WRITABLE`), never for the archive's own root and
+never for another format's entries; a new `fylz.archive.add-entries` (the archive Tools menu) opens
+the same multi-file picker Compress's own sources come from. `ui/actions/ArchiveEditFlow.kt` derives
+the destination folder from the browsing location stack (the real folder `openEntry` pushed the
+archive's own root location from) rather than asking, since an edit replaces a specific document
+rather than writing new files somewhere chosen — unlike `fylz.extract.selected`'s own destination
+chooser. Each action (delete, rename, add) commits its own single-purpose edit immediately; there is
+no multi-step editing session, though `EditPlanner`/`ArchiveEditRequest` themselves place no such
+restriction.
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 21;
+`docs/agent/REVIEW_QUEUE.md`'s M3.6 entry (the architecture choice and every scope narrowing and
+deviation, in full).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

@@ -963,3 +963,154 @@ as landed).
   `CompressFlow`, would need this same check copied in, since it is not the planner's own rule.
 - Moving `CompressSheet.kt` to `ui/actions/` (28): purely a package move once compiled and tested;
   no behavioural risk.
+
+## M3.6 — Edit ZIP archives in place
+
+**Milestone:** M3.6 (`docs/agent/MASTER_PLAN.md`'s own M3.6 text; no separate design document --
+this task's own brief is the design; per-commit detail in `docs/agent/PROGRESS.md`'s `M3.6` row;
+device checks in `docs/agent/DEVICE_CHECKS.md` section 21, sandbox-verified only). Not a gate:
+log-and-continue.
+
+**Scope narrowed from the plan's own text, both recorded here rather than silently assumed:**
+
+1. **ZIP only, not "ZIP and 7z."** 7z has no writer at all yet (M3.5's own scope: `ArchiveWriteFormat`
+   has no 7z member, `ArchiveWriteEngine` cannot produce a 7z stream) -- M3.5's own review queue
+   entry already deferred 7z creation to the 7-Zip pack (item 1 there). `EditPlanner.plan` refuses
+   any non-ZIP archive outright (`ArchiveFormatFamily.isZip`), before opening anything for write, and
+   `BuiltInActions.kt`'s new gate (`ARCHIVE_ENTRY_WRITABLE`) never re-enables `fylz.rename`/
+   `fylz.recycle` for a non-ZIP-family archive location -- `BrowserStateFixtures.archiveNonZipFamilyWithSelection`
+   is the golden-test fixture proving the second half of that.
+2. **Top-level archives only.** An archive nested inside another archive (`ArchiveRef.chain`
+   non-empty) is refused (`EditPlanner.NESTED_REFUSED`) rather than attempted: rewriting the inner
+   archive would also have to rewrite the outer one to update that entry's own bytes, which is well
+   beyond this milestone. `ui/actions/ArchiveEditFlow.kt`'s own `archiveEditContext` checks this
+   against the *current* location's own archive ref, not against wherever the archive-authority run
+   of the location stack happens to start -- deliberately, so a zip-inside-zip is judged by the
+   *inner* archive's chain, never mistaken for the (always chain-empty) outer one.
+3. **A kept symlink, hardlink or other special entry refuses the whole edit**, rather than being
+   silently dropped or silently kept unchanged: ZIP entries of these kinds are rare in practice and
+   this milestone has no policy for "does the edit change this link's target" to get right, so
+   `EditPlanner`'s manifest walk fails closed (`EditPlanner.LINKS_REFUSED`) the moment it reaches one
+   that was not explicitly deleted.
+
+**Architecture choice, as the brief asked to be recorded and justified:**
+
+- **The operation type.** An edit is planned and run as an ordinary `FileOperationType.ARCHIVE`
+  create -- the exact same `ArchiveCreator`/`TransferWorker`/`OperationRunner.enqueueCreate` queue
+  path M3.5's Compress sheet already uses -- with one new, nullable `CompressPlan.replaceOriginalUri`
+  field (schema v5, additive) that `ArchiveCreator.Run.finalizeParts` checks: when set, the one
+  archive the run produces replaces that document through `RecycleBinService.replaceWithRecycleFallback`
+  instead of a plain rename, after first making sure the destination folder actually has a
+  `.fylz-trash` to recycle into (M3.6's own requirement is unconditional, unlike an ordinary Replace
+  conflict's best-effort "use one if this folder already has it, else delete" -- see item 4 below).
+  Considered and rejected: a new `FileOperationType.ARCHIVE_EDIT` with its own claim/journal tables
+  and worker branch, mirroring M3.4/M3.5's own pattern for a genuinely new operation shape. Rejected
+  because an edit is not a new operation *shape* at all -- it is the exact same "write one manifest
+  to one new archive" M3.5 already built, with two differences that live entirely in the planner and
+  in one finalise step: what the manifest is built from (`EditPlanner`, a sibling of
+  `CompressPlanner` rather than a modification of it, so M3.5's own compress path is untouched), and
+  what happens to the destination name once the write succeeds. Reusing the queue outright means
+  cancel, progress, staging, verification and conflict-handling (the brief's own explicit checklist)
+  all come for free, already tested by `ArchiveCreatorTest`, rather than needing to be re-proven for
+  a second operation type.
+- **Copy-through for unchanged entries.** No new Rust surface at all -- `fylz-archive`/
+  `fylz-ffi-android` are untouched by this milestone. Considered and rejected: a native
+  copy-through function reading one entry's bytes from an already-open read handle and feeding them
+  as `DATA` frames into an already-open `Writer` programmatically. Rejected because the app already
+  has a working, tested, less-code path: `CompressPlanner.visitArchiveEntry` already treats "a file
+  inside an archive" as an ordinary compress source (an `ArchiveDocumentId` `Uri`,
+  `entryUri(archive, entry)`), and `ArchiveCreator.feedFile` already reads any such source through
+  `ContentResolver.openFileDescriptor`/`openInputStream` -- resolved by `ArchiveDocumentsProvider`,
+  materialised through `ArchiveEntryCache`'s existing `extract_entry_at` pass, the same one a
+  browsed archive's own preview and copy-out already run. `EditPlanner`'s kept-file manifest rows
+  build the identical `Uri` shape, so an unchanged entry is fed through exactly this
+  already-proven path with zero new code on the Rust side. `EditPlannerTest`'s round-trip test
+  exercises this for real (the real, hosted `ArchiveDocumentsProvider`, not a shortcut), which is
+  what actually proves the "no native copy-through needed" claim rather than merely asserting it.
+
+**What else was decided:**
+
+4. **The old archive's recycling is unconditional, not best-effort.** `replaceWithRecycleFallback`'s
+   own documented behaviour for an ordinary Replace conflict (copy/move/restore) is "use
+   `.fylz-trash` if the destination folder already has one, otherwise just delete" -- a deliberate,
+   already-recorded M3.5 choice for a fresh compress colliding with an unrelated existing file
+   (M3.5's own item 21: "a plain delete... creating [`.fylz-trash`] as a side effect of a Replace
+   conflict here would be a surprising thing for a compress to do"). Editing a file the user
+   explicitly asked to modify in place is a different case -- the plan's own text says "the old
+   archive goes to the recycle bin" as a requirement, not a maybe -- so `ArchiveCreator.Run.replaceOriginal`
+   creates `.fylz-trash` directly under the destination folder first if it is not already there,
+   guaranteeing the fallback path is never taken for an edit.
+5. **UI wiring re-enables exactly two built-ins for exactly one case.** `fylz.rename`/`fylz.recycle`'s
+   `enabledWhen` gains `ARCHIVE_ENTRY_WRITABLE` (`WRITABLE_LOCATION` OR a ZIP-family archive
+   location) in place of `WRITABLE_LOCATION` alone; every other read-only rule for an archive
+   location (`fylz.cut`, `fylz.move-to`, `fylz.tags`, `fylz.rename.batch`, new-folder/new-file/etc.)
+   is untouched. A new `fylz.archive.add-entries` built-in (`ARCHIVE_TOOLS` menu, slot 30) is visible
+   only while actually browsing a ZIP-family archive location -- the one item in that menu not
+   available from anywhere, unlike its siblings "Create ZIP"/"Inspect and extract ZIP".
+   `BrowserStateFixtures`/`ActionResolverGoldenTest` gained the two fixtures this needed
+   (`archiveZipFamilyWithSelection`/`archiveNonZipFamilyWithSelection`) and the golden oracle's own
+   `archiveEntryWritable` twin, per the brief's explicit "load-bearing, do not skip it."
+6. **Each user-facing action commits its own single-purpose edit immediately** (`ui/actions/ArchiveEditFlow.kt`):
+   deleting queues a deletion-only `ArchiveEditRequest`, renaming a rename-only one, adding files an
+   addition-only one -- there is no multi-step "editing session" accumulating several pending
+   changes before a single commit. `EditPlanner`/`ArchiveEditRequest` themselves place no such
+   restriction (all three kinds combine into one request), which is what
+   `EditPlannerTest`'s round-trip test exercises directly against the planner; the UI simply never
+   asks for that combination in one user action. Recorded as a deliberate scope simplification, not
+   a planner limitation.
+7. **The destination folder is derived from the browsing location stack, never asked.** Unlike
+   `fylz.extract.selected` (which always asks via the destination chooser, since extraction writes
+   *new* files somewhere the user chooses), an edit must replace the *specific* document the archive
+   already is -- so `archiveEditContext` walks `FolderTab.locations` for the last non-archive
+   location, which is exactly the real folder `openEntry` pushed the archive's own root location
+   from, and uses that unconditionally.
+8. **`ArchiveDocumentsProvider` itself gains no write support.** Its own class doc comment
+   ("M3.6 decides what becomes writable") is resolved as: nothing, permanently -- an edit is a
+   whole-archive rewrite through the operation queue, never a `renameDocument`/`deleteDocument` call
+   against one entry's own document id. Recorded because a future reader could reasonably have
+   expected the opposite from that comment's wording.
+
+**Deviations found while writing the tests, fixed in this same commit:**
+
+9. `ArchiveCreator.Run.finalizeParts` needed to become `suspend` (it already ran inside a `suspend`
+   caller; the keyword was simply missing until `replaceOriginal`'s own `RecycleBinService` call
+   needed it).
+10. `FylzDatabase`'s v4→v5 migration cannot be a bare `if (oldVersion < 5) { ALTER TABLE ... }`
+    parallel to the existing `if (oldVersion < 4) { createCompressTables(db) }`: for an upgrade from
+    *before* v4 (e.g. v2 or v3), `createCompressTables` already creates `create_plans` with the new
+    column present (it was added to that function's own `CREATE TABLE` too, so a fresh v5 install
+    gets it from `onCreate` in one place), and the `ALTER TABLE ADD COLUMN` would then fail with
+    "duplicate column name" in the very same `onUpgrade` call. Fixed with `if (oldVersion == 4)`
+    instead of `< 5` -- the ALTER only ever needs to run for a database that already has
+    `create_plans` *without* the column, i.e. exactly v4. `FylzDatabaseUpgradeTest` gained a fourth
+    upgrade test (`V4Helper`, a v4→v5 case) alongside the existing v2→v4/v3→v4 ones, and the three
+    existing tests' hardcoded `4`s became `5`s.
+11. `EditPlannerTest`'s own first attempt at a source archive `Uri` (`FylzFilesDocumentsProvider.documentUri(rootId, name)`,
+    the same helper `ArchiveCreatorTest`'s own `sourceUri()` uses for a plain compress *source*) is
+    wrong for a document this milestone then *renames*: that helper roots the tree at the document
+    itself, so once `RecycleBinService.replaceWithRecycleFallback` renames it aside and tries to read
+    the result back through that same (now stale) tree, `DocumentsProvider.enforceTree` correctly
+    refuses it ("is not a descendant of" itself under its new name) -- a real Android platform check,
+    not a Robolectric artifact. Production never hits this: a folder-listed `FileEntry.uri` is always
+    rooted at the *containing* folder's tree, never at the file alone. Fixed in the test only, by
+    building the archive's own document `Uri` the way a real folder listing actually would
+    (`DocumentsContract.buildDocumentUriUsingTree` off the volume's own tree, not a per-document one).
+
+**Auto-detect / heuristic limits:** none in this milestone (M3.7's own entry covers that).
+
+**Relevant commit:** the M3.6 commit (this commit).
+
+**Risk if it turns out wrong:**
+- The `.fylz-trash`-creation-before-replace change (4): only ever runs inside `replaceOriginal`,
+  reached only when `CompressPlan.replaceOriginalUri` is non-null, which only `EditPlanner` ever
+  sets -- an ordinary M3.5 compress (including one that collides with an existing name) is
+  unaffected, still going through `resolveConflictsAsOneUnit`'s own plain-delete Replace path
+  exactly as before.
+- The v4→v5 migration fix (10): a database already past v5 (there is none yet) is unaffected either
+  way; the risk is specific to a *fresh* upgrade chain starting below v4, which is exactly what the
+  new test exercises.
+- `EditPlanner` refusing every kept link/special entry (scope item 3): a ZIP containing one is
+  extremely rare in practice (Info-ZIP's own UNIX extra field is what would produce one), so the
+  practical impact of "edit is unavailable for that one archive until this is revisited" is judged
+  low; extraction and browsing of such an archive are completely unaffected (M3.4/M3.3's own paths,
+  untouched by this milestone).

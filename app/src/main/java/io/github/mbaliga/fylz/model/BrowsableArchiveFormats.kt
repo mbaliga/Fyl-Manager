@@ -29,6 +29,20 @@ object BrowsableArchiveFormats {
     )
 
     fun matches(name: String): Boolean = FileFormatRegistry.compoundExtension(name) in extensions
+
+    /**
+     * M3.6: the extensions libarchive always reads as the ZIP format family
+     * (`fylz_archive::ArchiveFormatFamily::ZIP`, `0x50000`) -- what the archive header bar's own
+     * "edit in place" gate keys on (`actions/BuiltInActions.kt`'s `ARCHIVE_ENTRY_WRITABLE`), since
+     * the browser only knows the archive's file *name* at this point, never its `formatCode`
+     * (that lives in the catalog's summary, a suspend lookup this synchronous gate cannot make).
+     * A name-based heuristic, same convention [matches] itself already uses; `7z`/`cb7`, every
+     * `tar*` variant and everything else in [extensions] is a different format family and stays
+     * read-only until a writer for it exists.
+     */
+    val zipFamilyExtensions: Set<String> = setOf("zip", "zipx", "jar", "apk", "cbz")
+
+    fun isZipFamily(name: String): Boolean = FileFormatRegistry.compoundExtension(name) in zipFamilyExtensions
 }
 
 /** Whether tapping this entry pushes an archive location rather than opening a preview (never for a directory). */

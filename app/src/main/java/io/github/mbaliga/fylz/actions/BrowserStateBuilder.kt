@@ -36,6 +36,8 @@ data class BrowserStateInputs(
     val legacyBinCount: Int,
     val operationsNeedingAttention: Int,
     val registryProblemCount: Int,
+    // M3.6: whether the archive location being browsed (if any) is a ZIP-family archive.
+    val isZipFamilyArchiveLocation: Boolean = false,
 )
 
 /** The one place a [BrowserState] is assembled from the browser's raw state (moved out of `FylzV1App.kt`, M3.3c). */
@@ -62,5 +64,6 @@ fun buildBrowserState(inputs: BrowserStateInputs): BrowserState {
         activeTabId = inputs.activeTabId,
         registryProblemCount = inputs.registryProblemCount,
         locationKind = LocationKind.of(current),
+        isZipFamilyArchiveLocation = inputs.isZipFamilyArchiveLocation,
     )
 }

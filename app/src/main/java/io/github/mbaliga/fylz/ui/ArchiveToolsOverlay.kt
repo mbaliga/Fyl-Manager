@@ -184,6 +184,7 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
                 when (id.value) {
                     "fylz.protect" -> sourcePicker.launch(arrayOf("*/*"))
                     "fylz.archive.inspect" -> archivePicker.launch(INSPECTABLE_ARCHIVE_MIME_TYPES)
+                    "fylz.archive.add-entries" -> ctx.addArchiveEntries()
                 }
             },
         )

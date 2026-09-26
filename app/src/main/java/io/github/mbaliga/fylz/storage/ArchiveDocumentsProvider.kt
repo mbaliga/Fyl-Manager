@@ -48,8 +48,12 @@ import kotlinx.coroutines.runBlocking
  * `EXTRA_LOADING`, no `notifyChange`; a cold process gets the full listing, never an empty folder.
  * A catalog failure is carried as [DocumentsContract.EXTRA_ERROR] on a rowless children cursor
  * (`DocumentRepository.listChildren` turns it into an `IOException`, which the listing effect
- * already toasts) and as a `FileNotFoundException` from `queryDocument`/`openDocument`. Read-only:
- * every write method is `UnsupportedOperationException` (M3.6 decides what becomes writable).
+ * already toasts) and as a `FileNotFoundException` from `queryDocument`/`openDocument`. Read-only,
+ * still: every write method here stays `UnsupportedOperationException`. M3.6's "edit in place"
+ * does not make this provider itself writable -- add/delete/rename queue a whole-archive rewrite
+ * through `operations.EditPlanner`/`ArchiveCreator` instead (the same rewrite-to-staging-then-
+ * atomic-replace machinery M3.5's Compress sheet already runs), never a `renameDocument`/
+ * `deleteDocument` call against one entry's own document id.
  * In-process `ContentResolver` calls run the provider on the caller's thread through the local
  * transport, and every existing caller is already off the main thread; a debug-only check says so,
  * injectable so Robolectric (main looper) can run it.
@@ -149,7 +153,8 @@ class ArchiveDocumentsProvider : DocumentsProvider() {
         return mimeTypeOf(entry)
     }
 
-    // Read-only until M3.6.
+    // Read-only, permanently (M3.6's own class doc comment): an edit goes through the operation
+    // queue as a whole-archive rewrite, never a per-document write here.
     override fun createDocument(parentDocumentId: String, mimeType: String, displayName: String): String = readOnly()
     override fun deleteDocument(documentId: String): Unit = readOnly()
     override fun renameDocument(documentId: String, displayName: String): String = readOnly()
@@ -157,7 +162,7 @@ class ArchiveDocumentsProvider : DocumentsProvider() {
     override fun copyDocument(sourceDocumentId: String, targetParentDocumentId: String): String = readOnly()
     override fun removeDocument(documentId: String, parentDocumentId: String): Unit = readOnly()
 
-    private fun readOnly(): Nothing = throw UnsupportedOperationException("Archives are read-only (M3.6 decides what becomes writable)")
+    private fun readOnly(): Nothing = throw UnsupportedOperationException("Archive entries are edited as a whole through the operation queue, never per document")
 
     // ---------------------------------------------------------------- helpers
 

@@ -49,6 +49,7 @@ object BrowserStateFixtures {
         legacyBinCount: Int = 0,
         operationsNeedingAttention: Int = 0,
         locationKind: LocationKind = LocationKind.FOLDER,
+        isZipFamilyArchiveLocation: Boolean = false,
     ): BrowserState = BrowserState(
         hasActiveTab = hasActiveTab,
         canNavigateUp = canNavigateUp,
@@ -68,6 +69,7 @@ object BrowserStateFixtures {
         legacyBinCount = legacyBinCount,
         operationsNeedingAttention = operationsNeedingAttention,
         locationKind = locationKind,
+        isZipFamilyArchiveLocation = isZipFamilyArchiveLocation,
     )
 
     private val file1 = entry("a.txt", EntryKind.TEXT)
@@ -165,6 +167,15 @@ object BrowserStateFixtures {
     fun archiveWithClipboard(): BrowserState =
         base(entries = listOf(archiveEntry, pdf1), clipboard = FylzClipboard(ClipboardMode.COPY, listOf(file1)), locationKind = LocationKind.ARCHIVE)
 
+    // M3.6 (DESIGN brief's own M3.6/M3.7): `fylz.rename`/`fylz.recycle` re-enabled for a ZIP-family
+    // archive's own entries, and only those -- these two fixtures are the load-bearing case the
+    // golden test exercises, side by side with the two ARCHIVE fixtures above that stay read-only.
+    fun archiveZipFamilyWithSelection(): BrowserState =
+        base(entries = listOf(archiveEntry, pdf1), selection = listOf(archiveEntry), locationKind = LocationKind.ARCHIVE, isZipFamilyArchiveLocation = true)
+
+    fun archiveNonZipFamilyWithSelection(): BrowserState =
+        base(entries = listOf(archiveEntry, pdf1), selection = listOf(archiveEntry), locationKind = LocationKind.ARCHIVE, isZipFamilyArchiveLocation = false)
+
     fun all(): List<Pair<String, BrowserState>> = listOf(
         "noTabClipboardNull" to noTabClipboardNull(),
         "noTabClipboardSet" to noTabClipboardSet(),
@@ -200,5 +211,7 @@ object BrowserStateFixtures {
         "archiveRootNoSelection" to archiveRootNoSelection(),
         "archiveFolderWithSelection" to archiveFolderWithSelection(),
         "archiveWithClipboard" to archiveWithClipboard(),
+        "archiveZipFamilyWithSelection" to archiveZipFamilyWithSelection(),
+        "archiveNonZipFamilyWithSelection" to archiveNonZipFamilyWithSelection(),
     )
 }

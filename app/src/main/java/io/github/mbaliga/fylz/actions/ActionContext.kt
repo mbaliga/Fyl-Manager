@@ -54,6 +54,10 @@ interface ActionContext {
      * the AES switch is on, which stays on the legacy zip4j path (no password support here yet). */
     fun openCompressMenu(sources: List<Uri>)
 
+    /** `fylz.archive.add-entries` (M3.6): opens the picker for files to add to the ZIP-family
+     * archive currently being browsed, at the folder within it currently being browsed. */
+    fun addArchiveEntries()
+
     fun batchRename()
     fun pdfTools()
     fun share()

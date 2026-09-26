@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
 import androidx.work.WorkInfo
 import io.github.mbaliga.fylz.archive.ArchiveFrameWriter
 import io.github.mbaliga.fylz.archive.ArchiveListingCodec
@@ -533,8 +534,15 @@ class ArchiveCreator(
         /** Last part first, down to `.001` last (design section 2.3 step 7): a reader never sees a
          * `.001` without every later part also present; a later failure rolls back what already
          * finalised by renaming it back to its staging name (best effort -- it stays a `.fylz-part-*`
-         * document rather than silently vanishing). */
-        private fun finalizeParts() {
+         * document rather than silently vanishing). M3.6: an edit ([CompressPlan.replaceOriginalUri]
+         * set) is always a single, unsplit part and finalises through [replaceOriginal] instead --
+         * the old archive goes to the recycle bin rather than being renamed aside and discarded. */
+        private suspend fun finalizeParts() {
+            val replaceOriginalUri = plan.replaceOriginalUri
+            if (replaceOriginalUri != null) {
+                replaceOriginal(replaceOriginalUri)
+                return
+            }
             val finalized = mutableListOf<Pair<DocNode, String>>()
             try {
                 for (item in parts.sortedByDescending { it.itemIndex }) {
@@ -547,6 +555,38 @@ class ArchiveCreator(
                 finalized.forEach { (node, stagedName) -> runCatching { node.rename(resolver, stagedName) } }
                 throw failure
             }
+        }
+
+        /**
+         * M3.6: the one archive an edit ever produces replaces [replaceOriginalUri] through
+         * [RecycleBinService.replaceWithRecycleFallback] -- the same "rename existing aside, rename
+         * the replacement into place, recycle the aside copy" sequence a Replace conflict already
+         * uses for copy/move/restore ([TargetPlanner.finalizeTarget]), so the old archive lands in
+         * [destination]'s own `.fylz-trash` (created if it does not have one yet) rather than being
+         * deleted outright. The original must still exist under this exact Uri: if it does not (the
+         * user deleted or moved it while the edit was running), this fails the whole edit with
+         * [CreateErrorCodes.DESTINATION_MISSING] -- nothing about the staged replacement is lost,
+         * it stays a `.fylz-part-*` document [discardAllParts] can still clean up.
+         */
+        private suspend fun replaceOriginal(replaceOriginalUri: Uri) {
+            val item = parts.single()
+            val staged = item.stagingUri?.let { DocNode.load(resolver, it) } ?: throw IOException(CreateErrorCodes.VERIFICATION_FAILED)
+            val original = DocNode.load(resolver, replaceOriginalUri) ?: throw IOException(CreateErrorCodes.DESTINATION_MISSING)
+            // M3.6's own requirement ("the old archive goes to the recycle bin") is unconditional,
+            // unlike an ordinary Replace conflict's best-effort "use one if this folder already has
+            // it, else delete" (`replaceWithRecycleFallback`'s own doc comment): ensure the
+            // destination's `.fylz-trash` exists first, so the fallback path is never taken here.
+            if (destination.children(resolver).none { it.isDirectory && it.name == RecycleBinService.RECYCLE_DIRECTORY }) {
+                destination.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, RecycleBinService.RECYCLE_DIRECTORY)
+            }
+            val final = recycleBin.replaceWithRecycleFallback(
+                destinationRoot = destination,
+                existing = original,
+                staged = staged,
+                requestedName = item.requestedName,
+                originalParentUri = destination.uri,
+            )
+            journal.putCreatePlanItem(id, item.copy(stagingUri = final.uri, state = OperationState.SUCCEEDED), refresh = false)
         }
 
         private fun finish(): CreateRunOutcome {

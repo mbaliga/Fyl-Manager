@@ -194,6 +194,7 @@ import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
 import io.github.mbaliga.fylz.ui.actions.CompressFlowHost
 import io.github.mbaliga.fylz.ui.actions.ExtractFlowHost
 import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
+import io.github.mbaliga.fylz.ui.actions.rememberArchiveEditFlow
 import io.github.mbaliga.fylz.ui.actions.rememberCompressFlow
 import io.github.mbaliga.fylz.ui.actions.rememberExtractFlow
 import io.github.mbaliga.fylz.ui.actions.LocationsRoom
@@ -518,6 +519,7 @@ private fun FylzV1Workspace(
         context, scope, operationRunner, persistTreePermission = repository::persistTreePermission,
         onToast = ::toast, onCompressed = { toast("Compressing"); refresh() },
     )
+    val archiveEditFlow = rememberArchiveEditFlow(context, scope, operationRunner, onToast = ::toast, onEdited = { toast("Archive updated"); refresh() }) // M3.6
 
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
         val existing = tabs.indexOfFirst { it.treeUri == treeUri }
@@ -999,8 +1001,8 @@ private fun FylzV1Workspace(
         override fun moveTo() {
             pendingDestinationChooser = DestinationChooserRequest(PendingDestinationAction.MOVE, selectedEntries.map { it.uri }, null)
         }
-        override fun recycleSelection() { doRecycleSelection() }
-        override fun rename() { renameDialog = true }
+        override fun recycleSelection() { archiveEditFlow.recycleOrDelegate(activeTab, selectedEntries, doRecycleSelection) }
+        override fun rename() { archiveEditFlow.renameOrDelegate(activeTab, selectedEntries) { renameDialog = true } }
         override fun tags() { tagDialog = true }
         override fun compress() { compressFlow.openSheet(selectedEntries.map { it.uri }) }
         override fun extract() { val entry = selectedEntries.singleOrNull() ?: return; extractFlow.openMenu(ArchiveRef(entry.uri, emptyList())) }
@@ -1014,6 +1016,7 @@ private fun FylzV1Workspace(
         }
         override fun openExtractMenu(archive: Uri) { ensureNotificationPermissionRequested(); extractFlow.openMenu(ArchiveRef(archive, emptyList())) }
         override fun openCompressMenu(sources: List<Uri>) { compressFlow.openSheet(sources) }
+        override fun addArchiveEntries() { archiveEditFlow.addEntries(activeTab) }
         override fun batchRename() { batchRenameDialog = true }
         override fun pdfTools() { pdfDialog = true }
         override fun share() {
@@ -1135,7 +1138,7 @@ private fun FylzV1Workspace(
                 selection = selectedEntries, selectionOrder = selectedUris, focused = focusedEntry, clipboard = clipboard,
                 sortSpec = sortSpec, viewMode = viewMode, previewMode = previewMode, query = query, searchRecursive = searchRecursive,
                 themeMode = themeMode, favouriteUris = library.favorites().map { it.uri }, legacyBinCount = legacyBinNames.size,
-                operationsNeedingAttention = operationsNeedingAttention, registryProblemCount = actionRegistry.problems.size,
+                operationsNeedingAttention = operationsNeedingAttention, registryProblemCount = actionRegistry.problems.size, isZipFamilyArchiveLocation = archiveEditFlow.isZipFamilyArchiveLocation(activeTab),
             ),
         )
     }
