@@ -1572,3 +1572,38 @@ which `:app:testDebugUnitTest`/`:app:lintDebug`/`:app:assembleDebug` all green a
 makes unlikely (a missing class or unresolved import fails the Kotlin compile step outright, it does
 not compile quietly). zip4j and `ArchiveService.kt` are untouched, so the AES ZIP path carries no
 new risk from this commit at all.
+
+---
+
+## M3 acceptance
+
+**Milestone:** the whole M3 milestone's own acceptance block (`docs/agent/MASTER_PLAN.md`'s M3
+"Acceptance" list, four lines), assessed in full in `docs/agent/REPORT-M3.md` — read that report for
+the per-line detail; this entry only points at it and gives the one-line verdict per line for a
+reviewer scanning this queue. Not a gate: log-and-continue (M3 is not in Addendum 1 §A's named
+review-gate list, but this report and entry are what closing out the milestone honestly calls for).
+
+- "A fixture corpus of at least one of each format opens": **partially met** — every compression
+  filter, unencrypted ZIP/7z, tar (+ five compressed variants) and ISO have a real, engine-verified
+  fixture; RAR (no fixture possible here), eight formats (cpio/deb/rpm/xar/cab/lha/arj/warc, no
+  fixture ever built), split volumes (write only, no self-read) and several container extensions
+  (IPA/XAPK/APKM/EPUB/OOXML/ODF, not even wired into the browsable set) are not. `REPORT-M3.md` §3.1
+  has the full per-format table.
+- "A 5 GB 7z extracts through the queue with verification": **unverified, real-device-only**, as
+  M3.4's own device checks already said (`DEVICE_CHECKS.md` §19); the mechanism is implemented and
+  unit-tested at small scale (`REPORT-M3.md` §3.2).
+- "Hostile fixtures... are refused": **met** — 34 policy tests + 2 hostile-fixture tests + 3 bomb/
+  oversized-header tests, 39/39, re-run fresh for `REPORT-M3.md` §3.3.
+- "Fuzz targets for zip, 7z, rar, tar and iso run clean": **met, under the stated interpretation**
+  (one generic engine target per grammar layer, seeded from the format corpus, not five per-format
+  binaries — `REPORT-M3.md` §3.4 justifies this reading). Fresh 60 s runs, zero crashes on all four
+  targets (`sniff` 5,807,934 execs; `policy_evaluate` 1,112,713; `archive_entries` 48,536;
+  `write_frames` 1,493,631).
+
+**Relevant commit:** the docs commit adding `REPORT-M3.md` and this entry.
+
+**Risk if it turns out wrong:** low for the "met" lines (re-run fresh, not carried over). The
+"partially met"/"unverified" lines carry the risk the report itself already names as a gap, not a
+new risk this entry introduces — see `REPORT-M3.md` §5 ("Known gaps for the owner") for the full
+list, including RAR, the 5 GB device check, the AES/crypto-backend gap, 7z write, split-archive
+self-read, and the eight untested archive formats.
