@@ -803,3 +803,153 @@ commit (items 56–65 and the design's 3, 15, 16 as landed; `ArchiveExtractionPo
   block, the failure mode is quiet and specific — `.here`/`.folder` would extract into whatever
   folder was open the first time the flow was built, not the one currently open — worth a second
   look if `.here` ever seems to target the wrong tab.
+
+## M3.5 — Compress
+
+**Milestone:** M3.5 (`docs/agent/DESIGN-M35-CREATE.md` rev 2; per-commit detail in
+`docs/agent/PROGRESS.md`'s `M3.5` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 20,
+sandbox-verified only). Not a gate: log-and-continue. Commits: M3.5a (engine and FFI: `write.rs`,
+the locale pin, the poisoning mechanism, the size rules, tests, the `write_frames` fuzz target),
+b (the queue), then c (UI, legacy path, docs; this entry's last extension).
+
+**What was decided, and needs a second read** (the design's section 3 list first, then what
+implementation added):
+
+1. 7z creation deferred to the 7-Zip pack: an isolated process cannot create a temp file by path
+   anywhere the sandbox permits, a passed directory descriptor grants no create rights, and a
+   `memfd` breaches the memory target; the only in-sandbox route is a vendored libarchive patch
+   accepting a caller fd for `__archive_mktemp`, gated on the same open question `DEVICE_CHECKS.md`
+   §18 item 7 already tracks.
+2. Password disabled until a real crypto backend exists; the same gap blocks M3.9's AES read, M5,
+   and M3.10.
+3. Native writing runs in an isolated instance with two client-owned pipes on their own executor,
+   distinct from both the browsing and the M3.4 extraction pools — sharing either would deadlock a
+   concurrent browse/extract against a compress.
+4. Level ceilings (xz 6, zstd 19) against the 256 MB target, with measured figures.
+5. Split volumes are raw `.001` parts for every format, resolved and finalised as one set; **Fylz
+   cannot yet open the split sets it writes** — a read-side gap the plan's own table does not flag,
+   named here for the milestone that closes it.
+6. "Relative to selection" is derived from the source's document id or the archive's in-archive
+   path, never from `FolderTab`'s display-name stack.
+7. A source that grows past its opened size aborts that entry; a shortfall is benign for zip and is
+   prevented for tar by spooling sources of unknown size first.
+8. Archives created above 10,000 entries, 4 GiB, or the ratio limit need consent to *extract* in
+   Fylz under M3.4's own rules; above 200,000 entries Fylz cannot even list what it just wrote.
+9. Compressing from inside an archive costs one materialisation per source entry (512 MiB cap) and
+   is refused above a small entry count for stream/solid-format sources.
+10. `tar.bz2`/`tar.lz4` exceed the plan's named format list.
+11. A destination with no tree grant (Drive) is reachable only through "Save as…", unsplit.
+12. The crypto stub gates three later milestones (item 2).
+13. Non-ASCII names depend on the engine pinning its own thread's locale to `C.UTF-8` at write
+    time — without that pin, every non-ASCII name fails to write at all, in every locale, not merely
+    as mojibake; verified against the host build.
+14. Directory symlinks are followed by the Fylz provider's own path check; the walk keeps its own
+    visited-set/depth bound rather than relying on the provider.
+15. A restart after a system stop starts the whole create over, bounded to 3 attempts.
+16. Headless `compress` mode exists with defined semantics but no consumer yet.
+17. Schema v4.
+
+18. **(a→b, found writing tests) `Walker.addFile` set `needsSpooling` for every unknown-size
+    entry regardless of format**, spooling a zip source unnecessarily (design step 4 names
+    spooling as `tar.*`-only, since zip tolerates an unknown size directly): `Walker` now takes the
+    request's own `CompressFormat` and gates the flag on `format.isTar`.
+19. **(b, found writing tests) `CompressProblem.ArchiveRefused` was declared but never
+    constructed** — a source archive `catalog.open` refused, or found partial/structurally refused
+    once opened, threw `PlanRefused` (the whole plan) instead of becoming a skippable per-source
+    problem the way a link, an encrypted entry or an oversized entry already are.
+    `CompressPlanner.walkArchiveRoot` now mirrors `ExtractPlanner`'s own "structural verdict is the
+    gate" checks (`summary.isOk`/`summary.partial`/`summary.structuralRefusal`) per source, not per
+    whole plan — another selected source unrelated to the bad one still compresses.
+20. **(b, found writing tests) `resolveConflict`'s `existingParts` argument included the base name
+    itself**, so a plain, unsplit conflict reported a one-element part list instead of an empty one;
+    the base is now named only through `existingBaseName`, `existingParts` is the numbered parts
+    beyond it (possibly empty), matching the interface's own doc comment.
+21. **(b, found writing tests) `CompressPlanner.queryDisplayName` used the classic
+    `query(uri, projection, selection, args, sortOrder)` overload**, which `DocNode.load`'s own KDoc
+    already documents as throwing `UnsupportedOperationException` from this app's own
+    `DocumentsProvider` base class under Robolectric — every local-file plan crashed. Switched to
+    `DocNode.load(resolver, uri)?.name`.
+22. **(b, found writing tests) `ArchiveCreator` never cleaned up a previous attempt's staged
+    output before a resumed run re-staged from scratch**, leaking the abandoned document at the
+    destination (a resumed create always starts over per design step 8, so every prior attempt's
+    staging is stale by definition). `cleanUpStalePartsFromAPreviousAttempt` now deletes every
+    `create_plan_items` row's `stagingUri` before `openPart(0, ...)`, mirroring
+    `ArchiveExtractor.prepareItems`'s own resume cleanup.
+23. **(b, found writing tests) The engine's own `PROTOCOL_ERROR` outcome could never be
+    recognised by `writeFailureCode`**, which only ever saw the wrapping `IOException`'s message
+    text, never the outcome code itself — every protocol error was misreported as the generic
+    `ARCHIVE_WRITE_FAILED`. A new `EngineOutcomeException(outcome, message)` carries the outcome
+    code through `frameError` so it can be matched directly.
+24. **(b, found writing tests; the most significant of this milestone's own findings)
+    `DecoderClient.callTwoPipes` never closed its own copies of `inRead`/`outWrite` once the
+    transaction finished** — unlike `callStreaming`'s own `streamOnce`, which already closes its
+    one pipe's write end in the transaction's `finally` via `DrainStream`. Confirmed two ways: (i)
+    a plain-JVM `RobolectricPipeReadTest` proving a real OS pipe's read end never sees EOF while
+    any write end anywhere stays open, and (ii) this app's own copy of `outWrite` staying open for
+    the whole drain phase under the old code, which would mean **`drain()`'s real EOF on a real
+    device would never arrive at all** — not merely a Robolectric-testing artifact. `twoPipesOnce`
+    now closes `inRead`/`outWrite` in the transaction's own `finally` the instant it completes, and
+    wraps the drain in the same `DrainStream` retry-until-transaction-done class `callStreaming`
+    already uses (previously private to that one call site; now shared).
+25. **(b, found writing tests) `ArchiveCreator.feedFile` could call
+    `ArchiveFrameWriter.abort()` with an entry still open on the wire** whenever a source failed
+    after `entry()` but before `end()` (a source deleted between planning and feeding, a permission
+    revoked mid-read) — `abort()`'s own contract requires no entry open, and the engine correctly
+    rejects the violation as `PROTOCOL_ERROR`, masking the real `SOURCE_UNREADABLE` failure.
+    `feedFile` now ends the entry with whatever partial byte count arrived (a shortfall the engine
+    already tolerates) before the failure propagates to `feed()`'s own `abort()` call.
+26. **(c) "Save as…" (no tree grant) never reaches the queue at all** — `ArchiveCreator` itself
+    refuses a plan with no destination folder outright (design step 1's own claim rule) — so
+    `CompressFlow.writeDirectly` runs the one `writeArchive` pass itself, synchronously, reusing
+    `ArchiveCreator`'s own `sourceLengthOf`/`openSourceStreamOf` (extracted to top-level `internal`
+    functions for this). It has no staging, no split, no verification, no durable retry across a
+    process death, and **no spooling support**: a manifest entry needing one (an unknown-size
+    `tar.*` source) is refused outright with a message pointing at a destination folder instead,
+    rather than silently mis-sized.
+27. **(c) `fylz.compress`'s old direct `archiveCreator.launch(...)` call offered no format, level
+    or split choice at all** (always ZIP, always Fast-equivalent, never split) — it now opens the
+    Compress sheet through `CompressFlow.openSheet`, exactly like `ArchiveToolsOverlay`'s own
+    non-encrypted "Create ZIP" does via the new `ActionContext.openCompressMenu`.
+28. **(c) `DropdownMenuItem` calls must live under `ui/actions/`** (`NoHardCodedMenusTest`,
+    MC.0c/d's own rule) — `CompressSheet.kt` was written under `ui/components/` first (its format
+    and split choices are both `DropdownMenu`s) and moved to `ui/actions/` once the test caught it,
+    alongside `ExtractSheet.kt`.
+29. **(c) `FylzV1App.kt`'s ratchet holds at 2270** (2267 lines: the old `archiveCreator` launcher
+    and its inline `compress()` body left, six lines of `compressFlow` construction and two
+    one-line `ActionContext` methods arrived) — the bulk of the new flow, as with `ExtractFlow.kt`,
+    landed in its own file (`ui/actions/CompressFlow.kt` + `CompressSheet.kt`) rather than growing
+    this one. `FylzAppShell.kt`'s ratchet needed lowering again regardless, 101 → 100, once
+    `RetryDispatcher`'s construction grew an `enqueueCreate` parameter for M3.5b's own
+    `ReclaimCreate` retry path.
+30. The M3.5a commit's subject text ("framed archived writing in fylz-archive…") most likely
+    should have read "framed archive writing"; left uncorrected once noticed, rather than amending
+    a pushed commit.
+
+**Relevant commits:** the M3.5a commit (`7f2c9db`; the design's 13, 3, 4 and this entry's own
+locale-pin and poisoning proofs as landed); the M3.5b commit (`f83713a`; items 18–25 and the
+design's 1, 5–7, 9, 11, 14–17 as landed); the M3.5c commit (items 26–30 and the design's 2, 7, 12
+as landed).
+
+**Risk if it turns out wrong:**
+- The `callTwoPipes` pipe-closing fix (24): if a future change removes the transaction's own
+  `finally` close again, the failure mode on a **real device** is a hung `drain()` (never seeing
+  EOF) rather than the spurious `PROTOCOL_ERROR` Robolectric's own non-blocking pipes show
+  instead — `RobolectricPipeReadTest`/`ArchiveFrameStreamingTest` prove the mechanism, not this
+  specific regression, so a silent reintroduction would only surface as a compress that never
+  finishes on a device, not as a failing test here.
+- `feedFile` ending an open entry before `abort()` (25): a source failing exactly between `entry()`
+  and its first byte now sends an `END` for zero bytes before the `ABORT` — the engine's own
+  "shortfall is benign" rule (design step 4) is what makes this safe rather than a new size-rule
+  edge case.
+- The stale-parts cleanup (22): deletes every `create_plan_items` row's `stagingUri` unconditionally
+  at the top of a resumed run, including one this exact resume is about to reuse the name of; since
+  every resume re-stages from scratch under a freshly `createChild`-ed document regardless (never
+  reopening a staged Uri for append), this is a pure cleanup with nothing to race against.
+- "Save as…"'s no-spooling refusal (26): a headless caller building a `CompressRequest` with
+  `destinationFolder = null` and a `tar.*` format over an archive-sourced entry of unknown size
+  would still plan successfully (the planner has no save-as awareness of its own) and then fail at
+  `ArchiveCreator`... except a null-destination plan never reaches `ArchiveCreator` at all (item
+  26's own point) — a future headless consumer driving `writeDirectly` directly, bypassing
+  `CompressFlow`, would need this same check copied in, since it is not the planner's own rule.
+- Moving `CompressSheet.kt` to `ui/actions/` (28): purely a package move once compiled and tested;
+  no behavioural risk.

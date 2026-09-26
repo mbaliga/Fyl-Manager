@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import androidx.work.WorkInfo
-import io.github.mbaliga.fylz.archive.ArchiveDocumentId
 import io.github.mbaliga.fylz.archive.ArchiveFrameWriter
 import io.github.mbaliga.fylz.archive.ArchiveListingCodec
 import io.github.mbaliga.fylz.decoder.ArchiveLimits
@@ -74,6 +73,24 @@ private class EngineOutcomeException(val outcome: Int, message: String?) : IOExc
  * inside an `inner class`. */
 private class PartOutput(val index: Int, val node: DocNode, val stream: OutputStream, val digest: MessageDigest) {
     var bytes = 0L
+}
+
+/** A manifest entry's size, read at feed time (design section 2.2 step 3), never trusted from
+ * planning -- shared by [ArchiveCreator.Run.feedFile] and the "Save as" direct-write path
+ * (`ui/actions/CompressFlow.kt`), which has no [ArchiveCreator] run of its own to belong to. */
+internal fun sourceLengthOf(resolver: ContentResolver, uri: Uri): Long? = DocNode.load(resolver, uri)?.size
+
+/** As [sourceLengthOf]: the source stream a manifest entry's bytes are actually fed from, shared
+ * with the "Save as" direct-write path for the same reason. */
+internal fun openSourceStreamOf(resolver: ContentResolver, uri: Uri): InputStream {
+    val signal = CancellationSignal()
+    return try {
+        resolver.openFileDescriptor(uri, "r", signal)?.let { pfd -> ParcelFileDescriptor.AutoCloseInputStream(pfd) }
+            ?: resolver.openInputStream(uri)
+            ?: throw IOException("no input stream for $uri")
+    } catch (failure: SecurityException) {
+        throw IOException(CreateErrorCodes.PERMISSION_DENIED, failure)
+    }
 }
 
 /**
@@ -425,26 +442,9 @@ class ArchiveCreator(
             reportProgress(force = false)
         }
 
-        private fun sourceLength(uri: Uri): Long? {
-            if (ArchiveDocumentId.isArchiveUri(uri)) {
-                val id = runCatching { ArchiveDocumentId.parse(uri) }.getOrNull() ?: return null
-                // The archive provider materialises on open; its own COLUMN_SIZE is authoritative
-                // for an entry (the tree already carried it at plan time, but re-query for safety).
-                return DocNode.load(resolver, uri)?.size
-            }
-            return DocNode.load(resolver, uri)?.size
-        }
+        private fun sourceLength(uri: Uri): Long? = sourceLengthOf(resolver, uri)
 
-        private fun openSourceStream(uri: Uri): InputStream {
-            val signal = CancellationSignal()
-            return try {
-                resolver.openFileDescriptor(uri, "r", signal)?.let { pfd -> ParcelFileDescriptor.AutoCloseInputStream(pfd) }
-                    ?: resolver.openInputStream(uri)
-                    ?: throw IOException("no input stream for $uri")
-            } catch (failure: SecurityException) {
-                throw IOException(CreateErrorCodes.PERMISSION_DENIED, failure)
-            }
-        }
+        private fun openSourceStream(uri: Uri): InputStream = openSourceStreamOf(resolver, uri)
 
         /** The drain (design section 2.3 step 3(b)/step 6): reads the archive stream into the
          * current staged part, rotating at each split boundary into the next, lazily opened, part. */

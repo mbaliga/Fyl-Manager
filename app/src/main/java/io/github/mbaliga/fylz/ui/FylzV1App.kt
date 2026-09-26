@@ -191,8 +191,10 @@ import io.github.mbaliga.fylz.actions.KeyRouter
 import io.github.mbaliga.fylz.actions.Routed
 import io.github.mbaliga.fylz.actions.RoomId
 import io.github.mbaliga.fylz.ui.actions.CommandPaletteDialog
+import io.github.mbaliga.fylz.ui.actions.CompressFlowHost
 import io.github.mbaliga.fylz.ui.actions.ExtractFlowHost
 import io.github.mbaliga.fylz.ui.actions.LibraryRailRoom
+import io.github.mbaliga.fylz.ui.actions.rememberCompressFlow
 import io.github.mbaliga.fylz.ui.actions.rememberExtractFlow
 import io.github.mbaliga.fylz.ui.actions.LocationsRoom
 import io.github.mbaliga.fylz.ui.actions.NavigateUpButton
@@ -510,6 +512,13 @@ private fun FylzV1Workspace(
         onLegacyEncryptedZip = { archive -> pendingArchiveUri = archive.source; extractPassword = ""; extractPasswordDialog = true }, onToast = ::toast, onExtracted = { toast("Extracted"); refresh() },
     )
 
+    // M3.5 (design §2.1-2.2): the whole compress flow; an AES-protected ZIP still uses the
+    // pre-M3.5 password path in ArchiveToolsOverlay.kt (ArchiveService.createZip, zip4j).
+    val compressFlow = rememberCompressFlow(
+        context, scope, operationRunner, persistTreePermission = repository::persistTreePermission,
+        onToast = ::toast, onCompressed = { toast("Compressing"); refresh() },
+    )
+
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
         val existing = tabs.indexOfFirst { it.treeUri == treeUri }
         if (existing >= 0) {
@@ -697,22 +706,8 @@ private fun FylzV1Workspace(
         beginTransfer(action, selectedEntries.map { it.uri }, destination, pendingArchiveUri)
     }
 
-    val archiveCreator = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip"),
-    ) { destination ->
-        if (destination != null && selectedEntries.isNotEmpty()) {
-            scope.launch {
-                loading = true
-                runCatching { archiveService.createZip(selectedEntries.map { it.uri }, destination) }
-                    .onSuccess { toast("Archive created") }
-                    .onFailure { toast(it.message ?: "Unable to create archive") }
-                loading = false
-            }
-        }
-    }
-
-    // Destination for PDF page extraction / merge. Kept separate from archiveCreator so the two
-    // flows cannot ever write into each other's target.
+    // Destination for PDF page extraction / merge. Kept separate from the compress flow so the
+    // two cannot ever write into each other's target.
     val pdfOutputCreator = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf"),
     ) { destination ->
@@ -1007,7 +1002,7 @@ private fun FylzV1Workspace(
         override fun recycleSelection() { doRecycleSelection() }
         override fun rename() { renameDialog = true }
         override fun tags() { tagDialog = true }
-        override fun compress() { archiveCreator.launch("Fylz-${System.currentTimeMillis()}.zip") }
+        override fun compress() { compressFlow.openSheet(selectedEntries.map { it.uri }) }
         override fun extract() { val entry = selectedEntries.singleOrNull() ?: return; extractFlow.openMenu(ArchiveRef(entry.uri, emptyList())) }
         override fun extractHere() { ensureNotificationPermissionRequested(); extractFlow.extractHere() }
         override fun extractIntoFolder() { ensureNotificationPermissionRequested(); extractFlow.extractIntoFolder() }
@@ -1018,6 +1013,7 @@ private fun FylzV1Workspace(
             ensureNotificationPermissionRequested(); extractFlow.extractSelected(archive, ids)
         }
         override fun openExtractMenu(archive: Uri) { ensureNotificationPermissionRequested(); extractFlow.openMenu(ArchiveRef(archive, emptyList())) }
+        override fun openCompressMenu(sources: List<Uri>) { compressFlow.openSheet(sources) }
         override fun batchRename() { batchRenameDialog = true }
         override fun pdfTools() { pdfDialog = true }
         override fun share() {
@@ -1562,6 +1558,7 @@ private fun FylzV1Workspace(
     }
 
     ExtractFlowHost(flow = extractFlow, tabs = tabs, resolver = actionResolver, dispatcher = actionDispatcher, state = browserState, ctx = actionContext)
+    CompressFlowHost(flow = compressFlow, tabs = tabs)
 
     externalDocument?.let { entry ->
         ExternalDocumentDialog(

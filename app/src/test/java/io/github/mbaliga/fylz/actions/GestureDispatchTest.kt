@@ -132,6 +132,7 @@ private class RecordingActionContext : ActionContext {
     override fun extractTo() {}
     override fun extractSelected() {}
     override fun openExtractMenu(archive: Uri) {}
+    override fun openCompressMenu(sources: List<Uri>) {}
     override fun batchRename() {}
     override fun pdfTools() {}
     override fun share() {}

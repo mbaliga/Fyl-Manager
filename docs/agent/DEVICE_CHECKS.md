@@ -643,3 +643,76 @@ memory number below need a device. **None of this ran on a device.**
 **What this verifies:** M3.4 (`5fdc515` (a), `075ecab` (b) and the M3.4c commit) -- the design's
 section 2.9 list, item for item, and the acceptance line MASTER_PLAN's own M3.4 entry states ("a 5 GB
 7z extracts through the queue with verification").
+
+## 20. M3.5 — Compress
+
+`docs/agent/DESIGN-M35-CREATE.md` moves archive creation onto the Rust engine, through the same
+durable queue extraction uses: `fylz.compress`/`ArchiveToolsOverlay`'s plain "Create ZIP" hand off
+to `ui/actions/CompressFlow.kt`, `operations.CompressPlanner` plans entirely in the UI process, and
+`operations.ArchiveCreator` runs the one pass on a **third isolated decoder instance**
+(`:decoders:write`) with `FZW1` frames fed in and the archive stream demultiplexed into staged,
+possibly-split output documents. Everything below was verified only in this sandbox: Rust tests on
+the write engine (including the locale-pin and poisoning proofs against the host build), Robolectric
+tests with a fake `IDecoderService.Stub` parsing real frames and writing a readable fake archive
+back, a plain-JVM real-pipe streaming proof of the frame codec (`ArchiveFrameStreamingTest`), and a
+simulated system stop (cancelling the run's coroutine with a stop reason). Real `bindIsolatedService`
+binding of a third instance, `:decoders:write` actually appearing in `ps` and being reaped, SELinux
+for the two pipes and the isolated process, a real WorkManager stop mid-create, non-ASCII names
+against the on-device bionic locale, and every wall-clock/memory number below need a device. **None
+of this ran on a device.**
+
+**Steps and expected results:**
+
+1. Compress a folder tree containing a non-ASCII name (e.g. "café", "日本語.txt") to `zip`,
+   `tar.gz`, `tar.xz` and `tar.zst` into Downloads. Expected: each opens correctly in a third-party
+   app and in Fylz's own M3.3 browsing, with the non-ASCII name intact (not mojibake, not a write
+   failure) -- this is the direct proof that `write_frames`' locale pin actually works against
+   bionic, not just the host build the Rust tests ran against; mtimes within a few seconds of the
+   source; `adb shell ps -A | grep decoders` shows `io.github.mbaliga.fylz:decoders:write` appear
+   for the run and disappear once it finishes (alongside `:decoders` if a browse is open, and
+   `:decoders:extract` if one is running -- all three coexist).
+2. Compress a 6 GB folder to `zip` on internal storage. Expected: a progress notification with a
+   bar and a byte line ("N of M files · X of Y MB", source bytes fed over the plan-time estimate);
+   record whether `:decoders:write` is distinguishable from a concurrent `:decoders` browse by pid
+   and by `adb shell dumpsys meminfo io.github.mbaliga.fylz:decoders:write` alone, or only by the
+   process name suffix, and how that was found (REVIEW_QUEUE/`ARCHITECTURE.md`'s own `UNVERIFIED`).
+   Repeat with `tar.xz` at Best (level 6) and confirm peak RSS stays under the 256 MB `:decoders`
+   target throughout.
+3. Compress the same large tree with a 700 MB split. Expected: parts named `name.zip.001`,
+   `.002`, … ; `cat name.zip.* > whole.zip` then open `whole.zip` normally. On a vfat card, compress
+   a source known to exceed 4 GiB with split Off: expected a dismissible warning suggesting a split,
+   never a hard block. Compress the same name twice with Keep-both: the second run's whole numbered
+   set shares one new base name, not a mix of old and new. Create a name, then Replace it with a
+   *shorter* split set than the one on disk (e.g. it now needs 2 parts where 4 existed before):
+   expected no stale trailing `.003`/`.004` remains at the destination afterward.
+4. Start a large compress from a throttled network share (a slow SMB/SFTP mount, or `tc`/a proxy
+   that rate-limits a USB-OTG drive) and Cancel mid-way while a source read is genuinely slow.
+   Expected: Cancel actually interrupts the hung read (the `CancellationSignal` path on
+   `openFileDescriptor`) within a few seconds, not after riding out the 10-minute
+   `SOURCE_UNREADABLE` cap; no staged parts remain at the destination; a copy/move/extract queued
+   behind the cancelled compress still runs to completion.
+5. Start a large compress, `adb shell am kill io.github.mbaliga.fylz` mid-way. Expected: on
+   relaunch the operation restarts the whole pass from scratch (no partial resume: the design's own
+   stated rule), the previous attempt's staged output is gone, not orphaned. Repeatedly kill the app
+   during the same operation's restarts to force `create_plans.restart_count` past 3: expected the
+   operation ends `FAILED`/`TOO_MANY_INTERRUPTIONS` cleanly, not one more restart loop. If reachable,
+   force a foreground-service execution-limit stop on a very long compress (Settings → background
+   restrictions, or a device known to enforce the 6-hour `dataSync` cap aggressively) and confirm the
+   mapped failure rather than a silent hang.
+6. Compress a folder browsed from inside an archive (M3.3), including one containing an encrypted
+   or oversized entry: expected that entry is refused as a skippable problem *at plan time*, before
+   any output byte exists, not discovered mid-archive. Compress into a different tab's own folder
+   via "Choose folder…". Compress via "Save as…" into a destination with no tree grant (a
+   `DocumentsUI` provider Fylz never mounted a tab in, e.g. Drive if installed): expected a single
+   output document, no split option offered, no operation-history row (this path never reaches the
+   queue).
+7. Open the Archive tools FAB, "Create ZIP", flip the AES switch on, encrypt and create an archive:
+   expected the pre-M3.5 zip4j path still runs unchanged and still refuses a folder source. Flip the
+   switch off instead: expected the new Compress sheet opens (not zip4j).
+8. Repeat steps 1-6 while running `adb logcat | grep avc` continuously. Expected: **no denial** for
+   `isolated_app` writing or reading either pipe, or anything about the third isolated instance
+   specifically (a denial here would surface as every compress ending FAILED/`ARCHIVE_WRITE_FAILED`
+   with no other symptom).
+
+**What this verifies:** M3.5 (`7f2c9db` (a), `f83713a` (b) and the M3.5c commit) -- the design's
+section 2.9 list, item for item.

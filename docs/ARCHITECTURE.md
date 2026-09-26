@@ -542,6 +542,99 @@ leaving a queued transfer behind it to run, `kill -9` mid-extract resuming); `do
 REVIEW_QUEUE.md`'s M3.4 entry (limits and consent's exact exposure, the WorkManager chain-poisoning
 hazard COPY/MOVE still has, mtimes not preserved, and every other logged deviation from the design).
 
+## Compress (M3.5)
+
+Compress is the inverse of selective extract: one framed pass into a **third** isolated decoder
+instance, planned entirely in the UI process first. `docs/agent/DESIGN-M35-CREATE.md` is the
+design; this section is the contract.
+
+**The actions and the flow.** `fylz.compress` (the selection bar) and `ArchiveToolsOverlay`'s own
+"Create ZIP" (`ActionContext.openCompressMenu`, its own picked sources) both open
+`ui/actions/CompressSheet.kt`: archive name, format, Fast/Normal/Best, an optional split size, and
+the "paths relative to the selection" toggle. Two buttons stand in for a single "Next", since each
+needs its own picker flow: "Choose folder…" opens the in-app/system folder chooser
+`ui/actions/CompressFlow.kt` already owns for every other destination pick in this app; "Save as…"
+launches `CreateDocument` for a single output file with no tree grant at all, disabled whenever a
+split is chosen (one system-picked document is the only output that destination can ever offer).
+The overlay's AES-protected "Create ZIP" (the password dialog's encrypt switch on) still runs the
+pre-M3.5 `data.ArchiveService.createZip` (zip4j) path instead — the new engine has no password
+support yet (§2.7 below).
+
+**Planning is entirely in the UI process, before any output exists.** `operations.CompressPlanner`
+walks every selected source (bounded depth against a directory-symlink loop the provider's own path
+check does not catch), sanitising and case-insensitively uniquifying each path component as
+discovered, naming entries relative to the selection or prefixed with the parent's root-relative
+path per the toggle. A source under the archive provider's authority is planned against
+`archive.ArchiveCatalog` directly: a link, an encrypted entry, an oversized entry, or a source
+archive that is unreadable, partial or structurally refused is a skippable problem for *that* source
+alone, never a whole-plan refusal, mirroring `CompressProblem`'s own per-entry/per-source shape. A
+conflicting output name — and, if split, its whole numbered `.001…` set — is resolved **as one
+unit**, never per part; sizes are never trusted from planning, only read again at feed time. The
+result (`CompressPlan`, `CompressManifestEntry` rows — deliberately no size column) is written to
+`data.FylzDatabase`'s `create_plans`/`create_plan_items`/`create_manifest` tables alongside the
+`FileOperation`, atomically, before `OperationRunner.enqueueCreate` ever calls WorkManager — see
+"Durable operation queue" above for what happens after that. A "Save as…" destination (no
+`destinationUri`) never reaches the queue at all: `operations.ArchiveCreator` itself refuses a plan
+with no destination folder outright, so `CompressFlow.writeDirectly` runs that one pass itself,
+synchronously, with no staging, no split, no verification and no durable retry.
+
+**One pass, a third isolated instance, frames — with a stated concurrency invariant.**
+`operations.ArchiveCreator` claims the plan (mirroring `ArchiveExtractor` exactly: plan rows missing
+or unreadable fail without retry, a prior spooled temp file is re-spooled if missing) and runs
+**one** `writeArchive` call on a **third, dedicated** isolated decoder instance
+(`decoder.DecoderClient.forWriter`, `bindIsolatedService(..., "write", ...)` → process
+`:decoders:write`). The feeder, the drain and the Binder transaction each run on their **own
+dedicated executor** (`DecoderClient.createTransactionDispatcher`) — a small fixed pool used *only*
+for create operations, never the browsing pool `callStreaming` uses for `inspectArchive`/
+`listArchive`/`extractEntry` and never the extraction pool M3.4 dedicates to `extractRanges`.
+Sharing either would deadlock a concurrent browse/extract against a compress: the create call's own
+liveness watchdog pauses whenever it reports "busy", and two independently-busy calls sharing one
+small pool starve each other forever. The feeder writes `FZW1` frames (`archive.ArchiveFrameWriter`
+mirrors `fylz-ffi-android`'s `frames.rs` reader) — `ENTRY`/`DATA`/`END` per manifest row in order,
+`FINISH` when done, `ABORT` instead when cancelled or a source could not be read (an entry already
+open is closed with `END` first: `ArchiveFrameWriter.abort`'s own contract requires no entry open,
+and the engine correctly rejects a violation as a protocol error otherwise, masking the real
+failure). The drain reads the archive stream into the current staged part, rotating at each split
+boundary into the next, lazily opened part with a running SHA-256. **No transparent retry** of the
+create call itself, unlike `callStreaming`'s browsing retry, which would produce a second,
+interleaved `writeArchive` transaction into the same demuxer. Every exit path closes all four
+client-side pipe ends in the transaction's own `finally` the instant the transaction itself
+finishes — not left for a later, single closing pass, which would leave this process's own copy of
+the engine's output pipe open for the whole drain phase and the drain's real EOF would never arrive.
+
+**The locale requirement.** The engine pins the calling thread's locale to `C.UTF-8` for the
+duration of the call (bionic and modern glibc both provide it), asserting
+`nl_langinfo(CODESET) == "UTF-8"` afterward and restoring the previous locale when it returns — this
+is what makes any non-ASCII name at all actually write, for zip and pax alike, rather than failing
+every time as it does in the unpinned C locale. On `ABORT`, a protocol violation, or any internal
+error, the writer is explicitly poisoned (a `poisoned: Cell<bool>` makes the write callback fail on
+its next call) before it is freed, which is what stops `archive_write_free`'s unconditional
+close-on-drop from quietly emitting a well-formed truncated archive.
+
+**Formats, levels and their memory ceiling** (`operations.CompressFormat`/`levelFor`): `zip`,
+`tar.gz`, `tar.xz`, `tar.zst`, `tar.bz2`, `tar.lz4`, each with three distinct Fast/Normal/Best
+levels. `tar.xz`'s range is capped at level 6 (≈93 MiB; level 9 would be ≈673 MiB) and `tar.zst`'s
+Best is 19 (≈89.5 MiB; level 22 would be ≈833.6 MiB) against the `:decoders` 256 MB memory target;
+`tar.xz` has no multi-threading offered (`xz:threads=1`), `tar.zst`'s MT support is compiled out.
+7z creation is deferred to a later pack: an isolated process cannot create a temp file by path
+anywhere the sandbox permits, a passed directory descriptor grants no create rights, and a `memfd`
+breaches the memory target.
+
+**Split semantics.** A split archive is raw `.001`/`.002`/… byte-sliced parts of whichever format
+was chosen — libarchive has no multi-volume support of its own here — resolved and finalised **as
+one unit**, last part first down to `.001` last, so a reader never sees a `.001` without every later
+part also present; a later part failing to finalise rolls back whatever already did. **Fylz cannot
+yet open the split sets it writes** — a read-side gap M3.3's own browsing does not close, named here
+for the milestone that does.
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 20 (the
+write instance's own pid/RSS distinguishable from browsing, a 6 GB compress, split parts reassembled
+with `cat`, cancel during a genuinely slow source read, `kill -9` mid-create restarting from scratch
+bounded to 3 attempts, compressing from inside a browsed archive, the overlay's AES path still
+working, SELinux on the two pipes); `docs/agent/REVIEW_QUEUE.md`'s M3.5 entry (the crypto stub, the
+level ceilings with measured figures, the split read-side gap, and every other logged deviation from
+the design).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

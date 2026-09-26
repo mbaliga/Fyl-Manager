@@ -24,6 +24,8 @@ interface ActionContext {
     fun recycleSelection()
     fun rename()
     fun tags()
+
+    /** `fylz.compress` (design M3.5 §2.1): opens the Compress sheet for the current selection. */
     fun compress()
 
     /** `fylz.extract` (design M3.4 §2.1): opens the Extract sheet for the single selected archive. */
@@ -46,6 +48,11 @@ interface ActionContext {
      * the same flow"): opens the same Extract sheet [extract] does, for the archive its own
      * picker chose rather than the current selection. */
     fun openExtractMenu(archive: Uri)
+
+    /** `ArchiveToolsOverlay`'s own "Create ZIP" button, for the sources its own picker chose
+     * rather than the current selection: opens the same Compress sheet [compress] does, unless
+     * the AES switch is on, which stays on the legacy zip4j path (no password support here yet). */
+    fun openCompressMenu(sources: List<Uri>)
 
     fun batchRename()
     fun pdfTools()

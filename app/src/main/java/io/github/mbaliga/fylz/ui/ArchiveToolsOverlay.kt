@@ -200,9 +200,19 @@ fun ArchiveToolsOverlay(resolver: ActionResolver, state: BrowserState, ctx: Acti
                 passwordPurpose = null
                 when (purpose) {
                     ArchivePasswordPurpose.CREATE -> {
-                        pendingCreatePassword = password
-                        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-                        createDestination.launch("Fylz-$stamp.zip")
+                        if (password == null) {
+                            // M3.5: no AES switch -- the new Compress sheet/queue, not zip4j.
+                            val sources = selectedSources
+                            selectedSources = emptyList()
+                            ctx.openCompressMenu(sources)
+                        } else {
+                            // The AES switch is on: zip4j is still the only encrypted-archive path
+                            // (design §2.7's own scoped-down choice, until M3.9 gives every format
+                            // a password prompt through the queue and M3.10 removes zip4j).
+                            pendingCreatePassword = password
+                            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+                            createDestination.launch("Fylz-$stamp.zip")
+                        }
                     }
                     ArchivePasswordPurpose.EXTRACT -> {
                         pendingExtractPassword = password
