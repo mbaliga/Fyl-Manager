@@ -23,6 +23,9 @@ object ArchiveListingTestWriter {
         encryptedData: Boolean = false,
         encryptedMetadata: Boolean = false,
         nameLossy: Boolean = false,
+        /** M3.7: the raw bytes a lossy [path] came from; defaults to [path]'s own UTF-8 bytes when
+         * [nameLossy] is set but no real raw bytes matter to the caller (most existing callers). */
+        rawPathBytes: ByteArray? = null,
     ): ArchiveListingRecord {
         var flags = 0
         if (encryptedData) flags = flags or ArchiveListingCodec.FLAG_ENCRYPTED_DATA
@@ -31,7 +34,8 @@ object ArchiveListingTestWriter {
         if (mtimeEpochSeconds == ArchiveEntryInfo.UNKNOWN_MTIME) flags = flags or ArchiveListingCodec.FLAG_MTIME_UNKNOWN
         if (nameLossy) flags = flags or ArchiveListingCodec.FLAG_NAME_LOSSY
         if (linkTarget != null) flags = flags or ArchiveListingCodec.FLAG_HAS_LINK_TARGET
-        return ArchiveListingRecord(ordinal, path, kind, flags, uncompressedBytes, mtimeEpochSeconds, mode, linkTarget)
+        val raw = if (nameLossy) (rawPathBytes ?: path.toByteArray(Charsets.UTF_8)).toList() else null
+        return ArchiveListingRecord(ordinal, path, kind, flags, uncompressedBytes, mtimeEpochSeconds, mode, linkTarget, raw)
     }
 
     fun directory(ordinal: Int, path: String): ArchiveListingRecord =
@@ -58,8 +62,14 @@ object ArchiveListingTestWriter {
     fun encodeRecord(record: ArchiveListingRecord): ByteArray {
         val path = record.path.toByteArray(Charsets.UTF_8)
         val target = record.linkTarget?.toByteArray(Charsets.UTF_8)
-        val buffer = ByteBuffer.allocate(1 + 4 + 4 + path.size + 1 + 1 + 8 + 8 + 4 + (target?.let { 4 + it.size } ?: 0))
-            .order(ByteOrder.LITTLE_ENDIAN)
+        val rawLossy = if (record.flags and ArchiveListingCodec.FLAG_NAME_LOSSY != 0) {
+            record.rawPathBytes?.toByteArray() ?: ByteArray(0)
+        } else {
+            null
+        }
+        val buffer = ByteBuffer.allocate(
+            1 + 4 + 4 + path.size + 1 + 1 + 8 + 8 + 4 + (target?.let { 4 + it.size } ?: 0) + (rawLossy?.let { 4 + it.size } ?: 0),
+        ).order(ByteOrder.LITTLE_ENDIAN)
         buffer.put(0x01)
         buffer.putInt(record.ordinal)
         buffer.putInt(path.size)
@@ -72,6 +82,10 @@ object ArchiveListingTestWriter {
         if (target != null) {
             buffer.putInt(target.size)
             buffer.put(target)
+        }
+        if (rawLossy != null) {
+            buffer.putInt(rawLossy.size)
+            buffer.put(rawLossy)
         }
         return buffer.array()
     }

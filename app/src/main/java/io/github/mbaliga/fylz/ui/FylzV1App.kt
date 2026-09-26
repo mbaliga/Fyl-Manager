@@ -1242,7 +1242,7 @@ private fun FylzV1Workspace(
             topBar = {
                 TopAppBar(
                     title = { Text(activeTab?.current?.name ?: "Fylz") },
-                    actions = { TopAppBarActions(actionResolver, actionDispatcher, browserState, actionContext) },
+                    actions = { io.github.mbaliga.fylz.ui.actions.ArchiveEncodingControl(activeTab, (context.applicationContext as FylzApplication).archiveEncodingOverrides, onChanged = ::refresh); TopAppBarActions(actionResolver, actionDispatcher, browserState, actionContext) }, // M3.7
                 )
             },
             bottomBar = {

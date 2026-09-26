@@ -768,3 +768,57 @@ harness — so they are entirely unverified until read on a device. **None of th
 **What this verifies:** M3.6 (this commit) — the brief's own scope: Rename/Delete re-enabled for
 zip-family archive entries only, "Add entries" via the Tools menu, the old archive recycled to
 `.fylz-trash`, and cancel-mid-edit leaving the original untouched.
+
+## 22. M3.7 — Legacy ZIP filename charset
+
+M3.7 touches Rust only in the listing writer (one new field, gated on the pre-existing
+`FLAG_NAME_LOSSY` flag) and adds no new `:decoders` instance or pipe contract — everything else is
+Kotlin: a small heuristic, an in-memory per-archive map, and a header-bar control. Everything below
+was verified only in this sandbox: the wire format round trip against a real, committed CP-437
+fixture (`legacy-cp437.zip`/`legacy-cp437.fzl`), the detector's heuristic on hand-built byte
+patterns per charset family, and the override's effect through the real, hosted
+`ArchiveDocumentsProvider` (document id, ordinal and extracted bytes unchanged; no re-listing).
+None of the five real JDK charsets (`Cp437`, `Cp866`, `GBK`, `Shift_JIS`, `EUC-KR`) has been tried
+against Android's own ICU-backed charset provider on a device — only against this sandbox's host
+JDK, which resolves all five (`LegacyZipCharsetDetectorTest`'s own smoke test). **None of this ran
+on a device.**
+
+**Steps and expected results:**
+
+1. Obtain (or build with a legacy tool — an old Windows `zip.exe`, 7-Zip/WinRAR with its charset
+   option set away from UTF-8, or Info-ZIP under a non-UTF-8 locale) a real ZIP whose entries carry
+   non-ASCII names in CP-437, CP-866, GBK, Shift-JIS and EUC-KR respectively (five separate
+   archives, or one archive per family is fine). Browse each into Fylz. Expected: a non-ASCII name
+   shows *something* readable rather than the U+FFFD replacement-character mush of the pre-M3.7
+   lossy string, for at least the Western (CP-437) and East Asian cases where Auto's heuristic is
+   expected to succeed; the Cyrillic (CP-866) case may still show mojibake under Auto per the
+   heuristic's own documented limit (`REVIEW_QUEUE.md`'s M3.7 entry, item 4) until the manual
+   override is used.
+2. With one of those archives browsed, open the header bar's new charset control (the icon next to
+   the folder name) and step through all six choices (Auto, CP-437, CP-866, GBK, Shift-JIS,
+   EUC-KR). Expected: the lossy-named entries' displayed names change immediately (no spinner, no
+   re-listing) with each choice, and the *correct* choice for that archive's own real charset shows
+   the name a person would recognise; every non-lossy (plain ASCII/UTF-8) entry's name is
+   unaffected by any choice.
+3. With the override changed to something other than Auto, tap into the lossy-named entry (open,
+   preview, or copy it out) and confirm it opens/extracts the *correct* file's bytes — the same
+   entry as before the override was touched, never a different one. Rename or Recycle it (a
+   ZIP-family archive, M3.6): confirm the edit operates on the entry the override is currently
+   *displaying*, correctly, regardless of which charset is selected — i.e. the display change never
+   silently retargets an action at the wrong header.
+4. Force-stop and relaunch Fylz, then browse back into the same archive. Expected: the override is
+   gone (back to Auto) — it was never meant to survive past the session, per the brief's own
+   "remembered for the session only... never persisted."
+5. Browse into a *nested* archive (an archive inside an archive, M3.3) that itself has a lossy
+   name, and confirm the header-bar control still appears and works for the nested archive's own
+   entries, independently of any override set for the outer archive.
+6. Repeat step 2 on a large archive (thousands of entries, at least one lossy-named) and confirm
+   switching the override redraws promptly (sub-second) — this is a `queryChildDocuments` re-query
+   against an already-cached tree (sandbox-confirmed: `stub.listCalls.get()` stays at 1 across every
+   override change in `ArchiveDocumentsProviderTest`), so a real device slowdown here would point at
+   something else (a `LazyColumn` recomposition cost, not a re-list).
+
+**What this verifies:** M3.7 (this commit) — the brief's own scope: raw bytes carried for a lossy
+name only, the five real charsets resolving on-device, the auto-detect heuristic's real-world
+behaviour (including its documented limits), the manual override changing display only, and the
+override lasting the session and no longer.

@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// The fixtures whose listings are committed as golden `.fzl` files for the Kotlin reader.
-const GOLDEN: [&str; 8] = [
+const GOLDEN: [&str; 9] = [
     "sample-cd.zip",
     "messy-paths.tar",
     "backslash.zip",
@@ -39,6 +39,9 @@ const GOLDEN: [&str; 8] = [
     "damaged-after-3.tar",
     "dot-rooted.tar",
     "sample-entries.zip",
+    // M3.7: the only golden fixture with a `FLAG_NAME_LOSSY` record, pinning the raw-path bytes
+    // the wire format now appends for one.
+    "legacy-cp437.zip",
 ];
 
 fn archive_fixture(name: &str) -> File {
@@ -76,6 +79,8 @@ struct Decoded {
     mtime: i64,
     mode: u32,
     link_target: Option<String>,
+    /// M3.7: present iff `flags & FLAG_NAME_LOSSY`.
+    raw_path: Option<Vec<u8>>,
 }
 
 struct DecodedListing {
@@ -127,6 +132,15 @@ fn decode(bytes: &[u8]) -> DecodedListing {
         } else {
             None
         };
+        let raw_path = if flags & listing::FLAG_NAME_LOSSY != 0 {
+            let len = u32_at(at) as usize;
+            at += 4;
+            let raw = bytes[at..at + len].to_vec();
+            at += len;
+            Some(raw)
+        } else {
+            None
+        };
         records.push(Decoded {
             ordinal,
             path,
@@ -136,6 +150,7 @@ fn decode(bytes: &[u8]) -> DecodedListing {
             mtime,
             mode,
             link_target,
+            raw_path,
         });
     }
 }
@@ -169,6 +184,11 @@ fn expected_record(entry: &EntryMetadata) -> Decoded {
         mtime: entry.mtime.unwrap_or(0),
         mode: entry.mode,
         link_target: entry.link_target.clone(),
+        raw_path: if entry.name_lossy {
+            Some(entry.raw_path.clone().unwrap_or_default())
+        } else {
+            None
+        },
     }
 }
 
@@ -206,6 +226,28 @@ fn golden_listings_match_the_committed_fzl_files() {
             bytes.len()
         );
     }
+}
+
+/// M3.7: the committed fixture, not an in-memory-built ZIP (`legacy-cp437.zip` is `tools/fixtures/
+/// make_archive_fixtures.py`'s `build_legacy_cp437_zip`, byte-patched after `zipfile` writes an
+/// ASCII placeholder, since `zipfile` itself cannot write a non-UTF-8 name). Its golden `.fzl` is
+/// the one committed listing that actually carries a raw-path field; the Kotlin
+/// `ArchiveListingCodecTest`/`LegacyZipCharsetDetectorTest` decode the same bytes.
+#[test]
+fn the_legacy_cp437_fixtures_raw_path_bytes_are_the_undecoded_name() {
+    let (result, bytes) = listing_of("legacy-cp437.zip", &Limits::default());
+    let pass = result.unwrap();
+    let entry = &pass.inspection.entries[0];
+    assert!(entry.name_lossy);
+    assert_eq!(entry.path, "caf\u{FFFD}.txt");
+    assert_eq!(entry.raw_path.as_deref(), Some(b"caf\x82.txt".as_slice()));
+    let decoded = decode(&bytes);
+    assert_eq!(decoded.records.len(), 1);
+    assert_ne!(decoded.records[0].flags & listing::FLAG_NAME_LOSSY, 0);
+    assert_eq!(
+        decoded.records[0].raw_path.as_deref(),
+        Some(b"caf\x82.txt".as_slice())
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -743,9 +785,16 @@ fn a_lossy_name_is_flagged_in_the_listing_and_matched_by_its_lossy_string() {
     let entry = &pass.inspection.entries[0];
     assert!(entry.name_lossy);
     assert_eq!(entry.path, "caf\u{FFFD}.txt");
+    // M3.7: the engine keeps the undecoded bytes beside the lossy string.
+    assert_eq!(entry.raw_path.as_deref(), Some(b"caf\x82.txt".as_slice()));
     let decoded = decode(&sink);
     assert_ne!(decoded.records[0].flags & listing::FLAG_NAME_LOSSY, 0);
     assert_eq!(decoded.records[0].path, entry.path);
+    // The listing carries those same raw bytes for Kotlin's charset override to re-decode.
+    assert_eq!(
+        decoded.records[0].raw_path.as_deref(),
+        Some(b"caf\x82.txt".as_slice())
+    );
     // The listing's string is exactly what extract_entry_at matches.
     let dest_path = dir.path().join("out");
     let dest = File::create(&dest_path).unwrap();

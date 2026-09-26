@@ -255,4 +255,23 @@ class ArchiveTreeTest {
         assertEquals("", tree.entry("a")!!.parentPath)
         assertEquals(ArchiveFormatFamily.TAR, tree.formatCode)
     }
+
+    @Test
+    fun `a lossy entry's raw path bytes survive into the tree, and only there`() {
+        val tree = tree("legacy-cp437.fzl", ArchiveFormatFamily.ZIP)
+        assertEquals(1, tree.size)
+        val entry = tree.entry("caf�.txt")!!
+        assertTrue(entry.nameLossy)
+        assertEquals("caf�.txt", entry.name)
+        assertEquals(listOf(0x63, 0x61, 0x66, 0x82, 0x2E, 0x74, 0x78, 0x74).map { it.toByte() }, entry.rawPathBytes)
+        // The round trip the M3.7 brief asks for: the real fixture's raw bytes, carried through the
+        // tree untouched, decode under the charset override to the name a legacy tool actually
+        // meant -- ArchiveTree itself knows nothing about charsets (ArchiveRef/ArchiveEncodingOverrides
+        // need a real android.net.Uri, so that last hop is `ArchiveEncodingOverridesTest`'s, this
+        // file being plain-JVM).
+        assertEquals("café.txt", LegacyZipCharsetDetector.decode(entry.rawPathBytes!!.toByteArray(), ArchiveNameEncoding.AUTO))
+        // Every other tree entry (none of this fixture's, but the general contract) carries no raw
+        // bytes at all.
+        assertNull(tree("sample-cd.fzl", ArchiveFormatFamily.ZIP).entry("hello.txt")!!.rawPathBytes)
+    }
 }

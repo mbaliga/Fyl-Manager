@@ -11,7 +11,8 @@
 //! ```text
 //! magic     "FZL1"
 //! record    tag 0x01 | ordinal u32 | path u32 len + bytes | kind u8 | flags u8 |
-//!           uncompressed u64 | mtime i64 | mode u32 | [link target u32 len + bytes]
+//!           uncompressed u64 | mtime i64 | mode u32 | [link target u32 len + bytes] |
+//!           [raw path u32 len + bytes, present iff FLAG_NAME_LOSSY]
 //! trailer   tag 0xFF | count u32 | partial u8
 //! ```
 //!
@@ -28,6 +29,14 @@
 //! byte-exact check -- recorded as a deviation.) The reader normalises paths for the tree; this
 //! writer never does. `uncompressed` is 0 and `mtime` is 0 when the matching `*_UNKNOWN` flag is
 //! set. `partial` is 1 when the header pass stopped on damage after at least one record.
+//!
+//! **M3.7:** a `FLAG_NAME_LOSSY` record additionally carries [EntryMetadata::raw_path] -- the
+//! undecoded bytes libarchive gave for the whole pathname -- appended after the link target field
+//! (present or not). Reusing the existing flag, rather than a new one, keeps a plain UTF-8 listing
+//! (the overwhelming majority of archives) exactly the size it already was; only a lossy name pays
+//! for carrying its name twice. Kotlin re-decodes these bytes under a chosen legacy charset for
+//! display only -- the `path` field above stays the byte-exact identity `extract_entry_at` and
+//! every id still match.
 
 use crate::EntryKind;
 use crate::EntryMetadata;
@@ -116,6 +125,12 @@ impl<W: Write> ListingWriter<W> {
         if let Some(target) = &entry.link_target {
             write_bytes(&mut self.out, target.as_bytes())?;
         }
+        if entry.name_lossy {
+            // Defensive: the invariant is that a lossy entry always carries `raw_path` (set at
+            // the one call site in `lib.rs`), but a test-constructed entry that violates it writes
+            // an empty raw path rather than panicking a decoder process.
+            write_bytes(&mut self.out, entry.raw_path.as_deref().unwrap_or(&[]))?;
+        }
         self.count = self.count.saturating_add(1);
         Ok(())
     }
@@ -148,6 +163,7 @@ mod tests {
             ordinal,
             path: path.to_string(),
             name_lossy: false,
+            raw_path: None,
             kind: EntryKind::File,
             link_target: None,
             uncompressed: Some(11),
@@ -188,6 +204,7 @@ mod tests {
             ordinal: 0,
             path: "l".to_string(),
             name_lossy: true,
+            raw_path: Some(b"raw-l".to_vec()),
             kind: EntryKind::Symlink,
             link_target: Some("t".to_string()),
             uncompressed: None,
@@ -213,6 +230,9 @@ mod tests {
         // uncompressed(8) mtime(8) mode(4) then the link target.
         assert_eq!(&bytes[36..40], &1u32.to_le_bytes());
         assert_eq!(bytes[40], b't');
+        // M3.7: the raw path bytes follow the link target because `FLAG_NAME_LOSSY` is set.
+        assert_eq!(&bytes[41..45], &5u32.to_le_bytes());
+        assert_eq!(&bytes[45..50], b"raw-l");
         // The trailer says partial.
         assert_eq!(bytes[bytes.len() - 1], 1);
         assert_eq!(bytes[bytes.len() - 6], TAG_TRAILER);

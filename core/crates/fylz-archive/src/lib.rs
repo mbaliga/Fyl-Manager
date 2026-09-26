@@ -858,6 +858,13 @@ impl Reader {
                 ordinal: self.current_ordinal(),
                 path,
                 name_lossy,
+                // M3.7: only a lossy name carries its undecoded bytes; every other entry's name
+                // is written once, not twice.
+                raw_path: if name_lossy {
+                    Some(raw_name.to_vec())
+                } else {
+                    None
+                },
                 kind,
                 link_target,
                 uncompressed,

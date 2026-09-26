@@ -131,6 +131,12 @@ pub struct EntryMetadata {
     /// string: every structural rule (depth, length, `..`, absolute) reads the same through
     /// replacement characters.
     pub name_lossy: bool,
+    /// The undecoded bytes of the pathname, `Some` **only** when [EntryMetadata::name_lossy] is
+    /// `true` (M3.7): the listing writes these for a lossy-flagged entry only, so Kotlin can offer
+    /// a manual charset override (CP437/CP866/GBK/Shift-JIS/EUC-KR) that re-decodes the name for
+    /// display without a second engine call. `None` whenever `name_lossy` is `false`, so a normal
+    /// UTF-8 listing carries no second copy of every name. Never consulted by the policy itself.
+    pub raw_path: Option<Vec<u8>>,
     pub kind: EntryKind,
     /// `archive_entry_symlink` for [EntryKind::Symlink], `archive_entry_hardlink` for
     /// [EntryKind::Hardlink], else `None`. `None` on a link entry is malformed and refused.

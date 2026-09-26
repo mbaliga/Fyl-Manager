@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.ProviderInfo
 import io.github.mbaliga.fylz.archive.ArchiveCacheSweeper
 import io.github.mbaliga.fylz.archive.ArchiveCatalog
+import io.github.mbaliga.fylz.archive.ArchiveEncodingOverrides
 import io.github.mbaliga.fylz.archive.ArchiveEntryCache
 import io.github.mbaliga.fylz.archive.ArchiveSource
 import io.github.mbaliga.fylz.archive.FakeArchiveDecoder
@@ -35,6 +36,8 @@ internal object ArchiveProviderTestSupport {
         val sweeper: ArchiveCacheSweeper,
         val entryCache: ArchiveEntryCache,
         var catalog: ArchiveCatalog,
+        /** M3.7: the charset overrides this provider reads; a test sets one and re-lists to see it applied. */
+        val encodingOverrides: ArchiveEncodingOverrides,
     ) {
         /** A fresh catalog with nothing in memory: what a cold process has. Disk listings stay. */
         fun coldCatalog(): ArchiveCatalog {
@@ -68,10 +71,12 @@ internal object ArchiveProviderTestSupport {
         val provider = Robolectric.buildContentProvider(ArchiveDocumentsProvider::class.java).create(info).get()
         provider.catalogOverride = catalog
         provider.entryCacheOverride = entryCache
+        val encodingOverrides = ArchiveEncodingOverrides()
+        provider.encodingOverridesOverride = encodingOverrides
         // Robolectric runs tests on the main looper; a device never calls a provider there.
         provider.mainThreadGuard = {}
         registerForContentResolver(provider, ArchiveDocumentsProvider.AUTHORITY)
-        return Hosted(provider, stub, sweeper, entryCache, catalog)
+        return Hosted(provider, stub, sweeper, entryCache, catalog, encodingOverrides)
     }
 
     /** The manifest's `<provider>` for the archive authority, as a [ProviderInfo]. */

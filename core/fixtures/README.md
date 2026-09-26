@@ -59,6 +59,12 @@ The same script adds the archives `src/listing_tests.rs` and the Kotlin `archive
 | `dot-rooted.tar` | `tarfile`: `./`, `./first.txt`, `./sub/`, `./sub/second.txt` -- `tar -C dir -cf x.tar .`'s shape | header 0 is the root the engine drops; the first real member has **ordinal 1** and `extract_entry_at` fetches it under that ordinal |
 | `damaged-after-3.tar` | three good members, then a 1 KiB non-zero block where the fourth header would be | `inspect` fails; `inspect_into` lists three entries and flags the listing partial |
 
+### Legacy ZIP filename charset fixture (M3.7)
+
+| File | Made how | Proves |
+|---|---|---|
+| `legacy-cp437.zip` | `zipfile`, an ASCII placeholder name byte-patched afterward to `caf\x82.txt` (`café.txt` under CP-437, UTF-8 flag bit left unset) -- the technique `crc-bad.zip` already uses, since `zipfile` itself always writes a non-ASCII `str` as UTF-8 | `name_lossy`/`raw_path` on a real committed fixture, not just an in-memory-built ZIP; the one golden `.fzl` with a `FLAG_NAME_LOSSY` record; the Kotlin charset-override round trip |
+
 ### Selective-extraction fixtures (M3.4a)
 
 The same script adds the archives `src/blocks_tests.rs`, `fylz-ffi-android`'s tests and the Kotlin
@@ -95,12 +101,15 @@ differently). The script prints each output's SHA-256; the committed values are 
 ### Golden listings -- `app/src/test/resources/fixtures/archives/*.fzl` (M3.3a)
 
 The listing codec (`src/listing.rs`, writer; `app/.../archive/ArchiveListingCodec.kt`, reader) is
-held together by golden files: the Rust writer's output for eight of the fixtures above
+held together by golden files: the Rust writer's output for nine of the fixtures above
 (`sample-cd`, `messy-paths`, `backslash`, `mixed-links`, `implicit-dirs`, `damaged-after-3`,
-`dot-rooted`, `sample-entries`), committed under `app/src/test/resources/fixtures/archives/`
-(MASTER_PLAN section 3.4 asks for fixtures under both trees). `cargo test -p fylz-archive golden`
-asserts the writer reproduces every committed file byte for byte; `ArchiveListingCodecTest` and
-`ArchiveTreeTest` decode them. Regenerate them, after a deliberate codec change only, with
+`dot-rooted`, `sample-entries`, `legacy-cp437`), committed under `app/src/test/resources/fixtures/
+archives/` (MASTER_PLAN section 3.4 asks for fixtures under both trees). `cargo test -p
+fylz-archive golden` asserts the writer reproduces every committed file byte for byte;
+`ArchiveListingCodecTest` and `ArchiveTreeTest` decode them. M3.7 (raw-path bytes for a
+`FLAG_NAME_LOSSY` record) left the first eight byte-identical -- none of them has a lossy name --
+and added `legacy-cp437.fzl` as the ninth. Regenerate them, after a deliberate codec change only,
+with
 
 ```
 FYLZ_WRITE_GOLDEN=1 cargo test -p fylz-archive golden

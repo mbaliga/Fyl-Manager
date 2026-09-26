@@ -1114,3 +1114,128 @@ log-and-continue.
   practical impact of "edit is unavailable for that one archive until this is revisited" is judged
   low; extraction and browsing of such an archive are completely unaffected (M3.4/M3.3's own paths,
   untouched by this milestone).
+
+## M3.7 — Legacy ZIP filename charset
+
+**Milestone:** M3.7 (`docs/agent/MASTER_PLAN.md`'s own M3.7 text; no separate design document --
+this task's own brief is the design, same as M3.6; per-commit detail in `docs/agent/PROGRESS.md`'s
+`M3.7` row; device checks in `docs/agent/DEVICE_CHECKS.md` section 22, sandbox-verified only). Not
+a gate: log-and-continue.
+
+**Where the wire-format change actually lives, and why nothing else needed to move:**
+
+1. `fylz-archive::EntryMetadata` gains `raw_path: Option<Vec<u8>>`, set from the same
+   `pathname_bytes` slice `Reader::metadata` already has in hand right before it lossy-decodes a
+   non-UTF-8 name (`lib.rs`) -- `Some` **only** when `name_lossy` is `true`, `None` otherwise, so a
+   plain UTF-8 archive's `EntryMetadata` (the overwhelming majority) carries nothing new. `listing.rs`'s
+   `ListingWriter::record` appends those bytes (length-prefixed, same shape as the existing link
+   target field) **after** the link target field, gated on the *existing* `FLAG_NAME_LOSSY` bit
+   rather than a new flag -- one flag now means both "this name is lossy" and "a raw-path field
+   follows," which is exactly the brief's own "avoid bloating every listing" instruction: a listing
+   with no lossy names (still the overwhelming majority of real archives) is byte-for-byte what it
+   was before this milestone. Proven, not just asserted: `FYLZ_WRITE_GOLDEN=1 cargo test -p
+   fylz-archive golden` reproduced all eight pre-existing golden `.fzl` files byte-identical (none
+   of their fixtures has a lossy name) and added a ninth, `legacy-cp437.fzl`, the one golden file
+   that actually exercises the new field.
+2. **The fixture:** `tools/fixtures/make_archive_fixtures.py` had no CP437-named fixture (checked
+   first, per the brief), so `build_legacy_cp437_zip()` adds `legacy-cp437.zip` -- an ASCII
+   placeholder name (`zipfile` itself cannot write a non-UTF-8 name; any non-ASCII `str` it is given
+   is always UTF-8-encoded with the UTF-8 flag bit set) byte-patched afterward to `caf\x82.txt`
+   (`café.txt` under CP-437), the same technique `build_crc_bad_zip` already uses for a byte pattern
+   `zipfile` would never produce on its own. Deterministic (built twice, compared, per the script's
+   own contract); every other fixture's hash is unchanged.
+3. **Kotlin gets the raw bytes as `List<Byte>`, never `ByteArray`, on both `ArchiveListingRecord`
+   and `ArchiveTreeEntry`.** A `ByteArray` property on a Kotlin `data class` gets *reference*
+   equality in the generated `equals`/`hashCode` (`==` on two arrays is `Any.equals`, not
+   `contentEquals`) -- a well-known pitfall that would have silently broken
+   `ArchiveListingCodecTest`'s own `assertEquals(records, listing.records)` round-trip assertion the
+   moment two decoded records needed to compare content-equal but weren't the same array instance.
+   `List<Byte>` costs a small amount of boxing for what is always a short byte string (a filename)
+   and sidesteps the whole problem for free.
+
+**Auto-detect heuristic and its recorded limits (the brief's own "doesn't need to be perfect"):**
+
+4. `LegacyZipCharsetDetector.detect` checks, in order, for a Shift-JIS-shaped lead/trail byte pair,
+   then an EUC-KR-shaped one, then GBK's (broadest of the three, so it is checked last -- GBK's own
+   lead/trail ranges are a strict superset of EUC-KR's, so checking GBK first would make EUC-KR
+   unreachable), and only once none of those match falls back to a single-byte guess between CP-437
+   and CP-866. **Recorded, not silently accepted:**
+   - CP-437 and CP-866 share almost their *entire* high-byte range (both put accented Latin /
+     Cyrillic letters across `0x80`-`0xAF` and `0xE0`-`0xEF`), so there is no reliable byte-range
+     signal that tells a single CP-437 letter from a single CP-866 one in general. The detector
+     recognises only `0x90`-`0x9F` (CP-866's own "second half" of Cyrillic uppercase, a block
+     CP-437 barely uses at all) as a CP-866 hint; anything else defaults to CP-437, by far the more
+     common of the two for a legacy ZIP. A Cyrillic name that happens to avoid those 16 codepoints,
+     or a Western name that happens to use one of CP-437's rare symbols there, guesses wrong -- the
+     manual override exists precisely for that case, and is the only way to reach CP-866 reliably.
+   - A **real, multi-character** CP-866 (Cyrillic) name is often misdetected as Shift-JIS or GBK
+     instead of ever reaching the CP-866 check at all, because CP-866's own high bytes (`0xE0`-`0xEF`
+     lowercase Cyrillic, in particular) sit squarely inside those East Asian pages' own lead/trail
+     ranges, and a real Cyrillic word supplies several such bytes in a row -- exactly the
+     "double-byte-shaped" evidence the detector treats as more reliable than a single-byte guess
+     (a real short Western/Cyrillic name rarely produces such a run by chance). In practice this
+     means Auto correctly recognises an *isolated* CP-866 byte surrounded by ASCII but not a full
+     Cyrillic word; `LegacyZipCharsetDetectorTest` documents and exercises both shapes rather than
+     hiding the gap. The fix, if this needs revisiting, is a proper frequency/n-gram scorer per
+     charset rather than a byte-range heuristic -- judged over-engineering for a display-only,
+     always-overridable feature, per the brief.
+   - The double-byte lead/trail ranges themselves are simplified (a real decoder's own tables
+     exclude a handful of reserved codepoints inside those ranges); "structurally looks like a
+     double-byte character" is the bar, not "is a valid one," which is enough to pick a family
+     without needing to actually decode it first.
+
+**What else was decided:**
+
+5. **The override is keyed by `ArchiveRef`, not by `ArchiveCatalog`'s own internal cache key
+   string** (`sha256(src|size|mtime)`, chained for nested archives). `ArchiveRef` is the same public
+   identity type `ArchiveCatalog.open(ref)`/`ArchiveEditFlow`/every id already address an archive
+   by, needs no reach into the catalog's own private key derivation, and is exactly what the brief
+   means by "the archive's catalog key" -- the thing that identifies which archive's listing this
+   is, not a specific string encoding of it. `ArchiveEncodingOverrides` is one
+   `ConcurrentHashMap<ArchiveRef, ArchiveNameEncoding>` (`FylzApplication`-scoped, never persisted),
+   since it is read off the main thread (`ArchiveDocumentsProvider`'s own contract) and written on
+   it (the header-bar control).
+6. **The override is unscoped by format or nesting depth**, unlike M3.6's own editing gate
+   (`ARCHIVE_ENTRY_WRITABLE`, ZIP-family and top-level only). A lossy name is not a ZIP-only
+   phenomenon -- a tar or an ISO 9660 disc can carry non-UTF-8 bytes exactly as a legacy ZIP can --
+   and a nested archive's own entries are no less worth re-decoding than a top-level one's, so
+   `ui/actions/ArchiveEncodingControl.kt`'s own `currentArchiveRef` is deliberately more permissive
+   than `ArchiveEditFlow.kt`'s `archiveEditContext`, not a reuse of it.
+7. **Re-decoding is display-only by construction, not by a rule remembered to check.** The chosen
+   encoding never touches `ArchiveTreeEntry.path` (the field ids, ordinals and `extract_entry_at`'s
+   byte-exact match all key on) or `ArchiveTreeEntry.ordinal` -- `ArchiveEncodingOverrides.displayNameFor`
+   reads `rawPathBytes` and returns a plain `String`, nothing it computes ever feeds back into the
+   tree, the catalog or an id. `ArchiveDocumentsProviderTest`'s own M3.7 case asserts this directly:
+   the same document `Uri` and the same extracted bytes before and after changing the override.
+8. **Changing the override never re-lists the archive.** `ArchiveDocumentsProvider.addEntryRow`
+   reads `rawPathBytes` off the already-cached `ArchiveTree` (the same one every other row read
+   already blocks on); `ArchiveDocumentsProviderTest`'s M3.7 case asserts `stub.listCalls.get() ==
+   1` across both queries, proving the "no new engine call" half of the brief rather than merely
+   assuming it from the code's shape.
+9. **`FylzV1App.kt`'s own contribution is one call site, on the existing `actions = { ... }` line,
+   using the new composable's fully-qualified name rather than a new import line.** `FylzV1App.kt`
+   was already sitting exactly at its own ratchet (2270/2270, zero headroom, M3.6's own doing) with
+   nothing obviously removable to make room for even a single new `import` line; the fully-qualified
+   call site keeps this milestone's net line delta at zero rather than either raising the ratchet or
+   spending time hunting for a line to cut elsewhere. All of the actual UI (the icon button, the
+   dropdown, the six-entry menu) lives in the new `ui/actions/ArchiveEncodingControl.kt` instead.
+10. **`onChanged` is a plain `FylzV1App.refresh()`, the same one every other "something in the
+    current folder changed, redraw it" path already calls** (M3.4's extract flow, M3.6's own edit
+    flow) -- not a new callback shape. It bumps `refreshKey` (re-querying `queryChildDocuments`,
+    which is where item 8's cached-tree read happens) and forgets any memoised catalog failure,
+    neither of which this milestone needs but both of which are harmless to run again.
+
+**Relevant commit:** the M3.7 commit (this commit).
+
+**Risk if it turns out wrong:**
+- The auto-detect heuristic (item 4) is display-only and always overridable per-archive, so a wrong
+  guess is a cosmetic annoyance (a mojibake-looking name where the manual override would have shown
+  the right one), never a correctness or extraction-safety issue -- item 7 is the reason why.
+- The wire-format change (item 1) is purely additive and gated on a pre-existing flag; a decoder
+  process older than this milestone (there is none, since the writer and reader always ship
+  together) would simply have never set `FLAG_NAME_LOSSY`'s new meaning, and a reader older than
+  this milestone would have refused the extra bytes as "unknown flag" -- neither case is reachable
+  in this repository, but the wire compatibility story is the same one M3.3's own flags already
+  established.
+- Item 9 (the fully-qualified call site over a new import): purely stylistic, reversible any time
+  `FylzV1App.kt` gets headroom again (a future milestone that removes more than it adds).

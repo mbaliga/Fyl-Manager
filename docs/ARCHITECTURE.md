@@ -681,6 +681,55 @@ restriction.
 `docs/agent/REVIEW_QUEUE.md`'s M3.6 entry (the architecture choice and every scope narrowing and
 deviation, in full).
 
+## Legacy ZIP filename encoding (M3.7)
+
+libarchive's own iconv support is compiled out (M3.1's `build.rs`), so a legacy ZIP name that is
+not valid UTF-8 (an old DOS/Windows tool's CP-437, a Cyrillic CP-866, or one of the East Asian
+double-byte pages) can only be lossy-decoded once, on the Rust side, into the replacement-character
+string every entry already carries (`EntryMetadata.name_lossy`/`path`). Re-decoding under a
+*different* charset has to happen in Kotlin, from the name's own undecoded bytes — which the
+listing did not carry before this milestone.
+
+**The wire format.** `fylz-archive::EntryMetadata` gains `raw_path: Option<Vec<u8>>`, `Some` only
+when `name_lossy` is `true`. `listing.rs`'s writer appends those bytes, length-prefixed, after the
+existing link-target field — gated on the *existing* `FLAG_NAME_LOSSY` bit rather than a new flag,
+so an ordinary UTF-8 listing (still the overwhelming majority) is byte-for-byte what it was before:
+proven by regenerating all eight pre-existing golden `.fzl` files unchanged and adding a ninth,
+`legacy-cp437.fzl`, from a new committed fixture (`legacy-cp437.zip`) built with a byte-patching
+technique (`build_crc_bad_zip`'s own) since `zipfile` itself cannot write a non-UTF-8 name.
+`archive/ArchiveListingCodec.kt` reads the same field into `ArchiveListingRecord.rawPathBytes`
+(`List<Byte>`, not `ByteArray` — a `ByteArray` data-class property gets *reference* equality in the
+generated `equals`, which would have silently broken the codec's own round-trip test), and
+`archive.ArchiveTree` carries it through onto `ArchiveTreeEntry` untouched — the tree's own `path`
+(what ids, ordinals and `extract_entry_at` key on) is never derived from it.
+
+**Auto-detect.** `archive.LegacyZipCharsetDetector` picks among CP-437, CP-866, GBK, Shift-JIS and
+EUC-KR from a lossy name's raw bytes alone: a structural "looks double-byte" check (a lead/trail
+byte pair in the right ranges) for the three East Asian pages, checked narrowest-range-first so
+GBK's own broader ranges never shadow EUC-KR's; failing that, a single-byte fallback that defaults
+to CP-437 unless a byte in `0x90`-`0x9F` (CP-866's own "second half" of Cyrillic uppercase) hints
+otherwise. Deliberately imprecise where the two single-byte pages' ranges genuinely overlap (nearly
+everywhere) and where a real multi-character Cyrillic word's own high bytes often look more like a
+double-byte East Asian pattern than a single-byte one — recorded in full in
+`docs/agent/REVIEW_QUEUE.md`'s M3.7 entry rather than chased with a heavier per-charset scorer, since
+this is a display-only, always-overridable feature. All five real charsets resolve via
+`Charset.forName` with standard JDK names (`Cp437`, `Cp866`, `GBK`, `Shift_JIS`, `EUC-KR`) — no new
+dependency, and a smoke test asserts each one on this JDK.
+
+**The manual override.** `archive.ArchiveEncodingOverrides` is one small in-memory map, keyed by
+`ArchiveRef` (the same identity type every archive Uri and the catalog already address one by), on
+`FylzApplication` — session-only, never persisted, never touching an id, an ordinal or a path.
+`storage.ArchiveDocumentsProvider.addEntryRow` reads it for every lossy-named entry's `DISPLAY_NAME`
+(re-decoding the tree-carried raw bytes it already has; no new engine call, no re-listing — the same
+cached `ArchiveTree` every other row read already blocks on). The header bar's own control
+(`ui/actions/ArchiveEncodingControl.kt`, unscoped by format or nesting depth, unlike M3.6's own
+editing gate: a lossy name is not a ZIP-only phenomenon) offers the five charsets plus Auto and
+tells the browser to redraw with a plain `refresh()` once one is picked.
+
+**What device checks and the review queue cover:** `docs/agent/DEVICE_CHECKS.md` section 22;
+`docs/agent/REVIEW_QUEUE.md`'s M3.7 entry (the wire-format reasoning, the heuristic's exact limits,
+and every other decision, in full).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

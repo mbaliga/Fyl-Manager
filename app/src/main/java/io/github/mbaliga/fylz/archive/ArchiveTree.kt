@@ -17,6 +17,9 @@ data class ArchiveTreeEntry(
     val mode: Int,
     /** The link target exactly as listed (not normalised); see [ArchiveTree.resolveHardlink]. */
     val linkTarget: String?,
+    /** [ArchiveListingRecord.rawPathBytes] (M3.7): `null` unless [nameLossy]. Carried untouched --
+     * the tree normalises [path], never this. */
+    val rawPathBytes: List<Byte>? = null,
 ) {
     val name: String get() = path.substringAfterLast('/')
     val parentPath: String get() = path.substringBeforeLast('/', "")
@@ -175,6 +178,7 @@ class ArchiveTree private constructor(
                     mtimeEpochSeconds = record.mtimeEpochSeconds,
                     mode = record.mode,
                     linkTarget = record.linkTarget,
+                    rawPathBytes = record.rawPathBytes,
                 )
                 val existing = byPath[path]
                 when {

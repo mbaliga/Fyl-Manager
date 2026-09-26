@@ -17,6 +17,7 @@ import io.github.mbaliga.fylz.BuildConfig
 import io.github.mbaliga.fylz.FylzApplication
 import io.github.mbaliga.fylz.archive.ArchiveCatalog
 import io.github.mbaliga.fylz.archive.ArchiveDocumentId
+import io.github.mbaliga.fylz.archive.ArchiveEncodingOverrides
 import io.github.mbaliga.fylz.archive.ArchiveEntryCache
 import io.github.mbaliga.fylz.archive.ArchiveHandle
 import io.github.mbaliga.fylz.archive.ArchiveTreeEntry
@@ -54,6 +55,11 @@ import kotlinx.coroutines.runBlocking
  * through `operations.EditPlanner`/`ArchiveCreator` instead (the same rewrite-to-staging-then-
  * atomic-replace machinery M3.5's Compress sheet already runs), never a `renameDocument`/
  * `deleteDocument` call against one entry's own document id.
+ *
+ * M3.7: an entry whose name was not valid UTF-8 (`ArchiveTreeEntry.nameLossy`) is shown here under
+ * the archive's own [ArchiveEncodingOverrides] choice -- the manual override the header bar offers,
+ * or the auto-detect heuristic under it -- re-decoded from the raw bytes the listing carried,
+ * display only. The document id, its `ordinal` and every other entry's name are unaffected.
  * In-process `ContentResolver` calls run the provider on the caller's thread through the local
  * transport, and every existing caller is already off the main thread; a debug-only check says so,
  * injectable so Robolectric (main looper) can run it.
@@ -67,6 +73,10 @@ class ArchiveDocumentsProvider : DocumentsProvider() {
     @VisibleForTesting
     internal var entryCacheOverride: ArchiveEntryCache? = null
 
+    /** Test seam: the M3.7 charset overrides to read instead of the application's. */
+    @VisibleForTesting
+    internal var encodingOverridesOverride: ArchiveEncodingOverrides? = null
+
     /** Debug-only: a provider call on the main looper would block the UI on a listing. Injectable for Robolectric. */
     @VisibleForTesting
     internal var mainThreadGuard: () -> Unit = {
@@ -78,6 +88,9 @@ class ArchiveDocumentsProvider : DocumentsProvider() {
 
     private val entryCache: ArchiveEntryCache
         get() = entryCacheOverride ?: (context!!.applicationContext as FylzApplication).archiveEntryCache
+
+    private val encodingOverrides: ArchiveEncodingOverrides
+        get() = encodingOverridesOverride ?: (context!!.applicationContext as FylzApplication).archiveEncodingOverrides
 
     override fun onCreate(): Boolean = true
 
@@ -215,7 +228,9 @@ class ArchiveDocumentsProvider : DocumentsProvider() {
     private fun addEntryRow(cursor: MatrixCursor, id: ArchiveDocumentId, entry: ArchiveTreeEntry) {
         cursor.newRow().apply {
             add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, id.encode())
-            add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, entry.name)
+            // M3.7: a lossy-named entry's displayed name honours the archive's own manual charset
+            // override (or the auto-detect heuristic under it); every other entry is untouched.
+            add(DocumentsContract.Document.COLUMN_DISPLAY_NAME, encodingOverrides.displayNameFor(id.archive, entry))
             add(DocumentsContract.Document.COLUMN_MIME_TYPE, mimeTypeOf(entry))
             add(DocumentsContract.Document.COLUMN_SIZE, if (entry.isDirectory || !entry.sizeKnown) null else entry.uncompressedBytes)
             add(DocumentsContract.Document.COLUMN_LAST_MODIFIED, if (entry.mtimeKnown) entry.mtimeEpochSeconds * 1_000L else null)

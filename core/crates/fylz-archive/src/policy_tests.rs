@@ -19,6 +19,7 @@ fn meta(name: &str, directory: bool, compressed: i64, uncompressed: i64) -> Entr
         ordinal: 0,
         path: name.to_string(),
         name_lossy: false,
+        raw_path: None,
         kind: if directory {
             EntryKind::Directory
         } else {
@@ -39,6 +40,7 @@ fn link(kind: EntryKind, path: &str, target: Option<&str>) -> EntryMetadata {
         ordinal: 0,
         path: path.to_string(),
         name_lossy: false,
+        raw_path: None,
         kind,
         link_target: target.map(str::to_string),
         uncompressed: Some(0),

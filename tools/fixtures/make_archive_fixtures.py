@@ -568,6 +568,31 @@ def build_backslash_zip() -> bytes:
     return data
 
 
+def build_legacy_cp437_zip() -> bytes:
+    """A ZIP whose one member's name was written in the legacy CP437 code page, never UTF-8 (the
+    general-purpose flag's UTF-8 bit, 0x800, unset) -- what a pre-UTF-8-aware tool (an old Windows
+    `zip.exe`, WinRAR set to a legacy code page, ...) actually writes for a non-ASCII name.
+    `zipfile` cannot write this directly: any non-ASCII `str` it is given is always encoded as
+    UTF-8 with that flag set (`zipfile.py`'s own `FileHeader`), so an ASCII placeholder of the same
+    byte length is written first and then patched to the real CP437 bytes in both the local header
+    and the central directory record -- the same byte-patching technique `build_crc_bad_zip` uses
+    for something `zipfile` itself would never write. `caf\\x82.txt` is `café.txt` under CP437
+    (`é` is byte 0x82): M3.7's fixture for the manual charset-override round trip (there is no
+    separate design document for M3.6/M3.7; the task brief is the design)."""
+    placeholder = "cafX.txt"
+    target = b"caf\x82.txt"
+    assert len(placeholder.encode("ascii")) == len(target)
+    raw = bytearray(stored_zip([(placeholder, b"a legacy cp437 name\n")]))
+    placeholder_bytes = placeholder.encode("ascii")
+    hits = bytes(raw).count(placeholder_bytes)
+    assert hits == 2, f"expected the placeholder name twice (local header + central directory), found {hits}"
+    data = bytes(raw).replace(placeholder_bytes, target)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        info = zf.infolist()[0]
+        assert not info.flag_bits & 0x800, "the UTF-8 flag must stay unset for this fixture to mean anything"
+    return data
+
+
 def build_dot_rooted_tar() -> bytes:
     """The shape `tar -C dir -cf x.tar .` produces: a `./` directory member for the root itself,
     then every member under `./`. The engine drops the root as an entry but it still occupies
@@ -883,6 +908,8 @@ FIXTURES: dict[Path, Callable[[], bytes]] = {
     FIXTURES_DIR / "backslash.zip": build_backslash_zip,
     FIXTURES_DIR / "dot-rooted.tar": build_dot_rooted_tar,
     FIXTURES_DIR / "damaged-after-3.tar": build_damaged_after_3_tar,
+    # M3.7 legacy ZIP filename charset fixture.
+    FIXTURES_DIR / "legacy-cp437.zip": build_legacy_cp437_zip,
     # M3.4 selective-extraction fixtures.
     FIXTURES_DIR / "tree.zip": build_tree_zip,
     FIXTURES_DIR / "tree.tar.zst": build_tree_tar_zst,

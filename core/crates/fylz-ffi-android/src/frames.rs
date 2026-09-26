@@ -282,6 +282,7 @@ mod tests {
             ordinal,
             path: path.to_string(),
             name_lossy: false,
+            raw_path: None,
             kind,
             link_target: None,
             uncompressed: size,

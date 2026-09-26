@@ -20,6 +20,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -60,6 +61,11 @@ class FakeArchive(
         /** The size the listing declares; the body's length unless a test wants a lie. */
         val declaredSize: Long = body.size.toLong(),
         val mtime: Long = 1_577_836_800L,
+        /** M3.7: `path` is always this entry's UTF-8 (possibly already lossy-looking, e.g. with a
+         * literal replacement character) display string; a real lossy entry additionally sets this
+         * so the fake decoder's listing carries a `FLAG_NAME_LOSSY` record with real raw bytes. */
+        val nameLossy: Boolean = false,
+        val rawPathBytes: ByteArray? = null,
     )
 
     fun write(file: File): File {
@@ -86,7 +92,9 @@ class FakeArchive(
                                 .put("off", offsets[index])
                                 .put("lt", entry.linkTarget ?: JSONObject.NULL)
                                 .put("enc", entry.encrypted)
-                                .put("mt", entry.mtime),
+                                .put("mt", entry.mtime)
+                                .put("nl", entry.nameLossy)
+                                .put("rpb", entry.rawPathBytes?.let { Base64.getEncoder().encodeToString(it) } ?: JSONObject.NULL),
                         )
                     }
                 },
@@ -286,6 +294,8 @@ class FakeArchiveDecoder(
                 mtimeEpochSeconds = entry.getLong("mt"),
                 linkTarget = entry.optString("lt").takeUnless { entry.isNull("lt") },
                 encryptedData = entry.getBoolean("enc"),
+                nameLossy = entry.optBoolean("nl", false),
+                rawPathBytes = entry.optString("rpb").takeUnless { entry.isNull("rpb") }?.let { Base64.getDecoder().decode(it) },
             )
         }
         ParcelFileDescriptor.AutoCloseOutputStream(sink).use { out ->

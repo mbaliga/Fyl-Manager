@@ -4,6 +4,7 @@ import android.app.Application
 import dev.aarso.crashrecovery.CrashRecovery
 import io.github.mbaliga.fylz.archive.ArchiveCacheSweeper
 import io.github.mbaliga.fylz.archive.ArchiveCatalog
+import io.github.mbaliga.fylz.archive.ArchiveEncodingOverrides
 import io.github.mbaliga.fylz.archive.ArchiveEntryCache
 import io.github.mbaliga.fylz.archive.ArchiveInspector
 import io.github.mbaliga.fylz.archive.ArchiveSource
@@ -66,6 +67,9 @@ class FylzApplication : Application() {
     val archiveCatalog: ArchiveCatalog by lazy {
         ArchiveCatalog(this, ArchiveSource(this, archiveLimits), decoderClient, archiveLimits, archiveEntryCache, archiveCacheSweeper)
     }
+
+    /** The session-only manual charset override for legacy ZIP filenames (M3.7); never persisted. */
+    val archiveEncodingOverrides: ArchiveEncodingOverrides by lazy { ArchiveEncodingOverrides() }
 
     override fun onCreate() {
         super.onCreate()

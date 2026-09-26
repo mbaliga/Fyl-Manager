@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import io.github.mbaliga.fylz.archive.ArchiveDocumentId
 import io.github.mbaliga.fylz.archive.ArchiveEntryCache
+import io.github.mbaliga.fylz.archive.ArchiveNameEncoding
 import io.github.mbaliga.fylz.archive.ArchiveRef
 import io.github.mbaliga.fylz.archive.FakeArchive
 import io.github.mbaliga.fylz.decoder.ArchiveEntryInfo
@@ -17,6 +18,7 @@ import io.github.mbaliga.fylz.operations.DocNode
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -129,6 +131,36 @@ class ArchiveDocumentsProviderTest : FylzDocumentsProviderTestBase() {
         // And getType goes through the same table.
         assertEquals("text/plain", resolver.getType(hello.uri))
         assertEquals(DocumentsContract.Document.MIME_TYPE_DIR, resolver.getType(rootUri(source)))
+    }
+
+    @Test
+    fun `a lossy-named entry's display name honours the M3_7 charset override, never its document id or ordinal`() {
+        val cp437Bytes = byteArrayOf(0x63, 0x61, 0x66, 0x82.toByte(), 0x2E, 0x74, 0x78, 0x74) // "café.txt"
+        val archive = FakeArchive(listOf(FakeArchive.Entry("caf�.txt", "legacy".toByteArray(), nameLossy = true, rawPathBytes = cp437Bytes)))
+        val source = archiveUri(archive = archive)
+        val ref = ArchiveRef(source, emptyList())
+
+        // AUTO (the default, per ArchiveEncodingOverrides): correctly detected as CP-437.
+        val before = children(rootUri(source)).single()
+        assertEquals("café.txt", before.name)
+        val idBefore = ArchiveDocumentId.parse(before.uri)
+
+        // A wrong manual override changes only the display string.
+        hosted.encodingOverrides.setEncoding(ref, ArchiveNameEncoding.CP866)
+        val after = children(rootUri(source)).single()
+        assertNotEquals("café.txt", after.name)
+        assertNotEquals("caf�.txt", after.name)
+        val idAfter = ArchiveDocumentId.parse(after.uri)
+        assertEquals("the ordinal is untouched by the override", idBefore.ordinal, idAfter.ordinal)
+        assertEquals("the path identity is untouched by the override", idBefore.path, idAfter.path)
+        assertEquals("the encoded document id itself does not depend on display name", before.uri, after.uri)
+
+        // Extraction still reads the same bytes: the override is display-only.
+        val bytes = FileInputStream(resolver.openFileDescriptor(after.uri, "r")!!.fileDescriptor).use { it.readBytes() }
+        assertArrayEquals("legacy".toByteArray(), bytes)
+        // Re-decoding under the override never re-lists the archive: the same cached tree served
+        // both queries, exactly as the brief asks ("no new engine call").
+        assertEquals(1, hosted.stub.listCalls.get())
     }
 
     @Test

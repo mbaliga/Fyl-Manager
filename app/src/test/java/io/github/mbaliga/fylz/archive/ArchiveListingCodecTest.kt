@@ -101,6 +101,19 @@ class ArchiveListingCodecTest {
     }
 
     @Test
+    fun `legacy-cp437 fzl carries the raw bytes only for its one lossy record`() {
+        val listing = decode(golden("legacy-cp437.fzl"))
+        assertEquals(1, listing.records.size)
+        val entry = listing.records[0]
+        assertTrue(entry.nameLossy)
+        assertEquals("caf�.txt", entry.path)
+        assertEquals(listOf(0x63, 0x61, 0x66, 0x82, 0x2E, 0x74, 0x78, 0x74).map { it.toByte() }, entry.rawPathBytes)
+        // M3.7's own charset override re-decodes those bytes into the name a legacy tool meant.
+        assertEquals("café.txt", LegacyZipCharsetDetector.decode(entry.rawPathBytes!!.toByteArray(), ArchiveNameEncoding.CP437))
+        assertEquals("café.txt", LegacyZipCharsetDetector.decode(entry.rawPathBytes!!.toByteArray(), ArchiveNameEncoding.AUTO))
+    }
+
+    @Test
     fun `every flag, the unknown sentinels and lossy names round-trip through the test writer`() {
         val records = listOf(
             ArchiveListingTestWriter.record(0, "plain.txt", uncompressedBytes = 5L),
@@ -217,5 +230,19 @@ class ArchiveListingCodecTest {
         for (cut in 5 until one.size - 6) {
             assertCorrupt("cut at $cut", one.copyOf(cut))
         }
+    }
+
+    @Test
+    fun `a lossy record truncated inside its own raw path field is corrupt at every cut, including a claimed length past the end`() {
+        val one = ArchiveListingTestWriter.encode(
+            listOf(ArchiveListingTestWriter.record(0, "caf�.txt", nameLossy = true, rawPathBytes = byteArrayOf(0x63, 0x61, 0x66, 0x82.toByte(), 0x2E, 0x74, 0x78, 0x74))),
+        )
+        for (cut in 5 until one.size - 6) {
+            assertCorrupt("cut at $cut", one.copyOf(cut))
+        }
+        // Trailer(6) + the 8 raw path bytes + their own 4-byte length prefix.
+        val lying = one.copyOf()
+        ByteBuffer.wrap(lying).order(ByteOrder.LITTLE_ENDIAN).putInt(one.size - 6 - 8 - 4, 1_000)
+        assertCorrupt("raw path runs past the end", lying)
     }
 }

@@ -26,6 +26,16 @@ data class ArchiveListingRecord(
     val mtimeEpochSeconds: Long,
     val mode: Int,
     val linkTarget: String?,
+    /**
+     * The undecoded bytes of [path] (M3.7), present iff [nameLossy]: `fylz-archive/src/listing.rs`
+     * writes these only for a `FLAG_NAME_LOSSY` record, so [ArchiveEncodingOverrides]/
+     * [LegacyZipCharsetDetector] can re-decode a legacy ZIP name under a chosen charset for
+     * display without a second engine call. A `List<Byte>`, not a `ByteArray`, purely so this data
+     * class's generated `equals` compares content rather than array identity (a `ByteArray`
+     * property would not, a well-known Kotlin data class pitfall) -- [ArchiveListingCodecTest]'s
+     * own `assertEquals(records, listing.records)` depends on it.
+     */
+    val rawPathBytes: List<Byte>? = null,
 ) {
     val isDirectory: Boolean get() = kind == ArchiveEntryInfo.KIND_DIRECTORY
     val isFile: Boolean get() = kind == ArchiveEntryInfo.KIND_FILE
@@ -49,9 +59,14 @@ class ArchiveListing(val records: List<ArchiveListingRecord>, val partial: Boole
  * ```
  * magic     "FZL1"
  * record    tag 0x01 | ordinal u32 | path u32 len + bytes | kind u8 | flags u8 |
- *           uncompressed u64 | mtime i64 | mode u32 | [link target u32 len + bytes]
+ *           uncompressed u64 | mtime i64 | mode u32 | [link target u32 len + bytes] |
+ *           [raw path u32 len + bytes, present iff FLAG_NAME_LOSSY]
  * trailer   tag 0xFF | count u32 | partial u8
  * ```
+ *
+ * M3.7: a `FLAG_NAME_LOSSY` record additionally carries the entry's undecoded pathname bytes,
+ * appended after the link target field (present or not) -- the flag doubles as "a raw path follows",
+ * so a plain UTF-8 listing (the overwhelming majority) pays nothing extra.
  *
  * The file is **untrusted**: a compromised decoder process wrote it. Every length is checked
  * against what remains, strings are capped at [MAX_STRING_BYTES], a path may have at most
@@ -130,6 +145,7 @@ object ArchiveListingCodec {
                     val mtime = buffer.long
                     val mode = buffer.int
                     val linkTarget = if (flags and FLAG_HAS_LINK_TARGET != 0) readString(buffer, "link target") else null
+                    val rawPathBytes = if (flags and FLAG_NAME_LOSSY != 0) readRawBytes(buffer, "raw path").toList() else null
                     records += ArchiveListingRecord(
                         ordinal = ordinal.toInt(),
                         path = path,
@@ -143,6 +159,7 @@ object ArchiveListingCodec {
                         mtimeEpochSeconds = if (flags and FLAG_MTIME_UNKNOWN != 0) ArchiveEntryInfo.UNKNOWN_MTIME else mtime,
                         mode = mode,
                         linkTarget = linkTarget,
+                        rawPathBytes = rawPathBytes,
                     )
                 }
                 else -> throw ArchiveListingCorrupt("listing tag 0x${Integer.toHexString(tag)} unknown")
@@ -151,12 +168,18 @@ object ArchiveListingCodec {
     }
 
     private fun readString(buffer: ByteBuffer, what: String): String {
+        val bytes = readRawBytes(buffer, what)
+        return String(bytes, Charsets.UTF_8)
+    }
+
+    /** As [readString], but the bytes are returned undecoded (M3.7's raw path is not UTF-8). */
+    private fun readRawBytes(buffer: ByteBuffer, what: String): ByteArray {
         if (buffer.remaining() < 4) throw ArchiveListingCorrupt("listing $what length truncated")
         val length = buffer.int.toLong() and 0xFFFF_FFFFL
         if (length > MAX_STRING_BYTES) throw ArchiveListingCorrupt("listing $what of $length bytes exceeds $MAX_STRING_BYTES")
         if (length > buffer.remaining()) throw ArchiveListingCorrupt("listing $what of $length bytes runs past the end")
         val start = buffer.position()
         buffer.position(start + length.toInt())
-        return String(buffer.array(), buffer.arrayOffset() + start, length.toInt(), Charsets.UTF_8)
+        return buffer.array().copyOfRange(buffer.arrayOffset() + start, buffer.arrayOffset() + start + length.toInt())
     }
 }
