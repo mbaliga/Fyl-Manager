@@ -13,8 +13,21 @@ members = [
     "crates/fylz-clean",
     "crates/fylz-ops",
     "crates/fylz-ffi-android",
-    "crates/fylz-ffi-qt",
 ]
+
+# `crates/fylz-ffi-qt` is deliberately NOT a member of this workspace. `cxx-qt` v0.7.3's own
+# build script (not just `cxx-qt-build`'s) panics outright -- `thread 'main' panicked ... Could
+# not find Qt installation: QtMissing` -- on any machine without a real Qt install, with no
+# feature flag able to suppress it (confirmed the hard way: it broke `cargo test --workspace` in
+# CI, which runs on a Qt-less `ubuntu-latest` runner). A Cargo `[dependencies]` entry always has
+# its build script run when the workspace is resolved, regardless of what the *consuming* crate's
+# own `build.rs` conditionally does -- so gating fylz-ffi-qt's own logic behind a `qmake` probe
+# (as its build.rs does) cannot protect the rest of this workspace from cxx-qt's build script.
+# Excluding it from `members` makes it its own independent single-package workspace: everything
+# here (`cargo test/clippy/fmt/deny --workspace`) never discovers or builds it, and a developer
+# working on M13 builds/tests it explicitly from its own directory
+# (`cd crates/fylz-ffi-qt && cargo test`), on a machine that actually has Qt 5.15 installed.
+# See `docs/agent/ADR-LINUX-UT-STRATEGY.md` for the full M13.2 write-up.
 
 [workspace.package]
 version = "0.1.0"

@@ -155,6 +155,17 @@ commits immediately following this one carry out.
   given (Qt 5.15 dev packages; real Lomiri Components) did not hold up under direct re-verification
   in this sandbox** -- corrected in the ADR with the exact commands and output, for the M13.2/M13.3
   dispatch to start from rather than repeat unchecked.
+- **M13.2's own `fylz-ffi-qt` broke PR #19's real CI within minutes of landing** -- listing it as a
+  real `core/Cargo.toml` workspace member let `cargo test --workspace` reach `cxx-qt`'s own build
+  script, which panics outright (`Could not find Qt installation: QtMissing`) on CI's Qt-less
+  runner; the crate's own `qmake`-probe `build.rs` gate had no power over a *dependency's* build
+  script, only over its own code, so it could not and did not prevent this. Fixed same-day: removed
+  `fylz-ffi-qt` from workspace `members`, giving it its own single-package `[workspace]` instead.
+  `cargo test/clippy/fmt/deny --workspace` from `core/` re-confirmed at the same 287/287 count and
+  clean clippy/fmt/deny as before; the crate itself re-confirmed standalone (9/9 `logic` tests, plus
+  a re-run of the real QML demo showing the same real row counts as the original dispatch). Full
+  account, including a reverted `target-dir`-sharing attempt that hit a real path-canonicalization
+  assertion in `fylz-archive`'s own `build.rs`: `docs/agent/ADR-LINUX-UT-STRATEGY.md` §6.3.
 
 ## Questions for Madhav
 

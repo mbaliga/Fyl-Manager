@@ -1,9 +1,16 @@
+# Deliberately its own single-package workspace, not a member of `../../Cargo.toml`'s -- see
+# that file's comment for why (cxx-qt's own build script panics without a real Qt install, which
+# broke `cargo test --workspace` in CI). The version/edition/license/publish values below are
+# copied from that workspace's `[workspace.package]` rather than inherited via `.workspace = true`,
+# since this package no longer belongs to it.
+[workspace]
+
 [package]
 name = "fylz-ffi-qt"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-publish.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
 
 [lib]
 name = "fylz_ffi_qt"
@@ -12,8 +19,10 @@ path = "src/lib.rs"
 # The QML end-to-end proof harness (M13.2/M13.3, `docs/agent/ADR-LINUX-UT-STRATEGY.md`): loads
 # `qml/main.qml` against a real folder, a real `fylz-archive` fixture and a real `fylz-ops`
 # journal. `main`'s own body is `#[cfg(fylz_qt_available)]`-gated (see `src/bin/qml_demo.rs`), so
-# this binary compiles to a harmless no-op on a machine `build.rs` found no Qt on -- it never
-# breaks `cargo build --workspace` there.
+# it degrades to a no-op if this crate is ever built on a machine `build.rs` found no Qt on. That
+# cfg gate only protects THIS crate's own code, though -- it cannot stop `cxx-qt`'s own build
+# script from panicking on a Qt-less machine before this crate's code even runs (see the parent
+# `core/Cargo.toml`'s comment on why this crate is excluded from that workspace entirely).
 [[bin]]
 name = "fylz-qml-demo"
 path = "src/bin/qml_demo.rs"

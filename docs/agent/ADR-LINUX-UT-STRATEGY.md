@@ -295,22 +295,53 @@ so it is the one `Cargo.toml` pins, rather than a guess at a newer line's real Q
   actual call returns a string naming the specific stub crate and milestone rather than
   fabricating a rename or search result.
 
-### 6.3 Why this crate cannot break `.github/workflows/android.yml`'s existing CI
+### 6.3 §6.3 was wrong: this crate DID break `.github/workflows/android.yml`'s CI — corrected below
 
-That workflow's `cargo test --workspace` / `cargo clippy --all-features --all-targets --workspace`
-step (from `core/`, M2.6) runs on a plain `ubuntu-latest` GitHub Actions runner with no Qt
-installed at all, and this task's own brief says the Android side stays untouched. Since
-`cxx-qt-build`'s Qt/C++ discovery panics outright when it finds no Qt, simply adding
-`fylz-ffi-qt` as a real workspace member with an unconditional `CxxQtBuilder::build()` call would
-have broken that CI the moment this crate stopped being a one-line stub. `build.rs` guards
-against this itself: it probes for `qmake` on `PATH` BEFORE ever calling into `cxx-qt-build`, and
-sets a `fylz_qt_available` cfg only when Qt was actually found. Every Qt-touching module in
-`src/lib.rs` is gated on that cfg — not stubbed, literally absent from the compiled crate when
-unset — so on a Qt-less machine this crate compiles to an inert placeholder (`src/lib.rs`'s own
-doc comment) instead of panicking the build. `src/logic.rs` (the real business logic every
-`QObject` wraps) carries no such gate and always compiles and tests, Qt or not. This sandbox DOES
-have Qt, so every check in this dispatch's own gate (§6.5) ran against the real bridge, not the
-placeholder.
+**This section originally claimed the `qmake`-probe `build.rs` gate in `fylz-ffi-qt` protected the
+rest of the workspace from a Qt-less machine. That was wrong, and it broke PR #19's real CI** (check
+run `109743445440`, "Test, lint, and build debug APK", commit `2e8ce2d`) within minutes of this
+dispatch's own commit landing, on the exact `cargo test --workspace` step named above:
+
+```
+error: failed to run custom build command for `cxx-qt v0.7.3`
+thread 'main' panicked at .../cxx-qt-build-0.7.3/src/lib.rs:1040:14:
+Could not find Qt installation: QtMissing
+```
+
+The reasoning failure: `build.rs`'s `qmake` probe only gates code *inside `fylz-ffi-qt` itself* —
+it has no power over `cxx-qt`'s *own* build script, which Cargo always runs once `cxx-qt` is
+resolved as a dependency of any workspace member, regardless of what that member's own `build.rs`
+conditionally does with the result. Listing `fylz-ffi-qt` in `core/Cargo.toml`'s `[workspace]
+members` was the actual mistake — not the absence of a cfg gate, which was never going to be
+sufficient on its own.
+
+**The fix** (same-day, after the CI failure): removed `fylz-ffi-qt` from `core/Cargo.toml`'s
+`members` entirely. It is now its own single-package workspace (`[workspace]` table added to its
+own `Cargo.toml`, with `version`/`edition`/`license`/`publish` copied as literals since it can no
+longer inherit via `.workspace = true`). `cargo test/clippy/fmt/deny --workspace` run from `core/`
+now never discovers this crate at all — confirmed by re-running all four after the fix, back to
+the exact same 287/287 test count and clean clippy/fmt/deny that M13.1 established, with no Qt
+installed differently than before. A developer working on M13.2+ builds/tests it explicitly from
+its own directory (`cd core/crates/fylz-ffi-qt && cargo test`), on a machine that actually has Qt
+5.15 — exactly the same shape as Fotoz's `:ut:bridge` needing `-Pfotoz.native=true` before Gradle's
+default project graph even discovers it.
+
+One more real thing this surfaced: excluding it from the parent workspace means it also gets its
+own `target/` directory instead of sharing `core/target/`'s already-built dependency artifacts
+(`fylz-archive`'s vendored libarchive/zlib/etc., in particular) — building it standalone the first
+time re-compiles all of that from scratch. A `target-dir` override pointing back at the shared
+`core/target` was tried and reverted: `fylz-archive`'s own `build.rs` has a `assert_eq!` sanity
+check on its CMake cache's recorded path, which compared the parent's canonicalized path against
+this crate's un-canonicalized relative `../../target` path and failed — a real mismatch, not a
+flake. Kept the separate `target/` dir rather than fight that assertion; it costs one extra
+from-scratch build of `fylz-archive`'s vendored C libraries (a few minutes, roughly 1 GB of disk)
+the first time a developer builds this crate, which is an acceptable, one-time, opt-in cost for a
+crate nothing else in the workspace depends on or builds by default.
+
+`src/logic.rs` (the real business logic every `QObject` wraps) has no Qt dependency at all and
+compiles/tests identically whether or not Qt is present — that half of the original claim was
+correct and remains true; it's why §6.5's 9 `logic::tests` still count as this crate's real,
+CI-independent test coverage even though the crate itself no longer runs in CI at all.
 
 ### 6.4 The QML end-to-end proof: exactly what was run, and what it showed
 
