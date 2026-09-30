@@ -190,6 +190,7 @@ class ActionResolverGoldenTest {
         Triple(id("fylz.theme.dark"), true, state.themeMode == ThemeMode.DARK),
         Triple(id("fylz.pinch-in.go-up"), true, state.pinchInBehavior == PinchInBehavior.GO_UP),
         Triple(id("fylz.pinch-in.detail-level"), true, state.pinchInBehavior == PinchInBehavior.DETAIL_LEVEL),
+        Triple(id("fylz.theme.palette"), true, null),
         // fylz.customisation.problems: visible only when registry.problems is non-empty, which it
         // never is for the shipped built-ins (design deviation (c); ShortcutTableTest asserts this).
     )

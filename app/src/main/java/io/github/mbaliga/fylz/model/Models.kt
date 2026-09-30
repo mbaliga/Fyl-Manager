@@ -70,12 +70,10 @@ enum class ThemeMode {
     DARK,
 }
 
-enum class AccentPreset {
-    MOSS,
-    INK,
-    CLAY,
-    ELECTRIC,
-}
+// AccentPreset (MOSS/INK/CLAY/ELECTRIC) lived here until the JSON-based theming feature
+// (docs/agent/REVIEW_QUEUE.md): its four hardcoded colour pairs became the bundled presets in
+// `io.github.mbaliga.fylz.ui.theme.BuiltInThemePresets` (Electric dropped, per that entry's "2-3
+// bundled" call), and `ThemePalette` replaced it as the type `FylzTheme` actually takes.
 
 /** Owner request: what a two-finger pinch-in on the browse surface does. [GO_UP] (the default)
  * reuses `fylz.navigate.up`'s own handler; [DETAIL_LEVEL] steps the grid/list detail ladder

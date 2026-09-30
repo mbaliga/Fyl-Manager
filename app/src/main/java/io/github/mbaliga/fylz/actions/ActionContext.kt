@@ -106,6 +106,10 @@ interface ActionContext {
     /** Tools room: which of Go Up / Detail level a pinch-in performs (see [PinchInBehavior]). */
     fun setPinchInBehavior(behavior: PinchInBehavior)
 
+    /** `fylz.theme.palette` (owner request: JSON-based theming): opens the Theme picker (built-ins
+     * plus "Custom…") -- see `io.github.mbaliga.fylz.ui.actions.ThemeFlow`. */
+    fun openThemePicker()
+
     fun showOperationHistory()
 
     fun openRoom(room: RoomId)

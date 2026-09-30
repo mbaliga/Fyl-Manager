@@ -1689,3 +1689,110 @@ value is a UX tuning issue, not a correctness one, and `GO_UP` (unaffected by an
 the default. Not verified on a real device (no device in this loop) -- the gesture detector's
 own feel (threshold, `MIN_PINCH_SPREAD_PX`) is exactly the kind of thing that wants a real pinch
 to confirm, the same caveat M3.4's own 5 GB device check carries.
+
+---
+
+## JSON-based theming with a mandatory plain-text preview (owner request, not a MASTER_PLAN item)
+
+**Not a gate:** not a MASTER_PLAN milestone -- the owner asked for this directly, phrased once for
+every app in this family: "All apps need a JSON-based way to theme them. User should be able to
+preview the JSON's content as plain text so they are never caught unawares." Logged here per that
+brief's own instruction, for a second look, not because a gate needs clearing.
+
+**What shipped:** `ui/theme/ThemeJson.kt` parses and strictly validates the schema below;
+`ui/theme/ThemePaletteStore.kt` persists the active selection (a bundled preset id, or the full
+custom JSON text verbatim) the same SharedPreferences-file-per-store shape every other setting in
+this app uses, and exposes an already-resolved `ThemePalette` so `FylzTheme` never has to parse
+anything itself; `ui/actions/ThemeFlow.kt` is the Tools-room flow -- built-ins apply immediately,
+"Custom…" requires a **mandatory** preview of the exact pasted text before Apply. `ThemeMode`
+(system/light/dark) is untouched; it stays the separate light-vs-dark selector this schema's
+`colors.light`/`colors.dark` halves feed into.
+
+**The exact schema, as implemented** (matches the design brief's own block precisely -- no
+divergence):
+
+```json
+{
+  "version": 1,
+  "name": "My Theme",
+  "colors": {
+    "light": { "primary": "#RRGGBB", "secondary": "#RRGGBB", "tertiary": "#RRGGBB", "background": "#RRGGBB", "surface": "#RRGGBB", "surfaceVariant": "#RRGGBB", "onBackground": "#RRGGBB", "onSurface": "#RRGGBB" },
+    "dark":  { "primary": "#RRGGBB", "secondary": "#RRGGBB", "tertiary": "#RRGGBB", "background": "#RRGGBB", "surface": "#RRGGBB", "surfaceVariant": "#RRGGBB", "onBackground": "#RRGGBB", "onSurface": "#RRGGBB" }
+  }
+}
+```
+
+Both `#RRGGBB` and `#AARRGGBB` are accepted per colour (the brief's own "validate hex colors
+strictly" line names both shapes even though the block above only shows six-digit ones); anything
+else is refused naming the exact `colors.<mode>.<key>` path. `"version"` must be present and equal
+`1`; a future schema revision would bump this and `ThemeJson` would refuse an old-shaped file with
+a clear "found 1" style message rather than silently misreading it.
+
+**Design calls worth a second look:**
+
+1. **Three bundled presets, not "the four `AccentPreset` values already had"** -- `Moss` (today's
+   unchanged default), `Ink`, `Clay`, each a real, complete JSON document in the exact schema
+   above, embedded as a Kotlin string constant in `BuiltInThemePresets.kt` rather than a file
+   under `app/src/main/assets/`. `Electric` was dropped, per the brief's own "2-3 bundled" guidance
+   rather than "convert all of them" -- `AccentPreset` itself is now dead code and was removed from
+   `model/Models.kt` (nothing referenced it once every `FylzTheme` call site moved to a
+   `ThemePalette`). If the owner wants Electric back, one more `private const val ELECTRIC_JSON`
+   plus one more id in `BuiltInThemePresets.ids` is the whole change.
+2. **`tertiary`/`surfaceVariant`/`onBackground`/`onSurface` did not exist as distinct values
+   before this feature** -- the old `AccentPreset` scheme only ever varied `primary`/`secondary`
+   per accent, with `surface`/`background` hardcoded the same for every accent and `tertiary` left
+   to Material3's own `lightColorScheme`/`darkColorScheme` default derivation. Converting to the
+   required schema meant choosing real values for four fields with no existing precedent to
+   preserve; they were chosen by hand for a plausible, tasteful look per preset (see each preset's
+   own JSON), not derived from any formula. Worth a design pass by whoever actually looks at these
+   on a screen -- nothing here was screenshot-checked (no device in this loop).
+3. **Material You dynamic colour (`dynamicColor`, wallpaper-derived, Android 12+) is superseded by
+   the JSON palette rather than made to compose with it.** It was already hardcoded `true` with no
+   UI to disable it or to choose an accent at all before this feature (`AccentPreset.MOSS` and
+   `dynamicColor = true` were both literal constants in every `FylzTheme(...)` call site); every
+   call site now passes `dynamicColor = false` so the active palette always wins, and the parameter
+   itself stays on `FylzTheme`'s signature (rather than being deleted) in case a future setting
+   wants to reintroduce it as a fourth option alongside built-in/custom.
+4. **The "Theme" Tools-room entry opens a picker dialog rather than inline radio rows** (unlike
+   `ThemeMode`/`PinchInBehavior`, which are individual checked rows). The design brief's own
+   "Tools room → 'Theme' → list built-ins + 'Custom…'" reads as a drill-down, and a picker dialog
+   is also where the mandatory preview step for Custom naturally lives; the currently-active
+   choice is not shown as a checkmark inside that picker in this first cut (`BrowserState` gained
+   no new field for it, to avoid touching the golden-test fixture set for a purely cosmetic
+   checkmark) -- worth adding if that turns out to matter in practice.
+5. **`lastCustomJson()` remembers the last custom text even after switching to a built-in and back**,
+   so re-opening "Custom…" offers it for editing rather than a blank field. This is a small,
+   additional persisted value (`ThemePaletteStore`'s own `last_custom` key) beyond the strict
+   "active selection" the brief described; it never affects which theme is *active*, only what the
+   edit step starts from.
+6. **Same reused finding as the pinch-gesture entry above:** `ThemeMode` itself is not actually
+   persisted today (`remember{}` state in `FylzV1App.kt`, confirmed by reading it before writing
+   this feature) -- `ThemePaletteStore` follows `operations.VerifySettings`'s real, working shape
+   instead. `ThemeMode`'s own lack of persistence is unrelated to this feature and was left alone.
+7. **Bundled presets are Kotlin string constants, not files under `app/src/main/assets/`, and
+   this was a real, tested-and-reverted design change, not the first idea.** The first cut did use
+   real `assets/themes/*.json` files, read via `context.assets.open(...)`; that needs
+   `testOptions.unitTests.isIncludeAndroidResources = true` for Robolectric to see them at all
+   (without it, every id throws `FileNotFoundException` under a Robolectric test, real device or
+   not, since AGP does not put real Android resources/assets on the unit-test classpath by
+   default). Adding that flag, though, reproducibly broke five wholly unrelated, pre-existing
+   `FylzDatabase` Robolectric tests (`FylzDatabaseUpgradeTest`/`FylzDatabaseMigrationTest`/
+   `FylzDatabaseIndexMigrationTest`) on a clean build -- confirmed twice, with the flag as the only
+   variable changed. Rather than ship that regression (or spend further budget root-causing an
+   AGP/Robolectric interaction between resource-merging mode and this project's native-SQLite
+   Robolectric shadow), the presets were embedded as plain Kotlin `String` constants instead
+   (`BuiltInThemePresets.kt`'s own doc has the full account). This drops the `Context` parameter
+   from `BuiltInThemePresets.load` entirely -- it needs no Robolectric shadow of any kind now,
+   and its own test (`BuiltInThemePresetsTest`) is plain JUnit, no longer Robolectric at all.
+   `app/build.gradle.kts` carries no trace of the abandoned attempt.
+
+**Relevant commit:** the commit adding this feature (see `docs/agent/PROGRESS.md`'s matching row
+for the exact SHA).
+
+**Risk if it turns out wrong:** low for correctness (every malformed-input case the brief names --
+missing key, bad hex, wrong version, not JSON at all -- is unit-tested, and a custom theme is
+validated before it ever touches persistence or the active `ColorScheme`, so a bad paste cannot
+corrupt the store or crash the app). The colour choices in call-out 2 above and the picker-vs-
+radio call in call-out 4 are taste/UX judgement calls, not correctness ones, and cost nothing to
+revisit later -- nothing else in the app depends on the exact bundled colour values or on the
+picker's own dialog shape.

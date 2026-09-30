@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -9,46 +10,26 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
 
-private data class AccentColors(
-    val lightPrimary: Color,
-    val lightSecondary: Color,
-    val darkPrimary: Color,
-    val darkSecondary: Color,
-)
-
-private fun AccentPreset.colors(): AccentColors = when (this) {
-    AccentPreset.MOSS -> AccentColors(
-        lightPrimary = Color(0xFF315F49),
-        lightSecondary = Color(0xFF52645A),
-        darkPrimary = Color(0xFF9BD3B3),
-        darkSecondary = Color(0xFFB9CCBF),
+/** Builds the Material3 [ColorScheme] for one light/dark half of a [ThemePalette] -- every field
+ * this JSON theme schema defines maps straight onto a `ColorScheme` field of the same name. */
+internal fun PaletteColors.toColorScheme(dark: Boolean): ColorScheme = if (dark) {
+    darkColorScheme(
+        primary = primary, secondary = secondary, tertiary = tertiary,
+        background = background, surface = surface, surfaceVariant = surfaceVariant,
+        onBackground = onBackground, onSurface = onSurface,
     )
-    AccentPreset.INK -> AccentColors(
-        lightPrimary = Color(0xFF3E5268),
-        lightSecondary = Color(0xFF565E68),
-        darkPrimary = Color(0xFFA8C9EA),
-        darkSecondary = Color(0xFFBEC7D2),
-    )
-    AccentPreset.CLAY -> AccentColors(
-        lightPrimary = Color(0xFF84523D),
-        lightSecondary = Color(0xFF705A50),
-        darkPrimary = Color(0xFFFFB69A),
-        darkSecondary = Color(0xFFE1BFB1),
-    )
-    AccentPreset.ELECTRIC -> AccentColors(
-        lightPrimary = Color(0xFF4D57A7),
-        lightSecondary = Color(0xFF5D5D72),
-        darkPrimary = Color(0xFFBEC2FF),
-        darkSecondary = Color(0xFFC6C4DD),
+} else {
+    lightColorScheme(
+        primary = primary, secondary = secondary, tertiary = tertiary,
+        background = background, surface = surface, surfaceVariant = surfaceVariant,
+        onBackground = onBackground, onSurface = onSurface,
     )
 }
 
@@ -79,10 +60,19 @@ private val FylzTypography = Typography(
     ),
 )
 
+/**
+ * @param palette the active JSON theme (owner request; see `ThemeJson.kt`) -- which colours.
+ * @param themeMode which of [palette]'s light/dark halves is active -- unchanged from before this
+ * feature, still the separate light-vs-dark selector.
+ * @param dynamicColor Material You wallpaper colour (Android 12+). Superseded by [palette] now
+ * that one is always active (see docs/agent/REVIEW_QUEUE.md for why this parameter stays, at
+ * `false` from every call site, rather than being removed outright); the two were never
+ * user-selectable together before this feature either.
+ */
 @Composable
 fun FylzTheme(
     themeMode: ThemeMode,
-    accentPreset: AccentPreset,
+    palette: ThemePalette,
     dynamicColor: Boolean,
     content: @Composable () -> Unit,
 ) {
@@ -92,29 +82,12 @@ fun FylzTheme(
         ThemeMode.DARK -> true
     }
     val context = LocalContext.current
-    val accent = accentPreset.colors()
 
     val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme ->
-            dynamicDarkColorScheme(context)
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            dynamicLightColorScheme(context)
-        darkTheme -> darkColorScheme(
-            primary = accent.darkPrimary,
-            secondary = accent.darkSecondary,
-            surface = Color(0xFF111413),
-            surfaceContainer = Color(0xFF191D1B),
-            surfaceContainerHigh = Color(0xFF232825),
-            background = Color(0xFF0E1110),
-        )
-        else -> lightColorScheme(
-            primary = accent.lightPrimary,
-            secondary = accent.lightSecondary,
-            surface = Color(0xFFFAFCFA),
-            surfaceContainer = Color(0xFFF1F4F1),
-            surfaceContainerHigh = Color(0xFFE8ECE8),
-            background = Color(0xFFFDFEFD),
-        )
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme -> dynamicDarkColorScheme(context)
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicLightColorScheme(context)
+        darkTheme -> palette.dark.toColorScheme(dark = true)
+        else -> palette.light.toColorScheme(dark = false)
     }
 
     MaterialTheme(

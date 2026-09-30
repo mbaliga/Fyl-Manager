@@ -93,7 +93,6 @@ import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.data.SaveResult
 import io.github.mbaliga.fylz.library.LibraryStore
-import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ClipboardMode
 import io.github.mbaliga.fylz.model.DensityMode
 import io.github.mbaliga.fylz.model.EntryKind
@@ -338,14 +337,15 @@ fun FylzV1App(
     overlays: @Composable () -> Unit = {},
 ) {
     var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
+    val appCtx = LocalContext.current.applicationContext; val paletteStore = remember { io.github.mbaliga.fylz.ui.theme.ThemePaletteStore(appCtx) }; val palette by paletteStore.resolved.collectAsState()
     FylzTheme(
         themeMode = themeMode,
-        accentPreset = AccentPreset.MOSS,
-        dynamicColor = true,
+        palette = palette,
+        dynamicColor = false,
     ) {
         FylzV1Workspace(
             themeMode = themeMode,
-            onThemeModeChange = { themeMode = it },
+            onThemeModeChange = { themeMode = it }, paletteStore = paletteStore,
             viewUri = viewUri,
             onShowHistory = onShowHistory,
             operationsNeedingAttention = operationsNeedingAttention,
@@ -358,6 +358,7 @@ fun FylzV1App(
 private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    paletteStore: io.github.mbaliga.fylz.ui.theme.ThemePaletteStore,
     viewUri: Uri? = null,
     onShowHistory: () -> Unit = {},
     operationsNeedingAttention: Int = 0,
@@ -528,7 +529,7 @@ private fun FylzV1Workspace(
         context, scope, operationRunner, persistTreePermission = repository::persistTreePermission,
         onToast = ::toast, onCompressed = { toast("Compressing"); refresh() },
     )
-    val archiveEditFlow = rememberArchiveEditFlow(context, scope, operationRunner, onToast = ::toast, onEdited = { toast("Archive updated"); refresh() }) // M3.6
+    val archiveEditFlow = rememberArchiveEditFlow(context, scope, operationRunner, onToast = ::toast, onEdited = { toast("Archive updated"); refresh() }); val themeFlow = io.github.mbaliga.fylz.ui.actions.rememberThemeFlow(paletteStore, onToast = ::toast) // M3.6
 
     fun openTabAt(treeUri: Uri, location: FolderLocation) {
         val existing = tabs.indexOfFirst { it.treeUri == treeUri }
@@ -1122,6 +1123,7 @@ private fun FylzV1Workspace(
         override fun setThemeMode(mode: ThemeMode) { onThemeModeChange(mode) }
         override fun stepDetailLevel(delta: Int) { val next = io.github.mbaliga.fylz.ui.actions.DetailLevelLadder.stepped(if (viewMode == ViewMode.GRID) io.github.mbaliga.fylz.ui.actions.DetailLevel.Grid(densityMode) else io.github.mbaliga.fylz.ui.actions.DetailLevel.ListView, delta); if (next is io.github.mbaliga.fylz.ui.actions.DetailLevel.Grid) { viewMode = ViewMode.GRID; densityMode = next.density } else viewMode = ViewMode.LIST }
         override fun setPinchInBehavior(behavior: io.github.mbaliga.fylz.model.PinchInBehavior) { pinchSettings.setBehavior(behavior) }
+        override fun openThemePicker() { themeFlow.openPicker() }
 
         override fun showOperationHistory() { onShowHistory() }
 
@@ -1581,7 +1583,7 @@ private fun FylzV1Workspace(
     }
 
     ExtractFlowHost(flow = extractFlow, tabs = tabs, resolver = actionResolver, dispatcher = actionDispatcher, state = browserState, ctx = actionContext)
-    CompressFlowHost(flow = compressFlow, tabs = tabs)
+    CompressFlowHost(flow = compressFlow, tabs = tabs); io.github.mbaliga.fylz.ui.actions.ThemeFlowHost(themeFlow)
 
     externalDocument?.let { entry ->
         ExternalDocumentDialog(

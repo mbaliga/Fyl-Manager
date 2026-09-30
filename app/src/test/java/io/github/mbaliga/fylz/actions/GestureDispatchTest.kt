@@ -217,6 +217,7 @@ private class RecordingActionContext : ActionContext {
     override fun setThemeMode(mode: ThemeMode) {}
     override fun stepDetailLevel(delta: Int) { detailLevelDelta = delta }
     override fun setPinchInBehavior(behavior: PinchInBehavior) {}
+    override fun openThemePicker() {}
 
     override fun showOperationHistory() {}
 

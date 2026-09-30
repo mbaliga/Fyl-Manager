@@ -823,18 +823,38 @@ call (deliberately not the same shape as Fotoz's `ZoomLadder.step`, and why that
 
 ## Theme architecture
 
-The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:
+Owner request, phrased once for every app in this family: "All apps need a JSON-based way to
+theme them. User should be able to preview the JSON's content as plain text so they are never
+caught unawares." `ThemeMode` (system/light/dark) stays the light-vs-dark *selector*; a separate,
+persisted `ActiveTheme` (`ui/theme/ThemePaletteStore.kt`) picks *which colours*:
 
-- surfaces and elevations;
-- emphasis tiers;
-- selection/focus/drag targets;
-- file-kind and status semantics;
-- typography scale and monospace family;
-- spacing/density scale;
-- shape and motion tokens;
-- high-contrast and reduced-motion modes.
+- `ui/theme/ThemeJson.kt` is the schema (version, name, `colors.light`/`colors.dark`, eight named
+  Material3 roles each, `#RRGGBB`/`#AARRGGBB` only) and the strict parser: malformed input -- not
+  JSON at all, a missing key, a wrong version, a bad hex value -- is refused with an error naming
+  the exact field, never a crash, and the schema is shared byte-for-byte with Fotoz's own JSON
+  theming so the same feature reads the same way in both apps.
+- The four hardcoded `AccentPreset` colour pairs this section used to describe are gone; three of
+  them became the bundled presets in `ui/theme/BuiltInThemePresets.kt` -- each a literal JSON
+  document in the exact schema above, embedded as a Kotlin string constant rather than a file
+  under `assets/` (tried first; reverted -- see docs/agent/REVIEW_QUEUE.md for why) -- Electric was
+  dropped per the design brief's "2-3 bundled" guidance. `ThemePaletteStore.resolved` is what
+  `FylzTheme` actually consumes: already parsed, recomputed whenever the selection changes, and
+  never malformed (a custom theme is validated before it is ever persisted, and a value that
+  somehow fails to parse on read falls back to the bundled default rather than crashing).
+- `ui/actions/ThemeFlow.kt` is the Tools-room UI: choosing a built-in applies it immediately; "Custom…"
+  opens an editable paste step, then a **mandatory** preview step showing the pasted JSON as
+  plain, read-only monospace text, byte-for-byte, before Apply/Cancel/Back -- the owner's own
+  "never caught unawares" made literal. Nothing is written to `ThemePaletteStore` until Apply
+  validates successfully.
 
-Community themes should be data-only token bundles. They must not execute code or load remote assets silently.
+This is the semantic-token direction the rest of this section already called for (the eight
+`PaletteColors` fields map straight onto `ColorScheme` fields); it does not yet cover elevation,
+emphasis tiers, file-kind semantics, typography, motion or high-contrast/reduced-motion tokens --
+those stay future work for whoever picks this section up next.
+
+Community themes are data-only JSON, per the sentence this section already had: they cannot
+execute code or load remote assets, since [ThemeJson] only ever reads eight colour strings and a
+name out of a JSON object.
 
 ## Broad storage access
 

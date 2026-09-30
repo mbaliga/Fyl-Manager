@@ -411,6 +411,15 @@ object BuiltInActions {
         pinchInBehaviorAction(PinchInBehavior.GO_UP, "fylz.pinch-in.go-up", "Pinch in: Go up", 63),
         pinchInBehaviorAction(PinchInBehavior.DETAIL_LEVEL, "fylz.pinch-in.detail-level", "Pinch in: Change detail level", 64),
         BuiltInBinding(
+            // Owner request: JSON-based theming (docs/agent/REVIEW_QUEUE.md). Opens the picker
+            // (built-ins plus "Custom…"); the mandatory plain-text preview lives inside that flow,
+            // not here -- this action itself carries no ThemePalette state to check/uncheck.
+            def = def("fylz.theme.palette", "Theme…", "None", listOf(Placement.Room(RoomId.TOOLS, 65))),
+            visibleWhen = ALWAYS,
+            enabledWhen = ALWAYS,
+            run = { ctx, _, _ -> ctx.openThemePicker() },
+        ),
+        BuiltInBinding(
             def = def("fylz.customisation.problems", "Customisation problems", "Warning", listOf(Placement.Room(RoomId.TOOLS, 90))),
             // MC.0e (design §2.3 clarification): registryProblemCount is supplied when BrowserState
             // is assembled, once the registry that produced it already exists -- the built-in
