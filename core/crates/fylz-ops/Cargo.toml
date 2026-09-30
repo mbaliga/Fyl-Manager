@@ -1,0 +1,24 @@
+[package]
+name = "fylz-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Journal persistence (a small JSON document per operation record) and .trashinfo field escaping.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Streamed SHA-256 for transfer-time copy verification (`checksum` module).
+sha2 = "0.10"
+# Operation/journal/trash-item identifiers, replacing Kotlin's `java.util.UUID.randomUUID()`.
+uuid = { version = "1", features = ["v4"] }
+# `getuid()` for the freedesktop Trash spec's per-user directory checks, and `localtime_r`/
+# `mktime` for a `.trashinfo` file's local-time `DeletionDate` (`recycle::trash` module) --
+# already present in this workspace's own dependency graph transitively (via uniffi), so this
+# is the one crate here that adds no new third-party code, only a direct Cargo.toml entry for
+# code already vetted.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

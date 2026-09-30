@@ -1,0 +1,100 @@
+package io.github.mbaliga.fylz.storage
+
+import android.database.Cursor
+import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * P0.0 "done when": a smoke test lists, creates, reads and writes through the hosted provider.
+ * Everything below runs against the real [FylzFilesDocumentsProvider], not a fake, over a
+ * temp directory supplied through [FylzDocumentsProviderTestBase].
+ */
+class FylzFilesDocumentsProviderSmokeTest : FylzDocumentsProviderTestBase() {
+
+    // DocumentsProvider overloads queryChildDocuments on (String? sortOrder) and (Bundle?
+    // queryArgs); a literal null third argument is ambiguous between them, so every call in this
+    // file goes through this helper instead.
+    private fun queryChildren(parentDocumentId: String): Cursor =
+        provider.queryChildDocuments(parentDocumentId, null, null as String?)
+
+    @Test
+    fun `queryRoots reports the overridden primary volume`() {
+        val cursor = provider.queryRoots(null)
+        assertEquals(1, cursor.count)
+        assertTrue(cursor.moveToFirst())
+        assertEquals(
+            FylzFilesDocumentsProvider.PRIMARY_ROOT_ID,
+            cursor.getString(cursor.getColumnIndexOrThrow(DocumentsContract.Root.COLUMN_ROOT_ID)),
+        )
+    }
+
+    @Test
+    fun `queryRoots called in-process (Fylz itself) still supports tree grants`() {
+        // provider.queryRoots(...) is called directly here, not through a real Binder IPC, so
+        // Binder.getCallingUid() falls back to this process's own uid -- exactly what a genuine
+        // in-process caller (there are none in production; this pins the same-uid branch) sees.
+        val cursor = provider.queryRoots(null)
+        assertTrue(cursor.moveToFirst())
+        val flags = cursor.getInt(cursor.getColumnIndexOrThrow(DocumentsContract.Root.COLUMN_FLAGS))
+        assertTrue(
+            "same-process caller must still be offered a tree grant",
+            flags and DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD != 0,
+        )
+    }
+
+    @Test
+    fun `an other-app caller's root omits FLAG_SUPPORTS_IS_CHILD but keeps create and local-only`() {
+        val flags = FylzFilesDocumentsProvider.rootFlagsFor(sameProcess = false)
+        assertEquals(0, flags and DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD)
+        assertTrue(flags and DocumentsContract.Root.FLAG_SUPPORTS_CREATE != 0)
+        assertTrue(flags and DocumentsContract.Root.FLAG_LOCAL_ONLY != 0)
+    }
+
+    @Test
+    fun `an empty root lists zero children`() {
+        val cursor = queryChildren(rootDocumentId())
+        assertEquals(0, cursor.count)
+    }
+
+    @Test
+    fun `create write read and list a file through the provider`() {
+        val createdId = provider.createDocument(rootDocumentId(), "text/plain", "notes.txt")
+
+        ParcelFileDescriptor.AutoCloseOutputStream(provider.openDocument(createdId, "w", null)).use {
+            it.write("hello fylz".toByteArray())
+        }
+
+        val children = queryChildren(rootDocumentId())
+        assertEquals(1, children.count)
+        assertTrue(children.moveToFirst())
+        assertEquals(
+            "notes.txt",
+            children.getString(children.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)),
+        )
+        assertEquals(
+            10L,
+            children.getLong(children.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)),
+        )
+
+        val readBack = ParcelFileDescriptor.AutoCloseInputStream(provider.openDocument(createdId, "r", null))
+            .use { it.readBytes() }
+        assertEquals("hello fylz", String(readBack))
+    }
+
+    @Test
+    fun `creating a folder then a child inside it round trips through queryChildDocuments`() {
+        val folderId = provider.createDocument(rootDocumentId(), DocumentsContract.Document.MIME_TYPE_DIR, "sub")
+        val fileId = provider.createDocument(folderId, "text/plain", "inside.txt")
+
+        val children = queryChildren(folderId)
+        assertEquals(1, children.count)
+        assertTrue(children.moveToFirst())
+        assertEquals(
+            fileId,
+            children.getString(children.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)),
+        )
+    }
+}

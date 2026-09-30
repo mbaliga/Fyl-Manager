@@ -1,0 +1,74 @@
+# Deliberately its own single-package workspace, not a member of `../../Cargo.toml`'s -- see
+# that file's comment for why (cxx-qt's own build script panics without a real Qt install, which
+# broke `cargo test --workspace` in CI). The version/edition/license/publish values below are
+# copied from that workspace's `[workspace.package]` rather than inherited via `.workspace = true`,
+# since this package no longer belongs to it.
+[workspace]
+
+[package]
+name = "fylz-ffi-qt"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "fylz_ffi_qt"
+path = "src/lib.rs"
+
+# The QML end-to-end proof harness (M13.2/M13.3, `docs/agent/ADR-LINUX-UT-STRATEGY.md`): loads
+# `qml/main.qml` against a real folder, a real `fylz-archive` fixture and a real `fylz-ops`
+# journal. `main`'s own body is `#[cfg(fylz_qt_available)]`-gated (see `src/bin/qml_demo.rs`), so
+# it degrades to a no-op if this crate is ever built on a machine `build.rs` found no Qt on. That
+# cfg gate only protects THIS crate's own code, though -- it cannot stop `cxx-qt`'s own build
+# script from panicking on a Qt-less machine before this crate's code even runs (see the parent
+# `core/Cargo.toml`'s comment on why this crate is excluded from that workspace entirely).
+[[bin]]
+name = "fylz-qml-demo"
+path = "src/bin/qml_demo.rs"
+
+# Seeds the temp folder/journal `fylz-qml-demo` points at, as a SEPARATE OS process: the whole
+# point is that `fylz_ops::journal::Journal::open`'s reconcile-after-process-death sweep
+# (`journal.rs`) only fires for a second, genuinely different process, never a second `open` call
+# in the same one. See `src/bin/seed_demo.rs`'s own doc comment.
+[[bin]]
+name = "fylz-seed-demo"
+path = "src/bin/seed_demo.rs"
+
+[dependencies]
+# M13.2: pinned to the 0.7 line -- confirmed by an actual build in this sandbox (`docs/agent/
+# ADR-LINUX-UT-STRATEGY.md`) against the real `qtbase5-dev`/`qtdeclarative5-dev` 5.15.13 this
+# sandbox has installed. Newer cxx-qt (0.8-0.10, all released in this same sandbox's `cargo
+# search` index) still advertise Qt 5.15 LTS support in their own docs, but 0.7.3 is the version
+# this crate actually proved end to end, so it is the one pinned, not a guess at a newer one.
+cxx = "1"
+cxx-qt = "0.7.3"
+# `default-features = false` plus an explicit, narrow feature list: `qt_gui` for
+# `QGuiApplication` (`src/bin/qml_demo.rs`), `qt_qml` for `QQmlApplicationEngine`. Deliberately
+# NOT `features = ["full"]` (which also pulls `chrono`/`url`/`http`/`bytes`/`rgb`/`time`/
+# `image-v0-24`/`image-v0-25` and their own transitive graphs) -- none of that is used here, and
+# `deny.toml`'s `[graph] all-features = true` would otherwise force `cargo deny check` to audit
+# licences for a dependency tree this crate never actually builds with.
+cxx-qt-lib = { version = "0.7.3", default-features = false, features = [
+    "qt_gui",
+    "qt_qml",
+] }
+fylz-ops = { path = "../fylz-ops", version = "0.1.0" }
+fylz-archive = { path = "../fylz-archive", version = "0.1.0" }
+# `PreviewProvider`'s real half (see `src/preview_provider.rs`): genuine magic-byte content
+# detection via the existing, already-done M2.5 crate -- no new image-decoding dependency added
+# for what this task's own brief says may honestly stay a documented stub.
+fylz-sniff = { path = "../fylz-sniff", version = "0.1.0" }
+
+[build-dependencies]
+# `link_qt_object_files` matches cxx-qt's own `cargo_without_cmake` example verbatim (needed for
+# a statically-linked Qt 6; harmless here against the dynamically-linked Qt 5.15 apt package).
+cxx-qt-build = { version = "0.7.3", features = ["link_qt_object_files"] }
+
+[dev-dependencies]
+tempfile = "3"
+# `logic.rs`'s own reconcile-after-process-death test writes a journal file directly, standing
+# in for a different process's own on-disk session marker -- `serde_json` is how `fylz_ops`
+# itself serialises a `FileOperation`, so the test reuses that real `Serialize` impl rather than
+# hand-rolling the journal's on-disk shape.
+serde_json = "1"

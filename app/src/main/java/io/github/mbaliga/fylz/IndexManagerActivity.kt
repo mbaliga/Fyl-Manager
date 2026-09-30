@@ -34,6 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,7 +55,7 @@ import io.github.mbaliga.fylz.index.SmartCollection
 import io.github.mbaliga.fylz.index.SmartRule
 import io.github.mbaliga.fylz.library.LibraryStore
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
-import io.github.mbaliga.fylz.model.AccentPreset
+import io.github.mbaliga.fylz.ui.theme.ThemePaletteStore
 import io.github.mbaliga.fylz.model.ThemeMode
 
 class IndexManagerActivity : ComponentActivity() {
@@ -64,10 +65,11 @@ class IndexManagerActivity : ComponentActivity() {
         // while the rest of the app was dark — the light-coloured Tools screen inside a
         // dark app that device testing turned up. An activity of Fylz is themed by Fylz.
         setContent {
+            val palette by remember { ThemePaletteStore(applicationContext) }.resolved.collectAsState()
             FylzTheme(
                 themeMode = ThemeMode.SYSTEM,
-                accentPreset = AccentPreset.MOSS,
-                dynamicColor = true,
+                palette = palette,
+                dynamicColor = false,
             ) { IndexManagerScreen(onClose = ::finish) }
         }
     }

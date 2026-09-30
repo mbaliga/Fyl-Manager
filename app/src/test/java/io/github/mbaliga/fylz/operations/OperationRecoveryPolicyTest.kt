@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.operations
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OperationRecoveryPolicyTest {
@@ -33,5 +34,10 @@ class OperationRecoveryPolicyTest {
         )
 
         assertEquals(operation, OperationRecoveryPolicy.recoverAfterProcessDeath(operation, 200))
+    }
+
+    @Test
+    fun `PARTIAL is terminal, since every item was already attempted`() {
+        assertTrue(OperationRecoveryPolicy.isTerminal(OperationState.PARTIAL))
     }
 }

@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    P0.12: all three target activities below are exported="false" in AndroidManifest.xml. A
+    launcher shortcut with an explicit targetClass, as every one of these is, can still start a
+    non-exported activity: the shortcut is published by this same app, not started on the
+    launcher process's own behalf.
+-->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
         android:shortcutId="operation_history"
@@ -22,11 +28,8 @@
             android:targetPackage="io.github.mbaliga.fylz"
             android:targetClass="io.github.mbaliga.fylz.PostV1ToolsActivity" />
     </shortcut>
-    <!--
-        IndexManagerActivity had no manifest declaration at all until now, so nothing could reach
-        the index/ package. It is exported="false", which a launcher shortcut with an explicit
-        targetClass can still start because the shortcut is published by this same app.
-    -->
+    <!-- IndexManagerActivity had no manifest declaration at all until it was added for this
+         shortcut, so nothing could reach the index/ package before. -->
     <shortcut
         android:shortcutId="index_manager"
         android:enabled="true"

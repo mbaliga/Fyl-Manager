@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,12 +35,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.operations.FileOperation
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationState
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
+import io.github.mbaliga.fylz.ui.theme.ThemePaletteStore
 import java.text.DateFormat
 import java.util.Date
 
@@ -48,10 +49,11 @@ class OperationHistoryActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
+            val palette by remember { ThemePaletteStore(applicationContext) }.resolved.collectAsState()
             FylzTheme(
                 themeMode = ThemeMode.SYSTEM,
-                accentPreset = AccentPreset.MOSS,
-                dynamicColor = true,
+                palette = palette,
+                dynamicColor = false,
             ) {
                 OperationHistoryScreen(
                     journal = remember { OperationJournal(applicationContext) },
@@ -87,6 +89,7 @@ private fun OperationHistoryScreen(
                         enabled = operations.any {
                             it.state == OperationState.SUCCEEDED ||
                                 it.state == OperationState.FAILED ||
+                                it.state == OperationState.PARTIAL ||
                                 it.state == OperationState.CANCELLED
                         },
                     ) {
@@ -142,7 +145,7 @@ private fun OperationHistoryScreen(
             title = { Text("Clear finished activity?") },
             text = {
                 Text(
-                    "Completed, failed, and cancelled records will be removed. " +
+                    "Completed, failed, partially completed, and cancelled records will be removed. " +
                         "Interrupted operations will remain visible until reviewed.",
                 )
             },
@@ -250,6 +253,7 @@ private fun OperationCard(operation: FileOperation) {
 private fun stateColor(state: OperationState) = when (state) {
     OperationState.SUCCEEDED -> MaterialTheme.colorScheme.primary
     OperationState.FAILED,
+    OperationState.PARTIAL,
     OperationState.NEEDS_ATTENTION,
     -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant

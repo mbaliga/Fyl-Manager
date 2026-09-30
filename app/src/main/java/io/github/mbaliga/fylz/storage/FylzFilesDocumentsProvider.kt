@@ -6,14 +6,18 @@ import android.database.MatrixCursor
 import android.graphics.Bitmap
 import android.graphics.Point
 import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Binder
 import android.os.CancellationSignal
 import android.os.Environment
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.DocumentsProvider
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.annotation.VisibleForTesting
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -44,24 +48,28 @@ import java.io.IOException
  */
 class FylzFilesDocumentsProvider : DocumentsProvider() {
 
+    /**
+     * Test seam (P0.0): when set, [volumeRoots] returns this list instead of asking
+     * [StorageManager] for the device's real volumes, so tests can host this provider over a
+     * temporary directory. Production code never sets this.
+     */
+    @VisibleForTesting
+    internal var volumeOverride: List<VolumeDescriptor>? = null
+
     override fun onCreate(): Boolean = true
 
     // ---------------------------------------------------------------- roots
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DEFAULT_ROOT_PROJECTION)
+        val flags = rootFlagsFor(sameProcess = Binder.getCallingUid() == Process.myUid())
         volumeRoots().forEach { root ->
             cursor.newRow().apply {
                 add(DocumentsContract.Root.COLUMN_ROOT_ID, root.rootId)
                 add(DocumentsContract.Root.COLUMN_DOCUMENT_ID, documentIdFor(root.rootId, root.directory, root.directory))
                 add(DocumentsContract.Root.COLUMN_TITLE, root.title)
                 add(DocumentsContract.Root.COLUMN_SUMMARY, root.directory.absolutePath)
-                add(
-                    DocumentsContract.Root.COLUMN_FLAGS,
-                    DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
-                        DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD or
-                        DocumentsContract.Root.FLAG_LOCAL_ONLY,
-                )
+                add(DocumentsContract.Root.COLUMN_FLAGS, flags)
                 add(DocumentsContract.Root.COLUMN_AVAILABLE_BYTES, root.directory.usableSpace)
                 add(DocumentsContract.Root.COLUMN_ICON, android.R.drawable.ic_menu_save)
             }
@@ -75,6 +83,12 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
         val cursor = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         addDocumentRow(cursor, documentId, resolveFile(documentId))
+        // P1.11: so a caller (this app's own DocumentRepository included, once it registers a
+        // ContentObserver -- none does yet) can be told this ONE document changed without
+        // re-querying it speculatively. Mirrors queryChildDocuments' own notification below.
+        context?.contentResolver?.let { resolver ->
+            cursor.setNotificationUri(resolver, DocumentsContract.buildDocumentUri(AUTHORITY, documentId))
+        }
         return cursor
     }
 
@@ -92,6 +106,13 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         // an empty folder so the browser shows "This folder is empty" instead of crashing.
         parent.listFiles().orEmpty().forEach { child ->
             addDocumentRow(cursor, documentIdFor(rootId, rootDirectory(rootId), child), child)
+        }
+        // P1.11: pairs with notifyChildrenChanged, called from every method below that adds,
+        // removes or renames a child -- a caller (DocumentsUI, or this app once something
+        // registers a ContentObserver on it) can react to a live change instead of only ever
+        // seeing this folder's contents as of whenever it last queried.
+        context?.contentResolver?.let { resolver ->
+            cursor.setNotificationUri(resolver, DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId))
         }
         return cursor
     }
@@ -138,25 +159,32 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
             runCatching { candidate.createNewFile() }.getOrDefault(false)
         }
         if (!created) throw FileNotFoundException("Unable to create $displayName in $parentDocumentId")
-        return documentIdFor(rootIdOf(parentDocumentId), rootDirectory(rootIdOf(parentDocumentId)), candidate)
+        val childId = documentIdFor(rootIdOf(parentDocumentId), rootDirectory(rootIdOf(parentDocumentId)), candidate)
+        notifyChildrenChanged(parentDocumentId)
+        return childId
     }
 
     @Throws(FileNotFoundException::class)
     override fun deleteDocument(documentId: String) {
         val file = resolveFile(documentId)
+        val parentId = parentDocumentIdOf(documentId, file)
         if (!deleteRecursively(file)) {
             throw FileNotFoundException("Unable to delete $documentId")
         }
+        parentId?.let { notifyChildrenChanged(it) }
     }
 
     @Throws(FileNotFoundException::class)
     override fun renameDocument(documentId: String, displayName: String): String {
         val file = resolveFile(documentId)
+        val parentId = parentDocumentIdOf(documentId, file)
         val target = File(file.parentFile, sanitizeDisplayName(displayName))
         if (target.exists()) throw FileNotFoundException("${target.name} already exists")
         if (!file.renameTo(target)) throw FileNotFoundException("Unable to rename $documentId")
         val rootId = rootIdOf(documentId)
-        return documentIdFor(rootId, rootDirectory(rootId), target)
+        val newId = documentIdFor(rootId, rootDirectory(rootId), target)
+        parentId?.let { notifyChildrenChanged(it) }
+        return newId
     }
 
     @Throws(FileNotFoundException::class)
@@ -176,7 +204,33 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
             throw FileNotFoundException("Unable to move $sourceDocumentId across storage volumes")
         }
         val rootId = rootIdOf(targetParentDocumentId)
-        return documentIdFor(rootId, rootDirectory(rootId), target)
+        val newId = documentIdFor(rootId, rootDirectory(rootId), target)
+        notifyChildrenChanged(sourceParentDocumentId)
+        notifyChildrenChanged(targetParentDocumentId)
+        return newId
+    }
+
+    /** The [DocumentsContract.buildChildDocumentsUri] notification target
+     *  [queryChildDocuments] registers via `setNotificationUri` -- called after every mutation
+     *  above that adds, removes, renames or moves a child (P1.11), so anything watching a folder
+     *  (DocumentsUI, or this app's own [io.github.mbaliga.fylz.ui.FylzV1App] FileObserver for the
+     *  common in-app case) is told, rather than only ever seeing a stale listing until its next
+     *  unrelated re-query. */
+    private fun notifyChildrenChanged(parentDocumentId: String) {
+        context?.contentResolver?.notifyChange(
+            DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId),
+            null,
+        )
+    }
+
+    /** [documentId]'s own parent, as a document id -- [deleteDocument]/[renameDocument] are only
+     *  ever handed the document itself, unlike [createDocument]/[moveDocument], which already
+     *  receive a parent id as a parameter. Null only for a root document, which has no parent to
+     *  notify (its own root's listing is reached through [queryRoots], not a children query). */
+    private fun parentDocumentIdOf(documentId: String, file: File): String? {
+        val parentFile = file.parentFile ?: return null
+        val rootId = rootIdOf(documentId)
+        return documentIdFor(rootId, rootDirectory(rootId), parentFile)
     }
 
     override fun openDocumentThumbnail(
@@ -307,6 +361,7 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
     // --------------------------------------------------------------- volumes
 
     private fun volumeRoots(): List<VolumeDescriptor> {
+        volumeOverride?.let { return it }
         val context = context ?: return emptyList()
         return discoverVolumes(context)
     }
@@ -320,13 +375,28 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
         return file.delete()
     }
 
+    /**
+     * Validates and lightly cleans a requested display name (P0.3, defect 3).
+     *
+     * Rejects only names that cannot be a document name at all: empty or whitespace-only, the
+     * reserved `.` and `..`, or containing a path separator or a NUL byte. Everything else --
+     * including a leading dot -- is a legitimate name and survives untouched apart from having
+     * other control characters replaced. This app grants full filesystem access, and its own
+     * recycle bin (`.fylz-trash`) depends on being able to create a dot-prefixed name; this
+     * method previously stripped every leading dot instead, so the directory landed on disk
+     * without one and every later name-based lookup for it silently failed.
+     */
     private fun sanitizeDisplayName(displayName: String): String {
-        val trimmed = displayName.trim().trimStart('.')
+        val trimmed = displayName.trim()
         require(trimmed.isNotBlank()) { "A name is required." }
-        // Strip path separators and control characters only. Spaces, hyphens and unicode
+        require(trimmed != "." && trimmed != "..") { "\"$trimmed\" is not a valid name." }
+        require(!trimmed.contains('/') && !trimmed.contains('\u0000')) {
+            "A name cannot contain \"/\" or a null character."
+        }
+        // Strip remaining control characters and backslash. Spaces, hyphens, dots and unicode
         // are legitimate in file names and must survive untouched.
         val cleaned = trimmed.map { char ->
-            if (char == '/' || char == '\\' || char.code < 0x20 || char.code == 0x7F) '_' else char
+            if (char == '\\' || char.code < 0x20 || char.code == 0x7F) '_' else char
         }.joinToString("")
         return cleaned.take(255)
     }
@@ -353,6 +423,23 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
 
         /** Root id of the primary shared volume, mirroring `ExternalStorageProvider`. */
         const val PRIMARY_ROOT_ID: String = "primary"
+
+        /**
+         * The [DocumentsContract.Root.COLUMN_FLAGS] value [queryRoots] reports (P1.9).
+         *
+         * [DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD] is what lets the system's picker offer a
+         * *tree* grant (`ACTION_OPEN_DOCUMENT_TREE`) over one of these roots at all -- without it, a
+         * caller can still browse and open single documents here (unaffected: that only needs
+         * `queryChildDocuments`/`openDocument`, both already same-uid-gated by the manifest's
+         * `MANAGE_DOCUMENTS` permission the normal way), but the system never offers "Use this
+         * folder" for a whole volume or `Download` to it. Omitting the flag for every OTHER app
+         * (never for Fylz itself, [sameProcess]) closes that off without touching single-document
+         * access other apps already legitimately have through Fylz's own roots.
+         */
+        internal fun rootFlagsFor(sameProcess: Boolean): Int =
+            DocumentsContract.Root.FLAG_SUPPORTS_CREATE or
+                DocumentsContract.Root.FLAG_LOCAL_ONLY or
+                (if (sameProcess) DocumentsContract.Root.FLAG_SUPPORTS_IS_CHILD else 0)
 
         private val DEFAULT_ROOT_PROJECTION = arrayOf(
             DocumentsContract.Root.COLUMN_ROOT_ID,
@@ -427,6 +514,55 @@ class FylzFilesDocumentsProvider : DocumentsProvider() {
                 treeUri(rootId, relativePath),
                 "$rootId:$relativePath",
             )
+
+        /**
+         * Resolves [uri] to the real [File] behind it, when [uri] is one of this provider's own
+         * documents (P1.3/A5) -- the same-process shortcut [LocalFileTransfer] needs to operate on
+         * a source or destination directly, bypassing a [android.content.ContentResolver] stream
+         * round trip entirely.
+         *
+         * [android.content.ContentProviderClient.getLocalContentProvider] returns the live
+         * [FylzFilesDocumentsProvider] instance without a Binder call when it runs in this same
+         * process -- true for every real install, since this provider is declared in this app's own
+         * manifest -- which lets this reuse [resolveFile]'s existing root-resolution and
+         * canonical-path escape checks instead of duplicating them. Returns null for any other
+         * provider's uri, or one that does not resolve (including simply not existing); never
+         * throws.
+         */
+        fun fileFor(context: Context, uri: Uri): File? {
+            if (uri.authority != AUTHORITY) return null
+            val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+            return withLocalInstance(context) { provider -> runCatching { provider.resolveFile(documentId) }.getOrNull() }
+        }
+
+        /**
+         * Whether [rootId] names a removable volume under this provider (P1.4, for
+         * [io.github.mbaliga.fylz.operations.classifyDestination]) -- null when [rootId] does not
+         * name any of this provider's current roots.
+         *
+         * Goes through the same live-instance lookup as [fileFor], rather than calling
+         * [discoverVolumes] directly, specifically so it sees a test's [volumeOverride]: that seam
+         * is set on a live provider *instance*, and [discoverVolumes] itself always asks
+         * [android.os.storage.StorageManager] fresh with no way to override it.
+         */
+        fun isRemovableRoot(context: Context, rootId: String): Boolean? =
+            withLocalInstance(context) { provider -> provider.volumeRoots().firstOrNull { it.rootId == rootId }?.removable }
+
+        /**
+         * Runs [block] against the live [FylzFilesDocumentsProvider] instance in this process, via
+         * [android.content.ContentProviderClient.getLocalContentProvider] -- true for every real
+         * install, since this provider is declared in this app's own manifest. Null if this
+         * process has no such instance (or [block] itself returns null).
+         */
+        private fun <T> withLocalInstance(context: Context, block: (FylzFilesDocumentsProvider) -> T?): T? {
+            val client = context.contentResolver.acquireContentProviderClient(AUTHORITY) ?: return null
+            return try {
+                val provider = client.localContentProvider as? FylzFilesDocumentsProvider ?: return null
+                block(provider)
+            } finally {
+                client.close()
+            }
+        }
     }
 }
 

@@ -4,6 +4,8 @@ import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.SSHClient
+import net.schmizz.sshj.common.Buffer
+import net.schmizz.sshj.transport.verification.FingerprintVerifier
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import java.io.File
 import java.security.MessageDigest
@@ -28,14 +30,20 @@ data class SftpProviderConfig(
         require(port in 1..65_535)
         require(username.isNotBlank())
         require(password.isNotEmpty())
-        require(normalizeFingerprint(pinnedHostKeySha256).matches(Regex("[A-Za-z0-9+/]{43}"))) {
-            "SFTP requires a pinned SHA-256 host-key fingerprint."
+        require(isPlausibleHostKeyFingerprint(pinnedHostKeySha256)) {
+            "SFTP requires a pinned host-key fingerprint: SHA-256 (SHA256:xxxx or bare base64) " +
+                "or legacy MD5 (aa:bb:cc:...)."
         }
         require(maximumDownloadBytes in 1..64L * 1024L * 1024L * 1024L)
     }
 }
 
-/** SFTP provider with mandatory SHA-256 host-key pinning and short-lived connections. */
+/**
+ * SFTP provider with mandatory host-key pinning and short-lived connections.
+ *
+ * Verification (P0.11) delegates to sshj's own [FingerprintVerifier] rather than hand-rolled
+ * comparison logic -- see [hostKeyVerifierFor] and [sha256Fingerprint] for why that matters.
+ */
 class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, AutoCloseable {
     override val id: String = config.id
     override val displayName: String = config.displayName
@@ -154,7 +162,7 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
         try {
             ssh.connectTimeout = 20_000
             ssh.timeout = 60_000
-            ssh.addHostKeyVerifier(PinnedHostKeyVerifier(config.pinnedHostKeySha256))
+            ssh.addHostKeyVerifier(hostKeyVerifierFor(config.pinnedHostKeySha256))
             ssh.connect(config.host, config.port)
             ssh.authPassword(config.username, passwordString)
             return ssh.newSFTPClient().use(block)
@@ -168,25 +176,94 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
         config.password.fill('\u0000')
     }
 
-    private class PinnedHostKeyVerifier(expected: String) : HostKeyVerifier {
-        private val expectedFingerprint = normalizeFingerprint(expected)
-
-        override fun verify(hostname: String, port: Int, key: PublicKey): Boolean {
-            val actual = Base64.encodeToString(
-                MessageDigest.getInstance("SHA-256").digest(key.encoded),
-                Base64.NO_WRAP,
-            ).trimEnd('=')
-            return MessageDigest.isEqual(
-                actual.toByteArray(Charsets.US_ASCII),
-                expectedFingerprint.toByteArray(Charsets.US_ASCII),
-            )
+    companion object {
+        /**
+         * Trust-on-first-use, step 1 (P0.11, defect 11): connects once with no credentials and a
+         * verifier that captures the presented host key and always rejects it, so the connection
+         * never completes unverified. Host-key exchange happens before authentication, so this
+         * needs neither a username nor a password. The caller shows the returned fingerprint to
+         * the user and pins it (into a [SftpProviderConfig]) only after they explicitly confirm
+         * it -- steps 2-3 are a UI concern, not this provider's.
+         */
+        suspend fun probeHostKeyFingerprint(host: String, port: Int): String = withContext(Dispatchers.IO) {
+            val capturing = CapturingHostKeyVerifier()
+            val ssh = SSHClient()
+            try {
+                ssh.connectTimeout = 20_000
+                ssh.addHostKeyVerifier(capturing)
+                runCatching { ssh.connect(host, port) }
+            } finally {
+                runCatching { ssh.disconnect() }
+                runCatching { ssh.close() }
+            }
+            sha256Fingerprint(capturing.capturedKey ?: error("The server did not present a host key."))
         }
-
-        override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = emptyList()
     }
 }
 
-private fun normalizeFingerprint(value: String): String = value
-    .trim()
-    .removePrefix("SHA256:")
-    .trimEnd('=')
+/** Always rejects -- trust-on-first-use must never let a probe connection complete as trusted --
+ * but remembers the key the server presented so the caller can show its fingerprint to the user. */
+internal class CapturingHostKeyVerifier : HostKeyVerifier {
+    var capturedKey: PublicKey? = null
+        private set
+
+    override fun verify(hostname: String, port: Int, key: PublicKey): Boolean {
+        capturedKey = key
+        return false
+    }
+
+    override fun findExistingAlgorithms(hostname: String, port: Int): List<String> = emptyList()
+}
+
+/**
+ * The OpenSSH SHA-256 fingerprint of [key]: SHA-256 of the SSH wire-format public-key blob
+ * (`Buffer.PlainBuffer().putPublicKey(key).compactData`), base64 without padding, `SHA256:`
+ * prefixed -- exactly what `ssh-keygen -lf` prints.
+ *
+ * This is the fix for P0.11, defect 11: [PublicKey.getEncoded] is X.509/DER, a *different*
+ * encoding of the same key. Hashing that instead (the pre-fix code) produced a value that could
+ * never match a real OpenSSH fingerprint no matter how carefully a user copied one in --
+ * host-key pinning was silently unenforceable.
+ */
+internal fun sha256Fingerprint(key: PublicKey): String {
+    val blob = Buffer.PlainBuffer().putPublicKey(key).compactData
+    val digest = MessageDigest.getInstance("SHA-256").digest(blob)
+    return "SHA256:" + Base64.encodeToString(digest, Base64.NO_WRAP).trimEnd('=')
+}
+
+/**
+ * sshj's own [FingerprintVerifier] (P0.11) instead of hand-rolled comparison logic. Accepts a
+ * bare or `SHA256:`-prefixed base64 SHA-256 fingerprint, or a legacy colon-hex MD5 one (the
+ * format sshj's own `SecurityUtils.getFingerprint` produces), with or without an `MD5:` prefix --
+ * whichever shape [config's pinned value][SftpProviderConfig.pinnedHostKeySha256] happens to be
+ * in, `FingerprintVerifier.getInstance` requires an explicit `SHA256:`/`SHA1:`/`MD5:` prefix only
+ * for the non-MD5-colon-hex forms, so bare base64 is normalized here before delegating.
+ */
+internal fun hostKeyVerifierFor(fingerprint: String): HostKeyVerifier {
+    val trimmed = fingerprint.trim()
+    val normalized = when {
+        trimmed.startsWith("SHA256:", ignoreCase = true) ||
+            trimmed.startsWith("SHA1:", ignoreCase = true) ||
+            trimmed.startsWith("MD5:", ignoreCase = true) -> trimmed
+        MD5_COLON_HEX.matches(trimmed) -> trimmed
+        else -> "SHA256:${trimmed.trimEnd('=')}"
+    }
+    return FingerprintVerifier.getInstance(normalized)
+}
+
+/** A cheap, fail-fast shape check for [SftpProviderConfig]'s `init` block -- not the authoritative
+ * validator (that's [hostKeyVerifierFor] via `FingerprintVerifier.getInstance` at connection
+ * time), just enough to catch blank or obviously-wrong input before ever attempting a connection. */
+internal fun isPlausibleHostKeyFingerprint(value: String): Boolean {
+    val trimmed = value.trim()
+    val stripped = when {
+        trimmed.startsWith("SHA256:", ignoreCase = true) -> trimmed.removePrefix("SHA256:")
+        trimmed.startsWith("SHA1:", ignoreCase = true) -> return trimmed.removePrefix("SHA1:").trimEnd('=').isNotBlank()
+        trimmed.startsWith("MD5:", ignoreCase = true) -> trimmed.removePrefix("MD5:")
+        else -> trimmed
+    }
+    return MD5_COLON_HEX.matches(stripped) || SHA256_BASE64.matches(stripped.trimEnd('='))
+}
+
+private val MD5_COLON_HEX = Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){15}$")
+private val SHA256_BASE64 = Regex("^[A-Za-z0-9+/]{40,44}$")

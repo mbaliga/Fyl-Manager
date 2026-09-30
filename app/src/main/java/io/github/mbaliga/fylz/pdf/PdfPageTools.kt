@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import com.google.mlkit.vision.text.Text
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -56,6 +57,7 @@ data class PdfExportResult(
     val pagesWritten: Int,
     val outputBytes: Long?,
     val rasterized: Boolean = true,
+    val searchableTextAdded: Boolean = false,
     val warning: String = RASTER_WARNING,
 ) {
     companion object {
@@ -77,13 +79,25 @@ object PdfPagePlanPolicy {
 }
 
 /**
- * Dependency-free PDF page tools using platform PdfRenderer and PdfDocument.
+ * PDF page tools using platform PdfRenderer and PdfDocument -- the app's one implementation of
+ * merge/extract/split, DPI-aware (unlike the fixed 2048px-edge renders the now-deleted
+ * `PdfToolService` used). P1.13 consolidated `PdfToolService`'s searchable-OCR
+ * capability into this class rather than the other way around, since this one already had the
+ * page-geometry-aware rendering [PdfExportOptions.renderDpi] depends on; `PdfToolService`'s own
+ * simpler fixed-edge render and its `merge`/`exportPages` naming are gone, not kept alongside.
  *
  * Android does not expose object-level PDF rewriting. These operations therefore create a
  * rasterized visual copy and disclose the fidelity trade-off instead of silently claiming a
  * lossless merge or edit.
+ *
+ * [ocrEngineFactory] is the P0.13 seam for decision D1 (see [OcrEngine]) -- it defaults to
+ * [MlKitOcrEngine], today's only implementation, and this class always requests
+ * [OcrScript.LATIN], matching `PdfToolService`'s own prior behavior exactly.
  */
-class PdfPageTools(private val context: Context) {
+class PdfPageTools(
+    private val context: Context,
+    private val ocrEngineFactory: OcrEngineFactory = MlKitOcrEngine.Companion,
+) {
     suspend fun inspect(uri: Uri, maxPageDetails: Int = 500): PdfDocumentInfo = withContext(Dispatchers.IO) {
         require(maxPageDetails in 1..PdfPagePlanPolicy.MAX_PAGES_PER_EXPORT)
         runCatching {
@@ -109,10 +123,31 @@ class PdfPageTools(private val context: Context) {
         List(info.pageCount) { PdfPageReference(uri, it) }
     }
 
+    /** Every source's pages, in source order, into one output -- fails as soon as the running
+     * total is known to exceed the page limit, without inspecting every remaining source first. */
+    suspend fun merge(
+        sources: List<Uri>,
+        outputUri: Uri,
+        searchableOcr: Boolean = false,
+        options: PdfExportOptions = PdfExportOptions(),
+        onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): PdfExportResult = withContext(Dispatchers.IO) {
+        require(sources.isNotEmpty()) { "Choose at least one PDF to merge." }
+        val pages = mutableListOf<PdfPageReference>()
+        for (source in sources) {
+            pages += allPages(source)
+            require(pages.size <= PdfPagePlanPolicy.MAX_PAGES_PER_EXPORT) {
+                "The export exceeds the ${PdfPagePlanPolicy.MAX_PAGES_PER_EXPORT}-page safety limit."
+            }
+        }
+        export(pages, outputUri, options, searchableOcr, onProgress)
+    }
+
     suspend fun export(
         references: List<PdfPageReference>,
         destinationUri: Uri,
         options: PdfExportOptions = PdfExportOptions(),
+        searchableOcr: Boolean = false,
         onProgress: (completed: Int, total: Int) -> Unit = { _, _ -> },
     ): PdfExportResult = withContext(Dispatchers.IO) {
         PdfPagePlanPolicy.validate(references)?.let { error(it) }
@@ -120,6 +155,7 @@ class PdfPageTools(private val context: Context) {
             ?: error("The destination is not writable.")
         val document = PdfDocument()
         val renderers = linkedMapOf<String, RendererHandle>()
+        val recognizer = if (searchableOcr) ocrEngineFactory.create(OcrScript.LATIN) else null
         try {
             references.forEachIndexed { outputIndex, reference ->
                 coroutineContext.ensureActive()
@@ -143,6 +179,11 @@ class PdfPageTools(private val context: Context) {
                     try {
                         bitmap.eraseColor(options.backgroundColor)
                         sourcePage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
+                        // Recognized BEFORE any rotation is applied: the recognizer sees the same
+                        // pixels [drawBitmap] draws, so a text line's bounding box is expressed in
+                        // that same bitmap-local coordinate space regardless of the page's own
+                        // rotation -- see [drawInvisibleSearchText] for how it's placed back.
+                        val recognized = recognizer?.recognize(bitmap)
                         val pageInfo = PdfDocument.PageInfo.Builder(
                             outputWidthPoints,
                             outputHeightPoints,
@@ -150,7 +191,17 @@ class PdfPageTools(private val context: Context) {
                         ).create()
                         val targetPage = document.startPage(pageInfo)
                         try {
-                            drawBitmap(targetPage.canvas, bitmap, rotation, outputWidthPoints, outputHeightPoints, options.backgroundColor)
+                            val matrix = pageDrawMatrix(rotation, bitmap.width, bitmap.height, outputWidthPoints, outputHeightPoints)
+                            drawBitmap(targetPage.canvas, bitmap, matrix, options.backgroundColor)
+                            recognized?.let {
+                                drawInvisibleSearchText(
+                                    targetPage.canvas,
+                                    it.textBlocks.flatMap { block -> block.lines },
+                                    matrix,
+                                    bitmap.width,
+                                    bitmap.height,
+                                )
+                            }
                         } finally {
                             document.finishPage(targetPage)
                         }
@@ -164,6 +215,7 @@ class PdfPageTools(private val context: Context) {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } finally {
+            recognizer?.close()
             document.close()
             renderers.values.forEach(RendererHandle::close)
         }
@@ -172,17 +224,19 @@ class PdfPageTools(private val context: Context) {
             outputBytes = runCatching {
                 context.contentResolver.openAssetFileDescriptor(destinationUri, "r")?.use { it.length.takeIf { length -> length >= 0L } }
             }.getOrNull(),
+            searchableTextAdded = searchableOcr,
         )
     }
 
     suspend fun split(
         sourceUri: Uri,
         destinations: List<Uri>,
+        searchableOcr: Boolean = false,
         options: PdfExportOptions = PdfExportOptions(),
     ): List<PdfExportResult> {
         val pages = allPages(sourceUri)
         require(destinations.size == pages.size) { "Provide one destination for each page." }
-        return pages.indices.map { index -> export(listOf(pages[index]), destinations[index], options) }
+        return pages.indices.map { index -> export(listOf(pages[index]), destinations[index], options, searchableOcr) }
     }
 
     private fun renderDimensions(widthPoints: Int, heightPoints: Int, options: PdfExportOptions): Pair<Int, Int> {
@@ -198,41 +252,40 @@ class PdfPageTools(private val context: Context) {
         return width to height
     }
 
-    private fun drawBitmap(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        quarterTurns: Int,
-        pageWidth: Int,
-        pageHeight: Int,
-        background: Int,
-    ) {
+    private fun drawBitmap(canvas: Canvas, bitmap: Bitmap, matrix: Matrix, background: Int) {
         canvas.drawColor(background)
-        val source = RectF(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat())
-        val matrix = Matrix()
-        when (quarterTurns) {
-            0 -> matrix.setRectToRect(source, RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat()), Matrix.ScaleToFit.CENTER)
-            1 -> {
-                matrix.postRotate(90f)
-                matrix.postTranslate(bitmap.height.toFloat(), 0f)
-                val rotated = RectF(0f, 0f, bitmap.height.toFloat(), bitmap.width.toFloat())
-                val fit = Matrix().apply { setRectToRect(rotated, RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat()), Matrix.ScaleToFit.CENTER) }
-                matrix.postConcat(fit)
-            }
-            2 -> {
-                matrix.postRotate(180f)
-                matrix.postTranslate(bitmap.width.toFloat(), bitmap.height.toFloat())
-                val fit = Matrix().apply { setRectToRect(source, RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat()), Matrix.ScaleToFit.CENTER) }
-                matrix.postConcat(fit)
-            }
-            3 -> {
-                matrix.postRotate(270f)
-                matrix.postTranslate(0f, bitmap.width.toFloat())
-                val rotated = RectF(0f, 0f, bitmap.height.toFloat(), bitmap.width.toFloat())
-                val fit = Matrix().apply { setRectToRect(rotated, RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat()), Matrix.ScaleToFit.CENTER) }
-                matrix.postConcat(fit)
-            }
-        }
         canvas.drawBitmap(bitmap, matrix, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+    }
+
+    /**
+     * An invisible (alpha ~0) text layer over an already-drawn, rasterized page, so the exported
+     * PDF is searchable/selectable despite being a raster copy -- ported from `PdfToolService`
+     * unchanged in spirit, generalized to any rotation via [matrix] rather than assuming an
+     * upright page: [lines]' bounding boxes are in the SAME bitmap-local coordinate space
+     * [pageDrawMatrix] was built from (see [export]'s own comment on why OCR runs before
+     * rotation), so concatenating that identical matrix onto the canvas before drawing each box's
+     * text places it correctly whatever the page's rotation is, with no separate rotation math.
+     */
+    private fun drawInvisibleSearchText(canvas: Canvas, lines: List<Text.Line>, matrix: Matrix, bitmapWidth: Int, bitmapHeight: Int) {
+        canvas.save()
+        try {
+            canvas.concat(matrix)
+            canvas.clipRect(RectF(0f, 0f, bitmapWidth.toFloat(), bitmapHeight.toFloat()))
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(1, 0, 0, 0) }
+            lines.take(MAX_OCR_LINES_PER_PAGE).forEach { line ->
+                val box = line.boundingBox ?: return@forEach
+                if (box.width() <= 0 || box.height() <= 0 || line.text.isBlank()) return@forEach
+                paint.textSize = box.height().toFloat().coerceAtLeast(4f)
+                val measured = paint.measureText(line.text).coerceAtLeast(1f)
+                val scaleX = box.width() / measured
+                canvas.save()
+                canvas.scale(scaleX, 1f, box.left.toFloat(), box.bottom.toFloat())
+                canvas.drawText(line.text.take(MAX_OCR_LINE_CHARS), box.left.toFloat(), box.bottom.toFloat(), paint)
+                canvas.restore()
+            }
+        } finally {
+            canvas.restore()
+        }
     }
 
     private fun normalizedRotation(value: Int): Int = ((value % 4) + 4) % 4
@@ -246,4 +299,56 @@ class PdfPageTools(private val context: Context) {
             runCatching { descriptor.close() }
         }
     }
+
+    private companion object {
+        const val MAX_OCR_LINES_PER_PAGE = 10_000
+        const val MAX_OCR_LINE_CHARS = 2_000
+    }
+}
+
+/**
+ * The [Matrix] that draws a [bitmapWidth]x[bitmapHeight] bitmap, rotated by [quarterTurns] (0-3,
+ * clockwise), scaled and centered to fill a [pageWidthPoints]x[pageHeightPoints] page. A quarter
+ * or three-quarter turn swaps which of the bitmap's own axes maps to the page's width vs. height
+ * -- callers already pass an [pageWidthPoints]/[pageHeightPoints] pair with that swap already
+ * applied (see [PdfPageTools.export]'s own `outputWidthPoints`/`outputHeightPoints`), so this
+ * function only ever has to fit, never itself decide which axis is "the wide one".
+ *
+ * A top-level, [Context]-free function (unlike the rest of [PdfPageTools]) specifically so it can
+ * be unit-tested without a real PDF, bitmap or canvas -- the trickiest new correctness surface
+ * this class gained this task (positioning an OCR text line under an arbitrary page rotation)
+ * depends only on this matrix being right; drawing pixels through it is unit-testable nowhere in
+ * this sandbox (see the P1.13 progress note on why), but the matrix itself is pure [Matrix] math.
+ */
+internal fun pageDrawMatrix(
+    quarterTurns: Int,
+    bitmapWidth: Int,
+    bitmapHeight: Int,
+    pageWidthPoints: Int,
+    pageHeightPoints: Int,
+): Matrix {
+    val source = RectF(0f, 0f, bitmapWidth.toFloat(), bitmapHeight.toFloat())
+    val destination = RectF(0f, 0f, pageWidthPoints.toFloat(), pageHeightPoints.toFloat())
+    val matrix = Matrix()
+    when (((quarterTurns % 4) + 4) % 4) {
+        0 -> matrix.setRectToRect(source, destination, Matrix.ScaleToFit.CENTER)
+        1 -> {
+            matrix.postRotate(90f)
+            matrix.postTranslate(bitmapHeight.toFloat(), 0f)
+            val rotated = RectF(0f, 0f, bitmapHeight.toFloat(), bitmapWidth.toFloat())
+            matrix.postConcat(Matrix().apply { setRectToRect(rotated, destination, Matrix.ScaleToFit.CENTER) })
+        }
+        2 -> {
+            matrix.postRotate(180f)
+            matrix.postTranslate(bitmapWidth.toFloat(), bitmapHeight.toFloat())
+            matrix.postConcat(Matrix().apply { setRectToRect(source, destination, Matrix.ScaleToFit.CENTER) })
+        }
+        else -> {
+            matrix.postRotate(270f)
+            matrix.postTranslate(0f, bitmapWidth.toFloat())
+            val rotated = RectF(0f, 0f, bitmapHeight.toFloat(), bitmapWidth.toFloat())
+            matrix.postConcat(Matrix().apply { setRectToRect(rotated, destination, Matrix.ScaleToFit.CENTER) })
+        }
+    }
+    return matrix
 }

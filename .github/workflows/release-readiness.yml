@@ -34,9 +34,23 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # See android.yml's identical step for why: v3's default package
+          # list includes "tools", which Google removed from the SDK
+          # repository, failing this step before app code is ever reached.
+          packages: 'platform-tools'
 
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      # See android.yml's identical steps for why: :app:buildCoreRelease (M2.3) needs these too.
+      - name: Install Android NDK
+        run: sdkmanager 'ndk;28.2.13676358'
+
+      - name: Install cargo-ndk and Rust Android targets
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk --locked
 
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4

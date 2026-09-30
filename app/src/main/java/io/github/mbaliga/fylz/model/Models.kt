@@ -70,9 +70,31 @@ enum class ThemeMode {
     DARK,
 }
 
-enum class AccentPreset {
-    MOSS,
-    INK,
-    CLAY,
-    ELECTRIC,
+// AccentPreset (MOSS/INK/CLAY/ELECTRIC) lived here until the JSON-based theming feature
+// (docs/agent/REVIEW_QUEUE.md): its four hardcoded colour pairs became the bundled presets in
+// `io.github.mbaliga.fylz.ui.theme.BuiltInThemePresets` (Electric dropped, per that entry's "2-3
+// bundled" call), and `ThemePalette` replaced it as the type `FylzTheme` actually takes.
+
+/** Owner request: what a two-finger pinch-in on the browse surface does. [GO_UP] (the default)
+ * reuses `fylz.navigate.up`'s own handler; [DETAIL_LEVEL] steps the grid/list detail ladder
+ * instead (`io.github.mbaliga.fylz.ui.actions.DetailLevelLadder`), and in that mode pinch-out is
+ * also live -- it is a no-op under [GO_UP]. Persisted the same shape as
+ * [io.github.mbaliga.fylz.operations.VerifySettings] (see `PinchSettingsStore`). */
+enum class PinchInBehavior {
+    GO_UP,
+    DETAIL_LEVEL,
 }
+
+/** P1.8: whether a [FylzClipboard] resolves at Paste time to a move or a copy. */
+enum class ClipboardMode {
+    CUT,
+    COPY,
+}
+
+/** What Cut/Copy put on the app's own in-memory clipboard (P1.8) -- [entries] is a snapshot taken
+ * at Cut/Copy time, not a live reference to the current selection, so it survives the selection
+ * being cleared or changed by navigating to another folder before Paste happens. */
+data class FylzClipboard(
+    val mode: ClipboardMode,
+    val entries: List<FileEntry>,
+)
