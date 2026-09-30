@@ -4,6 +4,7 @@ import androidx.compose.ui.input.key.Key
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.model.isBrowsableArchive
@@ -68,7 +69,8 @@ private fun def(
  */
 object BuiltInActions {
     fun all(): List<BuiltInBinding> = selectionBar() + topAppBar() + browserRow() + rowsAndCards() +
-        locationsRoom() + libraryRail() + toolsRoom() + recoveryRoom() + archiveToolsMenu() + extractMenu() + roomOpenGestures()
+        locationsRoom() + libraryRail() + toolsRoom() + recoveryRoom() + archiveToolsMenu() + extractMenu() +
+        roomOpenGestures() + pinchGestures()
 
     private fun selectionBar(): List<BuiltInBinding> = listOf(
         BuiltInBinding(
@@ -406,6 +408,8 @@ object BuiltInActions {
         themeAction(ThemeMode.SYSTEM, "Follow the system", 60),
         themeAction(ThemeMode.LIGHT, "Light", 61),
         themeAction(ThemeMode.DARK, "Dark", 62),
+        pinchInBehaviorAction(PinchInBehavior.GO_UP, "fylz.pinch-in.go-up", "Pinch in: Go up", 63),
+        pinchInBehaviorAction(PinchInBehavior.DETAIL_LEVEL, "fylz.pinch-in.detail-level", "Pinch in: Change detail level", 64),
         BuiltInBinding(
             def = def("fylz.customisation.problems", "Customisation problems", "Warning", listOf(Placement.Room(RoomId.TOOLS, 90))),
             // MC.0e (design §2.3 clarification): registryProblemCount is supplied when BrowserState
@@ -428,6 +432,16 @@ object BuiltInActions {
         enabledWhen = ALWAYS,
         checked = { it.themeMode == mode },
         run = { ctx, _, _ -> ctx.setThemeMode(mode) },
+    )
+
+    /** Owner request: the two-option radio next to the theme rows above -- which of Go Up /
+     * Detail level a pinch-in on the browse surface performs. Same shape as [themeAction]. */
+    private fun pinchInBehaviorAction(behavior: PinchInBehavior, id: String, title: String, order: Int): BuiltInBinding = BuiltInBinding(
+        def = def(id, title, "None", listOf(Placement.Room(RoomId.TOOLS, order))),
+        visibleWhen = ALWAYS,
+        enabledWhen = ALWAYS,
+        checked = { it.pinchInBehavior == behavior },
+        run = { ctx, _, _ -> ctx.setPinchInBehavior(behavior) },
     )
 
     private fun recoveryRoom(): List<BuiltInBinding> = listOf(
@@ -555,6 +569,41 @@ object BuiltInActions {
             visibleWhen = ALWAYS,
             enabledWhen = ALWAYS,
             run = { ctx, _, _ -> ctx.openRoom(RoomId.RECOVERY) },
+        ),
+    )
+
+    /** Owner request: the two-finger pinch on the browse surface (design decision recorded in
+     * docs/agent/REVIEW_QUEUE.md). `PINCH_IN`/`PINCH_OUT` carry no target -- same shape as `SHAKE`
+     * -- and each mode's binding gates on [BrowserState.pinchInBehavior] rather than on a target
+     * predicate, the same way [ActionDispatcher.gesture]'s own doc describes `ITEM_DOUBLE_TAP`'s
+     * two mutually-exclusive bindings picking exactly one. None of these three render anywhere
+     * (`paletteVisible = false`): they exist purely to be dispatched by `Modifier.pointerInput`
+     * gesture detection in `ui/actions/PinchGestureFlow.kt`, the same way `fylz.select.toggle`'s
+     * long-press binding has no visible UI of its own either. */
+    private fun pinchGestures(): List<BuiltInBinding> = listOf(
+        BuiltInBinding(
+            def = def("fylz.gesture.pinch-in.go-up", "Go up", "None", listOf(Placement.Gesture(GestureId.PINCH_IN))),
+            visibleWhen = ALWAYS,
+            enabledWhen = { it.pinchInBehavior == PinchInBehavior.GO_UP && it.canNavigateUp },
+            paletteVisible = false,
+            run = { ctx, _, _ -> ctx.navigateUp() },
+        ),
+        BuiltInBinding(
+            def = def("fylz.gesture.pinch-in.detail-level", "Denser", "None", listOf(Placement.Gesture(GestureId.PINCH_IN))),
+            visibleWhen = ALWAYS,
+            enabledWhen = { it.pinchInBehavior == PinchInBehavior.DETAIL_LEVEL },
+            paletteVisible = false,
+            run = { ctx, _, _ -> ctx.stepDetailLevel(-1) },
+        ),
+        BuiltInBinding(
+            // GO_UP has no pinch-out binding at all: with none registered for PINCH_OUT,
+            // ActionDispatcher.gesture finds nothing and returns without running anything -- the
+            // documented no-op the design brief asks for.
+            def = def("fylz.gesture.pinch-out.detail-level", "More detail", "None", listOf(Placement.Gesture(GestureId.PINCH_OUT))),
+            visibleWhen = ALWAYS,
+            enabledWhen = { it.pinchInBehavior == PinchInBehavior.DETAIL_LEVEL },
+            paletteVisible = false,
+            run = { ctx, _, _ -> ctx.stepDetailLevel(1) },
         ),
     )
 }

@@ -4,6 +4,7 @@ import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.ThemeMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -187,6 +188,8 @@ class ActionResolverGoldenTest {
         Triple(id("fylz.theme.system"), true, state.themeMode == ThemeMode.SYSTEM),
         Triple(id("fylz.theme.light"), true, state.themeMode == ThemeMode.LIGHT),
         Triple(id("fylz.theme.dark"), true, state.themeMode == ThemeMode.DARK),
+        Triple(id("fylz.pinch-in.go-up"), true, state.pinchInBehavior == PinchInBehavior.GO_UP),
+        Triple(id("fylz.pinch-in.detail-level"), true, state.pinchInBehavior == PinchInBehavior.DETAIL_LEVEL),
         // fylz.customisation.problems: visible only when registry.problems is non-empty, which it
         // never is for the shipped built-ins (design deviation (c); ShortcutTableTest asserts this).
     )

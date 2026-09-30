@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FylzClipboard
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
@@ -46,6 +47,9 @@ data class BrowserState(
     // archive's own entries rather than the archive root or another format. Defaulted so every
     // existing fixture and the golden test's named-arg `base()` stay unchanged.
     val isZipFamilyArchiveLocation: Boolean = false,
+    // Owner request: which of Go Up / Detail level a pinch-in on the browse surface performs.
+    // Defaulted so every existing fixture and the golden test's named-arg `base()` stay unchanged.
+    val pinchInBehavior: PinchInBehavior = PinchInBehavior.GO_UP,
 ) {
     val selectionCount: Int get() = selection.size
     val selectionKinds: Set<EntryKind> get() = selection.mapTo(HashSet()) { it.kind }

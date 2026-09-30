@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.actions
 import android.net.Uri
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.ThemeMode
 
 /**
@@ -96,6 +97,14 @@ interface ActionContext {
     fun openToolsActivity()
     fun openIndexActivity()
     fun setThemeMode(mode: ThemeMode)
+
+    /** `fylz.gesture.pinch-in.detail-level`/`fylz.gesture.pinch-out.detail-level`: one discrete
+     * pinch step (owner request) -- `+1` for pinch-out (more detail), `-1` for pinch-in (less
+     * detail/denser), via `io.github.mbaliga.fylz.ui.actions.DetailLevelLadder.stepped`. */
+    fun stepDetailLevel(delta: Int)
+
+    /** Tools room: which of Go Up / Detail level a pinch-in performs (see [PinchInBehavior]). */
+    fun setPinchInBehavior(behavior: PinchInBehavior)
 
     fun showOperationHistory()
 

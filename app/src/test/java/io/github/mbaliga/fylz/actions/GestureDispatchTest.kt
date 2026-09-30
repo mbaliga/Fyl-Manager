@@ -3,8 +3,10 @@ package io.github.mbaliga.fylz.actions
 import android.net.Uri
 import io.github.mbaliga.fylz.browse.SortField
 import io.github.mbaliga.fylz.model.FileEntry
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.ThemeMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -71,6 +73,45 @@ class GestureDispatchTest {
     }
 
     @Test
+    fun `pinch-in under GO_UP navigates up when it can`() {
+        val ctx = RecordingActionContext()
+        dispatcher.gesture(GestureId.PINCH_IN, null, BrowserStateFixtures.pinchGoUp(), ctx)
+        assertTrue(ctx.navigatedUp)
+        assertNull(ctx.detailLevelDelta)
+    }
+
+    @Test
+    fun `pinch-in under GO_UP at the root (canNavigateUp false) does nothing`() {
+        val ctx = RecordingActionContext()
+        dispatcher.gesture(GestureId.PINCH_IN, null, BrowserStateFixtures.folderDepth1(), ctx)
+        assertFalse(ctx.navigatedUp)
+        assertNull(ctx.detailLevelDelta)
+    }
+
+    @Test
+    fun `pinch-out under GO_UP is a no-op -- no binding is registered for it at all`() {
+        val ctx = RecordingActionContext()
+        dispatcher.gesture(GestureId.PINCH_OUT, null, BrowserStateFixtures.pinchGoUp(), ctx)
+        assertFalse(ctx.navigatedUp)
+        assertNull(ctx.detailLevelDelta)
+    }
+
+    @Test
+    fun `pinch-in under DETAIL_LEVEL steps toward less detail, not navigate up`() {
+        val ctx = RecordingActionContext()
+        dispatcher.gesture(GestureId.PINCH_IN, null, BrowserStateFixtures.pinchDetailLevel(), ctx)
+        assertEquals(-1, ctx.detailLevelDelta)
+        assertFalse(ctx.navigatedUp)
+    }
+
+    @Test
+    fun `pinch-out under DETAIL_LEVEL steps toward more detail`() {
+        val ctx = RecordingActionContext()
+        dispatcher.gesture(GestureId.PINCH_OUT, null, BrowserStateFixtures.pinchDetailLevel(), ctx)
+        assertEquals(1, ctx.detailLevelDelta)
+    }
+
+    @Test
     fun `a hidden binding does not fire`() {
         val hidden = BuiltInBinding(
             def = ActionDef(
@@ -117,6 +158,8 @@ private class RecordingActionContext : ActionContext {
     var openedWithEntry: FileEntry? = null
     var toggledEntry: FileEntry? = null
     var refreshed = false
+    var navigatedUp = false
+    var detailLevelDelta: Int? = null
 
     override fun cut() {}
     override fun copy() {}
@@ -150,7 +193,7 @@ private class RecordingActionContext : ActionContext {
     override fun findDuplicates() {}
     override fun aiOrganize() {}
 
-    override fun navigateUp() {}
+    override fun navigateUp() { navigatedUp = true }
     override fun selectAll() {}
 
     override fun setSortField(field: SortField) {}
@@ -172,6 +215,8 @@ private class RecordingActionContext : ActionContext {
     override fun openToolsActivity() {}
     override fun openIndexActivity() {}
     override fun setThemeMode(mode: ThemeMode) {}
+    override fun stepDetailLevel(delta: Int) { detailLevelDelta = delta }
+    override fun setPinchInBehavior(behavior: PinchInBehavior) {}
 
     override fun showOperationHistory() {}
 

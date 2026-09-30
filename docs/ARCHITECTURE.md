@@ -795,6 +795,32 @@ known inconsistency rather than a silent omission.
 `docs/agent/REVIEW_QUEUE.md`'s M3.9 entry (the consolidation decisions, what was and wasn't
 consolidated, and a pre-existing `ArchiveService.queryName` bug found while testing this, in full).
 
+## Pinch gesture and the detail-level ladder
+
+Owner request: pinch-in on the browse surface (grid or list) is configurable between two
+behaviours, `PinchInBehavior.GO_UP` (default) and `PinchInBehavior.DETAIL_LEVEL`, set in the Tools
+room next to the theme rows and persisted the same SharedPreferences-file-per-store shape as
+`operations.VerifySettings` (`ui/actions/PinchSettingsStore.kt`).
+
+- `ui/actions/PinchGestureFlow.kt` hand-rolls the multi-touch detector on `FileBrowser`'s own
+  `Modifier` (the same reason Fotoz's `gridZoomGestures` does, not Compose's
+  `detectTransformGestures`: the stock detector eats one-finger scroll and each card/row's own
+  tap/long-press). It never touches the app's action state directly -- it folds gesture frames
+  into discrete `GestureId.PINCH_IN`/`PINCH_OUT` dispatches through the same
+  `ActionDispatcher.gesture` path `SHAKE`/`EDGE_*` already use.
+- `ui/actions/DetailLevelLadder.kt` is the pure half: `stepPinch` (a threshold accumulator, mode-
+  and ladder-agnostic) and `DetailLevelLadder` (four rungs: `Grid(COMPACT/COMFORTABLE/DETAILED)`
+  then `ListView` -- `DensityMode`, already declared but unwired, is what those rungs are). Both
+  are unit-tested with no Robolectric.
+- `BuiltInActions.kt`'s `pinchGestures()` registers `GO_UP`'s pinch-in binding (calls
+  `ActionContext.navigateUp()` -- the exact handler `fylz.navigate.up` already calls, not a copy)
+  and `DETAIL_LEVEL`'s pinch-in/out bindings (`ActionContext.stepDetailLevel(±1)`); `GO_UP` has no
+  `PINCH_OUT` binding at all, so it is a documented no-op under that dispatcher's own "find nothing,
+  run nothing" rule.
+
+See `docs/agent/REVIEW_QUEUE.md` for the exact rung ladder and the residual-accumulator design
+call (deliberately not the same shape as Fotoz's `ZoomLadder.step`, and why that is still safe).
+
 ## Theme architecture
 
 The foundation exposes system/light/dark modes, accents, optional dynamic color, density, and immersive/traditional shells. Mature theming should move to semantic tokens rather than raw component colors:

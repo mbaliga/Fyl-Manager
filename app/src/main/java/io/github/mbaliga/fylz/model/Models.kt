@@ -77,6 +77,16 @@ enum class AccentPreset {
     ELECTRIC,
 }
 
+/** Owner request: what a two-finger pinch-in on the browse surface does. [GO_UP] (the default)
+ * reuses `fylz.navigate.up`'s own handler; [DETAIL_LEVEL] steps the grid/list detail ladder
+ * instead (`io.github.mbaliga.fylz.ui.actions.DetailLevelLadder`), and in that mode pinch-out is
+ * also live -- it is a no-op under [GO_UP]. Persisted the same shape as
+ * [io.github.mbaliga.fylz.operations.VerifySettings] (see `PinchSettingsStore`). */
+enum class PinchInBehavior {
+    GO_UP,
+    DETAIL_LEVEL,
+}
+
 /** P1.8: whether a [FylzClipboard] resolves at Paste time to a move or a copy. */
 enum class ClipboardMode {
     CUT,

@@ -6,6 +6,7 @@ import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FylzClipboard
 import io.github.mbaliga.fylz.model.ClipboardMode
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
@@ -50,6 +51,7 @@ object BrowserStateFixtures {
         operationsNeedingAttention: Int = 0,
         locationKind: LocationKind = LocationKind.FOLDER,
         isZipFamilyArchiveLocation: Boolean = false,
+        pinchInBehavior: PinchInBehavior = PinchInBehavior.GO_UP,
     ): BrowserState = BrowserState(
         hasActiveTab = hasActiveTab,
         canNavigateUp = canNavigateUp,
@@ -70,6 +72,7 @@ object BrowserStateFixtures {
         operationsNeedingAttention = operationsNeedingAttention,
         locationKind = locationKind,
         isZipFamilyArchiveLocation = isZipFamilyArchiveLocation,
+        pinchInBehavior = pinchInBehavior,
     )
 
     private val file1 = entry("a.txt", EntryKind.TEXT)
@@ -146,6 +149,10 @@ object BrowserStateFixtures {
 
     fun themeDark(): BrowserState = base(themeMode = ThemeMode.DARK)
 
+    fun pinchGoUp(): BrowserState = base(pinchInBehavior = PinchInBehavior.GO_UP)
+
+    fun pinchDetailLevel(): BrowserState = base(pinchInBehavior = PinchInBehavior.DETAIL_LEVEL)
+
     fun legacyBinCountZero(): BrowserState = base(legacyBinCount = 0)
 
     fun legacyBinCountOne(): BrowserState = base(legacyBinCount = 1)
@@ -203,6 +210,8 @@ object BrowserStateFixtures {
         "themeSystem" to themeSystem(),
         "themeLight" to themeLight(),
         "themeDark" to themeDark(),
+        "pinchGoUp" to pinchGoUp(),
+        "pinchDetailLevel" to pinchDetailLevel(),
         "legacyBinCountZero" to legacyBinCountZero(),
         "legacyBinCountOne" to legacyBinCountOne(),
         "operationsAttention0" to operationsAttention0(),

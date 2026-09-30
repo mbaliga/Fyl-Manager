@@ -17,7 +17,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -38,13 +37,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Cloud
-import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -92,13 +88,11 @@ import io.github.mbaliga.fylz.scan.GmsDocumentScannerAdapter
 import io.github.mbaliga.fylz.archive.ArchiveDocumentId
 import io.github.mbaliga.fylz.archive.ArchiveRef
 import io.github.mbaliga.fylz.browse.SortField
-import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.browse.sortEntries
 import io.github.mbaliga.fylz.data.ArchiveService
 import io.github.mbaliga.fylz.data.DocumentRepository
 import io.github.mbaliga.fylz.data.SaveResult
 import io.github.mbaliga.fylz.library.LibraryStore
-import io.github.mbaliga.fylz.library.SavedSearch
 import io.github.mbaliga.fylz.model.AccentPreset
 import io.github.mbaliga.fylz.model.ClipboardMode
 import io.github.mbaliga.fylz.model.DensityMode
@@ -138,7 +132,6 @@ import io.github.mbaliga.fylz.search.SearchProgress
 import io.github.mbaliga.fylz.search.SearchQuery
 import io.github.mbaliga.fylz.storage.ArchiveDocumentsProvider
 import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
-import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.VolumeInfoResolver
 import io.github.mbaliga.fylz.ui.components.ConflictSheet
@@ -162,7 +155,6 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.UUID
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListState
@@ -410,6 +402,8 @@ private fun FylzV1Workspace(
     var loading by remember { mutableStateOf(false) }
     var query by viewModel::query
     var viewMode by viewModel::viewMode
+    // Pinch-in/out (owner request, PinchSettingsStore's own KDoc): the detail ladder's density, plus the persisted Go-Up-vs-ladder setting.
+    var densityMode by remember { mutableStateOf(DensityMode.COMFORTABLE) }; val pinchSettings = remember { io.github.mbaliga.fylz.ui.actions.PinchSettingsStore(context.applicationContext) }; val pinchInBehavior by pinchSettings.behavior.collectAsState()
     var previewMode by viewModel::previewMode
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
@@ -1126,6 +1120,8 @@ private fun FylzV1Workspace(
                 .onFailure { toast("The index manager is unavailable") }
         }
         override fun setThemeMode(mode: ThemeMode) { onThemeModeChange(mode) }
+        override fun stepDetailLevel(delta: Int) { val next = io.github.mbaliga.fylz.ui.actions.DetailLevelLadder.stepped(if (viewMode == ViewMode.GRID) io.github.mbaliga.fylz.ui.actions.DetailLevel.Grid(densityMode) else io.github.mbaliga.fylz.ui.actions.DetailLevel.ListView, delta); if (next is io.github.mbaliga.fylz.ui.actions.DetailLevel.Grid) { viewMode = ViewMode.GRID; densityMode = next.density } else viewMode = ViewMode.LIST }
+        override fun setPinchInBehavior(behavior: io.github.mbaliga.fylz.model.PinchInBehavior) { pinchSettings.setBehavior(behavior) }
 
         override fun showOperationHistory() { onShowHistory() }
 
@@ -1153,7 +1149,7 @@ private fun FylzV1Workspace(
     val browserState = remember(
         activeTab, entries, visibleEntries, selectedEntries, selectedUris, focusedEntry, clipboard,
         sortSpec, viewMode, previewMode, query, searchRecursive, themeMode, legacyBinNames,
-        operationsNeedingAttention, refreshKey, activeTabId, actionRegistry,
+        operationsNeedingAttention, refreshKey, activeTabId, actionRegistry, pinchInBehavior,
     ) {
         buildBrowserState(
             BrowserStateInputs(
@@ -1162,6 +1158,7 @@ private fun FylzV1Workspace(
                 sortSpec = sortSpec, viewMode = viewMode, previewMode = previewMode, query = query, searchRecursive = searchRecursive,
                 themeMode = themeMode, favouriteUris = library.favorites().map { it.uri }, legacyBinCount = legacyBinNames.size,
                 operationsNeedingAttention = operationsNeedingAttention, registryProblemCount = actionRegistry.problems.size, isZipFamilyArchiveLocation = archiveEditFlow.isZipFamilyArchiveLocation(activeTab),
+                pinchInBehavior = pinchInBehavior,
             ),
         )
     }
@@ -1305,7 +1302,7 @@ private fun FylzV1Workspace(
                         selectedUris = selectedUris,
                         focusedEntry = focusedEntry,
                         query = query,
-                        viewMode = viewMode,
+                        viewMode = viewMode, densityMode = densityMode,
                         loading = loading,
                         operationMessage = operationMessage,
                         runningOperations = runningOperations,
@@ -1741,7 +1738,7 @@ private fun FileBrowser(
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
     query: String,
-    viewMode: ViewMode,
+    viewMode: ViewMode, densityMode: DensityMode,
     loading: Boolean,
     operationMessage: String?,
     runningOperations: List<RunningOperation>,
@@ -1769,7 +1766,8 @@ private fun FileBrowser(
         return
     }
 
-    Column(modifier) {
+    val pinchBridge = remember { io.github.mbaliga.fylz.ui.actions.PinchGestureBridge() }.also { it.onGesture = { g -> dispatcher.gesture(g, null, state, ctx) } }
+    Column(io.github.mbaliga.fylz.ui.actions.pinchDetailGesture(modifier, pinchBridge)) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             NavigateUpButton(resolver, dispatcher, state, ctx)
             OutlinedTextField(
@@ -1862,7 +1860,7 @@ private fun FileBrowser(
             }
         } else if (viewMode == ViewMode.GRID) {
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(130.dp),
+                columns = GridCells.Adaptive(when (densityMode) { DensityMode.COMPACT -> 96.dp; DensityMode.DETAILED -> 180.dp; else -> 130.dp }),
                 state = gridState,
                 contentPadding = PaddingValues(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

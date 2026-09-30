@@ -1607,3 +1607,85 @@ review-gate list, but this report and entry are what closing out the milestone h
 new risk this entry introduces — see `REPORT-M3.md` §5 ("Known gaps for the owner") for the full
 list, including RAR, the 5 GB device check, the AES/crypto-backend gap, 7z write, split-archive
 self-read, and the eight untested archive formats.
+
+---
+
+## Configurable pinch gesture (owner request, not a MASTER_PLAN item)
+
+**Not a gate:** this is not a MASTER_PLAN milestone -- the owner asked for it directly ("Pinch in
+gesture needs to be configurable — Go Up (Enclosing Folder) or change level of detail — if level
+of detail is selected, then it should ideally also enable the pinch out gesture"). Logged here
+per that brief's own instruction, for a second look, not because a gate needs clearing.
+
+**What shipped:** `model.PinchInBehavior` (`GO_UP` default, `DETAIL_LEVEL`), persisted by a new
+`ui/actions/PinchSettingsStore.kt` (SharedPreferences-file-per-store, the same shape
+`operations.VerifySettings` uses), set from two new rows in the Tools room next to the theme rows.
+A two-finger pinch on the browse surface (grid or list) is detected by a hand-rolled multi-touch
+accumulator (`ui/actions/PinchGestureFlow.kt`) rather than Compose's `detectTransformGestures`,
+for the documented reason Fotoz's own `gridZoomGestures` gives for the same choice: the stock
+detector consumes every pointer's position change on every frame, one finger included, which
+would eat this grid/list's own scroll and each card/row's `combinedClickable` tap/long-press/
+double-click detector. It reads pointer count itself and only ever consumes a frame with two or
+more fingers down. Discrete steps are dispatched as `GestureId.PINCH_IN`/`PINCH_OUT` through the
+existing `ActionDispatcher.gesture` path (the same one `SHAKE`/`EDGE_*` already use), so
+`GO_UP`'s pinch-in binding just calls `ActionContext.navigateUp()` -- the exact method
+`fylz.navigate.up` already calls, never a second copy of that logic -- and `GO_UP` registers no
+`PINCH_OUT` binding at all, which is the documented no-op the brief asks for.
+
+**Design calls worth a second look:**
+
+1. **The detail-level ladder has four rungs, not the brief's own "4-5" example, and they are
+   `Grid(DensityMode.COMPACT)` → `Grid(DensityMode.COMFORTABLE)` (today's unchanged default) →
+   `Grid(DensityMode.DETAILED)` → `ListView`** (`ui/actions/DetailLevelLadder.kt`). This reuses two
+   model concepts that already existed and were completely unwired -- `DensityMode`
+   (COMPACT/COMFORTABLE/DETAILED) and `ViewMode.DETAILS` -- rather than inventing a parallel
+   "zoom level" enum, per the brief's own "prefer extending what's there" instruction. The brief's
+   own illustrative fifth rung, a `ViewMode.DETAILS` row with size/date/kind columns, was **not**
+   built: `FileRowV1`/`FileCard` have no such rendering today, and `ui/FylzV1App.kt`'s own size
+   ratchet (2260 lines, and the file was sitting exactly at it before this change) left no room to
+   add that rendering inside the ratchet-limited file without a much larger refactor than this
+   task's scope. `ViewMode.DETAILS` stays declared and unused, same as before. Pinch-out from
+   `Grid(DETAILED)` currently lands on plain `ListView` (the existing list row), not a richer
+   detail row -- a real but smaller step than the brief's own example implies. Worth a second
+   look if the owner wants the full five-rung version; the ladder abstraction
+   (`DetailLevelLadder.rungOf`/`levelAt`/`stepped`) already supports adding a fifth rung without
+   touching the pinch-detection or dispatch code at all.
+2. **Grid density is wired to real, visible cell width** (96dp/130dp/180dp for
+   COMPACT/COMFORTABLE/DETAILED in `FylzV1App.kt`'s `GridCells.Adaptive(...)`), so the ladder is
+   not purely internal state -- pinching actually changes what's on screen at every rung, list
+   view included (the existing GRID/LIST branch in `FileBrowser`).
+3. **The pinch accumulator is deliberately NOT the same shape as Fotoz's own
+   `GalleryZoomLadder.step`**, which the design brief explicitly points at as a model. Fotoz folds
+   the residual-threshold accumulator and the ladder-position lookup into one function, and
+   specially clamps residual at the ladder's two closed ends to stop a later small reversal from
+   spending a large "banked" charge at once. This codebase's `stepPinch` (`DetailLevelLadder.kt`)
+   is deliberately ladder-agnostic: it always consumes exactly one threshold's worth of motion per
+   step it registers, win or lose, so residual can never exceed one threshold regardless of what
+   the caller does with the result (including nothing, if the ladder was already at an end, or if
+   `PinchInBehavior` is `GO_UP` and the "ladder" doesn't semantically apply at all that frame). The
+   two are functionally equivalent for the thrash Fotoz's own doc describes; this shape was chosen
+   because a single detector serves both `PinchInBehavior` modes, and only one of them (`DETAIL_LEVEL`)
+   has a ladder position to clamp against at all -- see `DetailLevelLadder.kt`'s own doc for the
+   full reasoning, and `DetailLevelLadderTest`'s `residual never grows past one threshold's worth`
+   test for the regression case Fotoz's own equivalent test covers.
+4. **`fylz.view.toggle`'s manual grid/list toggle button is untouched and independent of the
+   pinch ladder** -- pinching and tapping "Switch to list view" both write the same underlying
+   `viewMode` (and, for pinch, `densityMode`) state, so they never fight, but a manual toggle does
+   not move the ladder's own notion of "current rung" as a persisted position -- `stepDetailLevel`
+   re-derives the current rung from live `viewMode`/`densityMode` on every call, so a pinch right
+   after a manual toggle continues from wherever the toggle left it, correctly, with no separate
+   ladder-position state to go stale.
+5. **`ThemeMode`'s own persistence, which the design brief named as the pattern `PinchInBehavior`
+   should follow, turned out on inspection not to exist** -- `FylzV1App.kt` only ever held
+   `themeMode` in `remember{}` state; it does not survive a process death today. `PinchSettingsStore`
+   follows `operations.VerifySettings`'s actual, working shape instead (see that store's own KDoc).
+
+**Relevant commit:** the commit adding this feature (see `docs/agent/PROGRESS.md`'s matching row
+for the exact SHA).
+
+**Risk if it turns out wrong:** low. The gesture only ever fires on two-or-more-finger contact
+(`MIN_PINCH_SPREAD_PX` gate plus the pointer-count check), so a wrong ladder choice or threshold
+value is a UX tuning issue, not a correctness one, and `GO_UP` (unaffected by any of this) stays
+the default. Not verified on a real device (no device in this loop) -- the gesture detector's
+own feel (threshold, `MIN_PINCH_SPREAD_PX`) is exactly the kind of thing that wants a real pinch
+to confirm, the same caveat M3.4's own 5 GB device check carries.

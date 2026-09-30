@@ -5,6 +5,7 @@ import io.github.mbaliga.fylz.browse.SortSpec
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderTab
 import io.github.mbaliga.fylz.model.FylzClipboard
+import io.github.mbaliga.fylz.model.PinchInBehavior
 import io.github.mbaliga.fylz.model.PreviewMode
 import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.model.ViewMode
@@ -38,6 +39,8 @@ data class BrowserStateInputs(
     val registryProblemCount: Int,
     // M3.6: whether the archive location being browsed (if any) is a ZIP-family archive.
     val isZipFamilyArchiveLocation: Boolean = false,
+    // Owner request: which of Go Up / Detail level a pinch-in on the browse surface performs.
+    val pinchInBehavior: PinchInBehavior = PinchInBehavior.GO_UP,
 )
 
 /** The one place a [BrowserState] is assembled from the browser's raw state (moved out of `FylzV1App.kt`, M3.3c). */
@@ -65,5 +68,6 @@ fun buildBrowserState(inputs: BrowserStateInputs): BrowserState {
         registryProblemCount = inputs.registryProblemCount,
         locationKind = LocationKind.of(current),
         isZipFamilyArchiveLocation = inputs.isZipFamilyArchiveLocation,
+        pinchInBehavior = inputs.pinchInBehavior,
     )
 }
