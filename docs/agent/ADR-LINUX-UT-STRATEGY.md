@@ -210,12 +210,12 @@ table above (unchanged by this dispatch):
 
 | `QObject` | Backing crate | Can be real today? |
 |---|---|---|
-| `ArchiveModel` | `fylz-archive` (M3, done) | **Yes.** Real archive read/write/extract logic exists now. |
-| `FolderModel` | filesystem + this crate (`fylz-ops`) | **Yes.** Ordinary directory listing plus this crate's preflight/conflict/checksum/recycle policies are real, working Rust today. |
-| `OperationQueue` | this crate (`fylz-ops`) | **Yes.** `journal::Journal`'s claim/tag/reconcile lifecycle, `preflight`, `conflict`, `checksum` and `recycle` are real, tested Rust behind it. |
-| `RenameController` | `fylz-rename` (M7, stub) | **No.** `fylz-rename` is a one-line doc comment; a `RenameController` today would have nothing to call. |
-| `SearchController` | `fylz-query`/`fylz-index` (M8, stubs) | **No.** Same situation — no query AST, no index schema exist yet. |
-| `PreviewProvider` | thumbnail generation (not yet built anywhere in `core/`) | **No**, and not listed in §1's table because no crate is even named for it yet in `MASTER_PLAN.md`'s M2-M12 sections; M13.2 would need to scope where that logic lives first. |
+| `ArchiveModel` | `fylz-archive` (M3, done) | **Yes — confirmed real and running (M13.2, below).** |
+| `FolderModel` | filesystem + this crate (`fylz-ops`) | **Yes — confirmed real and running (M13.2, below).** |
+| `OperationQueue` | this crate (`fylz-ops`) | **Yes — confirmed real and running (M13.2, below).** |
+| `RenameController` | `fylz-rename` (M7, stub) | **No — confirmed stubbed (M13.2, below).** `fylz-rename` is a one-line doc comment; a `RenameController` today would have nothing to call. |
+| `SearchController` | `fylz-query`/`fylz-index` (M8, stubs) | **No — confirmed stubbed (M13.2, below).** Same situation — no query AST, no index schema exist yet. |
+| `PreviewProvider` | thumbnail generation (not yet built anywhere in `core/`) | **Partial (M13.2, below).** Real content classification via `fylz-sniff`; no pixel decode. |
 
 **The honest recommendation for M13.2:** build `ArchiveModel`, `FolderModel` and `OperationQueue`
 with real backing logic now — the crates behind them exist and are tested. Stub
@@ -237,3 +237,194 @@ decision before M13.2 starts, not a guess folded into it.
   §3 corrections should be treated as this dispatch's most load-bearing finding for whoever picks
   up M13.2 next — verify fresh regardless, but start from an accurate baseline instead of a stale
   201/403 story that does not hold in this sandbox.
+
+---
+
+## 6. M13.2 + a minimal M13.3 slice: what actually got built, real vs. stubbed, confirmed running
+
+This section is the record §0/§4 above point forward to, written by the M13.2 dispatch (this
+crate's own real content, `core/crates/fylz-ffi-qt`) on 2026-09-30, immediately after M13.1. Per
+this dispatch's own brief, §3's two corrections (Qt 5.15 and real Lomiri Components both
+apt-installable; no running Docker daemon) were re-verified independently in THIS session's own
+container before relying on either — both held, unchanged from §3's record.
+
+### 6.1 cxx-qt version pinned: 0.7.3
+
+The brief asked for a cxx-qt version confirmed to support Qt 5.15, not an assumption that the
+latest one does. Checked two ways before picking: `cargo search cxx-qt` in this sandbox shows the
+newest published version is 0.10.0 (crates.io publish timestamps in this workspace's own view of
+time run through 2026-08-24, consistent with this sandbox's other dated findings), and the
+`cxx-qt` project's own current documentation states plainly that it targets "the Qt versions that
+have official support by the Qt company... Qt 5.15 LTS and all versions of Qt 6" — i.e. every
+current release line still claims Qt 5.15 support, not just an old one. Rather than trust that
+claim for whichever version happened to be newest, this dispatch **built a real, minimal cxx-qt
+QObject bridge against this sandbox's actual Qt 5.15.13 with cxx-qt 0.7.3 specifically** (a
+stand-alone probe crate first, then this crate itself) and it built and ran end to end — see §6.4.
+0.7.3 is not the newest (0.8.0-0.10.0 exist), but it is the one this dispatch actually proved,
+so it is the one `Cargo.toml` pins, rather than a guess at a newer line's real Qt 5.15 behaviour.
+
+### 6.2 Real vs. stubbed, per `QObject` (adding to §4's table above)
+
+- **`FolderModel`, `ArchiveModel`, `OperationQueue` — real, confirmed running end to end.**
+  `FolderModel` lists a real directory via `std::fs`, and its `hasConflict`/`isStaging` columns
+  are genuine `fylz_ops::preflight::PreflightPolicy::evaluate`/`fylz_ops::staging::is_staging_name`
+  verdicts, not a hand-rolled duplicate check. `ArchiveModel` lists a real archive via
+  `fylz_archive::inspect` (M3.3's own browsing entry point). `OperationQueue` lists a real
+  `fylz_ops::journal::Journal`'s operations, including a genuine reconcile-after-process-death
+  sweep (§6.4). Each is a thin `#[cxx_qt::bridge]` `QAbstractListModel` wrapper
+  (`src/folder_model.rs`, `src/archive_model.rs`, `src/operation_queue.rs`) around one Qt-free
+  plain-Rust function in `src/logic.rs`, unit-tested there (9 tests, §6.5) independently of
+  whether Qt is even installed.
+- **`PreviewProvider` — a documented partial stub, not the full `QQuickImageProvider`.** It
+  classifies a file's real content via `fylz-sniff` (M2.5, done: genuine magic-byte sniffing of
+  the file's own bytes) but produces no actual thumbnail pixel. The master plan's own M13.2 entry
+  names this `QQuickImageProvider` specifically; that Qt class is a plain, non-`QObject` abstract
+  C++ interface (registered on a `QQmlEngine` via `addImageProvider`, not instantiated as a QML
+  element), outside cxx-qt 0.7.3's supported subclassing surface, which targets a `QObject`-
+  derived base (`#[base = QAbstractListModel]`, used by the three models above) — not
+  `QQuickImageProvider`. Hand-writing a real C++ image provider on top of this bridge is real,
+  in-scope future work (M13.3's full UI or a follow-on dispatch), not attempted here — no new
+  Rust image-decoding dependency was added either (checked: no existing crate in `core/` pulls one
+  in; `fylz-sniff` already gives real classification for free). Said plainly per this task's own
+  brief, rather than silently narrowing scope.
+- **`RenameController`, `SearchController` — confirmed stubbed, and why.** `fylz-rename` (M7) and
+  `fylz-query`/`fylz-index` (M8) are still the exact one-line stub crates §1's table already
+  recorded — re-checked fresh for this dispatch, unchanged. Each `QObject` exists with its real
+  shape (`available: bool` property, always `false`; one invokable QML code can already compile
+  against) so QML written against them today does not need to change once M7/M8 land, but every
+  actual call returns a string naming the specific stub crate and milestone rather than
+  fabricating a rename or search result.
+
+### 6.3 Why this crate cannot break `.github/workflows/android.yml`'s existing CI
+
+That workflow's `cargo test --workspace` / `cargo clippy --all-features --all-targets --workspace`
+step (from `core/`, M2.6) runs on a plain `ubuntu-latest` GitHub Actions runner with no Qt
+installed at all, and this task's own brief says the Android side stays untouched. Since
+`cxx-qt-build`'s Qt/C++ discovery panics outright when it finds no Qt, simply adding
+`fylz-ffi-qt` as a real workspace member with an unconditional `CxxQtBuilder::build()` call would
+have broken that CI the moment this crate stopped being a one-line stub. `build.rs` guards
+against this itself: it probes for `qmake` on `PATH` BEFORE ever calling into `cxx-qt-build`, and
+sets a `fylz_qt_available` cfg only when Qt was actually found. Every Qt-touching module in
+`src/lib.rs` is gated on that cfg — not stubbed, literally absent from the compiled crate when
+unset — so on a Qt-less machine this crate compiles to an inert placeholder (`src/lib.rs`'s own
+doc comment) instead of panicking the build. `src/logic.rs` (the real business logic every
+`QObject` wraps) carries no such gate and always compiles and tests, Qt or not. This sandbox DOES
+have Qt, so every check in this dispatch's own gate (§6.5) ran against the real bridge, not the
+placeholder.
+
+### 6.4 The QML end-to-end proof: exactly what was run, and what it showed
+
+Per this task's brief, "compiles" was not treated as good enough — the QML screen was actually
+launched and driven. Reproducible from `core/`, after `apt-get install qtbase5-dev
+qtdeclarative5-dev qtdeclarative5-dev-tools qml-module-lomiri-components` (§3.1/§3.2, re-verified):
+
+```
+$ cargo build -p fylz-ffi-qt --bins
+$ ./target/debug/fylz-seed-demo > /tmp/fylz_demo_env.sh   # a real, separate OS process: creates
+                                                            # a real temp folder (real files, a
+                                                            # real case-collision, a real
+                                                            # .fylz-part-* staged write, a real
+                                                            # PNG-signature file) and a real
+                                                            # fylz_ops journal with one operation
+                                                            # deliberately left `Running`
+$ source /tmp/fylz_demo_env.sh
+$ QT_QPA_PLATFORM=offscreen ./target/debug/fylz-qml-demo   # a SECOND, genuinely different OS
+                                                            # process: loads qml/main.qml via a
+                                                            # real QGuiApplication +
+                                                            # QQmlApplicationEngine
+```
+
+Real, observed output (unedited console lines from this exact run):
+
+```
+FYLZ_FOLDER_ROWCOUNT 6
+FYLZ_FOLDER_ROW 0 name=.fylz-part-demo-op-0-incoming.bin isDirectory=false sizeBytes=512 isStaging=true hasConflict=false
+FYLZ_FOLDER_ROW 4 name=report.TXT isDirectory=false sizeBytes=4 isStaging=false hasConflict=true
+FYLZ_FOLDER_TOTALBYTES 4710
+FYLZ_ARCHIVE_ROWCOUNT 48
+FYLZ_ARCHIVE_ROW 0 path=photos/ isDirectory=true sizeBytes=0
+FYLZ_ARCHIVE_FORMAT ZIP 2.0 (uncompressed)
+FYLZ_QUEUE_ROWCOUNT 3
+FYLZ_QUEUE_ROW 2 id=84309a28-... kind=Copy state=NeedsAttention itemCount=1 progressPercent=25
+FYLZ_PREVIEW PNG image (image/png) -- classified via fylz-sniff; NOT_IMPLEMENTED: pixel thumbnail rendering ...
+FYLZ_RENAME NOT_IMPLEMENTED: fylz-rename (M7) is still a one-line stub crate ...
+FYLZ_SEARCH NOT_IMPLEMENTED: fylz-query/fylz-index (M8) are still one-line stub crates ...
+```
+
+Every number is real, not asserted-then-hidden: 6 real folder rows (matching exactly what
+`fylz-seed-demo` wrote, byte-for-byte sizes included — 512+4+4096+32+4+62 = 4710), the real
+case-insensitive collision flagged on the SECOND-seen name only (`report.TXT`, not `Report.txt`,
+matching `PreflightPolicy`'s own documented first-seen rule), 48 real entries from
+`core/fixtures/archives/tree.zip` (an existing M3 fixture, not fabricated for this task) with the
+real ZIP format string libarchive itself reports, and — the most load-bearing single line —
+`state=NeedsAttention` at 25% progress on the operation `fylz-seed-demo` left `Running`:
+`fylz_ops::journal::Journal::open`'s reconcile-after-process-death sweep firing for real, because
+`fylz-qml-demo` really is a different OS process than the one that wrote it, not a simulation of
+one. The process exited 0 on its own (a `Qt.callLater(Qt.quit)` chain in `qml/main.qml`), needing
+none of the 30 s timeout budgeted for it.
+
+Two real bugs surfaced and were fixed in the course of getting this to run, recorded because they
+are genuinely load-bearing cxx-qt 0.7.3 facts the next dispatch should not have to rediscover:
+
+- **cxx-qt does not camelCase Rust snake_case names.** A `#[qproperty(i64, total_bytes)]` becomes
+  a literal `Q_PROPERTY(... total_bytes ...)`, and `fn row_summary(...)` becomes
+  `Q_INVOKABLE ... row_summary(...)` — QML calling `.totalBytes`/`.rowSummary(...)` (idiomatic Qt
+  style) got `undefined`/`TypeError`. Fixed with explicit `cxx_name = "totalBytes"` /
+  `#[cxx_name = "rowSummary"]` on every multi-word property and invokable.
+- **An overridden virtual loses the base class's C++ default argument.** Qt's own
+  `QAbstractItemModel::rowCount(parent = QModelIndex())` has a default; the generated C++
+  override of a `#[cxx_override]` `row_count(self, _parent: &QModelIndex)` does not carry that
+  default forward, so QML script calling `model.rowCount()` with zero arguments (rather than a
+  `ListView` delegate's own internal C++ dispatch, which never goes through this path) failed with
+  "Insufficient arguments". Worked around with a separate, genuinely zero-argument `count()`
+  invokable on each model, kept alongside the real `rowCount()` override rather than instead of
+  it.
+- **A `[[bin]]` in the same package as the bridge does not link unless it references the `[lib]`
+  crate.** `cxx-qt-build`'s Qt/C++ link flags apply to every target in the package, but the
+  compiled Rust-side definitions of each `extern "Rust"` glue function live only in the `[lib]`
+  crate's own object code; a `[[bin]]` whose source never references that crate is never linked
+  against its `.rlib` at all, leaving the C++ side's required symbols undefined. Fixed by giving
+  `src/lib.rs` a real `run_qml_demo()` function `src/bin/qml_demo.rs`'s `main` genuinely calls
+  (not a dummy reference), and having `src/bin/seed_demo.rs` genuinely check
+  `fylz_ffi_qt::QT_UNAVAILABLE_AT_BUILD_TIME` before printing its exported paths.
+
+### 6.5 Gate, run from `core/`
+
+`cargo test --workspace`: 296 passed (287 before this dispatch + 9 new, all in `fylz-ffi-qt`'s
+`logic` module — Qt-free, so they run regardless of Qt's own availability), 0 failed.
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo clippy --all-features --all-targets --workspace -- -D warnings` (the exact command
+`android.yml` runs): both clean. `cargo fmt --check`: clean. `cargo deny check`: `advisories ok,
+bans ok, licenses ok, sources ok` — the new cxx/cxx-qt/cxx-qt-lib/cxx-qt-build dependency tree
+(all MIT OR Apache-2.0, KDAB's own convention) needed no `deny.toml` allow-list change at all;
+the only new warnings are the same shape of pre-existing duplicate-version/license-not-encountered
+informational warnings every prior commit already carries (now also naming `thiserror`/
+`unicode-width`, from this new tree), not failures.
+
+### 6.6 Packaging (M13.5, scoped down): `ut/clickable.yaml`, `ut/manifest.json`, `ut/fylz.apparmor`
+
+Written as source only, per this task's own brief — never invoked, since §3.3's Docker-daemon
+finding still holds (re-checked fresh: `dockerd` still has no running daemon here). Modelled on
+Clickable 8.9+'s own documented project-config schema and a real production app's own files
+(UBports' `lomiri-filemanager-app`, whose `filemanager.apparmor` is the source for
+`"template": "unconfined"` — the exact real-world precedent `MASTER_PLAN.md`'s own research note
+names: "the stock `lomiri-filemanager-app` already has" the unconfined template and its "Full
+System Access" badge), not invented from scratch. `ut/clickable.yaml`'s `root_dir` points at
+`core/crates/fylz-ffi-qt` — the one crate M13.2 built, which (via `cxx-qt-build`'s `qml_module`)
+already **is** the app in the same shape as cxx-qt's own `cargo_without_cmake` example, so there
+is no separate "app" crate to package. **Not yet buildable, stated plainly in the file's own
+comments:** `specific_output_bin: fylz` names M13.3's own future full app binary, which does not
+exist yet (only this crate's dev-only `fylz-qml-demo`/`fylz-seed-demo` proof harnesses do) — this
+project cannot actually run `clickable build` successfully until M13.3 adds it, on top of needing
+a working Docker daemon this sandbox still does not have.
+
+**Scoped down from the full M13.5, on purpose:** this dispatch's own brief narrows M13.5 to
+exactly `clickable.yaml` + `manifest.json` + the AppArmor manifest, and says nothing about the
+plan's further M13.5 item, a second confined "Fylz Lite" variant using `content_exchange` only.
+That variant is real, separate, still-unstarted work (it needs its own `manifest.json`/apparmor
+pair and, more fundamentally, a `content_exchange`-only code path M13.3's full UI has not been
+built yet to provide) — not attempted here, rather than a half-built or guessed-at second
+variant. M13.6 (the OpenStore submission kit) is untouched for the same reason this task's brief
+states directly: it is gated on Madhav submitting (`GATE-UT`) and needs a real built `.click` to
+write meaningfully about, which this sandbox cannot produce.
+
