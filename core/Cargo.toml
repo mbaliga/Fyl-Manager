@@ -11,6 +11,7 @@ members = [
     "crates/fylz-verify",
     "crates/fylz-usb",
     "crates/fylz-clean",
+    "crates/fylz-ops",
     "crates/fylz-ffi-android",
     "crates/fylz-ffi-qt",
 ]
