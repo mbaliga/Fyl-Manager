@@ -334,3 +334,52 @@ On PR #19's branch (read-only, via `git show` and `git archive`): `docs/agent/MA
 Program inputs: `Personal-Tracker/PORTING_PROGRAM.md` (§0–§3, §4.1–§4.6, the §5 row, §6, §7, §8), the reader profile, and the Fylz entries and platform facts in the program
 briefs `Personal-Tracker/porting/platforms/{ios,macos,windows,linux,ubuntu-touch,framework-strategy}.md`. GitHub REST `pulls` listing for PR states. The submodules
 `hyle-design-system` and `shared-libraries` are not checked out locally and were not read.
+
+## Owner rulings and the proposed line (added 2026-10-07)
+
+Status: PLAN. Nothing here is built, run on a device, signed or submitted. The program-level plan is Personal-Tracker `PORTING_PROGRAM.md` ([PR #10](https://github.com/mbaliga/Personal-Tracker/pull/10)), which holds the owner's rulings and section 5A, the proposed port / no-port line. The cells, estimates and open questions above are this repo's original plan and are unedited. Where the owner has since answered a question, the answer is below. Section 5A is a proposal; the owner has not yet confirmed it.
+
+### Where Fyl-Manager sits in the proposed line (program section 5A.3, a proposal)
+
+| Target       | Verdict | Weeks and flags |
+| ------------ | ------- | --------------- |
+| Ubuntu Touch | port    | 12w g           |
+| Linux        | port    | 6w g            |
+| iOS/iPadOS   | no-port | -               |
+| macOS        | no-port | -               |
+| Windows      | no-port | -               |
+
+Key: `follows` means it ports only as far as the products that depend on it; `exists` means the program reads it as already running there, unverified (finish, verify and sign); flags: `g` gated on a prerequisite, `r` re-estimate or floor, `o` its own program, `s` scope note. The program's P4, P8, P12 and P13 gate whole columns or repos and are not flagged per cell. A port verdict counts the deliverable in the line; where this repo's plan calls a deliverable a reframe (program rule R12) it keeps that label. Tests cited in the reason: (a) the owner said it is needed there; (b) its job is really done on that OS by real users; (c) that OS is where it is sold or its audience is; it has no reason to exist if (x) its surface is absent or untouchable, (y) the capability is forbidden or impossible, or (z) the only form is a thin wrapper or a different product nobody asked for. P-numbers and OQ-numbers refer to the program plan (Personal-Tracker `PORTING_PROGRAM.md`, sections 5A.5 and 8).
+
+Reason: Exists to fix Android storage; UT is its native port (M13) and Linux a cheap increment of it, both hard-gated on which trunk wins (OQ-9, program P14). Finder and Explorer are first-class file managers, so macOS, Windows and iOS have no job for it.
+
+### Owner rulings that apply here
+
+- **OQ-17 toolchain (2026-10-06):** "B: staged pin (Recommended)": Kotlin 2.1.20 and Compose Multiplatform 1.8.2 for the first wave, 2.4.x deferred. Fylz uses no KMP or CMP and is already on Kotlin 2.1.20; the ruling matters only so that its frozen composite (Kotlin 2.1.20, AGP 8.9.1) does not break.
+- **Ubuntu Touch scope (2026-10-06):** "Native only, no substitutes" for Android-only products: a web or demo click is not a port. **OQ-21:** "No, native ports only" (Waydroid is not accepted). **Ubuntu Touch keys:** "App-private file allowed" (an app-private file with the weaker guarantee shown in the UI).
+- **Ubuntu Touch device:** the owner owns one and says it is a OnePlus 6; research reads it as 20.04-only while the program plan targets 24.04. On 2026-10-07 the owner chose "OnePlus 6 pre-spike now, decide later" (OQ-37): a labelled "S-UT1 (focal)" headless-JVM pre-spike, no 24.04 flashing, a 24.04 device decision afterwards. Every Ubuntu Touch device gate stays NDV until then. The pre-spike tests a headless JVM and does not exercise this repo's shape (a Rust core with QML).
+- **OQ-22 key custody (2026-10-06):** "OS keystore, weaker fallback shown (Recommended)": Keychain, Credential Manager (DPAPI), Secret Service, a passphrase-protected file or an app-private file on Ubuntu Touch, each with the weaker guarantee stated in the UI. Whether this ruling counts as the repo-local owner approval this plan asks for is for this repo to record; nothing in this section ratifies a repo decision.
+- **OQ-5 hardware (2026-10-06):** the owner's answer changes which of their other machines can serve as device gates, so a gate this plan names on specific hardware may be moved or dropped. Which machine carries which device gate is not decided (OQ-33).
+- **Directives (2026-10-06):** "Draft amendments for approval": program directives I-1 to I-12 and rules R1 to R12 are unchanged; PROPOSED-1 to PROPOSED-4 in Personal-Tracker `DECISIONS.md` are drafts awaiting the owner.
+
+### Prerequisites and open questions that touch this repo (program sections 5A.5 and 8)
+
+Prerequisites (program-level; not costed here):
+
+- program P4: A device that can run the 24.04 Ubuntu Touch the program plan targets (the owner's OnePlus 6 is read as 20.04-only)
+- program P14: Which Fylz trunk wins (OQ-9)
+
+Owner questions in the program register that concern this repo (status as of 2026-10-07):
+
+- OQ-5 (ruled): Hardware stance
+- OQ-6 (open): Reframes to accept or reject: 'Fylz for Files' on iOS
+- OQ-8 (open): Native Ubuntu Touch strategies (Fylz Rust plus Qt is one of three)
+- OQ-9 (open): Fylz trunk and its macOS and Windows shells
+- OQ-17 (ruled): Toolchain pins: the pin is ruled; the "Also" approvals (converting shared modules to kotlin("multiplatform"), asom's no-KMP rule staying asom-local) are unanswered
+- OQ-21 (ruled): Waydroid as the Ubuntu Touch answer
+- OQ-22 (ruled): Secret custody per platform
+- OQ-29 (open): Hyle-consumer status
+- OQ-33 (open): Hardware details still open
+- OQ-37 (answered in part): A second Ubuntu Touch device
+
+When the owner confirms or changes the line, this repo's original cells above stay as the engineering detail; only the verdicts and re-costs in program section 5A change.
