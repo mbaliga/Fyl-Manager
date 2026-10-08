@@ -1,6 +1,6 @@
 # Fylz
 
-Fylz is an open-source, local-first Android file workspace for phones, tablets, foldables and desktop-style Android environments.
+Fylz is a source-available, local-first Android file workspace for phones, tablets, foldables and desktop-style Android environments.
 
 > Status: **1.0.0-alpha01 / pre-release**. Code-level v1 scope is implemented and automated debug/release validation is required on every pull request. Stable release remains blocked on recorded real-device/provider, accessibility and signed-upgrade acceptance.
 
@@ -118,6 +118,6 @@ GitHub Actions uploads the debug APK after the Android CI workflow and an unsign
 - [Contributing](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 
-## License
+## Licence
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Source-available, free for noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). If you make money with it, you need a commercial licence: see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
