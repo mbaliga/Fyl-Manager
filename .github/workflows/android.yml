@@ -33,7 +33,13 @@ jobs:
           java-version: '17'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          # The action's default packages input requests the legacy 'tools'
+          # package, which Google's SDK repository no longer serves (sdkmanager
+          # exits 1 at SDK setup before Gradle ever runs). Only platform-tools
+          # here; the next step installs the platform and build-tools.
+          packages: platform-tools
 
       - name: Install Android platform
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
