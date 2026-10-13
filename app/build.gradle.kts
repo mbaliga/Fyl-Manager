@@ -1,3 +1,7 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -5,6 +9,14 @@ plugins {
     // M3.2b: the decoder-process AIDL interface returns @Parcelize data classes (decoder/).
     id("org.jetbrains.kotlin.plugin.parcelize")
 }
+
+// Folder-card redesign: screenshot-tests the new grid card composables to real PNGs
+// (`recordPaparazziDebug` writes them to src/test/snapshots/, Paparazzi's own convention) -- see
+// FolderCardPaparazziTest.kt and docs/agent/PROGRESS.md. Applied the classic way (not `id(...)` in
+// the `plugins{}` block above), matching the classic `classpath(...)` declaration this version
+// needs in the root build.gradle.kts's own `buildscript{}` block -- see that block's own comment
+// for why 1.3.3, not a newer release.
+apply(plugin = "app.cash.paparazzi")
 
 android {
     namespace = "io.github.mbaliga.fylz"
@@ -78,6 +90,17 @@ configurations.configureEach {
         "org.jetbrains.kotlin:kotlin-stdlib:2.1.20",
         "org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.1.20",
         "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.1.20",
+        // Paparazzi 1.3.3 (folder-card redesign) pulls layoutlib-native 2023.1.1 by default, whose
+        // bundled `android.os._Original_Build` shadow class predates `Build.VERSION_CODES_FULL`
+        // (added to this project's compileSdk 36 android.jar). `Renderer.configureBuildProperties`
+        // reflectively copies every nested class of the real `Build` onto the shadow by simple
+        // name and throws `NoSuchElementException` the moment it reaches that missing one --
+        // confirmed by decomposing both jars' `android/os/Build$*.class` entries (full account in
+        // docs/agent/PROGRESS.md). Forcing the newest published layoutlib-native snapshot
+        // (2023.2.1, Mar 2024) picks up a newer AOSP tree snapshot that already has it, with no
+        // other change to the plugin/API surface Renderer/Bridge depend on.
+        "app.cash.paparazzi:layoutlib-native-jdk11:2023.2.1-6c7316c",
+        "app.cash.paparazzi:layoutlib-native-linux:2023.2.1-6c7316c",
     )
 }
 
@@ -257,4 +280,65 @@ buildCoreDebug.configure { finalizedBy(check16KbPageAlignment) }
 buildCoreRelease.configure { finalizedBy(check16KbPageAlignment) }
 
 tasks.matching { it.name == "preDebugBuild" }.configureEach { dependsOn(buildCoreDebug) }
+
+// Works around a real bug in app.cash.paparazzi:paparazzi-gradle-plugin:1.3.3 (folder-card
+// redesign; see this file's own `apply(plugin = "app.cash.paparazzi")` comment for why this
+// version), reproduced and root-caused in this sandbox by decompiling the plugin's own
+// `EnvironmentKt.class` (full account in docs/agent/PROGRESS.md): `Environment.detectEnvironment()`
+// resolves the SDK's `platforms/android-36/` directory against `androidHome()`, which reads
+// `ANDROID_SDK_ROOT`/`ANDROID_HOME` -- and only when BOTH are unset does it fall back to a
+// hardcoded, Gradle/`local.properties`-ignorant guess (`"$HOME/Android/Sdk"` on Linux). This
+// sandbox's SDK lives at a different path (see local.properties' sdk.dir), and neither env var is
+// set for a forked `Test` task's JVM by default, so every Paparazzi test failed with
+// `FileNotFoundException: Missing platform version 36` even though the SDK genuinely has that
+// platform installed. Setting the env var Paparazzi itself reads, to the SDK path Gradle/AGP
+// already resolved, fixes the lookup at its actual source; harmless for every other test.
+tasks.withType<Test>().configureEach {
+    environment("ANDROID_HOME", android.sdkDirectory.absolutePath)
+    environment("ANDROID_SDK_ROOT", android.sdkDirectory.absolutePath)
+}
+
+// Second, independent Paparazzi 1.3.3 bug (folder-card redesign; full account in
+// docs/agent/PROGRESS.md): `Renderer.configureBuildProperties` reflectively copies every nested
+// class of the real, loaded `android.os.Build` (this project's compileSdk 36 `android.jar`, on
+// every unit test's own classpath) onto `android.os._Original_Build`, a shadow class bundled in
+// `app.cash.paparazzi:layoutlib-native-jdk11`, matching by simple name -- and throws
+// `NoSuchElementException` the moment it reaches `Build.VERSION_CODES_FULL`, a nested class the
+// shadow doesn't have. Confirmed by decompiling both jars' `android/os/Build$*.class` entries:
+// every published layoutlib-native-jdk11 release (up to and including the newest, 2023.2.1,
+// forced above) predates that class, and no `Environment`/`compileSdkVersion` setting changes
+// which `android.jar` supplies the *real* `Build` here -- that is purely this Test task's own
+// classpath, which AGP always populates from the project's actual `compileSdk`. Grepped first:
+// nothing in this codebase references `Build.VERSION_CODES_FULL`. So, for unit tests only (never
+// for `compileDebugKotlin`/`lintDebug`/`assembleDebug`, which keep the real, unmodified
+// android-36 `android.jar`), this strips just that one nested class from a copy of the jar on the
+// Test task's own classpath -- restoring the exact three-nested-class `Build` shape every
+// Paparazzi release has always shadowed correctly (confirmed: this sandbox's other installed
+// platform, android-34, has the same three-nested-class shape with no fourth class at all).
+tasks.withType<Test>().configureEach {
+    doFirst {
+        val originalAndroidJar = android.bootClasspath.firstOrNull { it.name == "android.jar" }
+        if (originalAndroidJar != null && originalAndroidJar.exists()) {
+            val patchedJar = layout.buildDirectory.file(
+                "paparazzi/android-jar-without-version-codes-full.jar",
+            ).get().asFile
+            patchedJar.parentFile.mkdirs()
+            ZipFile(originalAndroidJar).use { source ->
+                ZipOutputStream(patchedJar.outputStream()).use { out ->
+                    val entries = source.entries()
+                    while (entries.hasMoreElements()) {
+                        val entry = entries.nextElement()
+                        if (entry.name == "android/os/Build\$VERSION_CODES_FULL.class") continue
+                        out.putNextEntry(ZipEntry(entry.name))
+                        if (!entry.isDirectory) {
+                            source.getInputStream(entry).use { it.copyTo(out) }
+                        }
+                        out.closeEntry()
+                    }
+                }
+            }
+            classpath = classpath.filter { it.absolutePath != originalAndroidJar.absolutePath } + files(patchedJar)
+        }
+    }
+}
 tasks.matching { it.name == "preReleaseBuild" }.configureEach { dependsOn(buildCoreRelease) }

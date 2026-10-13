@@ -11,11 +11,39 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import io.github.mbaliga.fylz.R
 import io.github.mbaliga.fylz.model.ThemeMode
+
+/**
+ * Space Grotesk (SIL Open Font License 1.1; the licence text ships in the APK at
+ * `app/src/main/assets/fonts/SpaceGrotesk-OFL.txt`, and is summarised in `THIRD_PARTY_NOTICES.md`
+ * under "Fonts") -- bundled as `res/font/space_grotesk.ttf`, Google Fonts' own single variable-font
+ * file (weight axis, Light-Bold), rather than four separate static files. Each [Font] entry below
+ * points at that one file with a different [FontVariation.Settings] weight-axis value, which is
+ * the standard way to expose a variable font's weight range as an ordinary [FontFamily] that
+ * `FontWeight.Medium`/`.SemiBold`/etc. resolve against normally.
+ *
+ * Judgment call (`docs/agent/PROGRESS.md`): this is used ONLY by the folder card's name/subtitle
+ * text (`ui/components/FolderCard.kt`), the one place the task's Figma exports actually specify
+ * it. [FylzTypography] below deliberately keeps `FontFamily.SansSerif` for everything else --
+ * swapping the app's whole typeface was not in the brief (only the folder-card SVGs name a
+ * typeface at all) and would be a far larger, riskier visual change than the folder-card redesign
+ * this font was added for.
+ */
+@OptIn(ExperimentalTextApi::class)
+val SpaceGrotesk: FontFamily = FontFamily(
+    Font(R.font.space_grotesk, weight = FontWeight.Normal, variationSettings = FontVariation.Settings(FontVariation.weight(400))),
+    Font(R.font.space_grotesk, weight = FontWeight.Medium, variationSettings = FontVariation.Settings(FontVariation.weight(500))),
+    Font(R.font.space_grotesk, weight = FontWeight.SemiBold, variationSettings = FontVariation.Settings(FontVariation.weight(600))),
+    Font(R.font.space_grotesk, weight = FontWeight.Bold, variationSettings = FontVariation.Settings(FontVariation.weight(700))),
+)
 
 /** Builds the Material3 [ColorScheme] for one light/dark half of a [ThemePalette] -- every field
  * this JSON theme schema defines maps straight onto a `ColorScheme` field of the same name. */

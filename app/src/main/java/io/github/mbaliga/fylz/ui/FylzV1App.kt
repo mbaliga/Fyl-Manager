@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -137,12 +136,16 @@ import io.github.mbaliga.fylz.ui.components.ConflictSheet
 import io.github.mbaliga.fylz.ui.components.DestinationChooserSheet
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
 import io.github.mbaliga.fylz.ui.components.ExternalDocumentDialog
+import io.github.mbaliga.fylz.ui.components.FileCard
 import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
+import io.github.mbaliga.fylz.ui.components.FolderPreview
+import io.github.mbaliga.fylz.ui.components.FolderTabStrip
 import io.github.mbaliga.fylz.ui.components.PasswordField
 import io.github.mbaliga.fylz.ui.components.PasswordPromptDialog
 import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
 import io.github.mbaliga.fylz.ui.components.PreflightSheet
 import io.github.mbaliga.fylz.ui.components.PreviewPane
+import io.github.mbaliga.fylz.ui.components.ViewModeSwitcherBar
 import io.github.mbaliga.fylz.ui.components.totalKnownBytes
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
@@ -1268,8 +1271,15 @@ private fun FylzV1Workspace(
                 )
             },
             bottomBar = {
-                if (selectedEntries.isNotEmpty()) {
-                    SelectionActionBar(actionResolver, actionDispatcher, browserState, actionContext)
+                // Restyled pill tab strip (docs/agent/PROGRESS.md): same tabs/activeTabId state as
+                // ever, shown only when there is more than one tab to switch between.
+                Column {
+                    if (selectedEntries.isNotEmpty()) {
+                        SelectionActionBar(actionResolver, actionDispatcher, browserState, actionContext)
+                    }
+                    if (tabs.size > 1) {
+                        FolderTabStrip(tabs = tabs, activeTabId = activeTabId, onSelect = { activeTabId = it })
+                    }
                 }
             },
         ) { padding ->
@@ -1304,7 +1314,8 @@ private fun FylzV1Workspace(
                         selectedUris = selectedUris,
                         focusedEntry = focusedEntry,
                         query = query,
-                        viewMode = viewMode, densityMode = densityMode,
+                        viewMode = viewMode, densityMode = densityMode, onViewModeChange = { viewMode = it },
+                        repository = repository, refreshKey = refreshKey,
                         loading = loading,
                         operationMessage = operationMessage,
                         runningOperations = runningOperations,
@@ -1740,7 +1751,8 @@ private fun FileBrowser(
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
     query: String,
-    viewMode: ViewMode, densityMode: DensityMode,
+    viewMode: ViewMode, densityMode: DensityMode, onViewModeChange: (ViewMode) -> Unit,
+    repository: DocumentRepository, refreshKey: Int,
     loading: Boolean,
     operationMessage: String?,
     runningOperations: List<RunningOperation>,
@@ -1769,7 +1781,14 @@ private fun FileBrowser(
     }
 
     val pinchBridge = remember { io.github.mbaliga.fylz.ui.actions.PinchGestureBridge() }.also { it.onGesture = { g -> dispatcher.gesture(g, null, state, ctx) } }
+    // Folder-card redesign's live-preview cache (docs/agent/PROGRESS.md): keyed by folder Uri,
+    // invalidated the same way the rest of this screen's own listing already is -- a fresh
+    // `remember` (so an empty map) exactly when the active folder or refreshKey changes.
+    val previewCache = remember(activeTab.treeUri, activeTab.current.uri, refreshKey) { mutableMapOf<Uri, FolderPreview>() }
     Column(io.github.mbaliga.fylz.ui.actions.pinchDetailGesture(modifier, pinchBridge)) {
+        if (selectedUris.isNotEmpty()) {
+            ViewModeSwitcherBar(viewMode, onViewModeChange, modifier = Modifier.fillMaxWidth())
+        }
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             NavigateUpButton(resolver, dispatcher, state, ctx)
             OutlinedTextField(
@@ -1869,7 +1888,7 @@ private fun FileBrowser(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, dispatcher, state, ctx)
+                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, dispatcher, state, ctx, repository, activeTab.treeUri, previewCache)
                 }
             }
         } else {
@@ -2036,38 +2055,6 @@ private fun FileRowV1(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FileCard(
-    entry: FileEntry,
-    selected: Boolean,
-    focused: Boolean,
-    dispatcher: ActionDispatcher,
-    state: BrowserState,
-    ctx: ActionContext,
-) {
-    val target = ActionTarget.Entry(entry)
-    Surface(
-        color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.height(140.dp).combinedClickable(
-            onClick = { dispatcher.gesture(GestureId.ITEM_TAP, target, state, ctx) },
-            onDoubleClick = { dispatcher.gesture(GestureId.ITEM_DOUBLE_TAP, target, state, ctx) },
-            onLongClick = { dispatcher.gesture(GestureId.ITEM_LONG_PRESS, target, state, ctx) },
-        ).semantics { contentDescription = entry.name },
-    ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.Top) {
-                // Grid cells get a larger thumbnail: it is the whole point of grid view.
-                EntryThumbnail(entry, size = 56.dp)
-                Spacer(Modifier.weight(1f))
-                Checkbox(selected, onCheckedChange = { dispatcher.run(SELECT_TOGGLE_ID, state, target, ctx) })
-            }
-            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

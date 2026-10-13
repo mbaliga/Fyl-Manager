@@ -26,7 +26,12 @@ class FylzV1AppSizeTest {
     // `PasswordField` helper moved to `ui.components.PasswordField`, both paying for the small
     // amount of new wiring this file itself still needs (the remembered-password lookup, and the
     // one-shot auto-launch past the dialog when a password is already known).
-    private val fylzV1AppMaxLines = 2260
+    // Lowered again to 2247 in the folder-card redesign: the old private `FileCard` (31 lines)
+    // moved out to `ui/components/FolderCard.kt` as a public composable (the folder-glass visuals,
+    // the live-preview fetch/cache, the selection glow) -- more than paying for this task's own new
+    // wiring in this file (FileBrowser's three new params, the bottom-bar pill tab strip, the
+    // selection-mode view-switcher row). See docs/agent/PROGRESS.md for the full account.
+    private val fylzV1AppMaxLines = 2247
 
     // FylzAppShell.kt must not grow past its MC.0e size (112); lowered to 101 in M3.4b, when the
     // retry dispatch moved to operations/RetryDispatcher.kt.

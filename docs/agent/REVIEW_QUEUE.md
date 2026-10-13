@@ -1796,3 +1796,92 @@ corrupt the store or crash the app). The colour choices in call-out 2 above and 
 radio call in call-out 4 are taste/UX judgement calls, not correctness ones, and cost nothing to
 revisit later -- nothing else in the app depends on the exact bundled colour values or on the
 picker's own dialog shape.
+
+---
+
+## Folder-card redesign (owner request, not a MASTER_PLAN item)
+
+**Not a gate:** not a MASTER_PLAN milestone -- the owner supplied a Figma export (two reference
+SVGs, light and dark folder cards, plus two PNG screenshots of normal browse and selection mode)
+and asked for the folder-browse grid's visual design matched to it, with live content inside each
+card. Logged here per that brief's own instruction, for a second look, not because a gate needs
+clearing.
+
+**What shipped:** `ui/components/FolderCardVisuals.kt`/`FolderCard.kt` render a translucent glass
+folder icon (parsed from the SVGs' own path data via `PathParser`, never hand-transcribed) over a
+rounded background plate, showing the folder's own last 3-4 most-recently-modified files as real,
+lazy, cached thumbnails through the glass; `FolderTabStrip.kt` and `ViewModeSwitcherBar.kt` restyle
+two existing, previously-unstyled mechanisms (the `FolderTab` pill strip and the `ViewMode`
+switcher) to match the mockup; `SelectionActionBarRenderer.kt` is restyled in place, action-registry
+untouched.
+
+1. **Subdirectories are skipped when picking a folder's preview files**, rather than recursing into
+   them to find *their* most-recently-modified file. The brief's own wording ("the last 3-4 most
+   recently modified files inside each folder") maps naturally onto files, which have a single
+   `lastModifiedMillis` the way a folder's own aggregate content does not (a folder's "modified
+   time" on most filesystems reflects its own directory-entry changes, not its deepest descendant's
+   content) -- extending this to a true recursive most-recent-file search was judged out of scope
+   for a lightweight grid-card preview, and would also change this screen's existing listing cost
+   characteristics (today a single `listChildren` call per folder; recursive previews would need
+   one per subfolder, compounding on a folder full of folders).
+2. **No pre-existing tab-strip renderer was found for `FolderTab`/`BrowserViewModel.tabs`, despite
+   a deliberate search before building one.** The task brief's own wording implied one already
+   existed and only needed restyling; grepping every reference to `tabs`/`activeTabId`/`FolderTab`
+   across `FylzV1App.kt`, `FylzAppShell.kt` and `BrowserViewModel.kt` turned up real, working tab
+   *state* (open/close/switch, selection highlighting elsewhere) but no composable that actually
+   drew a strip of them on screen. `FolderTabStrip.kt` is therefore new, not a restyle of
+   something hidden -- built directly against the existing state/callbacks, with the exact same
+   `tabs.size > 1` show/hide rule `FylzAppShell.kt`'s own comment already uses to justify hiding
+   every other piece of conditional chrome in this app (so a single tab never "charges rent").
+3. **The selection-mode glow replaces the old `secondaryContainer`-tint selection visual with a
+   `shadow` + `border` pair using the theme's own existing accent-adjacent token** (not a new,
+   invented colour, and not `secondaryContainer` either, which stayed a plain surface tint
+   elsewhere) -- picked to read as a blue/violet glow against both the light and dark palette
+   without introducing a token this app's theming system (see the JSON-theming entry just above)
+   doesn't already expose.
+4. **The view-mode icon row is additive, not a replacement for the existing `toggleViewMode()`
+   action/mechanism.** It is shown only while in selection mode (matching the mockup's own
+   screenshot, which only shows that row with items selected), and calling it still goes through
+   the same `ViewMode` state and the same action the rest of the app already uses to change it --
+   there is exactly one way to change `ViewMode` before and after this change, just a second place
+   it's now also exposed.
+5. **Space Grotesk is scoped to the folder card's own name/subtitle text only; the rest of the
+   app's typography (`FylzTypography`) is untouched, still `FontFamily.SansSerif`.** Neither
+   reference SVG specifies a typeface for anything outside the folder card itself, and swapping
+   the whole app's font was never asked for -- `ui/theme/FylzTheme.kt`'s own `SpaceGrotesk` val is
+   documented as deliberately narrow in scope.
+6. **Paparazzi was added, and getting it to run at all required finding and fixing two real,
+   independent bugs in `app.cash.paparazzi:paparazzi-gradle-plugin:1.3.3`** (an AGP-version
+   attribute block on every newer release, forcing the choice of 1.3.3 in the first place; an SDK
+   path-resolution bug ignoring `local.properties`; and a reflective-field-copy crash on a Build
+   nested class, `VERSION_CODES_FULL`, that this project's compileSdk 36 has and the plugin's
+   bundled 2023-era shadow framework class does not) -- all three root-caused by decompiling the
+   plugin's own bytecode (`javap -c -p`), not guessed at, and the first two are genuinely fixed.
+   **A third, still-unresolved failure is a native-library `UnsatisfiedLinkError` past both fixes**
+   (`com.android.layoutlib.bridge.Bridge.init()` loading its own bundled `libandroid_runtime.so`),
+   confirmed to reproduce in a bare `System.load(...)` call with no Gradle or Paparazzi code
+   involved at all -- most likely tied to this sandbox having only OpenJDK 21 installed against an
+   artifact literally named `layoutlib-native-jdk11` (no JDK 11/17 available here to confirm one
+   way or the other; a pre-existing sandbox constraint, not one this task introduced). The test
+   class and all three of its test methods are `@Ignore`d, with the full account in each one's own
+   KDoc, rather than claimed passing or silently deleted -- the full account, including the exact
+   decompiled bytecode findings, is in `docs/agent/PROGRESS.md`'s matching row. **No real PNG
+   snapshot exists as a result** -- this is the one part of the brief not delivered as asked;
+   structural verification (programmatic SVG path parsing rather than hand-transcription, 7 pure
+   unit tests on the preview-selection logic, and every new composable compiling and type-checking
+   against the real `DocumentRepository`/`EntryThumbnail`/action-registry APIs) stands in its place.
+
+**Relevant commit:** the commit adding this feature (see `docs/agent/PROGRESS.md`'s matching row
+for the exact SHA).
+
+**Risk if it turns out wrong:** low for the functional core (the live-preview fetch reuses the
+existing repository/thumbnail APIs exactly as asked, is cached and invalidated the same way the
+rest of the screen already is, and has its own pure-logic unit tests covering the edge cases named
+in the brief). Call-outs 3-5 are taste/visual-fidelity judgement calls against a Figma export this
+agent cannot pixel-diff against a rendered screenshot in this sandbox, so they carry the most risk
+of the set -- cheap to revisit, since none of them touch any other feature's behaviour. Call-out 6
+carries no functional risk (Paparazzi is a test-only dependency; the `@Ignore`s do not affect the
+app itself, and the two real fixes left in `app/build.gradle.kts` are harmless if never exercised),
+but does mean this task's own visual fidelity to the mockup was never confirmed by an actual
+rendered image, only by code review against the SVGs' own geometry -- worth a real device or an
+environment with a working JDK 11/17 revisiting this before treating the visual match as settled.

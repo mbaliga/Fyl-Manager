@@ -118,12 +118,29 @@ Notable dependencies as of M2.2:
   M3.1; `cc` is now also a direct build-dependency of `fylz-archive`, for bzip2) are covered by
   `cargo deny` and never linked into the APK.
 
+## Fonts
+
+- Space Grotesk — SIL Open Font License, Version 1.1. Copyright 2020 The Space Grotesk Project
+  Authors (https://github.com/floriankarsten/space-grotesk). Bundled as the single variable-font
+  file Google Fonts distributes (`app/src/main/res/font/space_grotesk.ttf`, weight axis
+  300-700), fetched from the `google/fonts` repository's `ofl/spacegrotesk/` directory. Its own
+  licence text is shipped unmodified in the APK at
+  `app/src/main/assets/fonts/SpaceGrotesk-OFL.txt`, satisfying the OFL's "this licence must
+  accompany the font" requirement. Used by the folder card redesign
+  (`io.github.mbaliga.fylz.ui.theme.SpaceGrotesk`, `ui/components/FolderCard.kt`) for the folder
+  name/subtitle text only; see `docs/agent/PROGRESS.md` for why the rest of the app's typography
+  stays `FontFamily.SansSerif`.
+
 ## Test-only dependency
 
 - JUnit 4.13.2 — Eclipse Public License 1.0
 - `androidx.work:work-testing` 2.11.2 (M3.4b) — Apache License 2.0; a `testImplementation`
   dependency only (`TestListenableWorkerBuilder`, `WorkManagerTestInitHelper` for the transfer
   worker's extraction tests), never shipped in the APK.
+- Paparazzi (`app.cash.paparazzi`) 1.3.3 — Apache License 2.0, Copyright 2019 Square,
+  Inc. A Gradle-plugin-applied test dependency only (renders Compose screens to PNG on pure JVM
+  for `FolderCardPaparazziTest.kt`); never a runtime/APK dependency, and it bundles its own
+  LayoutLib rendering engine rather than pulling one into the app.
 
 ## Release review procedure
 
