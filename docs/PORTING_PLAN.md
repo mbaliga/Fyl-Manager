@@ -383,3 +383,30 @@ Owner questions in the program register that concern this repo (status as of 202
 - OQ-37 (answered in part): A second Ubuntu Touch device
 
 When the owner confirms or changes the line, this repo's original cells above stay as the engineering detail; only the verdicts and re-costs in program section 5A change.
+
+## Update 2026-10-14: the market lens, iPadOS and the owner's latest answers
+
+Status: PLAN. Nothing here is built, run on a device, signed or submitted. This update follows the section "Owner rulings and the proposed line (added 2026-10-07)" above and the program plan's section 5A.12 (Personal-Tracker `PORTING_PROGRAM.md`, [PR #10](https://github.com/mbaliga/Personal-Tracker/pull/10)), which governs where the two differ. It records the owner's market lens and answers of 2026-10-13 and 2026-10-14; the proposed line is still a proposal. Two tests were added to the program's section 5A.1: (d) a real gap, or we are better or cheaper ("better" only where it has been measured; free alone is no gap when free tools exist); (w) mature free alternatives abound and the app adds nothing.
+
+### Where Fyl-Manager sits now (program section 5A.12, a proposal)
+
+| Target       | Verdict, weeks and flags |
+| ------------ | ------------------------ |
+| Ubuntu Touch | port 12w g               |
+| Linux        | follows 6w g             |
+| iPhone       | no-port                  |
+| iPad         | no-port                  |
+| macOS        | no-port                  |
+| Windows      | no-port                  |
+
+### What changed for this repo
+
+- Linux is now **follows** (the earlier section had port 6w): the Qt 6 lane is the Ubuntu Touch shell's test lane, so no Linux-only packaging or positioning; Dolphin, GNOME Files, Nemo and Thunar are free and mature.
+- iPad is **no-port**, and the owner accepted that after re-opening it: the app exists to fix Android's storage access, which the iPad sandbox rules out (no whole-filesystem browsing), and Apple's Files app is mature.
+
+### Owner answers that apply here
+
+- **Ubuntu Touch device (OQ-37, 2026-10-14):** "Wait for the OnePlus 6 on a newer image". No second device is bought; the research reads the OnePlus 6 as 20.04-only (the installed image is not stated, OQ-33), so it only takes the S-UT1 (focal) pre-spike, and every Ubuntu Touch device gate stays NDV until it runs 24.04.
+- **Skin contract (OQ-39, 2026-10-14):** proposed conformance level for this app: Level 1, cost class B (surface and background colours are literals in the theme functions; Material You dynamic colour interacts). The owner chose Tier 1 (palette) everywhere first and every app declaring its own level; the assistant chose JSON, not XML, after the owner asked for a check; the draft spec is Personal-Tracker `porting/skin-contract/SPEC-DRAFT.md`. This is a proposal, not decided for this app.
+
+When the owner confirms or changes the line, this repo's original cells above stay as the engineering detail; only the verdicts and re-costs in program section 5A.12 change.
