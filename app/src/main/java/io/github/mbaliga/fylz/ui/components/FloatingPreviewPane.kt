@@ -46,6 +46,7 @@ fun FloatingPreviewPane(
     onDock: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    showDock: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     BoxWithConstraints(modifier.fillMaxSize()) {
@@ -122,8 +123,10 @@ fun FloatingPreviewPane(
                                 .weight(1f)
                                 .padding(start = 8.dp),
                         )
-                        IconButton(onClick = onDock) {
-                            Icon(Icons.Outlined.PushPin, contentDescription = "Dock preview")
+                        if (showDock) {
+                            IconButton(onClick = onDock) {
+                                Icon(Icons.Outlined.PushPin, contentDescription = "Dock preview")
+                            }
                         }
                         IconButton(onClick = onClose) {
                             Icon(Icons.Outlined.Close, contentDescription = "Close preview")

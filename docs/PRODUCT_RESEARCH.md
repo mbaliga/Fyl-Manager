@@ -131,6 +131,7 @@ Camera scanning and AI organization should follow only after file operations are
 - **Fylz** is short, memorable, and distinctive, but its pronunciation and searchability need testing.
 - **Fyl Manager** explains the category but is less distinctive and can look like a typo.
 - Recommended working product name: **Fylz**.
+- Owner decision (13 Oct 2026): the product is **Fylz**. The "Fyl Manager" candidate above is retained as research history only.
 - Descriptive subtitle: **Local file workspace for Android**.
 
 Before publishing to stores, run trademark, package-name, domain, and app-store availability checks; this document is not a legal clearance.

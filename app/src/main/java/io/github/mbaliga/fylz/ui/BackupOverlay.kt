@@ -36,6 +36,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +57,9 @@ import io.github.mbaliga.fylz.backup.BackupScheduler
 import io.github.mbaliga.fylz.backup.BackupService
 import io.github.mbaliga.fylz.backup.BackupSnapshotRecord
 import io.github.mbaliga.fylz.backup.BackupStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
@@ -69,18 +72,25 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
     val scheduler = remember { BackupScheduler(context.applicationContext) }
     var open by remember { mutableStateOf(false) }
     var editor by remember { mutableStateOf<BackupPlanDraft?>(null) }
-    var plans by remember { mutableStateOf(store.plans()) }
-    var snapshots by remember { mutableStateOf(store.snapshots()) }
-    var runs by remember { mutableStateOf(store.runs()) }
+    // P1.11: placeholder defaults, not a blocking store read at composition time -- refresh()
+    // below loads the real values off the main thread as soon as this composable enters.
+    var plans by remember { mutableStateOf(emptyList<BackupPlan>()) }
+    var snapshots by remember { mutableStateOf(emptyList<BackupSnapshotRecord>()) }
+    var runs by remember { mutableStateOf(emptyList<BackupRunRecord>()) }
     var restoreSnapshot by remember { mutableStateOf<BackupSnapshotRecord?>(null) }
     var deleteSnapshot by remember { mutableStateOf<BackupSnapshotRecord?>(null) }
     var working by remember { mutableStateOf(false) }
 
-    fun refresh() {
-        plans = store.plans()
-        snapshots = store.snapshots()
-        runs = store.runs()
+    suspend fun refresh() {
+        val (loadedPlans, loadedSnapshots, loadedRuns) = withContext(Dispatchers.IO) {
+            Triple(store.plans(), store.snapshots(), store.runs())
+        }
+        plans = loadedPlans
+        snapshots = loadedSnapshots
+        runs = loadedRuns
     }
+
+    LaunchedEffect(Unit) { refresh() }
 
     fun persist(uri: Uri) {
         val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
@@ -123,8 +133,10 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
 
     FloatingActionButton(
         onClick = {
-            refresh()
-            open = true
+            scope.launch {
+                refresh()
+                open = true
+            }
         },
         modifier = modifier,
     ) {
@@ -155,9 +167,13 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
             },
             onDeleteSnapshot = { deleteSnapshot = it },
             onDeletePlan = { plan ->
-                scheduler.cancel(plan.id)
-                store.removePlan(plan.id)
-                refresh()
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        scheduler.cancel(plan.id)
+                        store.removePlan(plan.id)
+                    }
+                    refresh()
+                }
             },
         )
     }
@@ -171,10 +187,14 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
             onDismiss = { editor = null },
             onSave = {
                 val plan = it.toPlan()
-                store.putPlan(plan)
-                scheduler.schedule(plan)
-                editor = null
-                refresh()
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        store.putPlan(plan)
+                        scheduler.schedule(plan)
+                    }
+                    editor = null
+                    refresh()
+                }
             },
         )
     }
@@ -186,10 +206,12 @@ fun BackupOverlay(modifier: Modifier = Modifier) {
             text = { Text("This permanently deletes ${snapshot.displayName} from the selected backup destination.") },
             confirmButton = {
                 Button(onClick = {
-                    val deleted = service.deleteSnapshot(snapshot.id)
-                    Toast.makeText(context, if (deleted) "Backup deleted" else "Unable to delete backup", Toast.LENGTH_LONG).show()
-                    deleteSnapshot = null
-                    refresh()
+                    scope.launch {
+                        val deleted = withContext(Dispatchers.IO) { service.deleteSnapshot(snapshot.id) }
+                        Toast.makeText(context, if (deleted) "Backup deleted" else "Unable to delete backup", Toast.LENGTH_LONG).show()
+                        deleteSnapshot = null
+                        refresh()
+                    }
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleteSnapshot = null }) { Text("Cancel") } },

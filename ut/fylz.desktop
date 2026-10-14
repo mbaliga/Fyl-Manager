@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Fylz
+Comment=A file manager for Ubuntu Touch and desktop Linux
+Exec=fylz
+Terminal=false
+Type=Application
+X-Ubuntu-Touch=true
+X-Ubuntu-Splash-Color=#000000

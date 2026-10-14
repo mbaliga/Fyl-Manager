@@ -1,38 +1,83 @@
 package io.github.mbaliga.fylz
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
+import androidx.lifecycle.lifecycleScope
 import dev.aarso.crashrecovery.CrashRecovery
 import dev.aarso.crashrecovery.CrashRecoveryStyle
 import io.github.mbaliga.fylz.backup.BackupScheduler
 import io.github.mbaliga.fylz.ui.FylzAppShell
+import io.github.mbaliga.fylz.ui.theme.BuiltInThemePresets
+import io.github.mbaliga.fylz.ui.theme.ThemePalette
+import io.github.mbaliga.fylz.ui.theme.ThemePaletteStore
+import io.github.mbaliga.fylz.ui.theme.toColorScheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
+/**
+ * P0.12 (defects 12/13): `singleTask`, so a second `ACTION_VIEW` launch (another app's "Open
+ * with Fylz") while Fylz is already running arrives via [onNewIntent], not a fresh [onCreate].
+ * Both read `intent.data` into the same Compose state so either path opens the single-document
+ * preview the same way.
+ */
 class MainActivity : ComponentActivity() {
+    private var viewUri by mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (CrashRecovery.maybeShowRecovery(this, appLabel = "Fylz", style = CRASH_STYLE)) return
-        BackupScheduler(applicationContext).reconcile()
+        if (CrashRecovery.maybeShowRecovery(this, appLabel = "Fylz", style = crashStyleFor(activeThemePalette(applicationContext)))) return
+        // P1.11: off the main thread -- reconcile() reads the backup-plans SharedPreferences blob
+        // and issues a WorkManager enqueue per plan, both of which do disk I/O that used to run
+        // synchronously here, before setContent, on every cold start.
+        lifecycleScope.launch(Dispatchers.IO) { BackupScheduler(applicationContext).reconcile() }
         enableEdgeToEdge()
+        viewUri = viewUriFrom(intent)
         // No MaterialTheme wrapper here. FylzAppShell's content owns the theme (FylzTheme,
         // inside FylzV1App), and a bare MaterialTheme above it was one of the places the app's
         // own colours got lost on the way down.
-        setContent { FylzAppShell() }
+        setContent { FylzAppShell(viewUri = viewUri) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        viewUri = viewUriFrom(intent)
     }
 }
+
+internal fun viewUriFrom(intent: Intent?): Uri? =
+    intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data
 
 /**
  * Fylz's accent, handed to the recovery screen.
  *
  * crash-recovery ships its own neutral surface and takes only an accent from its host, so a
- * crash surface arrives in the colours of the app the user was actually in. These are the MOSS
- * preset as plain @ColorInt values — the module holds no dependency on Compose or on any design
- * system and must be handed platform colours.
+ * crash surface arrives in the colours of the app the user was actually in -- including the accent
+ * they picked in Tools -> Theme, not a fixed one. The pair is the palette's own `primary` and the
+ * `onPrimary` [toColorScheme] derives for it, as plain @ColorInt values: the module holds no
+ * dependency on Compose or on any design system and must be handed platform colours.
  */
-private val CRASH_STYLE = CrashRecoveryStyle.accent(
-    light = 0xFF315F49.toInt(),
-    onLight = 0xFFFFFFFF.toInt(),
-    dark = 0xFF9BD3B3.toInt(),
-    onDark = 0xFF10281A.toInt(),
-)
+internal fun crashStyleFor(palette: ThemePalette): CrashRecoveryStyle {
+    val light = palette.light.toColorScheme(dark = false)
+    val dark = palette.dark.toColorScheme(dark = true)
+    return CrashRecoveryStyle.accent(
+        light = light.primary.toArgb(),
+        onLight = light.onPrimary.toArgb(),
+        dark = dark.primary.toArgb(),
+        onDark = dark.onPrimary.toArgb(),
+    )
+}
+
+/** The saved palette, or the bundled default if the store cannot be read at all -- the recovery
+ * screen must come up even when the thing that crashed was theme persistence itself. */
+private fun activeThemePalette(context: Context): ThemePalette =
+    runCatching { ThemePaletteStore(context).resolved.value }.getOrElse { BuiltInThemePresets.fallback() }

@@ -27,4 +27,13 @@ class FileTypeTest {
         assertEquals(EntryKind.AUDIO, FileType.classify("recording", "audio/ogg"))
         assertEquals(EntryKind.VIDEO, FileType.classify("clip", "video/mp4"))
     }
+
+    @Test
+    fun `text extensions the registry knows but this class used to miss are now text`() {
+        // P0.9, defect 10: this class kept its own, smaller, drifted-apart text-extension set,
+        // so these fell through to OTHER (hex preview) even though FileFormatRegistry already
+        // classified them as text.
+        listOf("script.lua", "app.cfg", "movie.srt", "captions.vtt", "paper.tex", "refs.bib")
+            .forEach { name -> assertEquals(name, EntryKind.TEXT, FileType.classify(name, "application/octet-stream")) }
+    }
 }

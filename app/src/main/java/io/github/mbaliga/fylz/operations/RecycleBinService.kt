@@ -1,11 +1,13 @@
 package io.github.mbaliga.fylz.operations
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
+import android.provider.DocumentsContract
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
@@ -20,30 +22,69 @@ class RecycleBinService(
     private val context: Context,
     private val store: RecycleBinStore = RecycleBinStore(context),
     private val journal: OperationJournal = OperationJournal(context),
+    private val transferEngines: TransferEngines = TransferEngines(context),
 ) {
+    private val resolver: ContentResolver get() = context.contentResolver
+
     private data class RestorePlan(
         val requestedName: String,
         val stagingName: String,
-        val existing: DocumentFile? = null,
+        val existing: DocNode? = null,
     )
+
+    /**
+     * Finds `.fylz-trash` directly under the tree rooted at [rootTreeUri] by listing its children
+     * (A1) -- never `DocumentFile.findFile`, which is a per-call linear provider query with its
+     * own failure modes on some providers -- creating it if absent.
+     */
+    suspend fun recycleRootFor(rootTreeUri: Uri): DocNode = withContext(Dispatchers.IO) {
+        val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+            rootTreeUri,
+            DocumentsContract.getTreeDocumentId(rootTreeUri),
+        )
+        val root = DocNode.load(resolver, rootDocumentUri) ?: error("Unable to open the selected root.")
+        findRecycleRoot(root) ?: root.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, RECYCLE_DIRECTORY)
+    }
+
+    /** Finds `.fylz-trash` directly under [root]; never creates it. */
+    private fun findRecycleRoot(root: DocNode): DocNode? =
+        root.children(resolver).firstOrNull { it.isDirectory && it.name == RECYCLE_DIRECTORY }
 
     suspend fun recycle(
         sourceUri: Uri,
         originalParentUri: Uri?,
         recycleRootUri: Uri,
     ): RecycleRecord = withContext(Dispatchers.IO) {
-        val source = DocumentFile.fromSingleUri(context, sourceUri)
-            ?: error("Unable to open the selected item.")
-        require(source.exists()) { "The selected item no longer exists." }
+        val source = DocNode.load(resolver, sourceUri) ?: error("Unable to open the selected item.")
+        val recycleRoot = DocNode.load(resolver, recycleRootUri)
+            ?: error("Unable to open the recycle location.")
+        require(recycleRoot.isDirectory && recycleRoot.canWrite) {
+            "The selected provider cannot write to its Fylz recycle location."
+        }
+        recycleNode(source, sourceUri, originalParentUri, recycleRoot, journaled = true)
+    }
 
-        val displayName = source.name ?: "untitled"
-        val sourceSize = source.length().takeIf { it >= 0L }
+    /**
+     * The core recycle transaction, shared by the public [recycle] (a user-initiated delete) and
+     * [replaceWithRecycleFallback] (an item a Replace conflict is about to overwrite). Only the
+     * user-initiated path is journaled as its own [FileOperation]: a replace-fallback recycle is a
+     * sub-step of whatever copy, move or restore operation is already journaling itself.
+     */
+    private suspend fun recycleNode(
+        source: DocNode,
+        sourceUri: Uri,
+        originalParentUri: Uri?,
+        recycleRoot: DocNode,
+        journaled: Boolean,
+    ): RecycleRecord {
+        val displayName = source.name
+        val sourceSize = source.size
         var operation = FileOperation(
             type = FileOperationType.RECYCLE,
             items = listOf(
                 OperationItem(
                     source = sourceUri,
-                    destination = recycleRootUri,
+                    destination = recycleRoot.uri,
                     displayName = displayName,
                     expectedBytes = sourceSize,
                     state = OperationState.PREFLIGHT,
@@ -51,31 +92,46 @@ class RecycleBinService(
             ),
             state = OperationState.PREFLIGHT,
         )
-        journal.put(operation)
+        if (journaled) journal.put(operation)
 
         try {
-            val recycleRoot = DocumentFile.fromTreeUri(context, recycleRootUri)
-                ?: DocumentFile.fromSingleUri(context, recycleRootUri)
-                ?: error("Unable to open the recycle location.")
-            require(recycleRoot.canWrite() && recycleRoot.isDirectory) {
-                "The selected provider cannot write to its Fylz recycle location."
+            if (journaled) {
+                operation = operation.copy(
+                    state = OperationState.RUNNING,
+                    items = operation.items.map { it.copy(state = OperationState.RUNNING) },
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+                journal.put(operation)
             }
 
-            operation = operation.copy(
-                state = OperationState.RUNNING,
-                items = operation.items.map { it.copy(state = OperationState.RUNNING) },
-                updatedAtMillis = System.currentTimeMillis(),
-            )
-            journal.put(operation)
-
             val itemId = UUID.randomUUID().toString()
-            val container = recycleRoot.createDirectory(itemId)
-                ?: error("Unable to create a recycle transaction folder.")
+            val container = recycleRoot.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, itemId)
             var recordStored = false
 
             try {
-                val recycled = copyDocument(source, container, displayName)
-                verifyCopy(source, recycled)
+                // P1.3/A5: on the same volume, recycling is a File.renameTo into the container --
+                // instant, and the original is already gone the moment this succeeds, rather than
+                // still existing (as it does on every other path below) until the explicit delete
+                // a few lines down. That narrows, rather than widens, the usual "copied and
+                // verified and recorded before the original is removed" window this class's own
+                // doc promises -- with one accepted trade-off: if store.put a few lines down were
+                // to fail after a fast-path rename, the failure handler's container.delete(resolver)
+                // would remove the user's only remaining copy of the file, where it only ever
+                // discards an extra copy on every other path. Not specially guarded against here --
+                // a plain local key-value write failing right after a filesystem rename that just
+                // succeeded is the same near-impossible case every other journal/store write in
+                // this codebase already trusts not to happen.
+                var movedDirectly = false
+                val recycled = transferEngines.forPair(source, container).moveFile(
+                    source = source,
+                    sourceParent = null,
+                    destinationDirectory = container,
+                    requestedName = displayName,
+                )?.also { movedDirectly = true } ?: run {
+                    val copied = copyDocument(source, container, displayName)
+                    verifyCopy(source, copied)
+                    copied
+                }
                 val record = RecycleRecord(
                     itemId = itemId,
                     originalUri = sourceUri,
@@ -85,52 +141,61 @@ class RecycleBinService(
                     providerAuthority = sourceUri.authority,
                     sizeBytes = sourceSize,
                     recycledAtMillis = System.currentTimeMillis(),
+                    containerUri = container.uri,
                 )
 
                 store.put(record)
                 recordStored = true
-                check(source.delete()) {
-                    "The item was copied to the recycle bin, but the provider refused to remove the original."
+                if (!movedDirectly) {
+                    check(source.delete(resolver)) {
+                        "The item was copied to the recycle bin, but the provider refused to remove the original."
+                    }
                 }
 
-                operation = operation.copy(
-                    state = OperationState.SUCCEEDED,
-                    items = operation.items.map {
-                        it.copy(
-                            destination = recycled.uri,
-                            completedBytes = sourceSize ?: it.completedBytes,
-                            state = OperationState.SUCCEEDED,
-                        )
-                    },
-                    updatedAtMillis = System.currentTimeMillis(),
-                )
-                journal.put(operation)
-                record
+                if (journaled) {
+                    operation = operation.copy(
+                        state = OperationState.SUCCEEDED,
+                        items = operation.items.map {
+                            it.copy(
+                                destination = recycled.uri,
+                                completedBytes = sourceSize ?: it.completedBytes,
+                                state = OperationState.SUCCEEDED,
+                            )
+                        },
+                        updatedAtMillis = System.currentTimeMillis(),
+                    )
+                    journal.put(operation)
+                }
+                return record
             } catch (failure: Throwable) {
                 if (recordStored) store.remove(itemId)
-                container.delete()
+                container.delete(resolver)
                 throw failure
             }
         } catch (cancelled: CancellationException) {
-            journal.put(
-                operation.copy(
-                    state = OperationState.CANCELLED,
-                    items = operation.items.map { it.copy(state = OperationState.CANCELLED) },
-                    updatedAtMillis = System.currentTimeMillis(),
-                ),
-            )
+            if (journaled) {
+                journal.put(
+                    operation.copy(
+                        state = OperationState.CANCELLED,
+                        items = operation.items.map { it.copy(state = OperationState.CANCELLED) },
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
             throw cancelled
         } catch (failure: Throwable) {
-            journal.put(
-                operation.copy(
-                    state = OperationState.FAILED,
-                    items = operation.items.map {
-                        if (it.state == OperationState.SUCCEEDED) it
-                        else it.copy(state = OperationState.FAILED, errorCode = failure.errorCode())
-                    },
-                    updatedAtMillis = System.currentTimeMillis(),
-                ),
-            )
+            if (journaled) {
+                journal.put(
+                    operation.copy(
+                        state = OperationState.FAILED,
+                        items = operation.items.map {
+                            if (it.state == OperationState.SUCCEEDED) it
+                            else it.copy(state = OperationState.FAILED, errorCode = failure.errorCode())
+                        },
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
             throw failure
         }
     }
@@ -160,14 +225,12 @@ class RecycleBinService(
         journal.put(operation)
 
         try {
-            val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
-                ?: error("The recycled item is unavailable.")
-            require(recycled.exists()) { "The recycled item no longer exists." }
+            val recycled = DocNode.load(resolver, record.recycledUri)
+                ?: error("The recycled item no longer exists.")
 
-            val destination = DocumentFile.fromTreeUri(context, destinationUri)
-                ?: DocumentFile.fromSingleUri(context, destinationUri)
+            val destination = DocNode.load(resolver, destinationUri)
                 ?: error("Unable to open the restore destination.")
-            require(destination.isDirectory && destination.canWrite()) {
+            require(destination.isDirectory && destination.canWrite) {
                 "The restore destination is not writable."
             }
 
@@ -194,12 +257,17 @@ class RecycleBinService(
             var destinationFinalized = false
             try {
                 verifyCopy(recycled, staged)
-                val restored = finalizeRestore(plan, staged)
+                // On a failed finalize (rename/replace), the recycle record must stay exactly as
+                // it was: the recycled copy is still there, still restorable, and this throws
+                // rather than reporting success.
+                val restored = finalizeRestore(destination, plan, staged, destinationUri)
                 destinationFinalized = true
-                check(recycled.delete()) {
+                check(recycled.delete(resolver)) {
                     "The item was restored, but the provider refused to remove the recycle copy."
                 }
-                recycled.parentFile?.delete()
+                // The <uuid> container DocumentFile.fromSingleUri's null parentFile used to leak
+                // (defect 1): now tracked explicitly and removed once it's empty.
+                record.containerUri?.let { DocNode.load(resolver, it)?.delete(resolver) }
                 store.remove(itemId)
 
                 journal.put(
@@ -217,7 +285,7 @@ class RecycleBinService(
                 )
                 restored.uri
             } catch (failure: Throwable) {
-                if (!destinationFinalized && staged.exists()) staged.delete()
+                if (!destinationFinalized) staged.refresh(resolver)?.delete(resolver)
                 throw failure
             }
         } catch (cancelled: CancellationException) {
@@ -272,13 +340,11 @@ class RecycleBinService(
         journal.put(operation)
 
         try {
-            val recycled = DocumentFile.fromSingleUri(context, record.recycledUri)
-                ?: error("The recycled item is unavailable.")
-            val transactionFolder = recycled.parentFile
-            check(!recycled.exists() || recycled.delete()) {
+            val recycled = DocNode.load(resolver, record.recycledUri)
+            check(recycled == null || recycled.delete(resolver)) {
                 "The provider refused permanent deletion."
             }
-            transactionFolder?.delete()
+            record.containerUri?.let { DocNode.load(resolver, it)?.delete(resolver) }
             store.remove(itemId)
             operation = operation.copy(
                 state = OperationState.SUCCEEDED,
@@ -302,82 +368,187 @@ class RecycleBinService(
 
     fun records(): List<RecycleRecord> = store.list()
 
-    private suspend fun copyDocument(
-        source: DocumentFile,
-        destinationDirectory: DocumentFile,
+    /** Live view of the recycle manifest (P0.8); see [RecycleBinStore.records]. */
+    val records: StateFlow<List<RecycleRecord>> get() = store.records
+
+    /**
+     * Permanently deletes every current recycle record (contract §2.5-2.8's "Empty Recycle
+     * Bin"), behind the exact same confirmation gate as a single permanent delete. Continues past
+     * a single item's failure so one bad record can't block emptying the rest; the returned count
+     * is how many actually succeeded.
+     */
+    suspend fun emptyBin(confirmed: Boolean): Int = withContext(Dispatchers.IO) {
+        require(
+            RecycleBinPolicy.allowPermanentDelete(
+                invokedFromRecycleBin = true,
+                explicitAdvancedAction = false,
+                confirmed = confirmed,
+            ),
+        ) { "Permanent deletion requires explicit confirmation from the recycle bin." }
+
+        var succeeded = 0
+        store.list().forEach { record ->
+            runCatching { permanentlyDelete(record.itemId, confirmed = true) }
+                .onSuccess { succeeded++ }
+        }
+        succeeded
+    }
+
+    /**
+     * `fylz-trash` or `fylz-trash (n)` folders directly under [rootTreeUri] (P0.3, defect 3):
+     * bins created before this provider stopped stripping the leading dot from `.fylz-trash`, so
+     * they landed on disk visible and un-findable by name. A name match alone never qualifies --
+     * a user's own, unrelated folder that happens to share the name must never be touched -- so a
+     * candidate only counts when an existing [RecycleRecord] still points inside it.
+     */
+    suspend fun legacyRecycleFolders(rootTreeUri: Uri): List<DocNode> = withContext(Dispatchers.IO) {
+        val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(
+            rootTreeUri,
+            DocumentsContract.getTreeDocumentId(rootTreeUri),
+        )
+        val root = DocNode.load(resolver, rootDocumentUri) ?: return@withContext emptyList()
+        val candidates = root.children(resolver).filter { it.isDirectory && LEGACY_BIN_NAME.matches(it.name) }
+        if (candidates.isEmpty()) return@withContext emptyList()
+        val records = store.list()
+        candidates.filter { candidate ->
+            records.any { record -> isInside(candidate.uri, record.recycledUri) }
+        }
+    }
+
+    /** Names of [legacyRecycleFolders], for callers that only need to exclude them from a
+     * listing or a search, not open them. */
+    suspend fun legacyRecycleFolderNames(rootTreeUri: Uri): Set<String> =
+        legacyRecycleFolders(rootTreeUri).mapTo(mutableSetOf(), DocNode::name)
+
+    /**
+     * Moves every recorded item out of [legacy] and into the real `.fylz-trash`, one at a time:
+     * copy, verify, rewrite that item's record to point at the new location, then delete the old
+     * copy -- only once that's confirmed does the next item start. [legacy] itself is removed
+     * only if it ends up empty; any content in it that isn't backed by a [RecycleRecord] is left
+     * alone rather than guessed at. Nothing here runs automatically (contract §2): this is called
+     * only from an explicit "Tidy legacy recycle folders" action.
+     */
+    suspend fun tidyLegacyRecycleFolder(rootTreeUri: Uri, legacy: DocNode): Unit = withContext(Dispatchers.IO) {
+        val recycleRoot = recycleRootFor(rootTreeUri)
+        val records = store.list().filter { record -> isInside(legacy.uri, record.recycledUri) }
+        for (record in records) {
+            coroutineContext.ensureActive()
+            val recycled = DocNode.load(resolver, record.recycledUri) ?: continue
+            val newContainer = recycleRoot.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, record.itemId)
+            try {
+                val moved = copyDocument(recycled, newContainer, record.originalDisplayName)
+                verifyCopy(recycled, moved)
+                store.put(record.copy(recycledUri = moved.uri, containerUri = newContainer.uri))
+                check(recycled.delete(resolver)) {
+                    "Moved ${record.originalDisplayName} into .fylz-trash, but the provider refused to remove " +
+                        "the old copy."
+                }
+                record.containerUri?.let { oldContainer -> DocNode.load(resolver, oldContainer)?.delete(resolver) }
+            } catch (failure: Throwable) {
+                newContainer.delete(resolver)
+                throw failure
+            }
+        }
+        legacy.refresh(resolver)?.let { fresh -> if (fresh.children(resolver).isEmpty()) fresh.delete(resolver) }
+    }
+
+    /**
+     * The Replace conflict policy, shared by [restore]'s [finalizeRestore] and
+     * [FileOperationService]'s equivalent: the existing item is renamed aside, never deleted,
+     * until the replacement has actually landed under the requested name. Today's code deleted
+     * the existing item first, which left a window where a failed rename destroyed data with
+     * nothing left to recover.
+     *
+     * 1. Rename the existing item aside to `.fylz-replaced-<uuid>-<name>`.
+     * 2. Rename the staged item into place.
+     * 3. Recycle the aside item into `destinationRoot`'s `.fylz-trash` if it has one (so the
+     *    replaced version is still restorable), otherwise delete it -- the user explicitly chose
+     *    Replace, so no recycle bin at that root is not itself a reason to refuse.
+     * 4. If step 2 fails, rename the aside item back and report the failure; nothing is lost.
+     */
+    suspend fun replaceWithRecycleFallback(
+        destinationRoot: DocNode,
+        existing: DocNode,
+        staged: DocNode,
         requestedName: String,
-    ): DocumentFile {
+        originalParentUri: Uri?,
+    ): DocNode = withContext(Dispatchers.IO) {
+        val aside = existing.rename(resolver, ".fylz-replaced-${UUID.randomUUID()}-${existing.name}")
+        val finalNode = try {
+            staged.rename(resolver, requestedName)
+        } catch (failure: Exception) {
+            runCatching { aside.rename(resolver, existing.name) }
+            throw IllegalStateException(
+                "The replacement data is safe, but the provider could not restore the requested " +
+                    "name. It remains as ${staged.name}.",
+                failure,
+            )
+        }
+        val recycleRoot = findRecycleRoot(destinationRoot)
+        if (recycleRoot != null) {
+            runCatching { recycleNode(aside, aside.uri, originalParentUri, recycleRoot, journaled = false) }
+                .onFailure { aside.refresh(resolver)?.delete(resolver) }
+        } else {
+            aside.delete(resolver)
+        }
+        finalNode
+    }
+
+    private suspend fun copyDocument(
+        source: DocNode,
+        destinationDirectory: DocNode,
+        requestedName: String,
+    ): DocNode {
         coroutineContext.ensureActive()
         if (source.isDirectory) {
-            val directory = destinationDirectory.createDirectory(requestedName)
-                ?: error("Unable to create $requestedName.")
+            val directory = destinationDirectory.createChild(resolver, DocumentsContract.Document.MIME_TYPE_DIR, requestedName)
             try {
-                source.listFiles().forEach { child ->
-                    copyDocument(child, directory, child.name ?: "untitled")
+                source.children(resolver).forEach { child ->
+                    copyDocument(child, directory, child.name)
                 }
                 return directory
             } catch (failure: Throwable) {
-                directory.delete()
+                directory.delete(resolver)
                 throw failure
             }
         }
 
-        val target = destinationDirectory.createFile(
-            source.type ?: "application/octet-stream",
-            requestedName,
-        ) ?: error("Unable to create $requestedName.")
-
-        try {
-            val input = context.contentResolver.openInputStream(source.uri)
-                ?: error("Unable to read $requestedName.")
-            val output = context.contentResolver.openOutputStream(target.uri, "w")
-                ?: error("Unable to write $requestedName.")
-            input.use { sourceStream ->
-                output.use { targetStream ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val count = sourceStream.read(buffer)
-                        if (count < 0) break
-                        targetStream.write(buffer, 0, count)
-                    }
-                    targetStream.flush()
-                }
-            }
-            return target
-        } catch (failure: Throwable) {
-            target.delete()
-            throw failure
-        }
+        // P1.3/A5: same engine choice FileOperationService.copyDocument makes -- LocalFileTransfer
+        // when both ends are local to this device, DocumentsTransfer (with its own copyDocument
+        // fast path and 512 KiB stream fallback) otherwise.
+        return transferEngines.forPair(source, destinationDirectory).copyFile(
+            source = source,
+            destinationDirectory = destinationDirectory,
+            requestedName = requestedName,
+        ) { }
     }
 
-    private fun verifyCopy(source: DocumentFile, target: DocumentFile) {
-        val sourceLength = source.length()
-        val targetLength = target.length()
-        if (source.isFile && sourceLength >= 0L && targetLength >= 0L) {
-            check(sourceLength == targetLength) {
-                "Copy verification failed: expected $sourceLength bytes, wrote $targetLength bytes."
+    private fun verifyCopy(source: DocNode, target: DocNode) {
+        val expected = source.size
+        val actual = target.size
+        if (expected != null && actual != null) {
+            check(expected == actual) {
+                "Copy verification failed: expected $expected bytes, wrote $actual bytes."
             }
         }
     }
 
-    private fun finalizeRestore(plan: RestorePlan, staged: DocumentFile): DocumentFile {
+    private suspend fun finalizeRestore(
+        destinationRoot: DocNode,
+        plan: RestorePlan,
+        staged: DocNode,
+        destinationUri: Uri,
+    ): DocNode {
         val existing = plan.existing ?: return staged
-        check(existing.delete()) {
-            staged.delete()
-            "Unable to replace ${plan.requestedName}; the existing item was left untouched."
-        }
-        if (plan.stagingName == plan.requestedName) return staged
-        staged.renameTo(plan.requestedName)
-        return staged
+        return replaceWithRecycleFallback(destinationRoot, existing, staged, plan.requestedName, destinationUri)
     }
 
     private fun resolveRestorePlan(
-        destination: DocumentFile,
+        destination: DocNode,
         requestedName: String,
         policy: ConflictPolicy,
     ): RestorePlan? {
-        val existing = destination.findFile(requestedName)
+        val existing = destination.findChild(resolver, requestedName)
             ?: return RestorePlan(requestedName, requestedName)
         return when (policy) {
             ConflictPolicy.ASK -> error("A file named $requestedName already exists.")
@@ -391,25 +562,38 @@ class RecycleBinService(
                 stagingName = uniqueStagingName(destination, requestedName),
                 existing = existing,
             )
+            // P1.6's own ConflictSheet -- the only caller that ever selects this policy -- is
+            // wired to FileOperationService's copy/move flow only, not restore-from-recycle-bin,
+            // which keeps its own pre-existing ASK-throws-today behavior unchanged; the safest
+            // stub for a policy nothing here actually offers a user is the same as SKIP, not a
+            // silent replace.
+            ConflictPolicy.REPLACE_IF_NEWER -> null
         }
     }
 
-    private fun uniqueStagingName(destination: DocumentFile, requestedName: String): String {
+    /** Whether [documentUri] is [parentUri] or lives somewhere underneath it. A record whose
+     * document no longer exists (or any other provider error) safely counts as "no". */
+    private fun isInside(parentUri: Uri, documentUri: Uri): Boolean = runCatching {
+        documentUri == parentUri || DocumentsContract.isChildDocument(resolver, parentUri, documentUri)
+    }.getOrDefault(false)
+
+    private fun uniqueStagingName(destination: DocNode, requestedName: String): String {
         val safeName = requestedName.replace('/', '_')
         while (true) {
             val candidate = ".fylz-restore-${UUID.randomUUID()}-$safeName"
-            if (destination.findFile(candidate) == null) return candidate
+            if (destination.children(resolver).none { it.name == candidate }) return candidate
         }
     }
 
-    private fun uniqueName(destination: DocumentFile, requestedName: String): String {
+    private fun uniqueName(destination: DocNode, requestedName: String): String {
         val dot = requestedName.lastIndexOf('.')
         val base = if (dot > 0) requestedName.substring(0, dot) else requestedName
         val extension = if (dot > 0) requestedName.substring(dot) else ""
+        val existingNames = destination.children(resolver).mapTo(mutableSetOf()) { it.name }
         var index = 2
         while (true) {
             val candidate = "$base ($index)$extension"
-            if (destination.findFile(candidate) == null) return candidate
+            if (candidate !in existingNames) return candidate
             index += 1
         }
     }
@@ -419,5 +603,15 @@ class RecycleBinService(
         is IllegalArgumentException -> "INVALID_REQUEST"
         is IllegalStateException -> "OPERATION_FAILED"
         else -> "UNEXPECTED_ERROR"
+    }
+
+    companion object {
+        /** Must match [io.github.mbaliga.fylz.search.RecursiveSearchEngine.RECYCLE_DIRECTORY]. */
+        const val RECYCLE_DIRECTORY: String = ".fylz-trash"
+
+        /** A pre-P0.3 dot-stripped recycle bin: `fylz-trash`, `fylz-trash (2)`, and so on --
+         * `FylzFilesDocumentsProvider.createDocument`'s own disambiguation shape for a repeated
+         * name. See [legacyRecycleFolders]. */
+        private val LEGACY_BIN_NAME = Regex("""fylz-trash( \(\d+\))?""")
     }
 }

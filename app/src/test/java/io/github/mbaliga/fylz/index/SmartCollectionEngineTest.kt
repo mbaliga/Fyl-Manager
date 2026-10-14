@@ -9,6 +9,8 @@ class SmartCollectionEngineTest {
     private val file = IndexedFile(
         uri = "content://docs/report",
         rootUri = "content://docs/root",
+        parentUri = "content://docs/finance",
+        path = "Finance/Quarterly Report.pdf",
         name = "Quarterly Report.pdf",
         mimeType = "application/pdf",
         extension = "pdf",
@@ -45,12 +47,33 @@ class SmartCollectionEngineTest {
     }
 
     @Test
-    fun textContentRulesNeverMatchBecauseNoContentIsSampled() {
+    fun textContentRuleFailsClosedWhenNoSampleWasCaptured() {
         val collection = SmartCollection(
             name = "Mentions revenue",
             rules = listOf(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue")),
         )
         assertFalse(SmartCollectionEngine.matches(file, collection))
+    }
+
+    @Test
+    fun textContentRuleMatchesAgainstACapturedSnippet() {
+        val withSnippet = file.copy(textSnippet = "Total revenue grew 12% year over year.")
+        val collection = SmartCollection(
+            name = "Mentions revenue",
+            rules = listOf(SmartRule(RuleField.TEXT_CONTENT, RuleOperator.CONTAINS, "revenue")),
+        )
+        assertTrue(SmartCollectionEngine.matches(withSnippet, collection))
+        assertFalse(SmartCollectionEngine.matches(file, collection))
+    }
+
+    @Test
+    fun pathRuleMatchesTheScopeRelativePathNotJustTheName() {
+        val collection = SmartCollection(
+            name = "Finance folder",
+            rules = listOf(SmartRule(RuleField.PATH, RuleOperator.STARTS_WITH, "Finance/")),
+        )
+        assertTrue(SmartCollectionEngine.matches(file, collection))
+        assertFalse(SmartCollectionEngine.matches(file.copy(path = "HR/Quarterly Report.pdf"), collection))
     }
 
     @Test

@@ -72,6 +72,11 @@ fun StorageHomeScreen(
     onOpenRemotes: () -> Unit,
     modifier: Modifier = Modifier,
     refreshKey: Int = 0,
+    /** P1.8: hidden when this screen is embedded in a copy/move destination chooser -- a remote
+     * connection can't be a transfer destination today (`FileOperationService.transfer()` only
+     * ever reaches a `Uri`; `RemoteProvider`/`SftpProvider` still operate on path strings), so
+     * offering the button there would open a dialog with nothing useful to do from it. */
+    showRemotes: Boolean = true,
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
@@ -157,10 +162,12 @@ fun StorageHomeScreen(
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.storage_home_add_folder))
                     }
-                    Button(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-                        Icon(Icons.Outlined.Cloud, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.storage_home_remotes))
+                    if (showRemotes) {
+                        Button(onClick = onOpenRemotes, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Icon(Icons.Outlined.Cloud, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.storage_home_remotes))
+                        }
                     }
                     Text(
                         stringResource(R.string.storage_home_access_note, StorageAccess.accessLabel(context)),

@@ -1,0 +1,15 @@
+{
+    "name": "fylz.mbaliga",
+    "title": "Fylz",
+    "description": "A file manager for Ubuntu Touch and desktop Linux.",
+    "version": "0.1.0",
+    "framework": "ubuntu-touch-24.04-1.x",
+    "architecture": "@CLICK_ARCH@",
+    "maintainer": "mbaliga <mbaliga@users.noreply.github.com>",
+    "hooks": {
+        "fylz": {
+            "apparmor": "fylz.apparmor",
+            "desktop": "fylz.desktop"
+        }
+    }
+}

@@ -22,18 +22,22 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.model.BrowsableArchiveFormats
 import io.github.mbaliga.fylz.model.EntryKind
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.preview.FileFormatRegistry
 import io.github.mbaliga.fylz.preview.PreviewFamily
+import io.github.mbaliga.fylz.preview.resolvePreviewKind
 import io.github.mbaliga.fylz.util.FileType
 
 private val SEMANTIC_ZIP_DOCUMENTS = setOf(
@@ -50,6 +54,7 @@ fun PreviewPane(
     entry: FileEntry?,
     textContent: String?,
     textTruncated: Boolean,
+    textEncodingOk: Boolean = true,
     loading: Boolean,
     editorValue: String,
     onEditorValueChange: (String) -> Unit,
@@ -57,15 +62,34 @@ fun PreviewPane(
     modifier: Modifier = Modifier,
 ) {
     var editing by remember(entry?.uri) { mutableStateOf(false) }
+    val context = LocalContext.current
+    // P0.9: extension/MIME alone can't tell TypeScript source from an MPEG transport stream --
+    // both are `.ts`. Seeded from entry.kind so there's no one-frame flash before this resolves;
+    // resolving is instant (no I/O) for every extension other than `ts`.
+    var resolvedKind by remember(entry?.uri) { mutableStateOf(entry?.kind) }
+    LaunchedEffect(entry?.uri) {
+        resolvedKind = entry?.let { resolvePreviewKind(it, context.contentResolver) }
+    }
 
     Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
         if (entry == null) {
             EmptyPreview()
             return@Surface
         }
+        val kind = resolvedKind ?: entry.kind
         val descriptor = remember(entry.name, entry.mimeType, entry.kind) {
             FileFormatRegistry.describe(entry.name, entry.mimeType, entry.kind)
         }
+        // P0.7: a text/markdown file is only actually editable when the read wasn't capped (over
+        // 512 KiB) and decoded as valid UTF-8 -- either one means a save would not reproduce the
+        // file, so editing must be refused with a visible reason rather than silently corrupting it.
+        val editBlockedReason = when {
+            !FileType.isEditable(kind) -> null
+            textTruncated -> "Too large to edit (over 512 KiB)."
+            !textEncodingOk -> "Not valid UTF-8 text, so it can't be edited here."
+            else -> null
+        }
+        val canEdit = FileType.isEditable(kind) && editBlockedReason == null
         Column(Modifier.fillMaxSize()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -80,7 +104,7 @@ fun PreviewPane(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (FileType.isEditable(entry.kind)) {
+                if (canEdit) {
                     FilledTonalButton(onClick = { editing = !editing }) {
                         Icon(Icons.Outlined.Edit, contentDescription = null)
                         Text(if (editing) "Preview" else "Edit", Modifier.padding(start = 6.dp))
@@ -91,6 +115,12 @@ fun PreviewPane(
                             Text("Save", Modifier.padding(start = 6.dp))
                         }
                     }
+                } else if (editBlockedReason != null) {
+                    Text(
+                        editBlockedReason,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 ExternalOpenButton(entry)
             }
@@ -100,30 +130,33 @@ fun PreviewPane(
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-                editing && FileType.isEditable(entry.kind) -> OutlinedTextField(
+                editing && canEdit -> OutlinedTextField(
                     value = editorValue,
                     onValueChange = onEditorValueChange,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     label = { Text("UTF-8 text") },
                 )
-                entry.kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
+                kind == EntryKind.MARKDOWN && textContent != null -> Column(Modifier.fillMaxSize()) {
                     if (textTruncated) TruncationNotice()
                     MarkdownPreview(textContent, Modifier.fillMaxSize())
                 }
-                entry.kind == EntryKind.TEXT && textContent != null -> Column(Modifier.fillMaxSize()) {
+                kind == EntryKind.TEXT && textContent != null -> Column(Modifier.fillMaxSize()) {
                     if (textTruncated) TruncationNotice()
                     MonospaceTextPreview(textContent, Modifier.fillMaxSize())
                 }
-                descriptor.family == PreviewFamily.IMAGE -> RichImagePreview(entry, Modifier.fillMaxSize())
+                descriptor.family == PreviewFamily.IMAGE || descriptor.rendererId == "image" ->
+                    RichImagePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.PDF -> PdfPagerPreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.AUDIO || descriptor.family == PreviewFamily.VIDEO ->
                     MediaFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.family == PreviewFamily.FONT -> FontFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.extension in SEMANTIC_ZIP_DOCUMENTS ->
                     ZipDocumentPreview(entry, descriptor, Modifier.fillMaxSize())
-                descriptor.extension in ZIP_CONTAINER_EXTENSIONS ->
-                    ZipArchivePreview(entry, descriptor, Modifier.fillMaxSize())
+                // M3.3 (DESIGN-M33 §2.7): every format libarchive reads here, plus the ZIP containers
+                // (APK, JAR, CBZ, 3MF, ...) whose inspection stays.
+                descriptor.extension in ZIP_CONTAINER_EXTENSIONS || BrowsableArchiveFormats.matches(entry.name) ->
+                    ArchivePreview(entry, descriptor, Modifier.fillMaxSize())
                 descriptor.rendererId == "mesh-wireframe" || descriptor.rendererId == "dxf" ->
                     GeometryFilePreview(entry, descriptor, Modifier.fillMaxSize())
                 else -> UniversalInspectorPreview(entry, descriptor, Modifier.fillMaxSize())

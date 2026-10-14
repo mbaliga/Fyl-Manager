@@ -35,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,22 +65,31 @@ fun FileHistoryOverlay(modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val store = remember { FileHistoryStore(context.applicationContext) }
     var open by remember { mutableStateOf(false) }
-    var settings by remember { mutableStateOf(store.settings()) }
-    var versions by remember { mutableStateOf(store.allVersions()) }
-    var usage by remember { mutableStateOf(store.usage()) }
+    // P1.11: placeholder defaults, not a blocking store read at composition time -- refresh()
+    // below loads the real values off the main thread as soon as this composable enters.
+    var settings by remember { mutableStateOf(FileHistorySettings()) }
+    var versions by remember { mutableStateOf(emptyList<FileHistoryVersion>()) }
+    var usage by remember { mutableStateOf(FileHistoryUsage(totalBytes = 0L, versionCount = 0, fileCount = 0, maxBytes = 0L)) }
     var busy by remember { mutableStateOf(false) }
 
-    fun refresh() {
-        settings = store.settings()
-        versions = store.allVersions()
-        usage = store.usage()
+    suspend fun refresh() {
+        val (loadedSettings, loadedVersions, loadedUsage) = withContext(Dispatchers.IO) {
+            Triple(store.settings(), store.allVersions(), store.usage())
+        }
+        settings = loadedSettings
+        versions = loadedVersions
+        usage = loadedUsage
     }
+
+    LaunchedEffect(Unit) { refresh() }
 
     Box(modifier) {
         FloatingActionButton(
             onClick = {
-                refresh()
-                open = true
+                scope.launch {
+                    refresh()
+                    open = true
+                }
             },
         ) {
             Icon(Icons.Outlined.History, contentDescription = "File history")
@@ -136,12 +146,17 @@ fun FileHistoryOverlay(modifier: Modifier = Modifier) {
                 }
             },
             onDelete = { version ->
-                if (store.delete(version.id)) refresh()
+                scope.launch {
+                    val deleted = withContext(Dispatchers.IO) { store.delete(version.id) }
+                    if (deleted) refresh()
+                }
             },
             onClear = {
-                val removed = store.clear()
-                refresh()
-                Toast.makeText(context, "Deleted $removed saved versions.", Toast.LENGTH_LONG).show()
+                scope.launch {
+                    val removed = withContext(Dispatchers.IO) { store.clear() }
+                    refresh()
+                    Toast.makeText(context, "Deleted $removed saved versions.", Toast.LENGTH_LONG).show()
+                }
             },
         )
     }
