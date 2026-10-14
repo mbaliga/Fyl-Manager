@@ -183,6 +183,7 @@ A failure involving data loss, unsafe overwrite/delete, provider-boundary bypass
 - Optional dual-pane transfer mode.
 - Full keyboard shortcut map and Chromebook/desktop-mode polish.
 - F-Droid readiness and Play distribution review.
+- Ubuntu Touch, Linux desktop, iOS/iPadOS, macOS and Windows ports: planned only, nothing built; see the [porting plan](PORTING_PLAN.md).
 
 ## Research gates
 
