@@ -100,8 +100,8 @@ manager with a signed model catalogue for on-device alternatives.
 ## 2. Interaction patterns
 
 Fylz uses the **fonebrew spatial pattern** via `dev.aarso:cell-shell` — the same shell, the same
-motion constants, as Foto Xplorr. See
-[Foto Xplorr's `fonebrew-navigation.md`](https://github.com/mbaliga/Foto-Xplorr/blob/main/docs/fonebrew-navigation.md)
+motion constants, as Fotoz. See
+[Fotoz's `fonebrew-navigation.md`](https://github.com/mbaliga/Foto-Xplorr/blob/main/docs/fonebrew-navigation.md)
 for the pattern itself.
 
 ### Three rooms

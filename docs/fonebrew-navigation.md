@@ -3,7 +3,7 @@
 > Owner direction (2026-08-05): *"I expected the navigation pattern of fonebrew to be followed
 > everywhere."* This file is the written form of that pattern, distilled from the owner's two
 > reference videos, the fonebrew (Android-IDE-core "Workbench") rooms implementation, and the
-> correction round on the first Foto Xplorr / Fylz test builds. It exists so no future build
+> correction round on the first Fotoz / Fylz test builds. It exists so no future build
 > session re-derives the pattern from memory — or worse, ships hamburgers and bottom nav bars
 > again.
 
@@ -45,7 +45,7 @@ These are the things the first test builds got wrong. Do not reintroduce them:
   a `Menu` icon opening a drawer-style list.
 - **No bottom `NavigationBar` / tab bar.** (Fylz shipped "Files / Recovery" tabs — wrong.)
 - **No full-screen Material settings dialogs.** Settings slide in as a panel over the room
-  (Foto Xplorr's `SlideInPanel` from the right is the shape); a centered `AlertDialog`-style
+  (Fotoz's `SlideInPanel` from the right is the shape); a centered `AlertDialog`-style
   "Gallery settings" card is wrong.
 - **No static instructional copy in gesture spaces** ("PULL TO CREATE BACKUP"). If a gesture
   needs a permanent caption, the gesture is wrong.
@@ -55,7 +55,7 @@ These are the things the first test builds got wrong. Do not reintroduce them:
 | App | Has | Needs |
 |---|---|---|
 | fonebrew (IDE-core) | rooms implementation (`ui/rooms/`) | is the reference |
-| Foto Xplorr | nine destinations + `SlideInPanel` rail exists, but presented behind a hamburger; settings are a Material dialog | word-wheel rail presentation + motion; settings → slide-in panel; hamburger retired |
+| Fotoz | nine destinations + `SlideInPanel` rail exists, but presented behind a hamburger; settings are a Material dialog | word-wheel rail presentation + motion; settings → slide-in panel; hamburger retired |
 | Fylz | neither — hamburger-less but bottom tabs, chip tabs, Material tools screen (light) | full pattern adoption; one theme |
 | csapp / assay | standard Material consoles | pattern adoption once the two testable apps validate it |
 

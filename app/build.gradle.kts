@@ -156,7 +156,7 @@ dependencies {
     implementation("dev.aarso:crash-recovery:1.4.0")
     // The constellation's navigation and motion shell: the fonebrew spatial pattern (rooms
     // parked off the screen edges), the word-wheel rail and the Niagara-style edge scrubber.
-    // Shared rather than local so Fylz and Foto Xplorr move identically — which is the whole
+    // Shared rather than local so Fylz and Fotoz move identically — which is the whole
     // of the owner's "followed everywhere".
     implementation("dev.aarso:cell-shell:0.1.0")
 
