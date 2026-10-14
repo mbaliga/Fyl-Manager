@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +49,21 @@ class ThemeJsonTest {
         val darkScheme = palette.dark.toColorScheme(dark = true)
         assertEquals(Color(0xFFAABBCC), darkScheme.primary)
         assertEquals(Color(0xFF000000), darkScheme.background)
+    }
+
+    @Test
+    fun `accent-role tokens the schema does not name are derived from the palette, not left at Material baseline purple`() {
+        val palette = ThemeJson.parse(validJson).getOrThrow()
+        val lightScheme = palette.light.toColorScheme(dark = false, inversePrimary = palette.dark.primary)
+        assertEquals(Color(0xFFAABBCC), lightScheme.inversePrimary)
+        assertNotEquals(Color(0xFFEADDFF), lightScheme.primaryContainer)
+        assertNotEquals(Color(0xFFE8DEF8), lightScheme.secondaryContainer)
+        assertNotEquals(Color(0xFFFFD8E4), lightScheme.tertiaryContainer)
+        // On-colours are chosen for contrast with their accent: white on the dark #112233 primary,
+        // black on the pastel #9BD3B3.
+        assertEquals(Color.White, lightScheme.onPrimary)
+        val pastel = palette.dark.copy(primary = Color(0xFF9BD3B3)).toColorScheme(dark = true)
+        assertEquals(Color.Black, pastel.onPrimary)
     }
 
     @Test

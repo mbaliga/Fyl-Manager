@@ -3,11 +3,12 @@ package io.github.mbaliga.fylz.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * The three bundled JSON theme presets (owner request: "convert whatever fixed colors exist
+ * The bundled JSON theme presets (owner request: "convert whatever fixed colors exist
  * today into 2-3 bundled preset JSON files") -- `Moss` (today's only default, unchanged in
  * appearance), `Ink` and `Clay`, converted from the `AccentPreset` colours `FylzTheme.kt` used to
- * hardcode. The fourth pre-existing accent, `Electric`, was dropped from the bundled set per the
- * "2-3" guidance -- see docs/agent/REVIEW_QUEUE.md.
+ * hardcode. The fourth pre-existing accent, `Electric`, was first dropped per the "2-3" guidance
+ * and restored once accent selection became a user-facing feature (a one-tap blue/violet is the
+ * accent the folder-card mockup's selection glow is described in) -- see docs/agent/REVIEW_QUEUE.md.
  *
  * Each preset is a literal JSON document -- a real, complete, independently valid instance of
  * the exact schema [ThemeJson] parses, readable and editable as such -- embedded as a Kotlin
@@ -24,7 +25,7 @@ import androidx.compose.ui.graphics.Color
  */
 object BuiltInThemePresets {
     const val DEFAULT_ID = "moss"
-    val ids: List<String> = listOf("moss", "ink", "clay")
+    val ids: List<String> = listOf("moss", "ink", "clay", "electric")
 
     fun titleFor(id: String): String = id.replaceFirstChar { it.uppercaseChar() }
 
@@ -32,6 +33,7 @@ object BuiltInThemePresets {
         "moss" to MOSS_JSON,
         "ink" to INK_JSON,
         "clay" to CLAY_JSON,
+        "electric" to ELECTRIC_JSON,
     )
 
     fun load(id: String): Result<ThemePalette> = runCatching {
@@ -45,6 +47,7 @@ object BuiltInThemePresets {
      * [ThemeJson] holds for a user's own custom JSON). Moss's own colours, so a fallback is
      * visually identical to the pre-feature default. */
     fun fallback(): ThemePalette = ThemePalette(
+        // Fixed on purpose (reference design): these literals ARE the Moss theme source, used only when a bundled id fails to parse.
         name = "Moss",
         light = PaletteColors(
             primary = Color(0xFF315F49), secondary = Color(0xFF52645A), tertiary = Color(0xFF3B5B7A),
@@ -141,6 +144,37 @@ private const val CLAY_JSON = """
       "surfaceVariant": "#4A3F38",
       "onBackground": "#EDE0DA",
       "onSurface": "#EDE0DA"
+    }
+  }
+}
+"""
+
+// Accent pairs are the pre-JSON Electric preset's own (restored from the old AccentPreset); the
+// tertiary and neutrals are Ink's, which sit naturally under a blue/violet accent.
+private const val ELECTRIC_JSON = """
+{
+  "version": 1,
+  "name": "Electric",
+  "colors": {
+    "light": {
+      "primary": "#4D57A7",
+      "secondary": "#5D5D72",
+      "tertiary": "#6B4D68",
+      "background": "#FDFEFE",
+      "surface": "#FAFBFC",
+      "surfaceVariant": "#DEE3E9",
+      "onBackground": "#1B1C1E",
+      "onSurface": "#1B1C1E"
+    },
+    "dark": {
+      "primary": "#BEC2FF",
+      "secondary": "#C6C4DD",
+      "tertiary": "#D6B8D9",
+      "background": "#0E1013",
+      "surface": "#121417",
+      "surfaceVariant": "#3F444B",
+      "onBackground": "#E3E4E6",
+      "onSurface": "#E3E4E6"
     }
   }
 }

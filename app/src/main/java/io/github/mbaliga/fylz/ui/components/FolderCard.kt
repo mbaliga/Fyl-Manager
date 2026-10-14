@@ -146,6 +146,7 @@ fun FileCard(
             previewFiles = preview?.files.orEmpty(),
             subtitle = folderSubtitle(preview),
             selected = selected,
+            focused = focused,
             palette = palette,
             onClick = onClick,
             onDoubleClick = onDoubleClick,
@@ -207,12 +208,15 @@ fun FolderCardVisual(
     onLongClick: () -> Unit,
     onToggleSelected: () -> Unit,
     modifier: Modifier = Modifier,
+    focused: Boolean = false,
 ) {
     val glow = MaterialTheme.colorScheme.primary
     val shape = RoundedCornerShape(18.dp)
     Column(
         modifier
             .let { if (selected) it.selectionGlow(glow, shape) else it }
+            // Keyboard focus is an accent-role state too: a softer accent ring than the selection glow.
+            .let { if (focused && !selected) it.border(2.dp, glow.copy(alpha = 0.5f), shape) else it }
             .combinedClickable(onClick = onClick, onDoubleClick = onDoubleClick, onLongClick = onLongClick)
             .padding(10.dp)
             .semantics { contentDescription = "Folder ${entry.name}" },

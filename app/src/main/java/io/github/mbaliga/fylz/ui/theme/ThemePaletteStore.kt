@@ -1,6 +1,7 @@
 package io.github.mbaliga.fylz.ui.theme
 
 import android.content.Context
+import io.github.mbaliga.fylz.model.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +38,17 @@ class ThemePaletteStore(context: Context) {
 
     private val _resolved = MutableStateFlow(resolve(_selection.value))
     val resolved: StateFlow<ThemePalette> = _resolved.asStateFlow()
+
+    /** Light / Dark / Follow the system. Persisted here, with the accent, because the mode picks
+     * which half of the accent's light/dark pair is on screen: if it reset to "system" on every
+     * restart, so would the half of the chosen accent the user sees. */
+    private val _mode = MutableStateFlow(readMode())
+    val mode: StateFlow<ThemeMode> = _mode.asStateFlow()
+
+    fun setMode(next: ThemeMode) {
+        check(preferences.edit().putString(MODE_KEY, next.name).commit()) { "Could not save the theme mode" }
+        _mode.value = next
+    }
 
     fun setBuiltIn(id: String) {
         val next = ActiveTheme.BuiltIn(id)
@@ -84,8 +96,12 @@ class ThemePaletteStore(context: Context) {
         }
     }
 
+    private fun readMode(): ThemeMode =
+        runCatching { ThemeMode.valueOf(preferences.getString(MODE_KEY, null).orEmpty()) }.getOrDefault(ThemeMode.SYSTEM)
+
     private companion object {
         const val PREFERENCES_NAME = "fylz_theme_settings"
+        const val MODE_KEY = "mode"
         const val KIND_KEY = "kind"
         const val VALUE_KEY = "value"
         const val LAST_CUSTOM_KEY = "last_custom"

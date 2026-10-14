@@ -154,6 +154,7 @@ private fun GeometryCanvas(
                 val first = projected.getOrNull(edge.from) ?: return@forEach
                 val second = projected.getOrNull(edge.to) ?: return@forEach
                 drawLine(
+                    // Fixed white (content rendering): wireframe lines over the always-dark preview canvas, not UI accent.
                     color = Color.White.copy(alpha = 0.82f),
                     start = screen(first),
                     end = screen(second),

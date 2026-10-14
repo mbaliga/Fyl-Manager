@@ -62,6 +62,7 @@ fun SelectionActionBar(
     val middleItems = items.filterNot { it.id == CLEAR_ID || it.id == RECYCLE_ID }
     val onDark = MaterialTheme.colorScheme.inverseOnSurface
 
+    // Neutral chrome, deliberately not the accent: the overflow actions on it carry the accent.
     Surface(color = MaterialTheme.colorScheme.inverseSurface, shape = RoundedCornerShape(20.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
@@ -75,11 +76,10 @@ fun SelectionActionBar(
             )
             // The mockup only shows the count, cancel and trash; everything else this bar can do
             // (cut/copy/move/rename/tags/archive/extract/batch-rename/pdf/share) still renders,
-            // scrollable, through the shared ActionButton (a TextButton, so its icon/text colour
-            // is this theme's `primary` -- ActionButton.kt's own fixed styling, shared with other
-            // bars, intentionally left alone here -- rather than true white; `primary` reads fine
-            // against inverseSurface in every bundled palette, and these are secondary/overflow
-            // actions, not the bar's own focal point).
+            // scrollable, through the shared ActionButton, drawn in `inversePrimary` -- the accent
+            // Material3 reserves for text on `inverseSurface` (FylzTheme derives it from the other
+            // light/dark half of the palette). The plain `primary` the button defaults to has only
+            // 1.3-2.0:1 contrast on this bar in the bundled palettes; `inversePrimary` has 5-8:1.
             Row(
                 modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -90,6 +90,7 @@ fun SelectionActionBar(
                         label = item.label,
                         onClick = { dispatcher.run(item.id, state, null, ctx) },
                         enabled = item.enabled,
+                        contentColor = MaterialTheme.colorScheme.inversePrimary,
                     )
                 }
             }
@@ -99,6 +100,7 @@ fun SelectionActionBar(
                 }
             }
             recycleItem?.let { item ->
+                // Fixed red on purpose: the owner's mockup destructive button, semantic rather than accent.
                 Surface(color = Color(0xFFD32F2F), shape = CircleShape, modifier = Modifier.size(40.dp)) {
                     IconButton(onClick = { dispatcher.run(item.id, state, null, ctx) }, enabled = item.enabled) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = item.label, tint = Color.White)

@@ -54,7 +54,6 @@ import java.text.DateFormat
 import java.util.Date
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.ui.theme.ThemePaletteStore
-import io.github.mbaliga.fylz.model.ThemeMode
 
 class PostV1ToolsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,9 +62,11 @@ class PostV1ToolsActivity : ComponentActivity() {
         // while the rest of the app was dark — the light-coloured Tools screen inside a
         // dark app that device testing turned up. An activity of Fylz is themed by Fylz.
         setContent {
-            val palette by remember { ThemePaletteStore(applicationContext) }.resolved.collectAsState()
+            val themeStore = remember { ThemePaletteStore(applicationContext) }
+            val palette by themeStore.resolved.collectAsState()
+            val themeMode by themeStore.mode.collectAsState()
             FylzTheme(
-                themeMode = ThemeMode.SYSTEM,
+                themeMode = themeMode,
                 palette = palette,
                 dynamicColor = false,
             ) { PostV1ToolsScreen() }

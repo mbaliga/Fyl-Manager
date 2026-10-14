@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Moss, matching the bundled "moss" theme preset (ui/theme/BuiltInThemePresets.kt), the default. -->
+    <!-- Moss, matching the bundled "moss" theme preset (ui/theme/BuiltInThemePresets.kt), the default.
+         Fixed on purpose (reference design): a static launcher resource cannot follow the runtime accent; this is the brand colour. -->
     <color name="ic_launcher_background">#2E5A43</color>
 </resources>

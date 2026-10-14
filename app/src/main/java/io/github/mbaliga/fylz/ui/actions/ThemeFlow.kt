@@ -1,10 +1,17 @@
 package io.github.mbaliga.fylz.ui.actions
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -16,10 +23,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import io.github.mbaliga.fylz.ui.theme.ActiveTheme
 import io.github.mbaliga.fylz.ui.theme.BuiltInThemePresets
+import io.github.mbaliga.fylz.ui.theme.ThemePalette
 import io.github.mbaliga.fylz.ui.theme.ThemePaletteStore
 
 /**
@@ -46,6 +57,13 @@ class ThemeFlow(private val store: ThemePaletteStore, private val onToast: (Stri
     var previewError by mutableStateOf<String?>(null); private set
 
     val builtInIds: List<String> get() = BuiltInThemePresets.ids
+
+    /** Which theme is applied right now, so the picker can mark it. Read when the picker
+     * (re)composes; choosing a theme closes the picker, so it is never stale on screen. */
+    val activeTheme: ActiveTheme get() = store.selection.value
+
+    /** The palette currently applied -- the swatch for "Custom…" when a custom theme is active. */
+    val activePalette: ThemePalette get() = store.resolved.value
 
     fun openPicker() { pickerOpen = true }
 
@@ -110,6 +128,8 @@ fun ThemeFlowHost(flow: ThemeFlow) {
         )
         else -> ThemePickerDialog(
             builtInIds = flow.builtInIds,
+            active = flow.activeTheme,
+            activePalette = flow.activePalette,
             onChooseBuiltIn = flow::chooseBuiltIn,
             onCustom = flow::beginCustom,
             onDismiss = flow::dismiss,
@@ -120,22 +140,46 @@ fun ThemeFlowHost(flow: ThemeFlow) {
 @Composable
 private fun ThemePickerDialog(
     builtInIds: List<String>,
+    active: ActiveTheme,
+    activePalette: ThemePalette,
     onChooseBuiltIn: (String) -> Unit,
     onCustom: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Each row shows the accent it would apply, in the half (light/dark) the screen is showing now,
+    // and a tick on the one in force: a preview of the choice, not just its name.
+    val darkSurface = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    fun accentOf(palette: ThemePalette): Color = if (darkSurface) palette.dark.primary else palette.light.primary
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Theme") },
         text = {
             Column {
-                builtInIds.forEach { id -> TextButton(onClick = { onChooseBuiltIn(id) }) { Text(BuiltInThemePresets.titleFor(id)) } }
-                TextButton(onClick = onCustom) { Text("Custom…") }
+                builtInIds.forEach { id ->
+                    val swatch = BuiltInThemePresets.load(id).getOrNull()?.let(::accentOf) ?: MaterialTheme.colorScheme.primary
+                    ThemeChoiceButton(BuiltInThemePresets.titleFor(id), swatch, active == ActiveTheme.BuiltIn(id)) { onChooseBuiltIn(id) }
+                }
+                val customActive = active is ActiveTheme.Custom
+                ThemeChoiceButton("Custom…", if (customActive) accentOf(activePalette) else null, customActive, onCustom)
             }
         },
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+/** One picker row: an accent dot ([swatch], an empty ring when null), the [title], and a tick when [active]. */
+@Composable
+private fun ThemeChoiceButton(title: String, swatch: Color?, active: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Box(
+            Modifier
+                .size(16.dp)
+                .let { if (swatch != null) it.background(swatch, CircleShape) else it.border(1.dp, MaterialTheme.colorScheme.outline, CircleShape) },
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(if (active) "$title  \u2713" else title)
+    }
 }
 
 @Composable

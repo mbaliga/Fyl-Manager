@@ -166,7 +166,7 @@ private fun OperationHistoryCard(
                 tint = if (operation.state == OperationState.NEEDS_ATTENTION) {
                     MaterialTheme.colorScheme.onErrorContainer
                 } else {
-                    MaterialTheme.colorScheme.primary
+                    MaterialTheme.colorScheme.primary // Semantic: job state, the normal row reads in the accent; attention stays on the error role.
                 },
                 modifier = Modifier.size(24.dp),
             )

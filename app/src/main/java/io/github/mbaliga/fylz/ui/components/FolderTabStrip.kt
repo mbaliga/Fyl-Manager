@@ -44,6 +44,7 @@ fun FolderTabStrip(
     modifier: Modifier = Modifier,
 ) {
     Surface(
+        // Neutral chrome, deliberately not the accent: only the active pill below carries it.
         color = MaterialTheme.colorScheme.inverseSurface,
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
         modifier = modifier.fillMaxWidth(),
@@ -55,7 +56,7 @@ fun FolderTabStrip(
             items(tabs, key = { it.id }) { tab ->
                 val active = tab.id == activeTabId
                 Surface(
-                    color = if (active) MaterialTheme.colorScheme.inverseOnSurface else Color.Transparent,
+                    color = if (active) MaterialTheme.colorScheme.inversePrimary else Color.Transparent, // accent role: the chosen accent on the inverse bar
                     contentColor = if (active) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.inverseOnSurface,
                     shape = RoundedCornerShape(50),
                     modifier = Modifier.clickable { onSelect(tab.id) },

@@ -75,7 +75,7 @@ class SearchablePdfService(
                     val dimensions = renderDimensions(sourcePage.width, sourcePage.height, options)
                     val bitmap = Bitmap.createBitmap(dimensions.first, dimensions.second, Bitmap.Config.ARGB_8888)
                     try {
-                        bitmap.eraseColor(Color.WHITE)
+                        bitmap.eraseColor(Color.WHITE) // Fixed white (content rendering): the OCR page raster's paper, not UI accent.
                         sourcePage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
                         val recognized = recognizer.recognize(bitmap)
                         val pageInfo = PdfDocument.PageInfo.Builder(

@@ -121,6 +121,7 @@ data class FolderCardPalette(
 )
 
 object FolderCardPalettes {
+    // Fixed on purpose (reference design): literal hex values from the owner's two Figma SVGs; neutral greys, white and black, none of them an accent.
     /** `11a47228-Frame_2147226877.svg` (light mode). */
     val Light = FolderCardPalette(
         plate = Color(0xFFD6DADB),

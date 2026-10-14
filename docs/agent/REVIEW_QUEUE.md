@@ -1885,3 +1885,72 @@ app itself, and the two real fixes left in `app/build.gradle.kts` are harmless i
 but does mean this task's own visual fidelity to the mockup was never confirmed by an actual
 rendered image, only by code review against the SVGs' own geometry -- worth a real device or an
 environment with a working JDK 11/17 revisiting this before treating the visual match as settled.
+
+---
+
+## Accent theming, and the Fylz / Fotoz naming decision (owner request, not a MASTER_PLAN item)
+
+**Not a gate:** the owner asked for this directly (13 Oct 2026): name the apps Fylz and Fotoz
+everywhere, and make sure the apps are themeable "at least at the level of accent colour selection".
+Logged here for a second look, not because a gate needs clearing.
+
+**What shipped:** the chosen accent now reaches every accent-role element, and the picker is
+reachable, persistent and live. Full file list: the matching `docs/agent/PROGRESS.md` row.
+
+1. **Naming: nothing user-visible needed renaming; the decision is recorded and the one old-name
+   occurrence is kept as history.** A full audit (every tracked file, every string literal, the
+   manifest, resources, QML, `ut/`, the three workflows, and `git log -S` for "Fyl Manager" and
+   "FylManager") found the launcher label, in-app strings, notification channels, crash label and CI
+   artifact and workflow display names already say Fylz. The only "Fyl Manager" is the naming-research
+   bullet in `docs/PRODUCT_RESEARCH.md`; it is research history, so it stays, with one new line beside
+   it recording the decision. Sibling-app prose "Foto Xplorr" became "Fotoz" in a build-script comment
+   and two docs; the `Foto-Xplorr` repo slug in URLs, `com.fotoxplorr.app.*` identifiers and every
+   `Fyl-Manager` path/slug are addresses or identifiers and are untouched.
+2. **Compatibility paths: none needed, on purpose.** The app writes and later reads back by name
+   `.fylz-backup-manifest.json`, `.fylz-trash`, `.fylz-part-` staging files, and creates `Fylz Backup - …`
+   folders, `Fylz-<stamp>.zip`, `Fylz-pages-`/`Fylz-merged-` PDFs and `fylz-library-metadata.json`. None of
+   them has ever carried the old name (history check above), so there is no old-name data on any device
+   to keep recognising; renaming any of them would itself have orphaned existing backups, recycle bins
+   and staging files. If a device ever does hold something under another old name, this is the place
+   that would need a read-back alias.
+3. **Why most accent-role widgets ignored the accent.** `toColorScheme` passed only 8 of Material3's
+   ~40 tokens, so containers, `onPrimary` and `inversePrimary` stayed baseline purple. They are now
+   derived centrally (call-site-free). Taste calls, cheap to revisit: container tint is the accent at
+   18% (light) / 30% (dark) over `surface`, with `onSurface` as the on-colour; `onPrimary` is black or
+   white by luminance (so a pastel dark-mode accent gets black text, which also fixes the scrubber
+   bubble and Checkbox/Switch contents).
+4. **`inversePrimary` is paired with the other palette half** (light mode uses the dark primary and vice
+   versa). Material3 draws accent text on `inverseSurface` with `inversePrimary`, and `inverseSurface`
+   is dark in light mode and light in dark mode; each preset already defines a light/dark pair, so no
+   schema change. Measured on the selection bar: the overflow actions were `primary` at 1.3-2.0:1
+   for Moss/Ink/Clay in light and dark (the old code comment claimed they read fine); now 5.0-7.8:1,
+   and Electric the same. The active tab pill and view-mode icon use it too.
+5. **Electric restored as a fourth bundled accent.** It was dropped under "2-3 presets" when theming
+   was not user-facing; with a picker, a one-tap blue/violet (the colour the folder-card mockup's glow
+   is described in) is worth the 25 lines. Its accent pairs are the old `AccentPreset` values; its
+   tertiary and neutrals are Ink's. `BuiltInThemePresetsTest` covers it generically.
+6. **`ThemeMode` (Light/Dark/System) is now persisted** with the accent, because the mode decides which
+   half of the accent's pair is on screen; before, it reset to System on every restart and the three
+   secondary activities hard-coded System. `FylzV1App.kt` was edited in place only (it is at its line
+   ratchet, 2247).
+7. **Picker placement.** "Theme…" moved from under "Tools" (below the pinch rows) to "Appearance"
+   beside Light/Dark, with a dot for the live accent; the dialog shows each preset's accent dot and
+   ticks the active one. The custom-JSON path is unchanged: still the mandatory plain-text preview.
+8. **Kept fixed, each now carrying a one-line why-comment:** the Figma-transcribed folder-card palettes,
+   the destructive red recycle button, the neutral `inverseSurface` bars (only their active/accent
+   elements change), preview/PDF/OCR content colours, the Moss fallback literals, the static launcher
+   icon colour, and the two job-state `primary` uses.
+9. **Not done, deliberately:** no accent concept exists in the QML / Ubuntu Touch slice
+   (`core/crates/fylz-ffi-qt/qml/main.qml` carries no colours; its header lists a QML theme as future
+   work). The optional `surfaceContainer*` restoration (neutral tint dropped by the JSON-theming
+   commit) and an `NoHardCodedAccentTest` source scan were left out as not accent-role.
+10. **Not verified on a device.** The tests prove the accent reaches the `ColorScheme`, the saved
+    choice survives a store restart, and the crash screen follows it; they cannot show how the
+    result looks. A real-device pass through Tools -> Appearance -> Theme in light and dark is owed.
+
+**Relevant commit:** the commit adding this feature (see `docs/agent/PROGRESS.md`'s matching row).
+
+**Risk if it turns out wrong:** low. The derivation is a pure function with unit tests, the call-site
+edits are colour-token swaps, and nothing touches file operations. The tint strengths and the Electric
+tertiary are taste. The one behavioural change beyond colour is `ThemeMode` persistence, which uses
+the same SharedPreferences file and fails safe to System.

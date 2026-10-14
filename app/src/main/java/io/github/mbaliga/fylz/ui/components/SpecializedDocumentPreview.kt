@@ -167,7 +167,7 @@ private fun renderPdfPage(renderer: PdfRenderer, index: Int, targetWidth: Int): 
     renderer.openPage(index).use { page ->
         val height = (targetWidth * page.height.toFloat() / page.width).toInt().coerceAtLeast(1)
         Bitmap.createBitmap(targetWidth, height, Bitmap.Config.ARGB_8888).also { bitmap ->
-            bitmap.eraseColor(android.graphics.Color.WHITE)
+            bitmap.eraseColor(android.graphics.Color.WHITE) // Fixed white (content rendering): the rendered page's paper, not UI accent.
             page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         }.asImageBitmap()
     }

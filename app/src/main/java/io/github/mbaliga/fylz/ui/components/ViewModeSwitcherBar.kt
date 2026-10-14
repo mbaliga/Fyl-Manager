@@ -42,6 +42,7 @@ fun ViewModeSwitcherBar(
     modifier: Modifier = Modifier,
 ) {
     Surface(
+        // Neutral chrome, deliberately not the accent: only the active icon below carries it.
         color = MaterialTheme.colorScheme.inverseSurface,
         shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
         modifier = modifier,
@@ -59,7 +60,7 @@ private fun ViewModeIconButton(icon: ImageVector, mode: ViewMode, current: ViewM
     val active = mode == current
     val contentColor = if (active) MaterialTheme.colorScheme.inverseSurface else MaterialTheme.colorScheme.inverseOnSurface
     Surface(
-        color = if (active) MaterialTheme.colorScheme.inverseOnSurface else Color.Transparent,
+        color = if (active) MaterialTheme.colorScheme.inversePrimary else Color.Transparent, // accent role: the chosen accent on the inverse bar
         contentColor = contentColor,
         shape = CircleShape,
     ) {

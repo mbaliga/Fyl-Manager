@@ -271,6 +271,7 @@ class PdfPageTools(
         try {
             canvas.concat(matrix)
             canvas.clipRect(RectF(0f, 0f, bitmapWidth.toFloat(), bitmapHeight.toFloat()))
+            // Fixed near-invisible black (content rendering): the hidden OCR text layer's ink, not UI accent.
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(1, 0, 0, 0) }
             lines.take(MAX_OCR_LINES_PER_PAGE).forEach { line ->
                 val box = line.boundingBox ?: return@forEach

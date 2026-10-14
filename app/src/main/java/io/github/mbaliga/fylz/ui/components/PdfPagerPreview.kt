@@ -67,7 +67,7 @@ fun PdfPagerPreview(
                             val height = (source.height * scale).toInt().coerceAtLeast(1)
                             require(width.toLong() * height <= MAX_RENDER_PIXELS) { "PDF page exceeds the render safety limit." }
                             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                            bitmap.eraseColor(android.graphics.Color.WHITE)
+                            bitmap.eraseColor(android.graphics.Color.WHITE) // Fixed white (content rendering): the PDF page's paper, not UI accent.
                             source.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                             RenderedPdfPage(bitmap.asImageBitmap(), renderer.pageCount, safeIndex)
                         }

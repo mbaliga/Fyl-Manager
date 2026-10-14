@@ -339,8 +339,8 @@ fun FylzV1App(
     operationsNeedingAttention: Int = 0,
     overlays: @Composable () -> Unit = {},
 ) {
-    var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
     val appCtx = LocalContext.current.applicationContext; val paletteStore = remember { io.github.mbaliga.fylz.ui.theme.ThemePaletteStore(appCtx) }; val palette by paletteStore.resolved.collectAsState()
+    val themeMode by paletteStore.mode.collectAsState()
     FylzTheme(
         themeMode = themeMode,
         palette = palette,
@@ -348,7 +348,7 @@ fun FylzV1App(
     ) {
         FylzV1Workspace(
             themeMode = themeMode,
-            onThemeModeChange = { themeMode = it }, paletteStore = paletteStore,
+            onThemeModeChange = paletteStore::setMode, paletteStore = paletteStore,
             viewUri = viewUri,
             onShowHistory = onShowHistory,
             operationsNeedingAttention = operationsNeedingAttention,
@@ -2025,7 +2025,7 @@ private fun FileRowV1(
                 onDoubleClick = { dispatcher.gesture(GestureId.ITEM_DOUBLE_TAP, target, state, ctx) },
                 onLongClick = { dispatcher.gesture(GestureId.ITEM_LONG_PRESS, target, state, ctx) },
             )
-            .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+            .background(if (selected || focused) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent)
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .semantics { contentDescription = label },
         verticalAlignment = Alignment.CenterVertically,

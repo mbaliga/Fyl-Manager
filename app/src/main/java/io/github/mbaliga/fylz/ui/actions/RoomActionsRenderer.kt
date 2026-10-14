@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
@@ -179,10 +180,15 @@ fun LocationsRoom(
     }
 }
 
+/** The accent picker's row. Listed under "Appearance" beside Light/Dark (not under "Tools", below
+ * the pinch rows), with a dot showing the accent currently in force. */
+private val THEME_PALETTE_ID = ActionId.parse("fylz.theme.palette")
+
 private val THEME_ACTION_IDS = setOf(
     ActionId.parse("fylz.theme.system"),
     ActionId.parse("fylz.theme.light"),
     ActionId.parse("fylz.theme.dark"),
+    THEME_PALETTE_ID,
 )
 
 /**
@@ -211,6 +217,7 @@ fun ToolsRoom(resolver: ActionResolver, dispatcher: ActionDispatcher, state: Bro
         RoomHeading("Appearance")
         items.filter { it.id in THEME_ACTION_IDS }.forEach { item ->
             val selected = item.checked == true
+            val isPalette = item.id == THEME_PALETTE_ID
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -229,8 +236,12 @@ fun ToolsRoom(resolver: ActionResolver, dispatcher: ActionDispatcher, state: Bro
                     item.label,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected) 1f else 0.6f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (selected || isPalette) 1f else 0.6f),
                 )
+                if (isPalette) {
+                    // The live accent: this room renders inside FylzTheme, so `primary` is the chosen one.
+                    Box(Modifier.padding(start = 10.dp).size(12.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+                }
             }
         }
     }

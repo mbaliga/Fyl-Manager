@@ -35,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.github.mbaliga.fylz.model.ThemeMode
 import io.github.mbaliga.fylz.operations.FileOperation
 import io.github.mbaliga.fylz.operations.OperationJournal
 import io.github.mbaliga.fylz.operations.OperationState
@@ -49,9 +48,11 @@ class OperationHistoryActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            val palette by remember { ThemePaletteStore(applicationContext) }.resolved.collectAsState()
+            val themeStore = remember { ThemePaletteStore(applicationContext) }
+            val palette by themeStore.resolved.collectAsState()
+            val themeMode by themeStore.mode.collectAsState()
             FylzTheme(
-                themeMode = ThemeMode.SYSTEM,
+                themeMode = themeMode,
                 palette = palette,
                 dynamicColor = false,
             ) {
@@ -251,7 +252,7 @@ private fun OperationCard(operation: FileOperation) {
 
 @Composable
 private fun stateColor(state: OperationState) = when (state) {
-    OperationState.SUCCEEDED -> MaterialTheme.colorScheme.primary
+    OperationState.SUCCEEDED -> MaterialTheme.colorScheme.primary // Semantic: job state, "ok" reads in the accent; failures stay on the error role.
     OperationState.FAILED,
     OperationState.PARTIAL,
     OperationState.NEEDS_ATTENTION,

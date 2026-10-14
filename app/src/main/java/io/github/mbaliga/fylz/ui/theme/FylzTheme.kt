@@ -10,6 +10,9 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
@@ -45,20 +48,50 @@ val SpaceGrotesk: FontFamily = FontFamily(
     Font(R.font.space_grotesk, weight = FontWeight.Bold, variationSettings = FontVariation.Settings(FontVariation.weight(700))),
 )
 
-/** Builds the Material3 [ColorScheme] for one light/dark half of a [ThemePalette] -- every field
- * this JSON theme schema defines maps straight onto a `ColorScheme` field of the same name. */
-internal fun PaletteColors.toColorScheme(dark: Boolean): ColorScheme = if (dark) {
-    darkColorScheme(
-        primary = primary, secondary = secondary, tertiary = tertiary,
-        background = background, surface = surface, surfaceVariant = surfaceVariant,
-        onBackground = onBackground, onSurface = onSurface,
-    )
-} else {
-    lightColorScheme(
-        primary = primary, secondary = secondary, tertiary = tertiary,
-        background = background, surface = surface, surfaceVariant = surfaceVariant,
-        onBackground = onBackground, onSurface = onSurface,
-    )
+/**
+ * Builds the Material3 [ColorScheme] for one light/dark half of a [ThemePalette].
+ *
+ * The eight colours the JSON schema defines map straight onto the `ColorScheme` field of the same
+ * name. Material3's other tokens (the containers, their on-colours, `onPrimary`, `inversePrimary`)
+ * would otherwise fall back to the fixed baseline purple tonal palette, which made every FAB,
+ * FilterChip, SegmentedButton, tonal button and tertiary notice ignore the chosen accent. They are
+ * therefore derived here from the palette's own accent colours, so the one accent the user picks
+ * drives every accent-role element with no call-site changes:
+ *
+ * - `onPrimary`/`onSecondary`/`onTertiary`: black or white, whichever reads on that accent.
+ * - `primaryContainer`/`secondaryContainer`/`tertiaryContainer`: the accent tinted over `surface`
+ *   (18% light, 30% dark), with `onSurface` as the on-colour.
+ * - `inversePrimary`: the accent to draw on `inverseSurface` (the selection bar, tab strip and
+ *   view-mode bar). [inversePrimary] defaults to this half's own `primary`; [FylzTheme] passes the
+ *   *other* half's primary, because `inverseSurface` is dark in light mode and light in dark mode,
+ *   and each preset already defines a light/dark pair.
+ */
+internal fun PaletteColors.toColorScheme(dark: Boolean, inversePrimary: Color = primary): ColorScheme {
+    fun on(accent: Color): Color = if (accent.luminance() > 0.5f) Color.Black else Color.White
+    fun tint(accent: Color): Color = accent.copy(alpha = if (dark) 0.30f else 0.18f).compositeOver(surface)
+    return if (dark) {
+        darkColorScheme(
+            primary = primary, secondary = secondary, tertiary = tertiary,
+            background = background, surface = surface, surfaceVariant = surfaceVariant,
+            onBackground = onBackground, onSurface = onSurface,
+            onPrimary = on(primary), onSecondary = on(secondary), onTertiary = on(tertiary),
+            primaryContainer = tint(primary), onPrimaryContainer = onSurface,
+            secondaryContainer = tint(secondary), onSecondaryContainer = onSurface,
+            tertiaryContainer = tint(tertiary), onTertiaryContainer = onSurface,
+            inversePrimary = inversePrimary,
+        )
+    } else {
+        lightColorScheme(
+            primary = primary, secondary = secondary, tertiary = tertiary,
+            background = background, surface = surface, surfaceVariant = surfaceVariant,
+            onBackground = onBackground, onSurface = onSurface,
+            onPrimary = on(primary), onSecondary = on(secondary), onTertiary = on(tertiary),
+            primaryContainer = tint(primary), onPrimaryContainer = onSurface,
+            secondaryContainer = tint(secondary), onSecondaryContainer = onSurface,
+            tertiaryContainer = tint(tertiary), onTertiaryContainer = onSurface,
+            inversePrimary = inversePrimary,
+        )
+    }
 }
 
 private val FylzTypography = Typography(
@@ -114,8 +147,8 @@ fun FylzTheme(
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && darkTheme -> dynamicDarkColorScheme(context)
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> dynamicLightColorScheme(context)
-        darkTheme -> palette.dark.toColorScheme(dark = true)
-        else -> palette.light.toColorScheme(dark = false)
+        darkTheme -> palette.dark.toColorScheme(dark = true, inversePrimary = palette.light.primary)
+        else -> palette.light.toColorScheme(dark = false, inversePrimary = palette.dark.primary)
     }
 
     MaterialTheme(

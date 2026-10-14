@@ -113,4 +113,22 @@ class ThemeFlowTest {
         assertEquals("not json at all", flow.previewText)
         assertEquals(ActiveTheme.BuiltIn("ink"), store.selection.value)
     }
+
+    @Test
+    fun `the picker knows which theme is active so it can mark it`() {
+        val flow = newFlow()
+        assertEquals(ActiveTheme.BuiltIn("moss"), flow.activeTheme)
+
+        flow.openPicker()
+        flow.chooseBuiltIn("ink")
+        assertEquals(ActiveTheme.BuiltIn("ink"), flow.activeTheme)
+
+        flow.openPicker()
+        flow.beginCustom()
+        flow.onCustomTextChange(validJson)
+        flow.requestPreview()
+        flow.applyCustom()
+        assertTrue(flow.activeTheme is ActiveTheme.Custom)
+        assertEquals("Custom", flow.activePalette.name)
+    }
 }

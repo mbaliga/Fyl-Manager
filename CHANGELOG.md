@@ -63,6 +63,11 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Removed independent global floating recovery controls.
 - Added explicit labels and content descriptions for recovery actions.
 
+### Theming
+
+- The accent colour is now selectable and persistent: Tools -> Appearance -> Theme offers Moss, Ink, Clay and Electric (each shown with its accent dot, the active one ticked), or your own JSON theme after a plain-text preview. Light/Dark/System is remembered across restarts too.
+- The chosen accent now drives every accent-coloured element, including floating action buttons, filter chips, tonal buttons, the selected-row highlight, the tab and view-mode pills, the selection bar's actions, folder keyboard focus and the crash-recovery screen, which used to keep the default purple or green.
+
 ### Release engineering
 
 - Added debug CI and release-readiness workflows.
