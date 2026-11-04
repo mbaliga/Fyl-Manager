@@ -119,6 +119,122 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!--
+            Home-screen widgets (docs/widgets.md). Providers are exported because launchers bind
+            them; each one only redraws widgets bound to it, whatever ids an intent names
+            (widget/FylzWidgets.kt, WidgetIds.owned). The clock,
+            time-zone and locale broadcasts are exempt from Android's implicit-broadcast limits and
+            redraw day words and strings; the media broadcasts redraw Space when a volume comes or
+            goes. The tick and action receivers below are reached only by Fylz's own explicit,
+            immutable PendingIntents.
+        -->
+        <receiver
+            android:name=".widget.SpaceWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_space_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_MOUNTED" />
+                <action android:name="android.intent.action.MEDIA_UNMOUNTED" />
+                <action android:name="android.intent.action.MEDIA_EJECT" />
+                <action android:name="android.intent.action.MEDIA_REMOVED" />
+                <action android:name="android.intent.action.MEDIA_BAD_REMOVAL" />
+                <data android:scheme="file" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_space_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.BackupsWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_backups_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_backups_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.RecoveryWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_recovery_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_recovery_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.OperationsWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_operations_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_operations_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.FoldersWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_folders_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_folders_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.IndexWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_index_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_index_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.WidgetTickReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.WidgetActionReceiver"
+            android:exported="false" />
+
     </application>
 
 </manifest>

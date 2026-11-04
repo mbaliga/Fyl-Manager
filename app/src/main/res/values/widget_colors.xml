@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Home-screen widget colours, day values (night values in values-night/).
+
+    Fylz's MOSS palette, the fallback FylzTheme uses when dynamic colour is off. The widgets keep
+    the fixed palette rather than wallpaper colours so a role never changes meaning with the
+    wallpaper. The accent is decoration and fill length only: no widget state is carried by colour.
+    Every state has a glyph and a word (docs/DESIGN.md, docs/widgets.md).
+-->
+<resources>
+    <color name="widget_surface">#F1F4F1</color>
+    <color name="widget_on_surface">#191C1A</color>
+    <color name="widget_on_surface_variant">#414942</color>
+    <color name="widget_accent">#315F49</color>
+    <color name="widget_pad">#E3E9E4</color>
+    <color name="widget_track">#D5DDD7</color>
+</resources>

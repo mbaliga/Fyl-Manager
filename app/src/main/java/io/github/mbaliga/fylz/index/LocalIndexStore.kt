@@ -1,6 +1,8 @@
 package io.github.mbaliga.fylz.index
 
 import android.content.Context
+import io.github.mbaliga.fylz.model.StoreChanges
+import io.github.mbaliga.fylz.model.StoreTopic
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -8,6 +10,7 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 class LocalIndexStore(context: Context) {
+    private val appContext: Context = context.applicationContext ?: context
     private val root = File(context.filesDir, "local-index")
     private val filesFile = File(root, "files.json")
     private val scopesFile = File(root, "scopes.json")
@@ -158,6 +161,7 @@ class LocalIndexStore(context: Context) {
         if (file.exists() && !file.renameTo(backup)) { temp.delete(); error("Unable to preserve index metadata.") }
         if (!temp.renameTo(file)) { backup.renameTo(file); error("Unable to commit index metadata.") }
         backup.delete()
+        StoreChanges.changed(appContext, StoreTopic.LOCAL_INDEX)
     }
 
     private fun JSONArray.toStringSet(): Set<String> = buildSet { repeat(length()) { add(getString(it)) } }

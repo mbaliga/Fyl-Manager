@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    android:previewImage for every Fylz widget. Fylz's minSdk is 31, where launchers draw
+    android:previewLayout instead, so this is only a fallback for hosts that ignore previewLayout.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="80dp"
+    android:viewportWidth="160"
+    android:viewportHeight="80">
+    <path
+        android:fillColor="@color/widget_surface"
+        android:pathData="M16,0H144A16,16 0,0 1,160 16V64A16,16 0,0 1,144 80H16A16,16 0,0 1,0 64V16A16,16 0,0 1,16 0Z" />
+    <path
+        android:fillColor="@color/widget_accent"
+        android:pathData="M14,18H74V26H14Z M14,36H120V44H14Z" />
+    <path
+        android:fillColor="@color/widget_track"
+        android:pathData="M14,56H146V62H14Z" />
+    <path
+        android:fillColor="@color/widget_accent"
+        android:pathData="M14,56H96V62H14Z" />
+</vector>

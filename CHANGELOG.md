@@ -51,6 +51,13 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Removed independent global floating recovery controls.
 - Added explicit labels and content descriptions for recovery actions.
 
+### Home-screen widgets
+
+- Added six resizable home-screen widgets for any launcher: Space, Backups, Recovery, In progress, Quick folders and Index. Each has four size layouts, from 2x1 to 4x3 and taller.
+- The widgets show counts, sizes, times and standard folder names only: no file names, paths, previews, backup plan names or volume labels. Quick folders shows no item counts, and without All files access it says so at every size instead of drawing pads.
+- Fylz pushes widget updates when the journal, recycle manifest, backup state or index changes, and once at midnight, a backup window or a backup lease's end; nothing polls. If Fylz's process dies mid-copy, a watchdog redraw 15 minutes after the last journal write lets the journal's recovery mark the copy interrupted. The widgets cache nothing, need no new permission and add no dependency.
+- Compiled and unit-tested only. Device rendering, taps and refresh timing are not yet verified; see [docs/widgets.md](docs/widgets.md).
+
 ### Release engineering
 
 - Added debug CI and release-readiness workflows.
