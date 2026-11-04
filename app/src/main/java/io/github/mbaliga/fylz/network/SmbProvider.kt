@@ -127,12 +127,23 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
         }
     }
 
-    override suspend fun upload(path: String, source: File, mimeType: String) = withContext(Dispatchers.IO) {
+    override suspend fun upload(path: String, source: File, mimeType: String, overwrite: Boolean) = withContext(Dispatchers.IO) {
         requireWrites()
         require(source.isFile)
         withShare { share ->
+            RemoteWritePolicy.requireDeletablePath(path) // never write onto the share root itself
             val target = smbPath(path)
-            val temporary = "$target.fylz-upload-${System.nanoTime()}"
+            val temporary = "$target${RemoteWritePolicy.TEMP_UPLOAD_MARKER}${System.nanoTime()}"
+            // Once the old file is gone, the verified temporary copy is the only good copy left, so it
+            // must survive any later failure. Deleting it there would lose both versions.
+            fun refuseClash() {
+                val isFolder = share.folderExists(target)
+                if (isFolder || (!overwrite && share.fileExists(target))) {
+                    throw RemoteConflictException(target.substringAfterLast('\\'), isFolder)
+                }
+            }
+            refuseClash() // before transferring anything
+            var originalRemoved = false
             try {
                 openWrite(share, temporary).use { remote ->
                     source.inputStream().buffered().use { input ->
@@ -142,7 +153,11 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
                 require(share.getFileInformation(temporary).standardInformation.endOfFile == source.length()) {
                     "SMB upload size verification failed."
                 }
-                if (share.fileExists(target)) share.rm(target)
+                refuseClash() // again: something may have appeared at the target during the transfer
+                if (share.fileExists(target)) {
+                    share.rm(target)
+                    originalRemoved = true
+                }
                 share.openFile(
                     temporary,
                     EnumSet.of(AccessMask.DELETE, AccessMask.GENERIC_READ, AccessMask.GENERIC_WRITE),
@@ -152,6 +167,13 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
                     EnumSet.of(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE),
                 ).use { it.rename(target, true) }
             } catch (failure: Throwable) {
+                if (originalRemoved) {
+                    throw IllegalStateException(
+                        "The old file was removed but the new copy could not be renamed into place. " +
+                            "Your upload is kept on the share as ${temporary.substringAfterLast('\\')}.",
+                        failure,
+                    )
+                }
                 runCatching { if (share.fileExists(temporary)) share.rm(temporary) }
                 throw failure
             }
@@ -160,12 +182,14 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
 
     override suspend fun createDirectory(path: String) = withContext(Dispatchers.IO) {
         requireWrites()
+        RemoteWritePolicy.requireDeletablePath(path)
         withShare { it.mkdir(smbPath(path)) }
     }
 
     override suspend fun delete(path: String, confirmed: Boolean) = withContext(Dispatchers.IO) {
         requireWrites()
         require(confirmed) { "Deleting a remote item requires explicit confirmation." }
+        RemoteWritePolicy.requireDeletablePath(path)
         withShare { share ->
             val target = smbPath(path)
             if (share.folderExists(target)) share.rmdir(target, false) else share.rm(target)
