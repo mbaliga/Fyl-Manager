@@ -1,5 +1,11 @@
 package io.github.mbaliga.fylz.ui
 
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import java.io.File
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -65,9 +71,9 @@ import java.util.UUID
  * directory listing into a text alert and forgot the credentials. Connections are now saved
  * (secrets in the Keystore-backed vault), listed, browsable and deletable.
  *
- * Scope note: this browses and inspects remote locations. Remote-to-local transfers still run
- * through each provider's `download`, which is not yet wired to a destination picker -- that is
- * called out in the PR rather than faked here.
+ * Tapping a remote file asks where to save it (system "Create document" picker), downloads it
+ * through the provider's verified atomic path into private cache, then streams it to the chosen
+ * location. Uploads and deletes remain gated behind the per-connection "Allow writes" switch.
  */
 @Composable
 fun RemoteConnectionsDialog(
@@ -85,6 +91,39 @@ fun RemoteConnectionsDialog(
     var listing by remember { mutableStateOf<List<RemoteObject>>(emptyList()) }
     var path by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+    var pendingDownload by remember { mutableStateOf<RemoteObject?>(null) }
+    val context = LocalContext.current
+
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { target: Uri? ->
+        val entry = pendingDownload
+        val connection = browsing
+        pendingDownload = null
+        if (target == null || entry == null || connection == null) return@rememberLauncherForActivityResult
+        val secret = store.secret(connection.id)
+        if (secret == null) {
+            onError("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
+            return@rememberLauncherForActivityResult
+        }
+        val remotePath = if (path.isBlank()) entry.name else "$path/${entry.name}"
+        busy = true
+        scope.launch {
+            val staging = File(context.cacheDir, "remote-download-${System.nanoTime()}.tmp")
+            runCatching {
+                browser.download(connection, remotePath, secret, staging)
+                copyToUri(context, staging, target)
+            }.onSuccess {
+                onError("Saved ${entry.name}")
+            }.onFailure {
+                // Do not leave an empty document behind when the transfer failed.
+                runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
+                onError(it.message ?: "Download failed.")
+            }
+            staging.delete()
+            busy = false
+        }
+    }
 
     fun refresh() {
         connections = store.list()
@@ -171,8 +210,13 @@ fun RemoteConnectionsDialog(
                     browsing != null -> RemoteListing(
                         entries = listing,
                         onOpen = { entry ->
-                            val next = if (path.isBlank()) entry.name else "$path/${entry.name}"
-                            browse(browsing!!, next)
+                            if (entry.directory) {
+                                val next = if (path.isBlank()) entry.name else "$path/${entry.name}"
+                                browse(browsing!!, next)
+                            } else if (!busy) {
+                                pendingDownload = entry
+                                saveLauncher.launch(entry.name)
+                            }
                         },
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -292,7 +336,7 @@ private fun RemoteListing(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
-                    .clickable(enabled = entry.directory) { onOpen(entry) }
+                    .clickable(onClickLabel = if (entry.directory) "Open folder" else "Download") { onOpen(entry) }
                     .padding(vertical = 6.dp),
             ) {
                 Icon(
@@ -453,3 +497,10 @@ private fun defaultPort(kind: RemoteKind): String = when (kind) {
     RemoteKind.SMB -> "445"
     else -> ""
 }
+
+private suspend fun copyToUri(context: Context, source: File, target: Uri) =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val output = context.contentResolver.openOutputStream(target, "wt")
+            ?: error("Unable to open the chosen save location.")
+        output.use { out -> source.inputStream().use { it.copyTo(out) } }
+    }
