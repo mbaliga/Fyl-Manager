@@ -141,6 +141,9 @@ import io.github.mbaliga.fylz.search.SearchHit
 import io.github.mbaliga.fylz.search.SearchMatchSource
 import io.github.mbaliga.fylz.search.SearchProgress
 import io.github.mbaliga.fylz.search.SearchQuery
+import io.github.mbaliga.fylz.storage.FullAccessPermission
+import io.github.mbaliga.fylz.storage.FylzFilesDocumentsProvider
+import io.github.mbaliga.fylz.storage.SafStorageProvider
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
@@ -148,8 +151,11 @@ import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
+import io.github.mbaliga.fylz.widget.WidgetDestination
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -164,6 +170,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.outlined.Close
 import io.github.mbaliga.fylz.browse.entryStops
 import dev.aarso.cellshell.EdgeTimelineScrubber
+import dev.aarso.cellshell.RoomEdge
 import dev.aarso.cellshell.ShakeToRefresh
 import dev.aarso.cellshell.SpatialShell
 import dev.aarso.cellshell.WheelItem
@@ -187,10 +194,14 @@ private const val MAX_RESTORED_TABS = 8
  *
  * @param recoveryRoom the storage-and-recovery surface, shown as the shell's bottom room.
  * @param overlays dialogs the caller owns and needs drawn over everything.
+ * @param widgetDestination where a home-screen widget tap asked to land (already validated by
+ *   MainActivity); acted on once, then [onWidgetDestinationHandled] clears it.
  */
 @Composable
 fun FylzV1App(
     recoveryRoom: @Composable () -> Unit = {},
+    widgetDestination: WidgetDestination? = null,
+    onWidgetDestinationHandled: () -> Unit = {},
     overlays: @Composable () -> Unit = {},
 ) {
     var themeMode by remember { mutableStateOf(ThemeMode.SYSTEM) }
@@ -203,6 +214,8 @@ fun FylzV1App(
             themeMode = themeMode,
             onThemeModeChange = { themeMode = it },
             recoveryRoom = recoveryRoom,
+            widgetDestination = widgetDestination,
+            onWidgetDestinationHandled = onWidgetDestinationHandled,
         )
         overlays()
     }
@@ -213,6 +226,8 @@ private fun FylzV1Workspace(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     recoveryRoom: @Composable () -> Unit,
+    widgetDestination: WidgetDestination?,
+    onWidgetDestinationHandled: () -> Unit,
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -326,6 +341,56 @@ private fun FylzV1Workspace(
         val treeUri = root.treeUri ?: return
         val documentUri = root.documentUri ?: return
         openTabAt(treeUri, FolderLocation(documentUri, root.title))
+    }
+
+    // A home-screen widget tap (docs/widgets.md). Folders and volumes open directly only with All
+    // files access, which is what their tree URIs need; without it the tap lands on the storage
+    // home, where the access card and the picker rows are.
+    LaunchedEffect(widgetDestination) {
+        val destination = widgetDestination ?: return@LaunchedEffect
+        fun showHome() {
+            activeTabId = null
+            homeRefreshKey += 1
+            shell.closeAll()
+        }
+        when (destination) {
+            WidgetDestination.Home -> showHome()
+            WidgetDestination.Recovery -> shell.open(RoomEdge.BOTTOM)
+            WidgetDestination.RecycleBin -> {
+                shell.closeAll()
+                recycleDialog = true
+            }
+            is WidgetDestination.Folder -> {
+                val label = SafStorageProvider.STANDARD_DIRECTORIES
+                    .firstOrNull { it.second == destination.directory }?.first
+                if (label != null && FullAccessPermission.isGranted()) {
+                    val rootId = FylzFilesDocumentsProvider.PRIMARY_ROOT_ID
+                    openTabAt(
+                        FylzFilesDocumentsProvider.treeUri(rootId, destination.directory),
+                        FolderLocation(FylzFilesDocumentsProvider.documentUri(rootId, destination.directory), label),
+                    )
+                    shell.closeAll()
+                } else {
+                    showHome()
+                }
+            }
+            is WidgetDestination.Volume -> {
+                val volume = withContext(Dispatchers.IO) {
+                    FylzFilesDocumentsProvider.discoverVolumes(context.applicationContext)
+                        .firstOrNull { it.rootId == destination.rootId }
+                }
+                if (volume != null && FullAccessPermission.isGranted()) {
+                    openTabAt(
+                        FylzFilesDocumentsProvider.treeUri(volume.rootId),
+                        FolderLocation(FylzFilesDocumentsProvider.documentUri(volume.rootId), volume.title),
+                    )
+                    shell.closeAll()
+                } else {
+                    showHome()
+                }
+            }
+        }
+        onWidgetDestinationHandled()
     }
 
     val rootPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->

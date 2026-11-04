@@ -113,6 +113,7 @@ GitHub Actions uploads the debug APK after the Android CI workflow and an unsign
 - [Architecture and security boundaries](docs/ARCHITECTURE.md)
 - [Delivery roadmap](docs/ROADMAP.md)
 - [Device and provider acceptance](docs/DEVICE_ACCEPTANCE.md)
+- [Home-screen widgets](docs/widgets.md)
 - [Release and signing procedure](docs/RELEASE.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [Contributing](CONTRIBUTING.md)

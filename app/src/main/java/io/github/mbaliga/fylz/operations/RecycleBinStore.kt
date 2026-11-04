@@ -2,6 +2,8 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.model.StoreChanges
+import io.github.mbaliga.fylz.model.StoreTopic
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,6 +15,7 @@ import org.json.JSONObject
  */
 class RecycleBinStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val appContext: Context = context.applicationContext ?: context
 
     @Synchronized
     fun list(): List<RecycleRecord> {
@@ -47,6 +50,7 @@ class RecycleBinStore(context: Context) {
         }
 
         check(editor.commit()) { "Unable to persist the recycle manifest." }
+        StoreChanges.changed(appContext, StoreTopic.RECYCLE_BIN)
     }
 
     private fun encode(records: List<RecycleRecord>): String {

@@ -1,12 +1,15 @@
 package io.github.mbaliga.fylz.backup
 
 import android.content.Context
+import io.github.mbaliga.fylz.model.StoreChanges
+import io.github.mbaliga.fylz.model.StoreTopic
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
 class BackupStore(context: Context) {
+    private val appContext: Context = context.applicationContext ?: context
     private val root = File(context.filesDir, "backup-state")
     private val plansFile = File(root, "plans.json")
     private val runsFile = File(root, "runs.json")
@@ -126,6 +129,7 @@ class BackupStore(context: Context) {
             })
         }
         atomicWrite(mediaFile, root.toString())
+        notifyWidgets()
     }
 
     private fun readLeases(): Map<String, BackupLease> = runCatching {
@@ -266,7 +270,14 @@ class BackupStore(context: Context) {
         val array = JSONArray()
         values.forEach(array::put)
         atomicWrite(file, array.toString())
+        notifyWidgets()
     }
+
+    /**
+     * Plans, runs, snapshots and media counts feed the home-screen widgets. Lease refreshes (every
+     * progress tick of a running backup) deliberately do not notify.
+     */
+    private fun notifyWidgets() = StoreChanges.changed(appContext, StoreTopic.BACKUPS)
 
     private fun atomicWrite(file: File, value: String) {
         root.mkdirs()
