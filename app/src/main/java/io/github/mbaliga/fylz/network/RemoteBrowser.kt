@@ -1,5 +1,7 @@
 package io.github.mbaliga.fylz.network
 
+import java.io.File
+
 /**
  * One listing operation against a saved [RemoteConnection], regardless of backend.
  *
@@ -95,6 +97,75 @@ class RemoteBrowser(private val webDav: WebDavService = WebDavService()) {
             secret,
         ).use { provider ->
             Listing(path, provider.list(path).entries, provider.capabilities)
+        }
+    }
+
+    /**
+     * Downloads one remote file into [destination] (a private local file) with the provider's own
+     * verified, atomic write. The caller owns moving it to its final SAF location and deleting it.
+     */
+    suspend fun download(
+        connection: RemoteConnection,
+        path: String,
+        secret: CharArray,
+        destination: File,
+        onProgress: (Long, Long?) -> Unit = { _, _ -> },
+    ) {
+        val safePath = RemotePathPolicy.normalize(path)
+        when (connection.kind) {
+            RemoteKind.WEBDAV -> webDav.download(
+                WebDavConfig(
+                    id = connection.id,
+                    displayName = connection.displayName,
+                    baseUrl = connection.endpoint,
+                    username = connection.username,
+                ),
+                safePath,
+                secret,
+                destination,
+                onProgress,
+            )
+
+            RemoteKind.SFTP -> SftpProvider(
+                SftpProviderConfig(
+                    id = connection.id,
+                    displayName = connection.displayName,
+                    host = connection.host,
+                    port = connection.port.takeIf { it > 0 } ?: 22,
+                    username = connection.username,
+                    password = secret,
+                    pinnedHostKeySha256 = connection.hostKeyFingerprint,
+                    rootPath = "",
+                    writesEnabled = false,
+                ),
+            ).use { it.download(safePath, destination, onProgress) }
+
+            RemoteKind.SMB -> SmbProvider(
+                SmbProviderConfig(
+                    id = connection.id,
+                    displayName = connection.displayName,
+                    host = connection.host,
+                    port = connection.port.takeIf { it > 0 } ?: 445,
+                    share = connection.share,
+                    domain = connection.domain,
+                    username = connection.username,
+                    password = secret,
+                    rootPath = "",
+                    writesEnabled = false,
+                ),
+            ).use { it.download(safePath, destination, onProgress) }
+
+            RemoteKind.S3 -> S3RemoteProvider(
+                S3CompatibleConfig(
+                    id = connection.id,
+                    displayName = connection.displayName,
+                    endpoint = connection.endpoint,
+                    region = connection.region,
+                    bucket = connection.bucket,
+                    accessKeyId = connection.username,
+                ),
+                secret,
+            ).use { it.download(safePath, destination, onProgress) }
         }
     }
 }

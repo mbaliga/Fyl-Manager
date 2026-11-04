@@ -11,6 +11,10 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
 
+### Network locations
+
+- Added downloading of files from saved WebDAV, SFTP, SMB and S3 locations to a user-chosen save location, with provider-verified atomic transfer, cleanup of failed output and no plaintext credential handling.
+
 ### Preview and editing
 
 - Added bounded text and source previews, Markdown and common agent-artifact support.
