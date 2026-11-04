@@ -133,13 +133,15 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
         withShare { share ->
             RemoteWritePolicy.requireDeletablePath(path) // never write onto the share root itself
             val target = smbPath(path)
-            val temporary = "$target${RemoteWritePolicy.TEMP_UPLOAD_MARKER}${System.nanoTime()}"
+            val leaf = RemotePathPolicy.normalize(path).substringAfterLast('/')
+            val tempSuffix = "${RemoteWritePolicy.TEMP_UPLOAD_MARKER}${System.nanoTime()}"
+            val temporary = "$target$tempSuffix"
             // Once the old file is gone, the verified temporary copy is the only good copy left, so it
             // must survive any later failure. Deleting it there would lose both versions.
             fun refuseClash() {
                 val isFolder = share.folderExists(target)
                 if (isFolder || (!overwrite && share.fileExists(target))) {
-                    throw RemoteConflictException(target.substringAfterLast('\\'), isFolder)
+                    throw RemoteConflictException(leaf, isFolder)
                 }
             }
             refuseClash() // before transferring anything
@@ -170,7 +172,7 @@ class SmbProvider(private val config: SmbProviderConfig) : RemoteProvider, AutoC
                 if (originalRemoved) {
                     throw IllegalStateException(
                         "The old file was removed but the new copy could not be renamed into place. " +
-                            "Your upload is kept on the share as ${temporary.substringAfterLast('\\')}.",
+                            "Your upload is kept on the share as $leaf$tempSuffix.",
                         failure,
                     )
                 }

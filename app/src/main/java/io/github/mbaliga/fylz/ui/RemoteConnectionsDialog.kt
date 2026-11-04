@@ -51,6 +51,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -111,6 +113,19 @@ fun RemoteConnectionsDialog(
     val context = LocalContext.current
     val canWrite = browsing?.let { RemoteCapability.UPLOAD in browser.capabilities(it) } == true
 
+    // Staged copies normally go once their transfer settles. Anything left from a session that
+    // ended mid-transfer (process death, cancellation, closing during a prompt) is swept here.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            context.cacheDir.listFiles { file ->
+                file.name.startsWith(STAGING_PREFIX_UPLOAD) || file.name.startsWith(STAGING_PREFIX_DOWNLOAD)
+            }?.forEach { it.delete() }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { replacePrompt?.file?.delete() }
+    }
+
     fun secretsFor(connection: RemoteConnection): () -> CharArray = {
         store.secret(connection.id)
             ?: error("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
@@ -135,8 +150,11 @@ fun RemoteConnectionsDialog(
         }
     }
 
-    /** Runs one remote write, reports the outcome and re-lists the folder so the user sees the result. */
-    fun runWrite(connection: RemoteConnection, success: String, block: suspend () -> Unit) {
+    /**
+     * Runs one remote write against [directory] (captured when the user acted, never re-read later),
+     * reports the outcome and re-lists that folder so the user sees the result.
+     */
+    fun runWrite(connection: RemoteConnection, directory: String, success: String, block: suspend () -> Unit) {
         busy = true
         scope.launch {
             val outcome = runCatching { block() }
@@ -144,7 +162,7 @@ fun RemoteConnectionsDialog(
             outcome
                 .onSuccess { onMessage(success) }
                 .onFailure { onMessage(it.message ?: "The remote operation failed.") }
-            browse(connection, path)
+            browse(connection, directory)
         }
     }
 
@@ -154,7 +172,7 @@ fun RemoteConnectionsDialog(
             val outcome = runCatching {
                 browser.upload(
                     connection = connection,
-                    directory = path,
+                    directory = staged.directory,
                     name = staged.name,
                     source = staged.file,
                     secrets = secretsFor(connection),
@@ -170,7 +188,7 @@ fun RemoteConnectionsDialog(
             }
             staged.file.delete()
             if (failure == null) onMessage("Uploaded ${staged.name}") else onMessage(failure.message ?: "Upload failed.")
-            browse(connection, path)
+            browse(connection, staged.directory)
         }
     }
 
@@ -179,9 +197,10 @@ fun RemoteConnectionsDialog(
     ) { source: Uri? ->
         val connection = browsing
         if (source == null || connection == null) return@rememberLauncherForActivityResult
+        val directory = path
         busy = true
         scope.launch {
-            val staged = runCatching { stageForUpload(context, source) }
+            val staged = runCatching { stageForUpload(context, source, directory) }
             busy = false
             staged
                 .onSuccess { upload(connection, it, replaceExisting = false) }
@@ -201,10 +220,14 @@ fun RemoteConnectionsDialog(
             onMessage("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
             return@rememberLauncherForActivityResult
         }
-        val remotePath = RemoteWritePolicy.childPath(path, entry.name)
+        val remotePath = runCatching { RemoteWritePolicy.childPath(path, entry.name) }.getOrElse {
+            onMessage(unaddressableName(entry.name))
+            runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
+            return@rememberLauncherForActivityResult
+        }
         busy = true
         scope.launch {
-            val staging = File(context.cacheDir, "remote-download-${System.nanoTime()}.tmp")
+            val staging = File(context.cacheDir, "$STAGING_PREFIX_DOWNLOAD${System.nanoTime()}.tmp")
             runCatching {
                 browser.download(connection, remotePath, secret, staging)
                 copyToUri(context, staging, target)
@@ -234,6 +257,8 @@ fun RemoteConnectionsDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     if (browsing != null) {
                         IconButton(
+                            // Navigating away mid-write would clear `busy` and re-enable writes.
+                            enabled = !busy,
                             onClick = {
                                 if (path.isBlank()) {
                                     browsing = null
@@ -295,7 +320,9 @@ fun RemoteConnectionsDialog(
                             onOpen = { entry ->
                                 if (busy) return@RemoteListing
                                 if (entry.directory) {
-                                    browse(browsing!!, RemoteWritePolicy.childPath(path, entry.name))
+                                    runCatching { RemoteWritePolicy.childPath(path, entry.name) }
+                                        .onSuccess { browse(browsing!!, it) }
+                                        .onFailure { onMessage(unaddressableName(entry.name)) }
                                 } else {
                                     pendingDownload = entry
                                     saveLauncher.launch(entry.name)
@@ -346,8 +373,9 @@ fun RemoteConnectionsDialog(
             onDismiss = { pendingDelete = null },
             onConfirm = {
                 pendingDelete = null
-                runWrite(connection, "Deleted ${entry.name}") {
-                    browser.delete(connection, path, entry, secretsFor(connection), confirmed = true)
+                val directory = path
+                runWrite(connection, directory, "Deleted ${entry.name}") {
+                    browser.delete(connection, directory, entry, secretsFor(connection), confirmed = true)
                 }
             },
         )
@@ -361,7 +389,7 @@ fun RemoteConnectionsDialog(
         }
         ReplaceRemoteFileDialog(
             name = staged.name,
-            location = "/$path on ${connection.displayName}",
+            location = "/${staged.directory} on ${connection.displayName}",
             onDismiss = {
                 replacePrompt = null
                 staged.file.delete()
@@ -380,8 +408,9 @@ fun RemoteConnectionsDialog(
             onDismiss = { newFolderPrompt = false },
             onCreate = { name ->
                 newFolderPrompt = false
-                runWrite(connection, "Created $name") {
-                    browser.createDirectory(connection, path, name, secretsFor(connection))
+                val directory = path
+                runWrite(connection, directory, "Created $name") {
+                    browser.createDirectory(connection, directory, name, secretsFor(connection))
                 }
             },
         )
@@ -476,16 +505,22 @@ private fun ReplaceRemoteFileDialog(
 }
 
 /** A local copy of a picked document, ready to upload. Deleted once the upload settles. */
-private data class StagedUpload(val file: File, val name: String, val mimeType: String)
+private data class StagedUpload(val file: File, val name: String, val mimeType: String, val directory: String)
 
-private suspend fun stageForUpload(context: Context, source: Uri): StagedUpload =
+private fun unaddressableName(name: String) =
+    "Fylz can’t open “$name”: its name contains characters Fylz can’t address on this server."
+
+private const val STAGING_PREFIX_UPLOAD = "remote-upload-"
+private const val STAGING_PREFIX_DOWNLOAD = "remote-download-"
+
+private suspend fun stageForUpload(context: Context, source: Uri, directory: String): StagedUpload =
     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val resolver = context.contentResolver
         val name = resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
             if (cursor.moveToFirst()) cursor.getString(0) else null
         }?.takeIf(String::isNotBlank) ?: error("That file has no name Fylz can use.")
         val mimeType = resolver.getType(source) ?: "application/octet-stream"
-        val staging = File(context.cacheDir, "remote-upload-${System.nanoTime()}.tmp")
+        val staging = File(context.cacheDir, "$STAGING_PREFIX_UPLOAD${System.nanoTime()}.tmp")
         try {
             val input = resolver.openInputStream(source) ?: error("Couldn’t open that file.")
             input.use { inStream -> staging.outputStream().use { inStream.copyTo(it) } }
@@ -493,7 +528,7 @@ private suspend fun stageForUpload(context: Context, source: Uri): StagedUpload 
             staging.delete()
             throw failure
         }
-        StagedUpload(staging, name, mimeType)
+        StagedUpload(staging, name, mimeType, directory)
     }
 
 @Composable

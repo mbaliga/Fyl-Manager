@@ -136,17 +136,28 @@ class RemoteBrowser(private val webDav: WebDavService = WebDavService()) {
         RemoteWritePolicy.requireWritable(connection)
         val target = RemoteWritePolicy.childPath(directory, entry.name)
         RemoteWritePolicy.requireDeletablePath(target)
-        if (entry.directory) {
+        if (entry.directory && connection.kind != RemoteKind.WEBDAV) {
             RemoteWritePolicy.requireEmptyFolder(entry.name, listEntries(connection, target, secrets()))
         }
         when (connection.kind) {
-            RemoteKind.WEBDAV -> webDav.delete(
-                webDavConfig(connection),
-                target,
-                secrets(),
-                confirmed = true,
-                collection = entry.directory,
-            )
+            RemoteKind.WEBDAV -> {
+                // A WebDAV DELETE on a folder removes everything inside it, and the server will not
+                // refuse a non-empty one. So inspect the target itself immediately before deleting:
+                // its current type (the listing on screen may be stale), whether it is empty now, and
+                // its ETag, which the DELETE then carries as If-Match so the server refuses it if the
+                // item changed in between. Without an ETag the window is only this request's latency.
+                val config = webDavConfig(connection)
+                val current = webDav.inspect(config, target, secrets())
+                if (current.collection) RemoteWritePolicy.requireEmptyFolder(entry.name, current.children)
+                webDav.delete(
+                    config,
+                    target,
+                    secrets(),
+                    confirmed = true,
+                    collection = current.collection,
+                    ifMatch = current.etag,
+                )
+            }
             RemoteKind.SFTP -> sftp(connection, secrets(), writes = true).use { it.delete(target, confirmed = true) }
             RemoteKind.SMB -> smb(connection, secrets(), writes = true).use { it.delete(target, confirmed = true) }
             RemoteKind.S3 -> s3(connection, secrets()).use { provider ->
@@ -202,6 +213,11 @@ class RemoteBrowser(private val webDav: WebDavService = WebDavService()) {
                 val page = provider.list(directory, token, limit = S3_PAGE)
                 all += page.entries
                 token = page.continuationToken
+                // Some gateways answer list-type=2 with a V1-style page: IsTruncated but no token.
+                // Treating that as the whole folder would let an upload replace a file on page 2.
+                check(!(page.truncated && token.isNullOrEmpty())) {
+                    "This server didn’t return the whole folder, so Fylz can’t check for name clashes safely."
+                }
                 check(++pages <= MAX_S3_PAGES || token == null) {
                     "This folder is too large to check for name clashes safely."
                 }

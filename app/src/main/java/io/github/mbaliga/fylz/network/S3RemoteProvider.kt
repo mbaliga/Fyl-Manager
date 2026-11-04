@@ -47,6 +47,7 @@ class S3RemoteProvider(
                 )
             },
             continuationToken = page.nextContinuationToken,
+            truncated = page.truncated,
         )
     }
 

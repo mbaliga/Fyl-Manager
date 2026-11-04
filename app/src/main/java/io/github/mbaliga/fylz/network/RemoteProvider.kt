@@ -28,6 +28,8 @@ data class RemoteObject(
 data class RemotePage(
     val entries: List<RemoteObject>,
     val continuationToken: String? = null,
+    /** The server said more entries exist. With no [continuationToken], the rest cannot be fetched. */
+    val truncated: Boolean = false,
 )
 
 interface RemoteProvider {

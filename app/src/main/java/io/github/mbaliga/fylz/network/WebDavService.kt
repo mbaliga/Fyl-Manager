@@ -30,6 +30,14 @@ data class RemoteEntry(
     val sizeBytes: Long?,
     val modified: String?,
     val contentType: String?,
+    val etag: String? = null,
+)
+
+/** The current state of one WebDAV resource, read immediately before a destructive request. */
+data class WebDavResourceState(
+    val collection: Boolean,
+    val etag: String?,
+    val children: List<RemoteObject>,
 )
 
 /** HTTPS-only WebDAV adapter. Passwords are supplied per call from the encrypted credential vault. */
@@ -37,15 +45,7 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
     suspend fun list(config: WebDavConfig, path: String, password: CharArray): List<RemoteEntry> =
         withContext(Dispatchers.IO) {
             val url = WebDavPaths.resolve(config.baseUrl, path, collection = true)
-            val body = """
-                <?xml version="1.0" encoding="utf-8" ?>
-                <d:propfind xmlns:d="DAV:">
-                  <d:prop>
-                    <d:displayname/><d:resourcetype/><d:getcontentlength/>
-                    <d:getlastmodified/><d:getcontenttype/>
-                  </d:prop>
-                </d:propfind>
-            """.trimIndent().toRequestBody(XML)
+            val body = PROPFIND_BODY.toRequestBody(XML)
             val request = request(config, password, url)
                 .header("Depth", "1")
                 .method("PROPFIND", body)
@@ -53,6 +53,28 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
             // A Depth: 1 PROPFIND also describes the folder itself; that is not one of its children.
             execute(request) { responseBody ->
                 parseMultiStatus(responseBody).filterNot { WebDavPaths.isSameResource(url, it.href) }
+            }
+        }
+
+    /** Type, ETag and children of [path] itself, from one Depth: 1 PROPFIND. */
+    suspend fun inspect(config: WebDavConfig, path: String, password: CharArray): WebDavResourceState =
+        withContext(Dispatchers.IO) {
+            val url = WebDavPaths.resolve(config.baseUrl, path)
+            val request = request(config, password, url)
+                .header("Depth", "1")
+                .method("PROPFIND", PROPFIND_BODY.toRequestBody(XML))
+                .build()
+            execute(request) { body ->
+                val entries = parseMultiStatus(body)
+                val self = entries.firstOrNull { WebDavPaths.isSameResource(url, it.href) }
+                    ?: error("The server didn’t describe “${path.substringAfterLast('/')}”, so Fylz won’t delete it.")
+                WebDavResourceState(
+                    collection = self.directory,
+                    etag = self.etag,
+                    children = entries.filterNot { it === self }.map { child ->
+                        RemoteObject(child.href, child.name, child.directory, child.sizeBytes, null, null, child.etag)
+                    },
+                )
             }
         }
 
@@ -105,7 +127,10 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
             .put(source.asRequestBody(contentType.toMediaType()))
             .apply { if (!overwrite) header("If-None-Match", "*") }
             .build()
-        execute(request) { Unit }
+        execute(
+            request,
+            preconditionFailed = { RemoteConflictException(path.substringAfterLast('/'), existingIsDirectory = false) },
+        ) { Unit }
     }
 
     suspend fun createDirectory(config: WebDavConfig, path: String, password: CharArray) =
@@ -122,14 +147,22 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
         password: CharArray,
         confirmed: Boolean,
         collection: Boolean = false,
+        ifMatch: String? = null,
     ) = withContext(Dispatchers.IO) {
         require(confirmed) { "Remote deletion requires confirmation." }
         require(RemotePathPolicy.normalize(path).isNotBlank()) { "The connection’s top-level folder can’t be deleted." }
         val request = request(config, password, WebDavPaths.resolve(config.baseUrl, path, collection))
             .delete()
+            .apply { if (ifMatch != null) header("If-Match", ifMatch) }
             .build()
         // 207 Multi-Status on DELETE means some members could not be removed: that is a failure.
-        execute(request, acceptMultiStatus = false) { Unit }
+        execute(
+            request,
+            acceptMultiStatus = false,
+            preconditionFailed = {
+                IllegalStateException("“${path.substringAfterLast('/')}” changed on the server since it was checked, so it was not deleted.")
+            },
+        ) { Unit }
     }
 
     private fun request(
@@ -148,10 +181,15 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
         }
     }
 
-    private fun <T> execute(request: Request, acceptMultiStatus: Boolean = true, transform: (String) -> T): T {
+    private fun <T> execute(
+        request: Request,
+        acceptMultiStatus: Boolean = true,
+        preconditionFailed: (() -> Throwable)? = null,
+        transform: (String) -> T,
+    ): T {
         client.newCall(request).execute().use { response ->
             val body = response.body.string().take(MAX_RESPONSE_CHARS)
-            if (response.code == 412) throw RemoteConflictException(request.url.pathSegments.lastOrNull { it.isNotEmpty() } ?: "", false)
+            if (response.code == 412 && preconditionFailed != null) throw preconditionFailed()
             check(if (response.code == 207) acceptMultiStatus else response.isSuccessful) {
                 "WebDAV request failed with HTTP ${response.code}. ${body.take(300)}"
             }
@@ -171,6 +209,7 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
         var size: Long? = null
         var modified: String? = null
         var contentType: String? = null
+        var etag: String? = null
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG) {
@@ -182,6 +221,7 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
                         size = null
                         modified = null
                         contentType = null
+                        etag = null
                     }
                     "href" -> href = parser.nextText()
                     "displayname" -> displayName = parser.nextText()
@@ -189,6 +229,7 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
                     "getcontentlength" -> size = parser.nextText().toLongOrNull()
                     "getlastmodified" -> modified = parser.nextText()
                     "getcontenttype" -> contentType = parser.nextText()
+                    "getetag" -> etag = parser.nextText().trim().ifEmpty { null }
                 }
             } else if (event == XmlPullParser.END_TAG && parser.name.equals("response", true)) {
                 href?.let {
@@ -202,6 +243,7 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
                         sizeBytes = size,
                         modified = modified,
                         contentType = contentType,
+                        etag = etag,
                     )
                 }
             }
@@ -221,6 +263,15 @@ class WebDavService(private val client: OkHttpClient = OkHttpClient()) {
     private companion object {
         val XML = "application/xml; charset=utf-8".toMediaType()
         val EMPTY_BODY = ByteArray(0).toRequestBody(null)
+        val PROPFIND_BODY = """
+            <?xml version="1.0" encoding="utf-8" ?>
+            <d:propfind xmlns:d="DAV:">
+              <d:prop>
+                <d:displayname/><d:resourcetype/><d:getcontentlength/>
+                <d:getlastmodified/><d:getcontenttype/><d:getetag/>
+              </d:prop>
+            </d:propfind>
+        """.trimIndent()
         const val MAX_RESPONSE_CHARS = 2_000_000
     }
 }
