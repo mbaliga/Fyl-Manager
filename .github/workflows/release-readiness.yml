@@ -32,11 +32,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The hosted runner image already ships an Android SDK (ANDROID_HOME). The
+      # android-actions/setup-android action ran `sdkmanager tools`, a legacy package that no
+      # longer exists, and failed every job before any build step. Use the preinstalled SDK
+      # directly and install only what this build needs.
       - name: Install Android platform
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: |
+          set -eo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(ls -d "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER" || { echo "sdkmanager not found under $SDK_ROOT" >&2; exit 1; }
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses > /dev/null
+          set -o pipefail
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v4
