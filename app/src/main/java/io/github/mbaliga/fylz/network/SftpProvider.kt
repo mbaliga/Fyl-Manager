@@ -103,18 +103,39 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
         }
     }
 
-    override suspend fun upload(path: String, source: File, mimeType: String) = withContext(Dispatchers.IO) {
+    override suspend fun upload(path: String, source: File, mimeType: String, overwrite: Boolean) = withContext(Dispatchers.IO) {
         requireWrites()
         require(source.isFile)
         withClient { sftp ->
+            RemoteWritePolicy.requireDeletablePath(path) // never write onto the connection root itself
             val target = remotePath(path)
-            val temporary = "$target.fylz-upload-${System.nanoTime()}"
+            val temporary = "$target${RemoteWritePolicy.TEMP_UPLOAD_MARKER}${System.nanoTime()}"
+            // Once the old file is gone, the verified temporary copy is the only good copy left, so it
+            // must survive any later failure. Deleting it there would lose both versions.
+            fun refuseClash() {
+                val existing = sftp.statExistence(target) ?: return
+                val isFolder = existing.type.name == "DIRECTORY"
+                if (isFolder || !overwrite) throw RemoteConflictException(target.substringAfterLast('/'), isFolder)
+            }
+            refuseClash() // before transferring anything
+            var originalRemoved = false
             try {
                 sftp.put(source.absolutePath, temporary)
                 require(sftp.stat(temporary).size == source.length()) { "SFTP upload size verification failed." }
-                runCatching { sftp.rm(target) }
+                refuseClash() // again: something may have appeared at the target during the transfer
+                if (sftp.statExistence(target) != null) {
+                    sftp.rm(target)
+                    originalRemoved = true
+                }
                 sftp.rename(temporary, target)
             } catch (failure: Throwable) {
+                if (originalRemoved) {
+                    throw IllegalStateException(
+                        "The old file was removed but the new copy could not be renamed into place. " +
+                            "Your upload is kept on the server as ${temporary.substringAfterLast('/')}.",
+                        failure,
+                    )
+                }
                 runCatching { sftp.rm(temporary) }
                 throw failure
             }
@@ -123,26 +144,23 @@ class SftpProvider(private val config: SftpProviderConfig) : RemoteProvider, Aut
 
     override suspend fun createDirectory(path: String) = withContext(Dispatchers.IO) {
         requireWrites()
-        withClient { it.mkdirs(remotePath(path)) }
+        RemoteWritePolicy.requireDeletablePath(path)
+        withClient { it.mkdir(remotePath(path)) }
     }
 
     override suspend fun delete(path: String, confirmed: Boolean) = withContext(Dispatchers.IO) {
         requireWrites()
         require(confirmed) { "Deleting a remote item requires explicit confirmation." }
+        RemoteWritePolicy.requireDeletablePath(path)
         withClient { sftp ->
             val remote = remotePath(path)
-            if (sftp.stat(remote).type.name.equals("DIRECTORY", ignoreCase = true)) sftp.rmdir(remote)
+            // lstat, not stat: a symlink to a folder is removed as a link, never by entering its target.
+            if (sftp.lstat(remote).type.name.equals("DIRECTORY", ignoreCase = true)) sftp.rmdir(remote)
             else sftp.rm(remote)
         }
     }
 
-    private fun remotePath(path: String): String {
-        val joined = listOf(
-            RemotePathPolicy.normalize(config.rootPath),
-            RemotePathPolicy.normalize(path),
-        ).filter(String::isNotBlank).joinToString("/")
-        return if (joined.isBlank()) "." else "/$joined"
-    }
+    private fun remotePath(path: String): String = SftpPaths.remotePath(config.rootPath, path)
 
     private fun requireWrites() {
         require(config.writesEnabled) { "Writes are disabled for this SFTP connection." }
@@ -190,3 +208,24 @@ private fun normalizeFingerprint(value: String): String = value
     .trim()
     .removePrefix("SHA256:")
     .trimEnd('=')
+
+/**
+ * Maps a connection-relative path onto the SFTP server.
+ *
+ * With no root configured, everything resolves relative to the login directory, the same place a
+ * blank path lists. (Previously a blank path listed the login directory while every other path was
+ * made absolute, so opening a folder at the top level showed `/name` instead of `~/name`.) A
+ * configured root is absolute, so everything under it is too.
+ */
+internal object SftpPaths {
+    fun remotePath(rootPath: String, path: String): String {
+        val root = RemotePathPolicy.normalize(rootPath)
+        val relative = RemotePathPolicy.normalize(path)
+        return when {
+            root.isBlank() && relative.isBlank() -> "."
+            root.isBlank() -> relative
+            relative.isBlank() -> "/$root"
+            else -> "/$root/$relative"
+        }
+    }
+}

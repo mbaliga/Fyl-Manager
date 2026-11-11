@@ -1116,7 +1116,7 @@ private fun FylzV1Workspace(
         RemoteConnectionsDialog(
             store = remoteStore,
             onDismiss = { remoteDialog = false },
-            onError = ::toast,
+            onMessage = ::toast,
         )
     }
 

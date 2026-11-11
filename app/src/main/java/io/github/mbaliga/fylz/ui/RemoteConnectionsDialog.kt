@@ -1,6 +1,14 @@
 package io.github.mbaliga.fylz.ui
 
 import android.content.Context
+import android.provider.OpenableColumns
+import androidx.compose.material.icons.outlined.CreateNewFolder
+import androidx.compose.material.icons.outlined.Upload
+import androidx.compose.material3.AlertDialog
+import io.github.mbaliga.fylz.network.RemoteCapability
+import io.github.mbaliga.fylz.network.RemoteConflictException
+import io.github.mbaliga.fylz.network.RemoteWritePolicy
+import io.github.mbaliga.fylz.ui.components.PermanentDeleteConfirmationDialog
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +51,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,13 +83,18 @@ import java.util.UUID
  *
  * Tapping a remote file asks where to save it (system "Create document" picker), downloads it
  * through the provider's verified atomic path into private cache, then streams it to the chosen
- * location. Uploads and deletes remain gated behind the per-connection "Allow writes" switch.
+ * location.
+ *
+ * Writes (upload, new folder, delete) appear only for connections with "Allow writes" on, and all of
+ * them go through [RemoteBrowser], which applies `RemoteWritePolicy` before any request: an upload
+ * never silently replaces a file (the user is asked), a folder is never replaced, only empty folders
+ * are deleted, and every delete needs the same typed confirmation as permanent local deletion.
  */
 @Composable
 fun RemoteConnectionsDialog(
     store: RemoteConnectionStore,
     onDismiss: () -> Unit,
-    onError: (String) -> Unit,
+    onMessage: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val browser = remember { RemoteBrowser() }
@@ -92,47 +107,34 @@ fun RemoteConnectionsDialog(
     var path by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var pendingDownload by remember { mutableStateOf<RemoteObject?>(null) }
+    var pendingDelete by remember { mutableStateOf<RemoteObject?>(null) }
+    var replacePrompt by remember { mutableStateOf<StagedUpload?>(null) }
+    var newFolderPrompt by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val canWrite = browsing?.let { RemoteCapability.UPLOAD in browser.capabilities(it) } == true
 
-    val saveLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream"),
-    ) { target: Uri? ->
-        val entry = pendingDownload
-        val connection = browsing
-        pendingDownload = null
-        if (target == null || entry == null || connection == null) return@rememberLauncherForActivityResult
-        val secret = store.secret(connection.id)
-        if (secret == null) {
-            onError("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
-            return@rememberLauncherForActivityResult
-        }
-        val remotePath = if (path.isBlank()) entry.name else "$path/${entry.name}"
-        busy = true
-        scope.launch {
-            val staging = File(context.cacheDir, "remote-download-${System.nanoTime()}.tmp")
-            runCatching {
-                browser.download(connection, remotePath, secret, staging)
-                copyToUri(context, staging, target)
-            }.onSuccess {
-                onError("Saved ${entry.name}")
-            }.onFailure {
-                // Do not leave an empty document behind when the transfer failed.
-                runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
-                onError(it.message ?: "Download failed.")
-            }
-            staging.delete()
-            busy = false
+    // Staged copies normally go once their transfer settles. Anything left from a session that
+    // ended mid-transfer (process death, cancellation, closing during a prompt) is swept here.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            context.cacheDir.listFiles { file ->
+                file.name.startsWith(STAGING_PREFIX_UPLOAD) || file.name.startsWith(STAGING_PREFIX_DOWNLOAD)
+            }?.forEach { it.delete() }
         }
     }
+    DisposableEffect(Unit) {
+        onDispose { replacePrompt?.file?.delete() }
+    }
 
-    fun refresh() {
-        connections = store.list()
+    fun secretsFor(connection: RemoteConnection): () -> CharArray = {
+        store.secret(connection.id)
+            ?: error("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
     }
 
     fun browse(connection: RemoteConnection, target: String) {
         val secret = store.secret(connection.id)
         if (secret == null) {
-            onError("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
+            onMessage("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
             return
         }
         busy = true
@@ -143,9 +145,106 @@ fun RemoteConnectionsDialog(
                     path = target
                     listing = result.entries
                 }
-                .onFailure { onError(it.message ?: "Unable to reach ${connection.displayName}") }
+                .onFailure { onMessage(it.message ?: "Unable to reach ${connection.displayName}") }
             busy = false
         }
+    }
+
+    /**
+     * Runs one remote write against [directory] (captured when the user acted, never re-read later),
+     * reports the outcome and re-lists that folder so the user sees the result.
+     */
+    fun runWrite(connection: RemoteConnection, directory: String, success: String, block: suspend () -> Unit) {
+        busy = true
+        scope.launch {
+            val outcome = runCatching { block() }
+            busy = false
+            outcome
+                .onSuccess { onMessage(success) }
+                .onFailure { onMessage(it.message ?: "The remote operation failed.") }
+            browse(connection, directory)
+        }
+    }
+
+    fun upload(connection: RemoteConnection, staged: StagedUpload, replaceExisting: Boolean) {
+        busy = true
+        scope.launch {
+            val outcome = runCatching {
+                browser.upload(
+                    connection = connection,
+                    directory = staged.directory,
+                    name = staged.name,
+                    source = staged.file,
+                    secrets = secretsFor(connection),
+                    replaceExisting = replaceExisting,
+                    mimeType = staged.mimeType,
+                )
+            }
+            busy = false
+            val failure = outcome.exceptionOrNull()
+            if (failure is RemoteConflictException && !failure.existingIsDirectory && !replaceExisting) {
+                replacePrompt = staged // keep the staged copy until the user decides
+                return@launch
+            }
+            staged.file.delete()
+            if (failure == null) onMessage("Uploaded ${staged.name}") else onMessage(failure.message ?: "Upload failed.")
+            browse(connection, staged.directory)
+        }
+    }
+
+    val uploadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { source: Uri? ->
+        val connection = browsing
+        if (source == null || connection == null) return@rememberLauncherForActivityResult
+        val directory = path
+        busy = true
+        scope.launch {
+            val staged = runCatching { stageForUpload(context, source, directory) }
+            busy = false
+            staged
+                .onSuccess { upload(connection, it, replaceExisting = false) }
+                .onFailure { onMessage(it.message ?: "Couldn’t read that file.") }
+        }
+    }
+
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { target: Uri? ->
+        val entry = pendingDownload
+        val connection = browsing
+        pendingDownload = null
+        if (target == null || entry == null || connection == null) return@rememberLauncherForActivityResult
+        val secret = store.secret(connection.id)
+        if (secret == null) {
+            onMessage("No saved credential for ${connection.displayName}. Edit the connection to re-enter it.")
+            return@rememberLauncherForActivityResult
+        }
+        val remotePath = runCatching { RemoteWritePolicy.childPath(path, entry.name) }.getOrElse {
+            onMessage(unaddressableName(entry.name))
+            runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
+            return@rememberLauncherForActivityResult
+        }
+        busy = true
+        scope.launch {
+            val staging = File(context.cacheDir, "$STAGING_PREFIX_DOWNLOAD${System.nanoTime()}.tmp")
+            runCatching {
+                browser.download(connection, remotePath, secret, staging)
+                copyToUri(context, staging, target)
+            }.onSuccess {
+                onMessage("Saved ${entry.name}")
+            }.onFailure {
+                // Do not leave an empty document behind when the transfer failed.
+                runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
+                onMessage(it.message ?: "Download failed.")
+            }
+            staging.delete()
+            busy = false
+        }
+    }
+
+    fun refresh() {
+        connections = store.list()
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -158,6 +257,8 @@ fun RemoteConnectionsDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     if (browsing != null) {
                         IconButton(
+                            // Navigating away mid-write would clear `busy` and re-enable writes.
+                            enabled = !busy,
                             onClick = {
                                 if (path.isBlank()) {
                                     browsing = null
@@ -202,24 +303,34 @@ fun RemoteConnectionsDialog(
                         onSave = { connection, secret ->
                             runCatching { store.save(connection, secret) }
                                 .onSuccess { addingKind = null; editing = null; refresh() }
-                                .onFailure { onError(it.message ?: "That connection is not valid.") }
+                                .onFailure { onMessage(it.message ?: "That connection is not valid.") }
                         },
                         modifier = Modifier.weight(1f, fill = false),
                     )
 
-                    browsing != null -> RemoteListing(
-                        entries = listing,
-                        onOpen = { entry ->
-                            if (entry.directory) {
-                                val next = if (path.isBlank()) entry.name else "$path/${entry.name}"
-                                browse(browsing!!, next)
-                            } else if (!busy) {
-                                pendingDownload = entry
-                                saveLauncher.launch(entry.name)
-                            }
-                        },
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
+                    browsing != null -> Column(Modifier.weight(1f, fill = false)) {
+                        WriteToolbar(
+                            canWrite = canWrite,
+                            enabled = !busy,
+                            onUpload = { uploadLauncher.launch(arrayOf("*/*")) },
+                            onNewFolder = { newFolderPrompt = true },
+                        )
+                        RemoteListing(
+                            entries = listing,
+                            onOpen = { entry ->
+                                if (busy) return@RemoteListing
+                                if (entry.directory) {
+                                    runCatching { RemoteWritePolicy.childPath(path, entry.name) }
+                                        .onSuccess { browse(browsing!!, it) }
+                                        .onFailure { onMessage(unaddressableName(entry.name)) }
+                                } else {
+                                    pendingDownload = entry
+                                    saveLauncher.launch(entry.name)
+                                }
+                            },
+                            onDelete = if (canWrite) ({ entry -> if (!busy) pendingDelete = entry }) else null,
+                        )
+                    }
 
                     else -> ConnectionList(
                         connections = connections,
@@ -250,7 +361,175 @@ fun RemoteConnectionsDialog(
             }
         }
     }
+
+    val connection = browsing
+    pendingDelete?.let { entry ->
+        if (connection == null) {
+            pendingDelete = null
+            return@let
+        }
+        PermanentDeleteConfirmationDialog(
+            displayName = "${entry.name}” on “${connection.displayName}",
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                pendingDelete = null
+                val directory = path
+                runWrite(connection, directory, "Deleted ${entry.name}") {
+                    browser.delete(connection, directory, entry, secretsFor(connection), confirmed = true)
+                }
+            },
+        )
+    }
+
+    replacePrompt?.let { staged ->
+        if (connection == null) {
+            staged.file.delete()
+            replacePrompt = null
+            return@let
+        }
+        ReplaceRemoteFileDialog(
+            name = staged.name,
+            location = "/${staged.directory} on ${connection.displayName}",
+            onDismiss = {
+                replacePrompt = null
+                staged.file.delete()
+                onMessage("Kept the existing ${staged.name}")
+            },
+            onReplace = {
+                replacePrompt = null
+                upload(connection, staged, replaceExisting = true)
+            },
+        )
+    }
+
+    if (newFolderPrompt && connection != null) {
+        NewRemoteFolderDialog(
+            kind = connection.kind,
+            onDismiss = { newFolderPrompt = false },
+            onCreate = { name ->
+                newFolderPrompt = false
+                val directory = path
+                runWrite(connection, directory, "Created $name") {
+                    browser.createDirectory(connection, directory, name, secretsFor(connection))
+                }
+            },
+        )
+    }
 }
+
+@Composable
+private fun WriteToolbar(
+    canWrite: Boolean,
+    enabled: Boolean,
+    onUpload: () -> Unit,
+    onNewFolder: () -> Unit,
+) {
+    if (!canWrite) {
+        Text(
+            "Read-only. Turn on “Allow writes” in this connection’s settings to upload or delete.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        AssistChip(
+            onClick = onUpload,
+            enabled = enabled,
+            label = { Text("Upload") },
+            leadingIcon = { Icon(Icons.Outlined.Upload, contentDescription = null) },
+            modifier = Modifier.heightIn(min = 48.dp),
+        )
+        AssistChip(
+            onClick = onNewFolder,
+            enabled = enabled,
+            label = { Text("New folder") },
+            leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+            modifier = Modifier.heightIn(min = 48.dp),
+        )
+    }
+}
+
+@Composable
+private fun NewRemoteFolderDialog(
+    kind: RemoteKind,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    val problem = RemoteWritePolicy.nameProblem(kind, name)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New folder") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Folder name") },
+                singleLine = true,
+                isError = name.isNotEmpty() && problem != null,
+                supportingText = { if (name.isNotEmpty() && problem != null) Text(problem) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            Button(onClick = { onCreate(name) }, enabled = problem == null) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ReplaceRemoteFileDialog(
+    name: String,
+    location: String,
+    onDismiss: () -> Unit,
+    onReplace: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Replace “$name”?") },
+        text = {
+            Text(
+                "A file with this name already exists in $location. Replacing it overwrites the remote " +
+                    "copy, and Fylz can’t restore the old version.",
+            )
+        },
+        confirmButton = { Button(onClick = onReplace) { Text("Replace") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Keep existing") } },
+    )
+}
+
+/** A local copy of a picked document, ready to upload. Deleted once the upload settles. */
+private data class StagedUpload(val file: File, val name: String, val mimeType: String, val directory: String)
+
+private fun unaddressableName(name: String) =
+    "Fylz can’t open “$name”: its name contains characters Fylz can’t address on this server."
+
+private const val STAGING_PREFIX_UPLOAD = "remote-upload-"
+private const val STAGING_PREFIX_DOWNLOAD = "remote-download-"
+
+private suspend fun stageForUpload(context: Context, source: Uri, directory: String): StagedUpload =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val name = resolver.query(source, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }?.takeIf(String::isNotBlank) ?: error("That file has no name Fylz can use.")
+        val mimeType = resolver.getType(source) ?: "application/octet-stream"
+        val staging = File(context.cacheDir, "$STAGING_PREFIX_UPLOAD${System.nanoTime()}.tmp")
+        try {
+            val input = resolver.openInputStream(source) ?: error("Couldn’t open that file.")
+            input.use { inStream -> staging.outputStream().use { inStream.copyTo(it) } }
+        } catch (failure: Throwable) {
+            staging.delete()
+            throw failure
+        }
+        StagedUpload(staging, name, mimeType, directory)
+    }
 
 @Composable
 private fun ConnectionList(
@@ -319,6 +598,7 @@ private fun ConnectionList(
 private fun RemoteListing(
     entries: List<RemoteObject>,
     onOpen: (RemoteObject) -> Unit,
+    onDelete: ((RemoteObject) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     if (entries.isEmpty()) {
@@ -352,6 +632,11 @@ private fun RemoteListing(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+                if (onDelete != null) {
+                    IconButton(onClick = { onDelete(entry) }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Outlined.Delete, contentDescription = "Delete ${entry.name} from the server")
                     }
                 }
             }

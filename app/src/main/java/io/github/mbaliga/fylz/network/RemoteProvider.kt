@@ -28,6 +28,8 @@ data class RemoteObject(
 data class RemotePage(
     val entries: List<RemoteObject>,
     val continuationToken: String? = null,
+    /** The server said more entries exist. With no [continuationToken], the rest cannot be fetched. */
+    val truncated: Boolean = false,
 )
 
 interface RemoteProvider {
@@ -37,7 +39,16 @@ interface RemoteProvider {
 
     suspend fun list(path: String, continuationToken: String? = null, limit: Int = 500): RemotePage
     suspend fun download(path: String, destination: File, onProgress: (Long, Long?) -> Unit = { _, _ -> })
-    suspend fun upload(path: String, source: File, mimeType: String = "application/octet-stream")
+    /**
+     * Uploads [source] to [path]. Never replaces an existing file unless [overwrite] is true, and never
+     * replaces a folder; a clash throws [RemoteConflictException].
+     */
+    suspend fun upload(
+        path: String,
+        source: File,
+        mimeType: String = "application/octet-stream",
+        overwrite: Boolean = false,
+    )
     suspend fun createDirectory(path: String)
     suspend fun delete(path: String, confirmed: Boolean)
 }
