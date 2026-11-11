@@ -89,3 +89,7 @@ For every run, record the app commit, device, Android version, provider version,
 - Review release lint and dependency artifacts.
 
 A failed data-integrity, permission-boundary, credential, rollback or recovery case blocks stable release.
+
+## Home-screen widgets
+
+- Run the owner-verify list in [widgets.md](widgets.md#owner-verify-device-only) on each launcher in use (picker previews, placement, resizing through all four layouts, day/night, taps with and without All files access, live updates during a copy and a backup, SD/USB insert and remove, the midnight redraw, TalkBack, OEM battery managers).

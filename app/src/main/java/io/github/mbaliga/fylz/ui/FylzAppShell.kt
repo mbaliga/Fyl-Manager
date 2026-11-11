@@ -50,6 +50,7 @@ import io.github.mbaliga.fylz.operations.OperationRetryPlan
 import io.github.mbaliga.fylz.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.operations.OperationState
 import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
+import io.github.mbaliga.fylz.widget.WidgetDestination
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -66,9 +67,15 @@ import kotlinx.coroutines.launch
  * history dialog — and hands the room down as content. That matters for more than tidiness: the
  * content is composed inside [FylzV1App]'s theme, so Recovery finally paints in the app's own
  * colours instead of the bare `MaterialTheme` default it used to sit in.
+ *
+ * @param widgetDestination where a home-screen widget tap asked to land, if anywhere; handed to
+ *   [FylzV1App], which acts on it once and then calls [onWidgetDestinationHandled].
  */
 @Composable
-fun FylzAppShell() {
+fun FylzAppShell(
+    widgetDestination: WidgetDestination? = null,
+    onWidgetDestinationHandled: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
@@ -84,6 +91,8 @@ fun FylzAppShell() {
     }
 
     FylzV1App(
+        widgetDestination = widgetDestination,
+        onWidgetDestinationHandled = onWidgetDestinationHandled,
         recoveryRoom = {
             RecoveryHome(
                 operations = operations,

@@ -2,6 +2,8 @@ package io.github.mbaliga.fylz.operations
 
 import android.content.Context
 import android.net.Uri
+import io.github.mbaliga.fylz.model.StoreChanges
+import io.github.mbaliga.fylz.model.StoreTopic
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -14,6 +16,9 @@ import java.util.UUID
  */
 class OperationJournal(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+
+    // Declared before init: recovery in init can persist, and persist announces the change.
+    private val appContext: Context = context.applicationContext ?: context
 
     init {
         recoverFromPriorProcessIfNeeded()
@@ -109,6 +114,8 @@ class OperationJournal(context: Context) {
         check(preferences.edit().putString(RECORDS_KEY, root.toString()).commit()) {
             "Unable to persist the operation journal."
         }
+        // Progress, recovery and space all move with the journal (the widgets redraw, coalesced).
+        StoreChanges.changed(appContext, StoreTopic.OPERATION_JOURNAL)
     }
 
     private fun decode(raw: String?): List<FileOperation> {
