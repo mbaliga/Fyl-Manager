@@ -163,6 +163,14 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.outlined.Close
 import io.github.mbaliga.fylz.browse.entryStops
+import androidx.compose.runtime.produceState
+import androidx.compose.material.icons.outlined.Menu
+import dev.aarso.cellshell.RoomEdge
+import io.github.mbaliga.fylz.storage.StorageRootGroup
+import io.github.mbaliga.fylz.ui.places.CommonPlace
+import io.github.mbaliga.fylz.ui.places.CommonPlaces
+import io.github.mbaliga.fylz.ui.places.PlaceKind
+import io.github.mbaliga.fylz.ui.tree.FileTreeRoom
 import dev.aarso.cellshell.EdgeTimelineScrubber
 import dev.aarso.cellshell.ShakeToRefresh
 import dev.aarso.cellshell.SpatialShell
@@ -266,10 +274,22 @@ private fun FylzV1Workspace(
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
 
-    // Three rooms: locations LEFT, tools and settings RIGHT, recovery BOTTOM. The top edge is
-    // deliberately empty — it is reserved for the top room, and nothing else may claim the
-    // pull-down space.
+    // Four rooms: common places LEFT, tools and settings RIGHT, recovery BOTTOM, and the file
+    // tree TOP — pulled down over the file pane, which shrinks into its folder on the tree.
+    // Nothing else may claim the pull-down space.
     val shell = rememberSpatialController()
+
+    // The left rail's contents. Loaded the way the storage home surface loads them, so the rail
+    // and the home screen can never disagree about what a "Downloads" is.
+    val rootGroups by produceState(
+        initialValue = emptyList<StorageRootGroup>(),
+        key1 = homeRefreshKey,
+    ) {
+        value = runCatching {
+            StorageAccess.available(context).flatMap { it.rootGroups(context) }
+        }.getOrDefault(emptyList())
+    }
+    val places = remember(rootGroups) { CommonPlaces.build(rootGroups) }
     // Hoisted so the edge scrubber can read where the list is and jump it. Both are needed
     // because the browser switches between a column and a grid, and a scrubber that only worked
     // in one of them would be an affordance that silently stops meaning anything.
@@ -601,27 +621,58 @@ private fun FylzV1Workspace(
         cardColor = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxSize(),
         left = {
-            LocationsRoom(
-                tabs = tabs,
-                activeTabId = activeTabId,
-                onSelect = { id ->
-                    activeTabId = id
+            PlacesRoom(
+                places = places,
+                selectedId = CommonPlaces.selectedId(
+                    places = places,
+                    activeTreeUri = activeTab?.treeUri?.toString(),
+                    largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY,
+                ),
+                onSelect = { place ->
+                    shell.closeAll()
+                    // Large files is a search, so leaving it must also clear the search —
+                    // otherwise Downloads would open filtered to files over 100 MB.
+                    if (searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY) {
+                        query = ""
+                        searchRecursive = false
+                    }
+                    when (place.kind) {
+                        PlaceKind.HOME -> {
+                            activeTabId = null
+                            homeRefreshKey += 1
+                        }
+                        PlaceKind.FOLDER -> place.root?.let(::openStorageRoot)
+                        PlaceKind.LARGE_FILES -> CommonPlaces.largeFilesRoot(rootGroups)?.let { volume ->
+                            openStorageRoot(volume)
+                            query = CommonPlaces.LARGE_FILES_QUERY
+                            searchRecursive = true
+                        }
+                        PlaceKind.ADD -> rootPicker.launch(null)
+                    }
+                },
+            )
+        },
+        // TOP = where you are in the folder tree, pulled DOWN over the file pane. The pane
+        // shrinks into its own node on the tree (see FolderMorph). vProgress runs POSITIVE for
+        // a TOP room, which is what the morph's stagger expects.
+        top = {
+            FileTreeRoom(
+                trail = activeTab?.locations.orEmpty(),
+                childFolders = entries.filter(FileEntry::isDirectory),
+                reveal = { shell.vProgress },
+                onOpenAncestor = { index ->
+                    val tab = activeTab
+                    val at = tabs.indexOfFirst { it.id == tab?.id }
+                    if (tab != null && at >= 0) {
+                        tabs[at] = tab.copy(locations = tab.locations.take(index + 1))
+                    }
                     shell.closeAll()
                 },
-                onOpenHome = {
-                    activeTabId = null
-                    homeRefreshKey += 1
+                onOpenChild = { entry ->
+                    openEntry(entry)
                     shell.closeAll()
                 },
-                onClose = { tab ->
-                    val wasActive = activeTabId == tab.id
-                    tabs.remove(tab)
-                    if (wasActive) activeTabId = tabs.lastOrNull()?.id
-                },
-                onAdd = {
-                    shell.closeAll()
-                    rootPicker.launch(null)
-                },
+                onClose = { shell.closeAll() },
             )
         },
         right = {
@@ -659,6 +710,13 @@ private fun FylzV1Workspace(
             topBar = {
                 TopAppBar(
                     title = { Text(activeTab?.current?.name ?: "Fylz") },
+                    // The reference's header glyph. It opens the places rail — the same room an
+                    // edge swipe opens — and is the only chrome the rail has.
+                    navigationIcon = {
+                        IconButton(onClick = { shell.open(RoomEdge.LEFT) }) {
+                            Icon(Icons.Outlined.Menu, contentDescription = "Places")
+                        }
+                    },
                     actions = {
                         IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
                             Icon(
@@ -1662,34 +1720,22 @@ private fun formatBytes(bytes: Long): String {
 }
 
 /**
- * The left room: every open location, plus the ways to get another one.
+ * The left room: the common places, and a few select smart entries — nothing else.
  *
- * This replaces the numbered chip row that used to sit above the file list. The chips were a
- * second navigation surface stacked on the first, they mis-aligned on device, and — the deeper
- * problem — they made "which folder am I in" a horizontal scroll through abbreviations. As rows
- * in the word wheel the same locations are readable, and reaching them is the same gesture as
- * everything else in the app.
+ * It used to list every open tab, so it grew with wherever the user had wandered and stopped
+ * being a map of the app. Where you are now is the file tree's job (the top room); this is the
+ * short, stable list people start from: Home, the standard folders, Large files, and the picker.
  *
- * The wheel's `selectedId` uses a sentinel for the home surface rather than a nullable id: the
- * rail always has exactly one focused row, and "no tab open" is a real place in this app (the
- * storage home screen), not the absence of one.
+ * The rail is a word wheel, as in the reference: plain words, the focused one darkest and the
+ * rest fading with distance. No icons, no selection box.
  */
 @Composable
-private fun LocationsRoom(
-    tabs: List<FolderTab>,
-    activeTabId: String?,
-    onSelect: (String) -> Unit,
-    onOpenHome: () -> Unit,
-    onClose: (FolderTab) -> Unit,
-    onAdd: () -> Unit,
+private fun PlacesRoom(
+    places: List<CommonPlace>,
+    selectedId: String,
+    onSelect: (CommonPlace) -> Unit,
 ) {
-    val items = remember(tabs) {
-        buildList {
-            add(WheelItem(HOME_WHEEL_ID, "Home"))
-            tabs.forEach { add(WheelItem(it.id, it.current.name.ifBlank { "Folder" })) }
-            add(WheelItem(ADD_WHEEL_ID, "Add a location…"))
-        }
-    }
+    val items = remember(places) { places.map { WheelItem(it.id, it.label) } }
     Column(
         Modifier
             .fillMaxSize()
@@ -1699,31 +1745,11 @@ private fun LocationsRoom(
     ) {
         WordWheelRail(
             items = items,
-            selectedId = activeTabId ?: HOME_WHEEL_ID,
-            onSelect = { id ->
-                when (id) {
-                    HOME_WHEEL_ID -> onOpenHome()
-                    ADD_WHEEL_ID -> onAdd()
-                    else -> onSelect(id)
-                }
-            },
+            selectedId = selectedId,
+            onSelect = { id -> places.firstOrNull { it.id == id }?.let(onSelect) },
             inkColor = MaterialTheme.colorScheme.onSurface,
             accentColor = MaterialTheme.colorScheme.primary,
             modifier = Modifier.weight(1f),
-            trailing = { item ->
-                // Only the focused row gets a trailing slot, so closing is offered for the
-                // location you are actually looking at — which is also the only one where
-                // "close" has an unambiguous meaning.
-                tabs.firstOrNull { it.id == item.id }?.let { tab ->
-                    IconButton(onClick = { onClose(tab) }, modifier = Modifier.size(40.dp)) {
-                        Icon(
-                            Icons.Outlined.Close,
-                            contentDescription = "Close ${tab.current.name}",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            },
         )
     }
 }
@@ -1823,8 +1849,4 @@ private fun ThemeMode.readableLabel(): String = when (this) {
     ThemeMode.DARK -> "Dark"
 }
 
-/** The storage home surface's row in the locations wheel. Not a tab, but a real destination. */
-private const val HOME_WHEEL_ID = "__home__"
 
-/** The picker's row. A verb in a list of nouns, which is why it sits at the end. */
-private const val ADD_WHEEL_ID = "__add__"
