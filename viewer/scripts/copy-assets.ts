@@ -8,6 +8,9 @@ const pub = (p: string) => join(root, "public", p);
 
 rmSync(pub("libarchive"), { recursive: true, force: true });
 rmSync(pub("pdfjs"), { recursive: true, force: true });
+rmSync(pub("sqljs"), { recursive: true, force: true });
+mkdirSync(pub("sqljs"), { recursive: true });
+cpSync(nm("sql.js/dist/sql-wasm-browser.wasm"), pub("sqljs/sql-wasm-browser.wasm"));
 mkdirSync(pub("libarchive"), { recursive: true });
 mkdirSync(pub("pdfjs"), { recursive: true });
 cpSync(nm("libarchive.js/dist/worker-bundle.js"), pub("libarchive/worker-bundle.js"));

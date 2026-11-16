@@ -1,0 +1,12 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Grace Hopper
+ORG:Navy
+TEL;TYPE=CELL:+1 555 0100
+EMAIL:grace@example.com
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Alan Turing
+EMAIL:alan@example.com
+END:VCARD

@@ -167,6 +167,103 @@ out("sample.txt.gz", gzipSync(strToU8("gzip payload text\n".repeat(20))));
   out("test.otf", new Uint8Array(font.toArrayBuffer()));
 }
 
+// ---- phase 3 fixtures
+{
+  // sqlite via sql.js
+  const initSqlJs = (await import("sql.js")).default;
+  const SQL = await initSqlJs();
+  const db = new SQL.Database();
+  db.run("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER, bio TEXT);");
+  db.run("CREATE TABLE notes (id INTEGER PRIMARY KEY, person_id INTEGER REFERENCES people(id), body TEXT);");
+  db.run("CREATE VIEW adults AS SELECT * FROM people WHERE age >= 18;");
+  for (let i = 1; i <= 120; i++) db.run("INSERT INTO people (name, age, bio) VALUES (?, ?, ?)", [`Person ${i}`, 10 + (i % 60), i % 7 === 0 ? null : `bio of ${i}`]);
+  db.run("INSERT INTO notes (person_id, body) VALUES (1, 'first note'), (2, 'second note')");
+  out("data.sqlite", db.export());
+  db.close();
+
+  // epub (mimetype stored first)
+  const xhtml = (t: string, body: string) => `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${t}</title></head><body><h1>${t}</h1>${body}</body></html>`;
+  const png = new Uint8Array(readFileSync(join(FIX, "image.png")));
+  out("book.epub", zipSync({
+    mimetype: [strToU8("application/epub+zip"), { level: 0 }],
+    "META-INF/container.xml": strToU8('<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'),
+    "OEBPS/content.opf": strToU8('<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Fixture Book</dc:title><dc:creator>Fylz Tests</dc:creator><dc:identifier id="id">x</dc:identifier></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="c1" href="ch1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="text/ch2.xhtml" media-type="application/xhtml+xml"/><item id="img" href="img/pic.png" media-type="image/png"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>'),
+    "OEBPS/nav.xhtml": strToU8('<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="ch1.xhtml">Chapter One</a></li><li><a href="text/ch2.xhtml">Chapter Two</a></li></ol></nav></body></html>'),
+    "OEBPS/ch1.xhtml": strToU8(xhtml("Chapter One", '<p>It was a quiet start.</p><img src="img/pic.png" alt="pic"/><script>alert(1)</script>')),
+    "OEBPS/text/ch2.xhtml": strToU8(xhtml("Chapter Two", "<p>The story continues.</p>")),
+    "OEBPS/img/pic.png": png,
+  }));
+
+  // geo
+  out("shapes.geojson", JSON.stringify({ type: "FeatureCollection", features: [
+    { type: "Feature", properties: { name: "Home" }, geometry: { type: "Point", coordinates: [77.59, 12.97] } },
+    { type: "Feature", properties: { name: "Route" }, geometry: { type: "LineString", coordinates: [[77.59, 12.97], [77.62, 13.0], [77.66, 13.02]] } },
+    { type: "Feature", properties: { name: "Park" }, geometry: { type: "Polygon", coordinates: [[[77.60, 12.95], [77.63, 12.95], [77.63, 12.98], [77.60, 12.98], [77.60, 12.95]]] } },
+  ] }));
+  out("track.gpx", `<?xml version="1.0"?><gpx version="1.1" creator="fixture" xmlns="http://www.topografix.com/GPX/1/1"><wpt lat="12.97" lon="77.59"><name>Start</name></wpt><trk><name>Morning run</name><trkseg>${[0, 1, 2, 3, 4].map((i) => `<trkpt lat="${12.97 + i * 0.01}" lon="${77.59 + i * 0.01}"/>`).join("")}</trkseg></trk></gpx>\n`);
+  out("places.kml", `<?xml version="1.0"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark><name>Cafe</name><Point><coordinates>77.6,12.9,0</coordinates></Point></Placemark><Placemark><name>Loop</name><LineString><coordinates>77.6,12.9 77.7,13.0 77.8,12.95</coordinates></LineString></Placemark></Document></kml>\n`);
+
+  // calendar / contacts
+  out("events.ics", "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:Team sync\r\nDTSTART:20240115T093000Z\r\nDTEND:20240115T100000Z\r\nLOCATION:Room 4\r\nDESCRIPTION:Weekly sync\\nBring notes\r\nATTENDEE;CN=Ada Lovelace:mailto:ada@example.com\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Holiday\r\nDTSTART;VALUE=DATE:20240501\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+  out("people.vcf", "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Grace Hopper\r\nORG:Navy\r\nTEL;TYPE=CELL:+1 555 0100\r\nEMAIL:grace@example.com\r\nEND:VCARD\r\nBEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alan Turing\r\nEMAIL:alan@example.com\r\nEND:VCARD\r\n");
+
+  // notebook
+  out("analysis.ipynb", JSON.stringify({ nbformat: 4, nbformat_minor: 5, metadata: { language_info: { name: "python" } }, cells: [
+    { cell_type: "markdown", metadata: {}, source: ["# Notebook title\n", "Some *markdown*."] },
+    { cell_type: "code", metadata: {}, execution_count: 1, source: ["print('hi')"], outputs: [{ output_type: "stream", name: "stdout", text: ["hi\n"] }, { output_type: "display_data", data: { "text/html": ["<b>bold html</b><script>alert(1)</script>"] }, metadata: {} }] },
+    { cell_type: "code", metadata: {}, execution_count: 2, source: ["1/0"], outputs: [{ output_type: "error", ename: "ZeroDivisionError", evalue: "division by zero", traceback: ["\u001b[31mZeroDivisionError\u001b[0m: division by zero"] }] },
+  ] }, null, 1));
+
+  // mail
+  const b64 = (s: string) => Buffer.from(s).toString("base64").replace(/(.{76})/g, "$1\r\n");
+  const eml = ["From: =?UTF-8?B?" + Buffer.from("Ada Lovelace").toString("base64") + "?= <ada@example.com>", "To: bob@example.com", "Subject: =?UTF-8?Q?Hello_=E2=9C=93_fixture?=", "Date: Mon, 15 Jan 2024 09:30:00 +0000", "MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="MIX"', "",
+    "--MIX", 'Content-Type: multipart/alternative; boundary="ALT"', "", "--ALT", "Content-Type: text/plain; charset=utf-8", "", "Plain body text", "--ALT", "Content-Type: text/html; charset=utf-8", "Content-Transfer-Encoding: quoted-printable", "", "<p>HTML body =E2=9C=93 <b>bold</b></p><script>alert(1)</script><img src=3D\"http://evil.example/x.png\">", "--ALT--",
+    "--MIX", 'Content-Type: text/plain; name="note.txt"', 'Content-Disposition: attachment; filename="note.txt"', "Content-Transfer-Encoding: base64", "", b64("attachment content\n"), "--MIX--", ""].join("\r\n");
+  out("message.eml", eml);
+  out("inbox.mbox", `From a@example.com Mon Jan 15 09:30:00 2024\nFrom: a@example.com\nSubject: First\n\nbody one\n\nFrom b@example.com Tue Jan 16 09:30:00 2024\nFrom: b@example.com\nSubject: Second\n\nbody two\n`);
+
+  // jar / apk
+  out("lib.jar", zipSync({ "META-INF/MANIFEST.MF": strToU8("Manifest-Version: 1.0\r\nMain-Class: com.example.Main\r\nImplementation-Version: 1.2.3\r\n"), "com/example/Main.class": new Uint8Array([0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52]), "com/example/util/Helper.class": new Uint8Array([0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52]) }));
+  const { buildAxml } = await import("./axml");
+  const manifest = buildAxml({ tag: "manifest", attrs: { package: "com.example.fixture", versionCode: 7, versionName: "1.2.3" }, children: [
+    { tag: "uses-sdk", attrs: { minSdkVersion: 24, targetSdkVersion: 34 } }, { tag: "uses-permission", attrs: { name: "android.permission.INTERNET" } }, { tag: "uses-permission", attrs: { name: "android.permission.CAMERA" } },
+    { tag: "application", children: [{ tag: "activity", attrs: { name: ".Main" } }, { tag: "service", attrs: { name: ".Sync" } }] }] });
+  out("app.apk", zipSync({ "AndroidManifest.xml": manifest, "classes.dex": strToU8("dex\n035\0"), "resources.arsc": new Uint8Array(8), "lib/arm64-v8a/libfoo.so": new Uint8Array(4) }));
+
+  // 3D
+  out("cube.obj", "o cube\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\nf 1 2 3\nf 1 3 4\nf 5 6 7\nf 5 7 8\nf 1 2 6\nf 1 6 5\nf 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n");
+  out("pyramid.stl", "solid pyramid\n" + [[[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 0, 0], [1, 0, 0], [0, 0, 1]], [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[0, 0, 0], [0, 1, 0], [0, 0, 1]]].map((t) => `facet normal 0 0 1\n outer loop\n${t.map((v) => `  vertex ${v.join(" ")}`).join("\n")}\n endloop\nendfacet\n`).join("") + "endsolid pyramid\n");
+  out("tri.ply", "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 2\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n1 1 0\n0 1 0\n3 0 1 2\n3 0 2 3\n");
+  {
+    const bin = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const json = JSON.stringify({ asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }], meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] }], bufferViews: [{ buffer: 0, byteLength: 36 }], buffers: [{ byteLength: 36 }] });
+    const jb = Buffer.from(json + " ".repeat((4 - (json.length % 4)) % 4));
+    const glb = Buffer.alloc(12 + 8 + jb.length + 8 + 36);
+    glb.writeUInt32LE(0x46546c67, 0); glb.writeUInt32LE(2, 4); glb.writeUInt32LE(glb.length, 8);
+    glb.writeUInt32LE(jb.length, 12); glb.writeUInt32LE(0x4e4f534a, 16); jb.copy(glb, 20);
+    const o = 20 + jb.length; glb.writeUInt32LE(36, o); glb.writeUInt32LE(0x004e4942, o + 4); Buffer.from(bin.buffer).copy(glb, o + 8);
+    out("tri.glb", glb);
+  }
+
+  // RAW-like: a minimal TIFF (DNG-style) with Make/Model/ExifIFD and an embedded JPEG preview
+  {
+    const tmp = join(process.env.TMPDIR ?? "/tmp", "fv-preview.jpg");
+    execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=480x320:rate=1:duration=1", "-frames:v", "1", "-q:v", "3", tmp]);
+    const jpg = readFileSync(tmp);
+    const buf = Buffer.alloc(120 + jpg.length);
+    buf.write("II", 0); buf.writeUInt16LE(42, 2); buf.writeUInt32LE(8, 4);
+    buf.writeUInt16LE(3, 8);
+    const entry = (i: number, tag: number, type: number, count: number, val: number) => { const o = 10 + i * 12; buf.writeUInt16LE(tag, o); buf.writeUInt16LE(type, o + 2); buf.writeUInt32LE(count, o + 4); buf.writeUInt32LE(val, o + 8); };
+    entry(0, 0x010f, 2, 13, 50); entry(1, 0x0110, 2, 14, 64); entry(2, 0x8769, 4, 1, 80);
+    buf.writeUInt32LE(0, 46);
+    buf.write("Fylz Cameras\0", 50); buf.write("FX-1 RAW Test\0", 64);
+    buf.writeUInt16LE(1, 80); buf.writeUInt16LE(0x9003, 82); buf.writeUInt16LE(2, 84); buf.writeUInt32LE(20, 86); buf.writeUInt32LE(100, 90); buf.writeUInt32LE(0, 94);
+    buf.write("2024:05:06 07:08:09\0", 100);
+    jpg.copy(buf, 120);
+    out("shot.dng", buf);
+  }
+}
+
 // ---- media via ffmpeg when available (committed; regenerate only on demand)
 if (process.env.FIX_MEDIA || !existsSync(join(FIX, "photo.webp"))) {
   try {

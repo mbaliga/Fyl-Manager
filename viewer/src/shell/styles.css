@@ -143,3 +143,31 @@ button, input, select { font: inherit; color: inherit; }
 .fv-pdf-canvas, .fv-pdf-ann { position: absolute; left: 0; top: 0; } .fv-pdf-ann { pointer-events: none; }
 .fv-pdf-page .textLayer { position: absolute; inset: 0; } .fv-hit { background: rgba(255, 200, 0, .45) !important; color: transparent; }
 @media (max-width: 640px) { .fv-thumbs { width: 100px; } }
+/* sqlite */
+.fv-sqlite { display: flex; flex: 1; min-height: 0; }
+.fv-sql-side { width: 190px; overflow: auto; border-right: 1px solid var(--fv-border); background: var(--fv-bg-subtle); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.fv-sql-side .fv-btn { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-sql-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.fv-sql-schema { margin: 0; padding: 6px 10px; max-height: 110px; overflow: auto; font: 12px/1.4 var(--fv-mono); background: var(--fv-bg-subtle); border-bottom: 1px solid var(--fv-border); white-space: pre-wrap; }
+.fv-sql-console { display: flex; gap: 6px; padding: 6px 8px; } .fv-sql-console textarea { flex: 1; font-family: var(--fv-mono); resize: vertical; }
+@media (max-width: 640px) { .fv-sql-side { width: 110px; } }
+/* epub */
+.fv-epub { display: flex; flex: 1; min-height: 0; }
+.fv-epub-toc { width: 220px; overflow: auto; border-right: 1px solid var(--fv-border); background: var(--fv-bg-subtle); padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.fv-toc-link { color: var(--fv-fg); text-decoration: none; padding: 2px 4px; border-radius: 4px; } .fv-toc-link:hover { background: var(--fv-hover); } .fv-toc-cur { background: var(--fv-selection); }
+.fv-epub-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 640px) { .fv-epub-toc { width: 100px; font-size: 12px; } }
+/* geo / cards */
+.fv-geo { display: flex; flex: 1; min-height: 0; } .fv-geo-stage { flex: 1; min-width: 0; display: flex; background: var(--fv-bg-subtle); } .fv-geo-svg { width: 100%; height: 100%; }
+.fv-geo-side { width: 240px; overflow: auto; padding: 10px; border-left: 1px solid var(--fv-border); font-size: 13px; } .fv-geo-side ul { padding-left: 18px; }
+.fv-cards { flex: 1; overflow: auto; padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; align-content: start; }
+.fv-cards > .fv-muted { grid-column: 1 / -1; } .fv-card { border: 1px solid var(--fv-border); border-radius: 8px; padding: 10px 12px; background: var(--fv-bg-subtle); } .fv-card h3 { margin: 0 0 6px; } .fv-card dd { white-space: pre-wrap; }
+@media (max-width: 640px) { .fv-geo { flex-direction: column; } .fv-geo-side { width: auto; max-height: 35%; border-left: 0; border-top: 1px solid var(--fv-border); } }
+/* mail */
+.fv-mail { display: flex; flex: 1; min-height: 0; } .fv-mail-list { width: 240px; overflow: auto; border-right: 1px solid var(--fv-border); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.fv-mail-list .fv-btn { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .fv-mail-view { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.fv-mail-hdr { padding: 8px 12px; border-bottom: 1px solid var(--fv-border); } .fv-mail-att { padding: 6px 12px; border-bottom: 1px solid var(--fv-border); } .fv-att-row { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+.fv-mail-text { margin: 0; padding: 12px; white-space: pre-wrap; font: 13px/1.5 var(--fv-mono); overflow: auto; }
+.fv-ipynb { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.fv-package { padding: 12px 16px; overflow: auto; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.fv-3d { display: flex; flex-direction: column; flex: 1; min-height: 0; } .fv-3d-stage { flex: 1; min-height: 0; background: var(--fv-bg-subtle); position: relative; } .fv-3d-stage canvas { display: block; touch-action: none; }

@@ -22,8 +22,12 @@ The core is open source (Apache-2.0).
 | libarchive.js (+ libarchive WASM, BSD) | MIT | 7z/rar/bz2/xz archives |
 | yaml | ISC | YAML validation / tree |
 | smol-toml | BSD-3-Clause | TOML validation / tree |
-| three | MIT | 3D models (phase 3) |
+| three | MIT | 3D models |
 
-Flagged (LGPL, lazy-loaded, optional): _none yet_ — libheif-js will be listed here when added.
+Flagged (LGPL, lazy-loaded, optional):
+
+| Package | Licence | Where | Notes |
+|---|---|---|---|
+| libheif-js (libheif compiled to WASM) | **LGPL-3.0** | only in the lazily loaded `heic` plugin chunk (`src/plugins/heic/view.ts`) | Not part of the initial bundle. Source is unmodified from npm; the chunk is a separate file in `dist/assets/` that can be replaced by a relinked build. Remove the plugin from `src/plugins/index.ts` to ship without it. |
 
 Run `npx license-checker --summary` (or inspect `package-lock.json`) when adding dependencies.

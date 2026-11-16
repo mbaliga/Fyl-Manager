@@ -19,7 +19,11 @@ Resume from here. Work lives in `viewer/`. Check: `npm run build && npm test && 
   with e2e (range reads, chunked saves, failed save, close/dirty prompt, theme, read-only), offline e2e (pdf, xlsx, 7z wasm, hashing, docx with network off),
   `docs/HOST_BRIDGE.md`, `docs/FYLZ_INTEGRATION.md`, `docs/WRITING_A_PLUGIN.md`, Kotlin stub `app/.../viewer/FylzViewerBridge.kt` (no new deps).
 
+- **Phase 3** — heic (libheif WASM, LGPL, flagged), sqlite (sql.js, read-only SQL console), epub, 3D (glb/gltf/obj/stl/ply), RAW preview + EXIF,
+  geo (geojson/gpx/kml SVG plot), ics/vcf cards, ipynb, eml/mbox (attachments open recursively), apk/jar summary. Fixtures + unit + e2e for each.
+
 ## Next
+- Nothing blocking. Ideas: HTML sandbox preview, RAR fixture, password-protected PDF/zip prompts, real-device validation of the Android bridge.
 - Phase 3 plugins (heic, sqlite, epub, 3d, raw, geo, ics/vcf, ipynb, eml/mbox, apk/jar).
 - Phase 4: PWA (manifest, service worker, launchQueue, share target), mock Fylz host page + e2e, docs, Kotlin stub.
 

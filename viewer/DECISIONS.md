@@ -34,3 +34,9 @@ Judgement calls made while building, newest last. The owner reviews these at the
 15. **Grid selection** toggles CSS classes in place instead of re-rendering rows: replacing the cell under the pointer swallowed `dblclick`.
 16. **Inputs for in-canvas text** (image/PDF annotations) open on `click`, not `pointerdown`, because the pointer's default focus change blurs a just-created input.
 17. **`showSaveFilePicker` / `showOpenFilePicker`** are skipped when `navigator.webdriver` is set so e2e runs fall back to download / file input.
+18. **Phase 3 delivered in full** (heic, sqlite, epub, 3D, RAW, geo, ics/vcf, ipynb, eml/mbox, apk/jar), each with a generated fixture (HEIC and 7z are the two committed hand-made ones) and an e2e test.
+19. **RAW** support extracts the largest embedded JPEG by scanning the file (works for TIFF-based and RAF/CR3-style containers alike) rather than walking each vendor's IFD layout; EXIF via exifr. The sensor data is never developed.
+20. **APK manifests** are decoded with a small AXML reader (`plugins/package/axml.ts`), validated against a generated AXML fixture. Real-world APKs with unusual string-pool encodings are untested.
+21. **SQLite** opens read-only in practice: `PRAGMA query_only=ON` plus a single-statement SELECT/WITH/PRAGMA/EXPLAIN filter for the console. Tables show the first 100,000 rows in the virtualized grid.
+22. **HTML files** open in the text editor (source). A rendered preview would need the sandbox pipeline; "Open as…" does not offer it yet.
+23. **WebGL** is required for 3D; without it the session falls back to Hex with a notice.
