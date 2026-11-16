@@ -861,10 +861,15 @@ private fun FylzV1Workspace(
                     )
             },
             label = "pane",
-        ) { _ ->
-        if (pane != null) {
+        ) { shownId ->
+        // Which pane this content is for comes from the row it animates to, not from the live
+        // state: while the old pane slides out it must keep showing itself, not flip to the
+        // content that is arriving.
+        val shownPane = places.firstOrNull { it.id == shownId }?.kind
+            ?.takeIf { it == PlaceKind.RECYCLE_BIN || it == PlaceKind.RECOVERY || it == PlaceKind.SETTINGS }
+        if (shownPane != null) {
             PaneScaffold(onMenu = { shell.open(RoomEdge.LEFT) }) {
-                when (pane) {
+                when (shownPane) {
                     PlaceKind.RECYCLE_BIN -> RecycleBinPane(
                         records = remember(recycleVersion, refreshKey) { recycleBin.records() },
                         onRestore = { id ->
