@@ -12,6 +12,10 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
 - Added an in-app clipboard: Cut and Copy from the selection bar, then Paste into the folder you are in, in any tab. Pasting never overwrites (keep-both naming), so copying into the same folder duplicates the file; a cut into its own folder is a no-op; a folder cannot be pasted into itself or anything inside it. Cut items are drawn faint until they land. The picker-based transfers remain as "Copy to…" and "Move to…".
 
+- Reworked navigation around the places list. The left list now holds Home, the standard folders, Large files, **Recycle bin, Storage & recovery and Settings**; the bottom and right rooms are gone. The content opens as a large rounded card on the right half beside the list, and **moving the wheel onto a row changes the pane to match** (Pictures shows Pictures, Settings shows Settings), with the neighbouring cards peeking above and below and sliding with the wheel. Requires `shared-libraries` at or after `6095357` (the shell's open-park mode).
+- The top room now shows **what the folder is** (name, path, contents, size, newest change, largest file, types, free space on its volume) above the tree.
+- The landing screen is now a launcher: storage cards with free space, quick-access tiles for the standard folders plus Large files and the Recycle bin, a Recent row of folders opened lately, and Add folder / Network.
+
 ### Fixes
 
 - Fixed exported PDFs being named with literal template text (`Fylz-pages-${System.currentTimeMillis()}.pdf`) and PDF progress reading "Writing page $done of $total"; names now carry the timestamp and progress shows real numbers.

@@ -57,10 +57,11 @@ import kotlinx.coroutines.launch
  * App-level chrome for the file workspace and durable storage/recovery tools.
  *
  * There is no chrome left. Recovery used to be one of two `NavigationBarItem`s across the
- * bottom of the app; it is a **room** now — a surface parked off the bottom edge that the file
- * workspace lifts and parts to reveal, rendered by [FylzV1App]'s [SpatialShell]. Tabs went for
- * the reason the owner gave after the first test build: a bottom tab bar is not the fonebrew
- * pattern, and two permanent tabs for a screen most sessions never open is chrome charging rent.
+ * bottom of the app, then a room parked off the bottom edge. It is now a **row in the places
+ * list** on the left, next to the recycle bin and settings: moving the wheel onto it shows it in
+ * the pane on the right, exactly like moving onto a folder. Tabs went for the reason the owner
+ * gave after the first test build: a bottom tab bar is not the fonebrew pattern, and two
+ * permanent tabs for a screen most sessions never open is chrome charging rent.
  *
  * This function keeps only what Recovery *needs* — the journal, its polling, and the operation
  * history dialog — and hands the room down as content. That matters for more than tidiness: the

@@ -28,10 +28,13 @@ class CommonPlacesTest {
         StorageRootGroup("Folders", titles.map { root(it, StorageRootKind.STANDARD_DIRECTORY) })
 
     @Test
-    fun `the rail is home, the pinned folders in order, large files, then add`() {
+    fun `the rail is home, the pinned folders in order, large files, then the app's own surfaces`() {
         val places = CommonPlaces.build(listOf(device, folders("Movies", "Documents", "Downloads", "Pictures", "Music")))
         assertEquals(
-            listOf("Home", "Downloads", "Documents", "Pictures", "Music", "Movies", "Large files", "Add a location…"),
+            listOf(
+                "Home", "Downloads", "Documents", "Pictures", "Music", "Movies", "Large files",
+                "Recycle bin", "Storage & recovery", "Settings",
+            ),
             places.map { it.label },
         )
     }
@@ -39,7 +42,10 @@ class CommonPlacesTest {
     @Test
     fun `camera and unrecognised folders are not pinned`() {
         val places = CommonPlaces.build(listOf(device, folders("Camera (DCIM)", "Podcasts", "Downloads")))
-        assertEquals(listOf("Home", "Downloads", "Large files", "Add a location…"), places.map { it.label })
+        assertEquals(
+            listOf("Home", "Downloads", "Large files", "Recycle bin", "Storage & recovery", "Settings"),
+            places.map { it.label },
+        )
     }
 
     @Test
@@ -75,6 +81,33 @@ class CommonPlacesTest {
         val places = CommonPlaces.build(listOf(device))
         val id = CommonPlaces.selectedId(places, "content://t/Internal storage", largeFilesActive = true)
         assertEquals(CommonPlaces.LARGE_FILES_ID, id)
+    }
+
+    @Test
+    fun `an open pane wins over everything else`() {
+        val places = CommonPlaces.build(listOf(device, folders("Downloads")))
+        val id = CommonPlaces.selectedId(
+            places, "content://t/Downloads", largeFilesActive = true, activePaneId = CommonPlaces.SETTINGS_ID,
+        )
+        assertEquals(CommonPlaces.SETTINGS_ID, id)
+    }
+
+    @Test
+    fun `only the app surfaces map to a pane id`() {
+        assertEquals(CommonPlaces.RECYCLE_BIN_ID, CommonPlaces.paneId(PlaceKind.RECYCLE_BIN))
+        assertEquals(CommonPlaces.RECOVERY_ID, CommonPlaces.paneId(PlaceKind.RECOVERY))
+        assertEquals(CommonPlaces.SETTINGS_ID, CommonPlaces.paneId(PlaceKind.SETTINGS))
+        assertNull(CommonPlaces.paneId(PlaceKind.FOLDER))
+        assertNull(CommonPlaces.paneId(PlaceKind.HOME))
+    }
+
+    @Test
+    fun `the app surfaces are always offered, even with no storage`() {
+        val kinds = CommonPlaces.build(emptyList()).map { it.kind }
+        assertEquals(
+            listOf(PlaceKind.HOME, PlaceKind.RECYCLE_BIN, PlaceKind.RECOVERY, PlaceKind.SETTINGS),
+            kinds,
+        )
     }
 
     @Test
