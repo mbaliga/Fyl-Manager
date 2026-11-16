@@ -138,7 +138,7 @@ fun StorageHomeScreen(
     val loading = groups.isEmpty() && ready
     val model = remember(groups) { LauncherModel.from(groups) }
 
-    fun open(root: StorageRoot) {
+    fun openRoot(root: StorageRoot) {
         if (root.opensDirectly) onOpenRoot(root) else onPickFolder(root)
     }
 
@@ -190,7 +190,7 @@ fun StorageHomeScreen(
                 ) {
                     items(model.storages, key = { it.id }) { root ->
                         val index = model.storages.indexOf(root)
-                        StorageCard(root = root, tint = index, onClick = { open(root) })
+                        StorageCard(root = root, tint = index, onClick = { openRoot(root) })
                     }
                 }
             }
@@ -200,7 +200,7 @@ fun StorageHomeScreen(
             SectionLabel("Quick access")
             val tiles = buildList {
                 model.shortcuts.forEach { root ->
-                    add(LauncherTile(LauncherModel.tileLabel(root), shortcutIcon(root.title), root.opensDirectly.not()) { open(root) })
+                    add(LauncherTile(LauncherModel.tileLabel(root), shortcutIcon(root.title), root.opensDirectly.not()) { openRoot(root) })
                 }
                 add(LauncherTile("Large files", Icons.Outlined.DataUsage, false, onOpenLargeFiles))
                 add(LauncherTile("Recycle bin", Icons.Outlined.RestoreFromTrash, false, onOpenRecycleBin))
@@ -234,7 +234,7 @@ fun StorageHomeScreen(
             }
         }
         items(model.more, key = { "more:${it.id}" }) { root ->
-            StorageRootRow(root = root, onClick = { open(root) })
+            StorageRootRow(root = root, onClick = { openRoot(root) })
         }
 
         item(key = "footer") {

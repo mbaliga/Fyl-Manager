@@ -333,77 +333,6 @@ private fun FylzV1Workspace(
     // Nothing else may claim the pull-down space.
     val shell = rememberSpatialController()
 
-    // The left rail's contents. Loaded the way the storage home surface loads them, so the rail
-    // and the home screen can never disagree about what a "Downloads" is.
-    val rootGroups by produceState(
-        initialValue = emptyList<StorageRootGroup>(),
-        key1 = homeRefreshKey,
-    ) {
-        value = runCatching {
-            StorageAccess.available(context).flatMap { it.rootGroups(context) }
-        }.getOrDefault(emptyList())
-    }
-    val places = remember(rootGroups) { CommonPlaces.build(rootGroups) }
-    val largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY
-    val railSelectedId = CommonPlaces.selectedId(
-        places = places,
-        activeTreeUri = activeTab?.treeUri?.toString(),
-        largeFilesActive = largeFilesActive,
-        activePaneId = pane?.let(CommonPlaces::paneId),
-    )
-    val folderFacts = remember(entries) { FolderFacts.from(entries) }
-    val volumeLine = remember(activeTab?.treeUri, rootGroups) {
-        LauncherModel.volumeFor(activeTab?.treeUri, rootGroups)?.let { volume ->
-            val free = volume.availableBytes
-            val total = volume.totalBytes
-            if (free != null && total != null && total > 0) {
-                "${formatStorageBytes(free)} free of ${formatStorageBytes(total)}"
-            } else {
-                null
-            }
-        }
-    }
-
-    fun openLargeFiles() {
-        val volume = CommonPlaces.largeFilesRoot(rootGroups) ?: return
-        pane = null
-        openStorageRoot(volume)
-        query = CommonPlaces.LARGE_FILES_QUERY
-        searchRecursive = true
-    }
-
-    // Choosing a row of the places list. Turning the wheel onto a row IS choosing it (the rail
-    // reports a settle as a selection), and the pane to the right follows: that is the point
-    // of the list, so nothing here closes the room. The room is left the way it was entered.
-    fun selectPlace(place: CommonPlace) {
-        // Large files is a search, so leaving it must also clear the search — otherwise Downloads
-        // would open filtered to files over 100 MB.
-        if (place.kind != PlaceKind.LARGE_FILES && largeFilesActive) {
-            query = ""
-            searchRecursive = false
-        }
-        when (place.kind) {
-            PlaceKind.HOME -> {
-                pane = null
-                activeTabId = null
-                homeRefreshKey += 1
-            }
-            PlaceKind.FOLDER -> {
-                pane = null
-                place.root?.let(::openStorageRoot)
-            }
-            PlaceKind.LARGE_FILES -> openLargeFiles()
-            PlaceKind.RECYCLE_BIN, PlaceKind.RECOVERY, PlaceKind.SETTINGS -> pane = place.kind
-        }
-    }
-
-    // Opening a folder puts it at the front of the launcher's Recent row.
-    LaunchedEffect(activeTab?.id, activeTab?.current?.uri) {
-        val tab = activeTab ?: return@LaunchedEffect
-        recentFolders = recentStore.record(
-            RecentFolder(tab.treeUri.toString(), tab.current.uri.toString(), tab.current.name),
-        )
-    }
     // Hoisted so the edge scrubber can read where the list is and jump it. Both are needed
     // because the browser switches between a column and a grid, and a scrubber that only worked
     // in one of them would be an affordance that silently stops meaning anything.
@@ -780,6 +709,78 @@ private fun FylzV1Workspace(
             }.onFailure { toast(it.message ?: "Unable to recycle selection") }
             loading = false
         }
+    }
+
+    // The left rail's contents. Loaded the way the storage home surface loads them, so the rail
+    // and the home screen can never disagree about what a "Downloads" is.
+    val rootGroups by produceState(
+        initialValue = emptyList<StorageRootGroup>(),
+        key1 = homeRefreshKey,
+    ) {
+        value = runCatching {
+            StorageAccess.available(context).flatMap { it.rootGroups(context) }
+        }.getOrDefault(emptyList())
+    }
+    val places = remember(rootGroups) { CommonPlaces.build(rootGroups) }
+    val largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY
+    val railSelectedId = CommonPlaces.selectedId(
+        places = places,
+        activeTreeUri = activeTab?.treeUri?.toString(),
+        largeFilesActive = largeFilesActive,
+        activePaneId = pane?.let(CommonPlaces::paneId),
+    )
+    val folderFacts = remember(entries) { FolderFacts.from(entries) }
+    val volumeLine = remember(activeTab?.treeUri, rootGroups) {
+        LauncherModel.volumeFor(activeTab?.treeUri, rootGroups)?.let { volume ->
+            val free = volume.availableBytes
+            val total = volume.totalBytes
+            if (free != null && total != null && total > 0) {
+                "${formatStorageBytes(free)} free of ${formatStorageBytes(total)}"
+            } else {
+                null
+            }
+        }
+    }
+
+    fun openLargeFiles() {
+        val volume = CommonPlaces.largeFilesRoot(rootGroups) ?: return
+        pane = null
+        openStorageRoot(volume)
+        query = CommonPlaces.LARGE_FILES_QUERY
+        searchRecursive = true
+    }
+
+    // Choosing a row of the places list. Turning the wheel onto a row IS choosing it (the rail
+    // reports a settle as a selection), and the pane to the right follows: that is the point
+    // of the list, so nothing here closes the room. The room is left the way it was entered.
+    fun selectPlace(place: CommonPlace) {
+        // Large files is a search, so leaving it must also clear the search — otherwise Downloads
+        // would open filtered to files over 100 MB.
+        if (place.kind != PlaceKind.LARGE_FILES && largeFilesActive) {
+            query = ""
+            searchRecursive = false
+        }
+        when (place.kind) {
+            PlaceKind.HOME -> {
+                pane = null
+                activeTabId = null
+                homeRefreshKey += 1
+            }
+            PlaceKind.FOLDER -> {
+                pane = null
+                place.root?.let(::openStorageRoot)
+            }
+            PlaceKind.LARGE_FILES -> openLargeFiles()
+            PlaceKind.RECYCLE_BIN, PlaceKind.RECOVERY, PlaceKind.SETTINGS -> pane = place.kind
+        }
+    }
+
+    // Opening a folder puts it at the front of the launcher's Recent row.
+    LaunchedEffect(activeTab?.id, activeTab?.current?.uri) {
+        val tab = activeTab ?: return@LaunchedEffect
+        recentFolders = recentStore.record(
+            RecentFolder(tab.treeUri.toString(), tab.current.uri.toString(), tab.current.name),
+        )
     }
 
     // Back closes an open room before it does anything else: a room is not a back-stack entry,
@@ -1188,6 +1189,7 @@ private fun FylzV1Workspace(
                 )
             }
         }
+    }
     }
     // The cards before and after the focused one, peeking above and below the parked card and
     // sliding with the wheel. They live above the shell because the shell leaves no room for
