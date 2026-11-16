@@ -174,7 +174,27 @@ import androidx.compose.material.icons.outlined.Close
 import io.github.mbaliga.fylz.browse.entryStops
 import androidx.compose.runtime.produceState
 import androidx.compose.material.icons.outlined.Menu
+import dev.aarso.cellshell.OpenPark
 import dev.aarso.cellshell.RoomEdge
+import dev.aarso.cellshell.openParkDistance
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import io.github.mbaliga.fylz.library.RecentFolder
+import io.github.mbaliga.fylz.library.RecentFoldersStore
+import io.github.mbaliga.fylz.ui.places.LauncherModel
+import io.github.mbaliga.fylz.ui.tree.FolderFacts
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.ui.places.CommonPlace
 import io.github.mbaliga.fylz.ui.places.CommonPlaces
@@ -191,6 +211,18 @@ import androidx.compose.ui.text.font.FontWeight
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
 
+/**
+ * How the places list parks the content card: the reference's numbers (47% of the window kept,
+ * scaled to 80%, 28dp corners), which are the shell's own defaults for exactly this layout.
+ */
+private val LEFT_PARK = OpenPark()
+
+/** The gap between stacked cards, as a fraction of the window's height. */
+private const val PEEK_GAP_FRACTION = 0.02f
+
+/** How long the pane takes to slide when the wheel moves onto another row. */
+private const val PANE_SLIDE_MS = 320
+
 /** How faint a cut item is drawn while it waits to be pasted. */
 private const val CUT_ITEM_ALPHA = 0.45f
 
@@ -205,7 +237,7 @@ private const val MAX_RESTORED_TABS = 8
  * activities — arrived light inside an otherwise dark app. Content that belongs to Fylz is
  * rendered by Fylz's theme; there is no second place for that decision to be made.
  *
- * @param recoveryRoom the storage-and-recovery surface, shown as the shell's bottom room.
+ * @param recoveryRoom the storage-and-recovery surface, shown in the pane when its row of the places list is focused.
  * @param overlays dialogs the caller owns and needs drawn over everything.
  */
 @Composable
@@ -271,7 +303,6 @@ private fun FylzV1Workspace(
     var renameDialog by remember { mutableStateOf(false) }
     var tagDialog by remember { mutableStateOf(false) }
     var batchRenameDialog by remember { mutableStateOf(false) }
-    var recycleDialog by remember { mutableStateOf(false) }
     var moreExpanded by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
     var webDavDialog by remember { mutableStateOf(false) }
@@ -289,6 +320,13 @@ private fun FylzV1Workspace(
     // that is the whole point of cut/copy/paste. It is in-memory only: a cut that outlived the
     // process would be a pending move nobody can see.
     var clipboard by remember { mutableStateOf<FileClipboard?>(null) }
+    // Which of the app's own surfaces fills the pane instead of the file view: the recycle bin,
+    // storage & recovery, or settings. They are rows in the places list like any folder, so
+    // moving the wheel onto one shows it here. Null means the file view (or the launcher).
+    var pane by remember { mutableStateOf<PlaceKind?>(null) }
+    var recycleVersion by remember { mutableIntStateOf(0) }
+    val recentStore = remember { RecentFoldersStore(context.applicationContext) }
+    var recentFolders by remember { mutableStateOf(recentStore.list()) }
 
     // Four rooms: common places LEFT, tools and settings RIGHT, recovery BOTTOM, and the file
     // tree TOP — pulled down over the file pane, which shrinks into its folder on the tree.
@@ -306,6 +344,66 @@ private fun FylzV1Workspace(
         }.getOrDefault(emptyList())
     }
     val places = remember(rootGroups) { CommonPlaces.build(rootGroups) }
+    val largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY
+    val railSelectedId = CommonPlaces.selectedId(
+        places = places,
+        activeTreeUri = activeTab?.treeUri?.toString(),
+        largeFilesActive = largeFilesActive,
+        activePaneId = pane?.let(CommonPlaces::paneId),
+    )
+    val folderFacts = remember(entries) { FolderFacts.from(entries) }
+    val volumeLine = remember(activeTab?.treeUri, rootGroups) {
+        LauncherModel.volumeFor(activeTab?.treeUri, rootGroups)?.let { volume ->
+            val free = volume.availableBytes
+            val total = volume.totalBytes
+            if (free != null && total != null && total > 0) {
+                "${formatStorageBytes(free)} free of ${formatStorageBytes(total)}"
+            } else {
+                null
+            }
+        }
+    }
+
+    fun openLargeFiles() {
+        val volume = CommonPlaces.largeFilesRoot(rootGroups) ?: return
+        pane = null
+        openStorageRoot(volume)
+        query = CommonPlaces.LARGE_FILES_QUERY
+        searchRecursive = true
+    }
+
+    // Choosing a row of the places list. Turning the wheel onto a row IS choosing it (the rail
+    // reports a settle as a selection), and the pane to the right follows: that is the point
+    // of the list, so nothing here closes the room. The room is left the way it was entered.
+    fun selectPlace(place: CommonPlace) {
+        // Large files is a search, so leaving it must also clear the search — otherwise Downloads
+        // would open filtered to files over 100 MB.
+        if (place.kind != PlaceKind.LARGE_FILES && largeFilesActive) {
+            query = ""
+            searchRecursive = false
+        }
+        when (place.kind) {
+            PlaceKind.HOME -> {
+                pane = null
+                activeTabId = null
+                homeRefreshKey += 1
+            }
+            PlaceKind.FOLDER -> {
+                pane = null
+                place.root?.let(::openStorageRoot)
+            }
+            PlaceKind.LARGE_FILES -> openLargeFiles()
+            PlaceKind.RECYCLE_BIN, PlaceKind.RECOVERY, PlaceKind.SETTINGS -> pane = place.kind
+        }
+    }
+
+    // Opening a folder puts it at the front of the launcher's Recent row.
+    LaunchedEffect(activeTab?.id, activeTab?.current?.uri) {
+        val tab = activeTab ?: return@LaunchedEffect
+        recentFolders = recentStore.record(
+            RecentFolder(tab.treeUri.toString(), tab.current.uri.toString(), tab.current.name),
+        )
+    }
     // Hoisted so the edge scrubber can read where the list is and jump it. Both are needed
     // because the browser switches between a column and a grid, and a scrubber that only worked
     // in one of them would be an affordance that silently stops meaning anything.
@@ -687,43 +785,26 @@ private fun FylzV1Workspace(
     // Back closes an open room before it does anything else: a room is not a back-stack entry,
     // but Back is the gesture people reach for to leave one.
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
+    // With the room closed, Back leaves a pane for the file view before it leaves the app.
+    BackHandler(enabled = pane != null && shell.atHome) { pane = null }
 
+    Box(Modifier.fillMaxSize()) {
     SpatialShell(
         controller = shell,
         accentColor = MaterialTheme.colorScheme.primary,
         scrimColor = MaterialTheme.colorScheme.surfaceContainerLowest,
         cardColor = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxSize(),
+        // The places list opens the reference's way: the content stays a large, lit, rounded
+        // card on the right half of the window instead of shrinking to a band behind a scrim,
+        // so moving the wheel visibly moves the pane that follows it.
+        leftPark = LEFT_PARK,
         left = {
             PlacesRoom(
                 places = places,
-                selectedId = CommonPlaces.selectedId(
-                    places = places,
-                    activeTreeUri = activeTab?.treeUri?.toString(),
-                    largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY,
-                ),
-                onSelect = { place ->
-                    shell.closeAll()
-                    // Large files is a search, so leaving it must also clear the search —
-                    // otherwise Downloads would open filtered to files over 100 MB.
-                    if (searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY) {
-                        query = ""
-                        searchRecursive = false
-                    }
-                    when (place.kind) {
-                        PlaceKind.HOME -> {
-                            activeTabId = null
-                            homeRefreshKey += 1
-                        }
-                        PlaceKind.FOLDER -> place.root?.let(::openStorageRoot)
-                        PlaceKind.LARGE_FILES -> CommonPlaces.largeFilesRoot(rootGroups)?.let { volume ->
-                            openStorageRoot(volume)
-                            query = CommonPlaces.LARGE_FILES_QUERY
-                            searchRecursive = true
-                        }
-                        PlaceKind.ADD -> rootPicker.launch(null)
-                    }
-                },
+                selectedId = railSelectedId,
+                onSelect = ::selectPlace,
+                onMenu = { shell.closeAll() },
             )
         },
         // TOP = where you are in the folder tree, pulled DOWN over the file pane. The pane
@@ -733,6 +814,8 @@ private fun FylzV1Workspace(
             FileTreeRoom(
                 trail = activeTab?.locations.orEmpty(),
                 childFolders = entries.filter(FileEntry::isDirectory),
+                facts = folderFacts,
+                volumeLine = volumeLine,
                 reveal = { shell.vProgress },
                 onOpenAncestor = { index ->
                     val tab = activeTab
@@ -749,27 +832,6 @@ private fun FylzV1Workspace(
                 onClose = { shell.closeAll() },
             )
         },
-        right = {
-            ToolsRoom(
-                themeMode = themeMode,
-                onThemeModeChange = onThemeModeChange,
-                onAction = { action ->
-                    shell.closeAll()
-                    when (action) {
-                        ToolsAction.RECYCLE_BIN -> recycleDialog = true
-                        ToolsAction.REMOTES -> remoteDialog = true
-                        ToolsAction.WEBDAV -> webDavDialog = true
-                        ToolsAction.TOOLS -> runCatching {
-                            context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
-                        }.onFailure { toast("Tools are unavailable on this build") }
-                        ToolsAction.INDEX -> runCatching {
-                            context.startActivity(Intent(context, IndexManagerActivity::class.java))
-                        }.onFailure { toast("The index manager is unavailable") }
-                    }
-                },
-            )
-        },
-        bottom = recoveryRoom,
     ) {
     // Refresh is a shake, everywhere in the constellation. The pull-down space at the top of a
     // room belongs to the top-room reveal and no other gesture may claim it, so refresh moves
@@ -780,8 +842,72 @@ private fun FylzV1Workspace(
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 900.dp
-        Scaffold(
+        // The pane to the right of the places list. It is keyed on the focused row, so moving the
+        // wheel from Downloads to Pictures moves the pane too: it slides in the direction the
+        // wheel turned and the old one fades away behind it.
+        AnimatedContent(
+            targetState = railSelectedId,
+            transitionSpec = {
+                val from = places.indexOfFirst { it.id == initialState }
+                val to = places.indexOfFirst { it.id == targetState }
+                val down = to >= from
+                (
+                    slideInVertically(tween(PANE_SLIDE_MS)) { height -> if (down) height / 6 else -height / 6 } +
+                        fadeIn(tween(PANE_SLIDE_MS * 3 / 4))
+                    ) togetherWith (
+                    slideOutVertically(tween(PANE_SLIDE_MS)) { height -> if (down) -height / 6 else height / 6 } +
+                        fadeOut(tween(PANE_SLIDE_MS / 2))
+                    )
+            },
+            label = "pane",
+        ) { _ ->
+        if (pane != null) {
+            PaneScaffold(onMenu = { shell.open(RoomEdge.LEFT) }) {
+                when (pane) {
+                    PlaceKind.RECYCLE_BIN -> RecycleBinPane(
+                        records = remember(recycleVersion, refreshKey) { recycleBin.records() },
+                        onRestore = { id ->
+                            scope.launch {
+                                runCatching { recycleBin.restore(id, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
+                                    .onSuccess { refresh() }
+                                    .onFailure { toast(it.message ?: "Restore failed") }
+                                recycleVersion += 1
+                            }
+                        },
+                        onDelete = { id ->
+                            scope.launch {
+                                runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
+                                    .onFailure { toast(it.message ?: "Permanent deletion failed") }
+                                recycleVersion += 1
+                            }
+                        },
+                    )
+                    PlaceKind.RECOVERY -> recoveryRoom()
+                    PlaceKind.SETTINGS -> SettingsPane(
+                        themeMode = themeMode,
+                        onThemeModeChange = onThemeModeChange,
+                        onAction = { action ->
+                            when (action) {
+                                ToolsAction.REMOTES -> remoteDialog = true
+                                ToolsAction.WEBDAV -> webDavDialog = true
+                                ToolsAction.TOOLS -> runCatching {
+                                    context.startActivity(Intent(context, PostV1ToolsActivity::class.java))
+                                }.onFailure { toast("Tools are unavailable on this build") }
+                                ToolsAction.INDEX -> runCatching {
+                                    context.startActivity(Intent(context, IndexManagerActivity::class.java))
+                                }.onFailure { toast("The index manager is unavailable") }
+                            }
+                        },
+                    )
+                    else -> Unit
+                }
+            }
+        } else Scaffold(
             topBar = {
+                // The launcher has no title bar: just the glyph that opens the places list.
+                if (activeTab == null) {
+                    AppHeader(onMenu = { shell.open(RoomEdge.LEFT) })
+                } else
                 TopAppBar(
                     title = { Text(activeTab?.current?.name ?: "Fylz") },
                     // The reference's header glyph. It opens the places rail — the same room an
@@ -935,7 +1061,7 @@ private fun FylzV1Workspace(
                                 }
                             },
                             onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
-                            onRecycle = { recycleDialog = true },
+                            onRecycle = { pane = PlaceKind.RECYCLE_BIN },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
                         HorizontalDivider(Modifier.width(1.dp).fillMaxHeight())
@@ -959,6 +1085,15 @@ private fun FylzV1Workspace(
                         onPickFolder = { root -> rootPicker.launch(root?.initialUri) },
                         onOpenRemotes = { remoteDialog = true },
                         homeRefreshKey = homeRefreshKey,
+                        recents = recentFolders,
+                        onOpenRecent = { recent ->
+                            openTabAt(
+                                Uri.parse(recent.treeUri),
+                                FolderLocation(Uri.parse(recent.folderUri), recent.name),
+                            )
+                        },
+                        onOpenLargeFiles = ::openLargeFiles,
+                        onOpenRecycleBin = { pane = PlaceKind.RECYCLE_BIN },
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -1004,13 +1139,14 @@ private fun FylzV1Workspace(
                 }
             }
         }
+        }
 
         // The Niagara-style edge scrubber. Its stops follow whatever the list is sorted by —
         // letters, months, size bands or extensions — because Fylz re-keys the same folder as
         // the sort changes, and a strip showing months down an A-Z list would be a map of
         // somewhere else. It only appears when there is a listing to map: not on the storage
         // home surface, and not while a selection has taken over the bottom bar.
-        if (activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty()) {
+        if (pane == null && activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty()) {
             val stops = remember(visibleEntries, sortSpec) { entryStops(visibleEntries, sortSpec) }
             val grid = viewMode == ViewMode.GRID
             EdgeTimelineScrubber(
@@ -1053,6 +1189,14 @@ private fun FylzV1Workspace(
             }
         }
     }
+    // The cards before and after the focused one, peeking above and below the parked card and
+    // sliding with the wheel. They live above the shell because the shell leaves no room for
+    // them: its left room is narrowed to the part of the window the card leaves.
+    PeekCards(
+        count = places.size,
+        focusedIndex = places.indexOfFirst { it.id == railSelectedId }.coerceAtLeast(0),
+        openness = { shell.hProgress },
+    )
     }
 
     createDialog?.let { kind ->
@@ -1115,27 +1259,6 @@ private fun FylzV1Workspace(
                     runCatching { fileTools.executeBatchRename(plans) }
                         .onSuccess { selectedUris = emptySet(); refresh() }
                         .onFailure { toast(it.message ?: "Batch rename failed") }
-                }
-            },
-        )
-    }
-
-    if (recycleDialog) {
-        RecycleBinDialog(
-            records = recycleBin.records(),
-            onDismiss = { recycleDialog = false },
-            onRestore = { id ->
-                scope.launch {
-                    runCatching { recycleBin.restore(id, conflictPolicy = ConflictPolicy.KEEP_BOTH) }
-                        .onSuccess { refresh() }
-                        .onFailure { toast(it.message ?: "Restore failed") }
-                }
-            },
-            onDelete = { id ->
-                scope.launch {
-                    runCatching { recycleBin.permanentlyDelete(id, confirmed = true) }
-                        .onSuccess { recycleDialog = false; recycleDialog = true }
-                        .onFailure { toast(it.message ?: "Permanent deletion failed") }
                 }
             },
         )
@@ -1292,6 +1415,10 @@ private fun FileBrowser(
     onPickFolder: (StorageRoot?) -> Unit,
     onOpenRemotes: () -> Unit,
     homeRefreshKey: Int,
+    recents: List<RecentFolder>,
+    onOpenRecent: (RecentFolder) -> Unit,
+    onOpenLargeFiles: () -> Unit,
+    onOpenRecycleBin: () -> Unit,
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
@@ -1311,6 +1438,10 @@ private fun FileBrowser(
             onPickFolder = onPickFolder,
             onOpenRemotes = onOpenRemotes,
             refreshKey = homeRefreshKey,
+            recents = recents,
+            onOpenRecent = onOpenRecent,
+            onOpenLargeFiles = onOpenLargeFiles,
+            onOpenRecycleBin = onOpenRecycleBin,
             modifier = modifier,
         )
         return
@@ -1749,35 +1880,6 @@ private fun BatchRenameDialog(count: Int, onDismiss: () -> Unit, onConfirm: (Str
 }
 
 @Composable
-private fun RecycleBinDialog(
-    records: List<io.github.mbaliga.fylz.operations.RecycleRecord>,
-    onDismiss: () -> Unit,
-    onRestore: (String) -> Unit,
-    onDelete: (String) -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Recycle Bin") },
-        text = {
-            if (records.isEmpty()) Text("Recycle Bin is empty. Items are never removed automatically.")
-            else LazyColumn(Modifier.height(360.dp)) {
-                items(records, key = { it.itemId }) { record ->
-                    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                        Text(record.originalDisplayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Row {
-                            TextButton(onClick = { onRestore(record.itemId) }) { Text("Restore") }
-                            TextButton(onClick = { onDelete(record.itemId) }) { Text("Delete permanently") }
-                        }
-                        HorizontalDivider()
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
-}
-
-@Composable
 private fun AiDialog(entry: FileEntry?, onDismiss: () -> Unit, onRun: (String, String, String, Boolean) -> Unit) {
     var endpoint by remember { mutableStateOf("https://api.openai.com/v1") }
     var model by remember { mutableStateOf("") }
@@ -1869,31 +1971,109 @@ private fun PlacesRoom(
     places: List<CommonPlace>,
     selectedId: String,
     onSelect: (CommonPlace) -> Unit,
+    onMenu: () -> Unit,
 ) {
     val items = remember(places) { places.map { WheelItem(it.id, it.label) } }
-    Column(
+    Box(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .statusBarsPadding()
-            .padding(start = 24.dp, end = 16.dp, top = 32.dp, bottom = 32.dp),
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest),
     ) {
-        WordWheelRail(
-            items = items,
-            selectedId = selectedId,
-            onSelect = { id -> places.firstOrNull { it.id == id }?.let(onSelect) },
-            inkColor = MaterialTheme.colorScheme.onSurface,
-            accentColor = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f),
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(start = 24.dp, end = 16.dp, top = 32.dp, bottom = 32.dp),
+        ) {
+            WordWheelRail(
+                items = items,
+                selectedId = selectedId,
+                onSelect = { id -> places.firstOrNull { it.id == id }?.let(onSelect) },
+                inkColor = MaterialTheme.colorScheme.onSurface,
+                accentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        // The reference's header glyph stays top-left when the list is open; here it closes it.
+        IconButton(
+            onClick = onMenu,
+            modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(4.dp),
+        ) {
+            Icon(Icons.Outlined.Menu, contentDescription = "Close places")
+        }
+    }
+}
+
+/**
+ * The stack of cards from the reference, outside the focused one.
+ *
+ * The parked card is the focused destination's real pane. Above and below it, the neighbouring
+ * destinations' cards show as slivers, and as the wheel turns the whole stack slides by one
+ * card, so the list on the left and the cards on the right read as one carousel. The geometry is
+ * the shell's own ([LEFT_PARK], [openParkDistance]) so the slivers meet the card exactly.
+ *
+ * Nothing is drawn inside the parked card's own rectangle (that is the live pane), nothing
+ * answers touches, and with the list closed ([openness] 0) nothing is drawn at all.
+ */
+@Composable
+private fun PeekCards(count: Int, focusedIndex: Int, openness: () -> Float) {
+    if (count < 2) return
+    val position by animateFloatAsState(
+        targetValue = focusedIndex.toFloat(),
+        animationSpec = tween(PANE_SLIDE_MS, easing = FastOutSlowInEasing),
+        label = "peek-position",
+    )
+    val scheme = MaterialTheme.colorScheme
+    val tints = remember(scheme) {
+        listOf(
+            scheme.primaryContainer to scheme.tertiaryContainer,
+            scheme.secondaryContainer to scheme.primaryContainer,
+            scheme.tertiaryContainer to scheme.secondaryContainer,
         )
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        val open = openness().coerceIn(0f, 1f)
+        if (open <= 0.001f) return@Canvas
+        val scale = 1f - (1f - LEFT_PARK.scale) * open
+        val cardH = size.height * scale
+        val cardTop = (size.height - cardH) / 2f
+        val cardLeft = size.width * (1f - scale) / 2f + open * openParkDistance(size.width, LEFT_PARK)
+        val gap = size.height * PEEK_GAP_FRACTION * open
+        val pitch = cardH + gap
+        val corner = CornerRadius(LEFT_PARK.cornerDp.dp.toPx() * open)
+        val width = size.width - cardLeft + 2f * corner.x
+
+        fun drawStack(clipTop: Float, clipBottom: Float) {
+            clipRect(left = cardLeft, top = clipTop, right = size.width, bottom = clipBottom) {
+                for (i in 0 until count) {
+                    val top = cardTop + (i - position) * pitch
+                    if (top > clipBottom || top + cardH < clipTop) continue
+                    val (a, b) = tints[i % tints.size]
+                    drawRoundRect(
+                        brush = androidx.compose.ui.graphics.Brush.linearGradient(
+                            colors = listOf(a.copy(alpha = open), b.copy(alpha = open)),
+                            start = Offset(cardLeft, top),
+                            end = Offset(cardLeft + width, top + cardH),
+                        ),
+                        topLeft = Offset(cardLeft, top),
+                        size = Size(width, cardH),
+                        cornerRadius = corner,
+                    )
+                }
+            }
+        }
+        // Above the card and below it: the two margins the card's scale leaves.
+        drawStack(clipTop = 0f, clipBottom = (cardTop - gap).coerceAtLeast(0f))
+        drawStack(clipTop = (cardTop + cardH + gap).coerceAtMost(size.height), clipBottom = size.height)
     }
 }
 
 /** What a row in the tools room does. */
-private enum class ToolsAction { RECYCLE_BIN, REMOTES, WEBDAV, TOOLS, INDEX }
+private enum class ToolsAction { REMOTES, WEBDAV, TOOLS, INDEX }
 
 /**
- * The right room: the app's own tools and settings.
+ * Settings: the app's own tools and appearance, shown in the pane when Settings is the focused
+ * row of the places list.
  *
  * These were all buried in the file browser's overflow menu, which had eleven items and no
  * shape because it mixed "make a folder here" with "open the index manager". They are not
@@ -1904,7 +2084,7 @@ private enum class ToolsAction { RECYCLE_BIN, REMOTES, WEBDAV, TOOLS, INDEX }
  * `MaterialTheme`, and so was this menu's host.
  */
 @Composable
-private fun ToolsRoom(
+private fun SettingsPane(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     onAction: (ToolsAction) -> Unit,
@@ -1912,20 +2092,21 @@ private fun ToolsRoom(
     Column(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 32.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        RoomHeading("Tools")
-        ToolsRow("Recycle Bin") { onAction(ToolsAction.RECYCLE_BIN) }
+        Text("Settings", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 12.dp))
+        RoomHeading("Locations")
         ToolsRow(stringResource(R.string.remotes_title)) { onAction(ToolsAction.REMOTES) }
         ToolsRow("Quick WebDAV listing") { onAction(ToolsAction.WEBDAV) }
+
+        Spacer(Modifier.size(16.dp))
+        RoomHeading("Tools")
         ToolsRow(stringResource(R.string.tools_title)) { onAction(ToolsAction.TOOLS) }
         ToolsRow(stringResource(R.string.tools_index)) { onAction(ToolsAction.INDEX) }
 
-        Spacer(Modifier.size(20.dp))
+        Spacer(Modifier.size(16.dp))
         RoomHeading("Appearance")
         ThemeMode.entries.forEach { mode ->
             val selected = mode == themeMode
@@ -1937,7 +2118,7 @@ private fun ToolsRoom(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // A filled square for the chosen mode rather than a RadioButton: the same
-                // marker the rail uses, so the two rooms read as one app.
+                // marker the rail uses, so the two read as one app.
                 Box(Modifier.size(width = 20.dp, height = 10.dp), contentAlignment = Alignment.CenterStart) {
                     if (selected) {
                         Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary))
@@ -1951,6 +2132,59 @@ private fun ToolsRoom(
                 )
             }
         }
+    }
+}
+
+/** The recycle bin as a pane: what was recycled, and what can come back. */
+@Composable
+private fun RecycleBinPane(
+    records: List<io.github.mbaliga.fylz.operations.RecycleRecord>,
+    onRestore: (String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 16.dp)) {
+        Text("Recycle bin", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            if (records.isEmpty()) "Nothing here. Items are never removed automatically."
+            else "${records.size} item${if (records.size == 1) "" else "s"}. Nothing is removed automatically.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+        )
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(records, key = { it.itemId }) { record ->
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Text(record.originalDisplayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row {
+                        TextButton(onClick = { onRestore(record.itemId) }) { Text("Restore") }
+                        TextButton(onClick = { onDelete(record.itemId) }) { Text("Delete permanently") }
+                    }
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The one piece of chrome the launcher and the panes have: the glyph that opens the places list
+ * (the reference's header glyph). It is the same room an edge swipe opens.
+ */
+@Composable
+private fun AppHeader(onMenu: () -> Unit) {
+    Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp)) {
+        IconButton(onClick = onMenu) {
+            Icon(Icons.Outlined.Menu, contentDescription = "Places")
+        }
+    }
+}
+
+/** A pane under the glyph header. */
+@Composable
+private fun PaneScaffold(onMenu: () -> Unit, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        AppHeader(onMenu)
+        Box(Modifier.weight(1f)) { content() }
     }
 }
 

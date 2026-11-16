@@ -43,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import io.github.mbaliga.fylz.model.FileEntry
 import io.github.mbaliga.fylz.model.FolderLocation
+import io.github.mbaliga.fylz.ui.formatStorageBytes
+import java.text.DateFormat
+import java.util.Date
 
 /**
  * The top room: where you are in the folder tree.
@@ -52,6 +55,12 @@ import io.github.mbaliga.fylz.model.FolderLocation
  * the tree (the trail down from the root, and the folders inside this one) resolves under the
  * flying pane, and the names arrive last, sliding up into place.
  *
+ * It says two things, as Fotoz's room does for a photo: what this folder *is* (name, where it
+ * sits, what is in it, how big, how recent, which volume it lives on) and where it sits in the
+ * tree. The facts come first; the tree is the map.
+ *
+ * @param facts what the folder contains, derived from the listing already on screen.
+ * @param volumeLine "42.0 GB free of 128 GB" for the volume the folder lives on, when known.
  * @param trail root → … → current, exactly the tab's `locations`. Empty when no folder is open.
  * @param childFolders the sub-folders of the current folder, as (key, name).
  * @param reveal how open the room is, 0..1. Read at draw time so a drag animates without
@@ -66,6 +75,8 @@ fun FileTreeRoom(
     onOpenChild: (FileEntry) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    facts: FolderFacts = FolderFacts.Empty,
+    volumeLine: String? = null,
 ) {
     val rows = remember(trail, childFolders) {
         FileTreeModel.rows(trail, childFolders.map { it.uri.toString() to it.name })
@@ -114,6 +125,21 @@ fun FileTreeRoom(
                 .verticalScroll(rememberScrollState())
                 .padding(start = 24.dp, end = 16.dp, top = 32.dp, bottom = 32.dp),
         ) {
+            FolderInfoBlock(
+                name = trail.last().name.ifBlank { "Folder" },
+                path = trail.joinToString(" / ") { it.name.ifBlank { "Folder" } },
+                facts = facts,
+                volumeLine = volumeLine,
+                reveal = reveal,
+            )
+            Text(
+                "TREE",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(top = 28.dp, bottom = 8.dp)
+                    .arrives(reveal),
+            )
             rows.forEach { row ->
                 val isCurrent = row.kind == TreeRowKind.CURRENT
                 Row(
@@ -236,6 +262,70 @@ fun FileTreeRoom(
             }
         }
     }
+}
+
+/** What this folder is: its name, where it sits, and the facts about its contents. */
+@Composable
+private fun FolderInfoBlock(
+    name: String,
+    path: String,
+    facts: FolderFacts,
+    volumeLine: String?,
+    reveal: () -> Float,
+) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(Modifier.fillMaxWidth().arrives(reveal)) {
+        Text("FOLDER", style = MaterialTheme.typography.labelSmall, color = muted)
+        Text(
+            name,
+            style = MaterialTheme.typography.headlineMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            path,
+            style = MaterialTheme.typography.labelMedium,
+            color = muted,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 2.dp, bottom = 14.dp),
+        )
+        val date = remember { DateFormat.getDateInstance(DateFormat.MEDIUM) }
+        InfoRow("Contents", FolderFacts.countLine(facts))
+        if (!facts.isEmpty) {
+            if (facts.fileCount > 0) {
+                val lowerBound = if (facts.unknownSizeCount > 0) "at least " else ""
+                InfoRow("Size", lowerBound + formatStorageBytes(facts.totalBytes) + " in this folder")
+            }
+            facts.newestModifiedMillis?.let { InfoRow("Modified", date.format(Date(it))) }
+            facts.largestName?.let { largest ->
+                InfoRow("Largest", "$largest · ${formatStorageBytes(facts.largestBytes ?: 0L)}")
+            }
+            FolderFacts.kindsLine(facts).takeIf { it.isNotBlank() }?.let { InfoRow("Types", it) }
+        }
+        volumeLine?.let { InfoRow("Volume", it) }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(88.dp),
+        )
+        Text(value, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+    }
+}
+
+/** The room's text arrives last and slides up into place, like every other block here. */
+private fun Modifier.arrives(reveal: () -> Float): Modifier = graphicsLayer {
+    val r = reveal()
+    alpha = FolderMorph.textAlpha(r)
+    translationY = FolderMorph.textOffsetDp(r) * density
 }
 
 private const val INDENT_DP = 20
