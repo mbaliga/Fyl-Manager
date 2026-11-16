@@ -24,12 +24,13 @@ object ImagesCatalog {
         container: String? = null,
         text: Boolean = false,
         desc: String = "",
-    ) = FormatSpec(id, label, category, listOf(id) + alias, mime, sigs, container, text, desc)
+        exts: List<String>? = null,
+    ) = FormatSpec(id, label, category, exts ?: (listOf(id) + alias), mime, sigs, container, text, desc)
 
     private fun raw(
         id: String, label: String, mime: List<String> = emptyList(),
-        sigs: List<Signature> = emptyList(), tiff: Boolean = false, desc: String = "",
-    ) = f(id, label, RAW_PHOTO, mime = mime, sigs = sigs, container = if (tiff) "tif" else null, desc = desc)
+        sigs: List<Signature> = emptyList(), tiff: Boolean = false, desc: String = "", exts: List<String>? = null,
+    ) = f(id, label, RAW_PHOTO, mime = mime, sigs = sigs, container = if (tiff) "tif" else null, desc = desc, exts = exts)
 
     val specs: List<FormatSpec> = listOf(
         // ---- Common and obscure rasters ----
@@ -82,7 +83,7 @@ object ImagesCatalog {
             sigs = listOf(sigHex(0, "97 4A 42 32 0D 0A 1A 0A"))),
         f("ff", "Farbfeld image", IMAGE, sigs = listOf(sig(0, "farbfeld")),
             desc = "Suckless lossless 16-bit RGBA format."),
-        f("sid", "MrSID raster", IMAGE, alias = listOf("mrsid"), sigs = listOf(sig(0, "msid")),
+        f("sid-mrsid", "MrSID raster", IMAGE, exts = listOf("sid", "mrsid"), sigs = listOf(sig(0, "msid")),
             desc = "LizardTech multi-resolution seamless image database."),
         f("ecw", "ECW wavelet image", IMAGE, desc = "Enhanced Compression Wavelet geospatial raster."),
         f("wbmp", "Wireless bitmap", IMAGE, alias = listOf("wbm"), mime = listOf("image/vnd.wap.wbmp")),
@@ -93,6 +94,12 @@ object ImagesCatalog {
         f("pgf", "Progressive Graphics File", IMAGE),
         f("cut", "Dr. Halo CUT", IMAGE),
         f("pix", "Alias PIX image", IMAGE),
+        f("macpaint", "MacPaint image", IMAGE, alias = listOf("mac", "pntg"), mime = listOf("image/x-macpaint")),
+        f("wpg", "WordPerfect Graphics", IMAGE, sigs = listOf(sigHex(0, "FF 57 50 43")),
+            desc = "WordPerfect Graphics metafile / bitmap."),
+        f("tim", "PlayStation TIM texture", IMAGE),
+        f("cals", "CALS raster", IMAGE, alias = listOf("cal"), desc = "MIL-R-28002 Type 1 raster."),
+        f("jbig", "JBIG image", IMAGE, alias = listOf("jbg"), mime = listOf("image/x-jbig")),
 
         // ---- Legacy bitmaps ----
         f("tga", "Truevision TGA", IMAGE, alias = listOf("icb", "vda", "vst", "targa"),
@@ -162,7 +169,7 @@ object ImagesCatalog {
         raw("rw2", "Panasonic RAW 2", listOf("image/x-panasonic-rw2"), listOf(sigHex(0, "49 49 55 00"))),
         raw("rwl", "Leica RAW", listOf("image/x-leica-rwl"), tiff = true),
         raw("pef", "Pentax RAW", listOf("image/x-pentax-pef"), tiff = true),
-        raw("ptx", "Pentax RAW (legacy)"),
+        raw("ptx-pentax", "Pentax RAW (legacy)", exts = listOf("ptx")),
         raw("srw", "Samsung RAW", listOf("image/x-samsung-srw"), tiff = true),
         raw("x3f", "Sigma X3F", listOf("image/x-sigma-x3f"), listOf(sig(0, "FOVb")), desc = "Foveon sensor RAW."),
         raw("3fr", "Hasselblad 3F RAW", listOf("image/x-hasselblad-3fr"), tiff = true),
@@ -180,7 +187,7 @@ object ImagesCatalog {
         raw("mef", "Mamiya RAW", listOf("image/x-mamiya-mef"), tiff = true),
         raw("mos", "Leaf RAW", listOf("image/x-leaf-mos"), tiff = true),
         raw("iiq", "Phase One RAW", listOf("image/x-phaseone-iiq")),
-        raw("cap", "Phase One CAP RAW"),
+        raw("cap-phaseone", "Phase One CAP RAW", exts = listOf("cap")),
         raw("cs1", "Sinar CaptureShop RAW"),
         raw("bay", "Casio RAW"),
         raw("raw", "Generic RAW image", desc = "Used by Panasonic, Leica and others; contents vary."),
@@ -193,9 +200,6 @@ object ImagesCatalog {
             sigs = listOf(sig(0, "<svg"))),
         f("svgz", "Compressed SVG", VECTOR, mime = listOf("image/svg+xml-compressed"),
             desc = "Gzip-compressed SVG."),
-        f("eps", "Encapsulated PostScript", VECTOR, alias = listOf("epsf", "epsi"),
-            mime = listOf("application/postscript", "application/eps", "image/x-eps"), text = true,
-            sigs = listOf(sig(0, "%!PS-Adobe-"), sigHex(0, "C5 D0 D3 C6"))),
         f("ai", "Adobe Illustrator", VECTOR, mime = listOf("application/illustrator"),
             desc = "PDF-compatible (or legacy PostScript) Illustrator artwork."),
         f("ait", "Adobe Illustrator template", VECTOR),
@@ -209,10 +213,8 @@ object ImagesCatalog {
             sigs = listOf(sigHex(0, "D7 CD C6 9A"))),
         f("wmz", "Compressed WMF", VECTOR, desc = "Gzip-compressed Windows Metafile."),
         f("cgm", "Computer Graphics Metafile", VECTOR, mime = listOf("image/cgm")),
-        f("odg", "OpenDocument Drawing", VECTOR, mime = listOf("application/vnd.oasis.opendocument.graphics"),
-            desc = "ZIP package."),
         f("fig", "Xfig drawing", VECTOR, text = true, sigs = listOf(sig(0, "#FIG 3"))),
-        f("xar", "Xara vector graphic", VECTOR, sigs = listOf(sig(0, "XARA"))),
+        f("xar-xara", "Xara vector graphic", VECTOR, exts = listOf("xar"), sigs = listOf(sig(0, "XARA"))),
         f("hpgl", "HP-GL plot", VECTOR, alias = listOf("hpg", "plt"), text = true,
             desc = "Hewlett-Packard Graphics Language plotter commands."),
         f("drawio", "diagrams.net diagram", VECTOR, alias = listOf("dio"), text = true,
@@ -238,7 +240,7 @@ object ImagesCatalog {
             sigs = listOf(sigHex(4, "E0 A5") + sigHex(132, "FA F1")),
             desc = "Pixel art and animation editor file."),
         f("sai", "PaintTool SAI", IMAGE),
-        f("cpt", "Corel Photo-Paint", IMAGE),
+        f("cpt-corel", "Corel Photo-Paint", IMAGE, exts = listOf("cpt")),
         f("mdp", "MediBang Paint", IMAGE),
         f("gbr", "GIMP brush", IMAGE, sigs = listOf(sig(20, "GIMP"))),
         f("pat", "GIMP pattern", IMAGE, sigs = listOf(sig(20, "GPAT"))),
@@ -285,5 +287,7 @@ object ImagesCatalog {
         f("ttx", "TTX font dump", FONT, text = true, desc = "fontTools XML representation of a font."),
         f("cff", "Compact Font Format", FONT, desc = "Bare CFF table as used inside OpenType."),
         f("glyphs", "Glyphs font source", FONT, text = true),
+        f("otb", "OpenType bitmap font", FONT),
+        f("snf", "X11 Server Normal Format font", FONT),
     )
 }

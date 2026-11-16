@@ -160,7 +160,7 @@ object DocumentsCatalog {
         zipSpec("key", "Apple Keynote presentation", PRESENTATION, listOf("key", "kth"), listOf("application/vnd.apple.keynote")),
 
         // ---- WordPerfect, Lotus, Corel, other office suites ----
-        FormatSpec("wpd", "WordPerfect document", DOCUMENT, listOf("wpd", "wpt", "wp", "wp4", "wp5", "wp6"),
+        FormatSpec("wpd", "WordPerfect document", DOCUMENT, listOf("wpd", "wpt", "wpp", "wp", "wp4", "wp5", "wp6"),
             listOf("application/vnd.wordperfect", "application/wordperfect"),
             listOf(sigHex(0, "FF 57 50 43"))),
         ext("qpw", "Quattro Pro spreadsheet", SPREADSHEET, listOf("qpw", "wb1", "wb2", "wb3", "wq1", "wq2")),
@@ -185,7 +185,7 @@ object DocumentsCatalog {
         ext("gdoc", "Google Docs shortcut", DOCUMENT, mimes = listOf("application/vnd.google-apps.document"), desc = "JSON pointer to an online document.", text = true),
         ext("gsheet", "Google Sheets shortcut", SPREADSHEET, mimes = listOf("application/vnd.google-apps.spreadsheet"), text = true),
         ext("gslides", "Google Slides shortcut", PRESENTATION, mimes = listOf("application/vnd.google-apps.presentation"), text = true),
-        FormatSpec("slk", "SYLK spreadsheet", SPREADSHEET, listOf("slk"), listOf("application/x-sylk"),
+        FormatSpec("slk", "SYLK spreadsheet", SPREADSHEET, listOf("slk", "sylk"), listOf("application/x-sylk"),
             listOf(sig(0, "ID;P")), text = true, description = "Symbolic Link text interchange format."),
         FormatSpec("rtf", "Rich Text Format", DOCUMENT, listOf("rtf"), listOf("application/rtf", "text/rtf"),
             listOf(sig(0, "{\\rtf")), text = true),
@@ -212,29 +212,14 @@ object DocumentsCatalog {
         zipSpec("ibooks", "Apple iBooks Author book", EBOOK, mimes = listOf("application/x-ibooks+zip")),
         ext("acsm", "Adobe Content Server Message", EBOOK, mimes = listOf("application/vnd.adobe.adept+xml"), text = true),
         ext("opf", "Open Packaging Format", EBOOK, mimes = listOf("application/oebps-package+xml"), text = true),
-        zipSpec("cbz", "Comic book archive (ZIP)", EBOOK, mimes = listOf("application/vnd.comicbook+zip", "application/x-cbz")),
-        FormatSpec("cbr", "Comic book archive (RAR)", EBOOK, listOf("cbr"),
-            listOf("application/vnd.comicbook-rar", "application/x-cbr"), listOf(sigHex(0, "52 61 72 21 1A 07"))),
-        FormatSpec("cb7", "Comic book archive (7z)", EBOOK, listOf("cb7"), listOf("application/x-cb7"),
-            listOf(sigHex(0, "37 7A BC AF 27 1C"))),
-        ext("cbt", "Comic book archive (TAR)", EBOOK, mimes = listOf("application/x-cbt")),
 
         // ---- LaTeX / TeX / typesetting ----
-        ext("tex", "TeX / LaTeX source", DOCUMENT, listOf("tex", "latex", "ltx"), listOf("application/x-tex", "application/x-latex", "text/x-tex"), text = true),
-        ext("sty", "LaTeX style package", DOCUMENT, mimes = listOf("text/x-tex"), text = true),
-        ext("cls", "LaTeX document class", DOCUMENT, mimes = listOf("text/x-tex"), text = true),
-        ext("dtx", "LaTeX documented source", DOCUMENT, text = true),
         ext("ins", "LaTeX installer script", DOCUMENT, text = true),
-        ext("bib", "BibTeX bibliography", DOCUMENT, mimes = listOf("text/x-bibtex"), text = true),
-        ext("bst", "BibTeX style", DOCUMENT, text = true),
         ext("aux", "LaTeX auxiliary file", DOCUMENT, text = true),
         ext("bbl", "BibTeX generated bibliography", DOCUMENT, text = true),
-        ext("texi", "Texinfo source", DOCUMENT, listOf("texi", "texinfo", "txi"), listOf("application/x-texinfo"), text = true),
         FormatSpec("lyx", "LyX document", DOCUMENT, listOf("lyx"), listOf("application/x-lyx"),
             listOf(sig(0, "#LyX")), text = true),
         ext("rnw", "Sweave / knitr document", DOCUMENT, listOf("rnw", "snw"), text = true),
-        ext("rmd", "R Markdown", DOCUMENT, listOf("rmd"), text = true),
-        ext("qmd", "Quarto document", DOCUMENT, text = true),
         ext("dita", "DITA topic", DOCUMENT, listOf("dita", "ditamap", "ditaval"), listOf("application/dita+xml"), text = true),
 
         // ---- Desktop publishing ----
@@ -261,8 +246,6 @@ object DocumentsCatalog {
         ext("hhp", "HTML Help project", DOCUMENT, listOf("hhp", "hhc", "hhk"), text = true),
 
         // ---- Outliners, mind maps, diagrams ----
-        ext("opml", "OPML outline", DOCUMENT, mimes = listOf("text/x-opml"), text = true),
-        ext("org", "Emacs Org-mode outline", DOCUMENT, mimes = listOf("text/x-org"), text = true),
         ext("taskpaper", "TaskPaper outline", DOCUMENT, text = true),
         ext("leo", "Leo outline", DOCUMENT, text = true),
         ext("mm-freemind", "FreeMind mind map", DOCUMENT, listOf("mm"), listOf("application/x-freemind"), text = true),
@@ -273,7 +256,6 @@ object DocumentsCatalog {
         ext("mindnode", "MindNode mind map", DOCUMENT),
         ext("mup", "MindMup mind map", DOCUMENT, text = true, desc = "JSON."),
         ext("vym", "View Your Mind map", DOCUMENT),
-        ext("drawio", "diagrams.net diagram", DOCUMENT, listOf("drawio", "dio"), listOf("application/vnd.jgraph.mxfile"), text = true),
 
         // ---- Notes ----
         ext("enex", "Evernote export", DOCUMENT, mimes = listOf("application/x-evernote-export"), text = true),
@@ -283,5 +265,15 @@ object DocumentsCatalog {
         ext("sdocx", "Samsung Notes document", DOCUMENT),
         ext("xoj", "Xournal notes", DOCUMENT, desc = "Gzip-compressed XML."),
         ext("xopp", "Xournal++ notes", DOCUMENT, desc = "Gzip-compressed XML."),
+
+        // ---- Additional markup, ebook and office formats ----
+        ext("dbk", "DocBook document", DOCUMENT, listOf("dbk", "docbook"), listOf("application/docbook+xml"), text = true),
+        ext("htmlz", "HTML zip ebook", EBOOK, desc = "ZIP archive containing HTML."),
+        ext("txtz", "Text zip ebook", EBOOK, desc = "ZIP archive containing text."),
+        ext("snb", "Shanda Bambook ebook", EBOOK),
+        ext("tcr", "TCR compressed ebook", EBOOK),
+        ext("gnumeric", "Gnumeric spreadsheet", SPREADSHEET, mimes = listOf("application/x-gnumeric"), desc = "Gzip-compressed XML."),
+        ext("oxt", "OpenOffice extension", DOCUMENT, mimes = listOf("application/vnd.openofficeorg.extension"), desc = "ZIP package."),
+        ext("sxg", "OpenOffice.org 1.x master document", DOCUMENT, mimes = listOf(SUN + "writer.global")),
     )
 }
