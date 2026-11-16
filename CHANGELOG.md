@@ -10,6 +10,11 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Added file/folder creation, rename, duplicate, copy, move, recycle, restore and explicit permanent deletion.
 - Added durable operation journaling, progress, cancellation, process-death recovery and conservative retry rules.
 - Added cleanup-only recovery when a move committed its destination but could not remove the original.
+- Added an in-app clipboard: Cut and Copy from the selection bar, then Paste into the folder you are in, in any tab. Pasting never overwrites (keep-both naming), so copying into the same folder duplicates the file; a cut into its own folder is a no-op; a folder cannot be pasted into itself or anything inside it. Cut items are drawn faint until they land. The picker-based transfers remain as "Copy to…" and "Move to…".
+
+### Fixes
+
+- Fixed exported PDFs being named with literal template text (`Fylz-pages-${System.currentTimeMillis()}.pdf`) and PDF progress reading "Writing page $done of $total"; names now carry the timestamp and progress shows real numbers.
 
 ### Network locations
 

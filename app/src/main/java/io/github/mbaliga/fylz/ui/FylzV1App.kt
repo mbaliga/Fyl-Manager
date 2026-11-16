@@ -3,6 +3,7 @@ package io.github.mbaliga.fylz.ui
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -130,7 +131,15 @@ import io.github.mbaliga.fylz.model.ViewMode
 import io.github.mbaliga.fylz.network.RemoteConnectionStore
 import io.github.mbaliga.fylz.network.WebDavConfig
 import io.github.mbaliga.fylz.network.WebDavService
+import io.github.mbaliga.fylz.operations.ClipItem
+import io.github.mbaliga.fylz.operations.ClipboardMode
+import io.github.mbaliga.fylz.operations.ClipboardPolicy
 import io.github.mbaliga.fylz.operations.ConflictPolicy
+import io.github.mbaliga.fylz.operations.FileClipboard
+import io.github.mbaliga.fylz.operations.PdfOutputNames
+import androidx.compose.material.icons.outlined.ContentCut
+import androidx.compose.material.icons.outlined.ContentPaste
+import androidx.compose.ui.draw.alpha
 import io.github.mbaliga.fylz.operations.FileOperationService
 import io.github.mbaliga.fylz.operations.FileTools
 import io.github.mbaliga.fylz.operations.RecycleBinService
@@ -181,6 +190,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.text.font.FontWeight
 
 enum class PendingDestinationAction { COPY, MOVE, EXTRACT }
+
+/** How faint a cut item is drawn while it waits to be pasted. */
+private const val CUT_ITEM_ALPHA = 0.45f
 
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
@@ -273,6 +285,10 @@ private fun FylzV1Workspace(
     var searchRecursive by remember { mutableStateOf(false) }
     var searchProgress by remember { mutableStateOf<SearchProgress?>(null) }
     var homeRefreshKey by remember { mutableIntStateOf(0) }
+    // The clipboard lives here, above the tabs, so it survives switching folders and tabs —
+    // that is the whole point of cut/copy/paste. It is in-memory only: a cut that outlived the
+    // process would be a pending move nobody can see.
+    var clipboard by remember { mutableStateOf<FileClipboard?>(null) }
 
     // Four rooms: common places LEFT, tools and settings RIGHT, recovery BOTTOM, and the file
     // tree TOP — pulled down over the file pane, which shrinks into its folder on the tree.
@@ -436,13 +452,13 @@ private fun FylzV1Workspace(
                         sources = selectedEntries.filter { it.kind == EntryKind.PDF }.map { it.uri },
                         outputUri = destination,
                         searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Merging page \$done of \$total" }
+                    ) { done, total -> operationMessage = "Merging page $done of $total" }
                 } else {
                     pdfTools.exportPages(
                         pages = pages,
                         outputUri = destination,
                         searchableOcr = ocr,
-                    ) { done, total -> operationMessage = "Writing page \$done of \$total" }
+                    ) { done, total -> operationMessage = "Writing page $done of $total" }
                 }
             }.onSuccess {
                 toast("PDF written")
@@ -584,6 +600,64 @@ private fun FylzV1Workspace(
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             )
         }.onFailure { toast("No app can open this file") }
+    }
+
+    fun copyToClipboard(mode: ClipboardMode) {
+        val tab = activeTab ?: return
+        if (selectedEntries.isEmpty()) return
+        // A recursive-search hit lives in some folder other than the one on screen, so only
+        // claim a source folder when the listing really is this folder's own.
+        val folderOnScreen = tab.current.uri
+            .takeUnless { searchRecursive && query.isNotBlank() }
+            ?.let { runCatching { DocumentsContract.getDocumentId(it) }.getOrNull() }
+        val items = selectedEntries.mapNotNull { entry ->
+            val id = runCatching { DocumentsContract.getDocumentId(entry.uri) }.getOrNull() ?: return@mapNotNull null
+            ClipItem(entry.uri, entry.name, entry.isDirectory, id, folderOnScreen)
+        }
+        if (items.isEmpty()) {
+            toast("Those items cannot be put on the clipboard")
+            return
+        }
+        clipboard = FileClipboard(mode, items)
+        selectedUris = emptySet()
+        toast(if (mode == ClipboardMode.CUT) "Cut ${clipboard?.label}" else "Copied ${clipboard?.label}")
+    }
+
+    fun paste() {
+        val tab = activeTab ?: run { toast("Open a folder to paste into"); return }
+        val clip = clipboard ?: return
+        val destinationId = runCatching { DocumentsContract.getDocumentId(tab.current.uri) }.getOrNull()
+            ?: run { toast("This folder cannot be pasted into"); return }
+        val plan = ClipboardPolicy.plan(clip, destinationId)
+        if (plan.isEmpty) {
+            toast(plan.blocked.firstOrNull()?.second ?: "Already in this folder")
+            return
+        }
+        scope.launch {
+            loading = true
+            runCatching {
+                val sources = plan.transfer.map { it.uri }
+                // Keep-both: pasting never overwrites. Copying into the folder it came from
+                // therefore yields "name (2)", which is how a file is duplicated.
+                if (clip.mode == ClipboardMode.CUT) {
+                    fileOperations.move(sources, tab.current.uri, ConflictPolicy.KEEP_BOTH) { progress ->
+                        operationMessage = "Moving ${progress.displayName}"
+                    }
+                } else {
+                    fileOperations.copy(sources, tab.current.uri, ConflictPolicy.KEEP_BOTH) { progress ->
+                        operationMessage = "Copying ${progress.displayName}"
+                    }
+                }
+            }.onSuccess {
+                val note = if (plan.blocked.isEmpty()) "" else "; ${plan.blocked.size} folder(s) cannot go into themselves"
+                toast(ClipboardPolicy.resultMessage(clip.mode, plan.transfer.size, plan.alreadyHere.size) + note)
+                // A cut is spent once it lands; a copy stays so it can be pasted again.
+                if (clip.mode == ClipboardMode.CUT) clipboard = null
+            }.onFailure { toast(it.message ?: "Paste failed") }
+            refresh()
+            operationMessage = null
+            loading = false
+        }
     }
 
     fun recycleSelection() {
@@ -733,6 +807,12 @@ private fun FylzV1Workspace(
                             }
                             DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
                                 DropdownMenuItem(
+                                    text = { Text(clipboard?.let { "Paste ${it.label}" } ?: "Paste") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentPaste, null) },
+                                    enabled = clipboard != null && activeTab != null && !loading,
+                                    onClick = { moreExpanded = false; paste() },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("New folder") },
                                     leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
                                     enabled = activeTab != null,
@@ -789,9 +869,20 @@ private fun FylzV1Workspace(
                 )
             },
             bottomBar = {
+                val held = clipboard
+                if (selectedEntries.isEmpty() && held != null && activeTab != null) {
+                    PasteBar(
+                        clipboard = held,
+                        busy = loading,
+                        onPaste = ::paste,
+                        onClear = { clipboard = null },
+                    )
+                }
                 if (selectedEntries.isNotEmpty()) {
                     SelectionActionBar(
                         count = selectedEntries.size,
+                        onClipCut = { copyToClipboard(ClipboardMode.CUT) },
+                        onClipCopy = { copyToClipboard(ClipboardMode.COPY) },
                         canRename = selectedEntries.size == 1,
                         canExtract = selectedEntries.size == 1 && selectedEntries.first().kind == EntryKind.ARCHIVE,
                         canPdfTools = selectedEntries.isNotEmpty() &&
@@ -883,6 +974,8 @@ private fun FylzV1Workspace(
                             focusedEntry = entry.takeUnless(FileEntry::isDirectory)
                         },
                         onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
+                        cutUris = clipboard?.takeIf { it.mode == ClipboardMode.CUT }
+                            ?.items?.map { it.uri }?.toSet().orEmpty(),
                         listState = listState,
                         gridState = gridState,
                         modifier = Modifier.weight(1f),
@@ -1099,14 +1192,14 @@ private fun FylzV1Workspace(
                 pendingPdfPages = pages
                 pendingPdfOcr = ocr
                 pendingPdfMerge = false
-                pdfOutputCreator.launch("Fylz-pages-\${System.currentTimeMillis()}.pdf")
+                pdfOutputCreator.launch(PdfOutputNames.pages(System.currentTimeMillis()))
             },
             onMerge = { ocr ->
                 pdfDialog = false
                 pendingPdfPages = emptyList()
                 pendingPdfOcr = ocr
                 pendingPdfMerge = true
-                pdfOutputCreator.launch("Fylz-merged-\${System.currentTimeMillis()}.pdf")
+                pdfOutputCreator.launch(PdfOutputNames.merged(System.currentTimeMillis()))
             },
             onError = ::toast,
         )
@@ -1205,6 +1298,7 @@ private fun FileBrowser(
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
     onSelectAll: () -> Unit,
+    cutUris: Set<Uri>,
     listState: LazyListState,
     gridState: LazyGridState,
     modifier: Modifier = Modifier,
@@ -1325,13 +1419,13 @@ private fun FileBrowser(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, dimmed = entry.uri in cutUris)
                 }
             }
         } else {
             LazyColumn(state = listState) {
                 items(entries, key = { it.uri.toString() }) { entry ->
-                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection)
+                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, dimmed = entry.uri in cutUris)
                 }
             }
         }
@@ -1453,10 +1547,14 @@ private fun FileRowV1(
     onToggleSelection: (FileEntry) -> Unit,
     overline: String? = null,
     detail: String? = null,
+    dimmed: Boolean = false,
 ) {
     val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
     Row(
         modifier = Modifier
+            // A cut item stays where it is until it is pasted, drawn faint so it reads as
+            // "leaving" rather than gone.
+            .alpha(if (dimmed) CUT_ITEM_ALPHA else 1f)
             .fillMaxWidth()
             .heightIn(min = 62.dp)
             .combinedClickable(
@@ -1507,11 +1605,12 @@ private fun FileCard(
     onOpen: (FileEntry) -> Unit,
     onOpenExternal: (FileEntry) -> Unit,
     onToggleSelection: (FileEntry) -> Unit,
+    dimmed: Boolean = false,
 ) {
     Surface(
         color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
         shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.height(140.dp).combinedClickable(
+        modifier = Modifier.alpha(if (dimmed) CUT_ITEM_ALPHA else 1f).height(140.dp).combinedClickable(
             onClick = { onOpen(entry) },
             onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
             onLongClick = { onToggleSelection(entry) },
@@ -1536,6 +1635,8 @@ private fun SelectionActionBar(
     canExtract: Boolean,
     canPdfTools: Boolean,
     onPdfTools: () -> Unit,
+    onClipCut: () -> Unit,
+    onClipCopy: () -> Unit,
     onCopy: () -> Unit,
     onMove: () -> Unit,
     onRecycle: () -> Unit,
@@ -1554,8 +1655,12 @@ private fun SelectionActionBar(
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text("$count selected", modifier = Modifier.padding(horizontal = 10.dp))
-            ActionButton(Icons.Outlined.ContentCopy, "Copy", onCopy)
-            ActionButton(Icons.Outlined.DriveFileMove, "Move", onMove)
+            // Clipboard first: cut/copy then paste into any folder, in any tab.
+            ActionButton(Icons.Outlined.ContentCut, "Cut", onClipCut)
+            ActionButton(Icons.Outlined.ContentCopy, "Copy", onClipCopy)
+            // The picker-based transfers stay, named for what they do.
+            ActionButton(Icons.Outlined.ContentCopy, "Copy to…", onCopy)
+            ActionButton(Icons.Outlined.DriveFileMove, "Move to…", onMove)
             ActionButton(Icons.Outlined.Delete, "Recycle", onRecycle)
             ActionButton(Icons.Outlined.Edit, "Rename", onRename, canRename)
             ActionButton(Icons.Outlined.Tag, "Tags", onTags)
@@ -1564,6 +1669,36 @@ private fun SelectionActionBar(
             ActionButton(Icons.Outlined.TextSnippet, "Batch rename", onBatchRename)
             ActionButton(Icons.Outlined.PictureAsPdf, "PDF tools", onPdfTools, canPdfTools)
             ActionButton(Icons.Outlined.Share, "Share", onShare)
+            TextButton(onClick = onClear) { Text("Clear") }
+        }
+    }
+}
+
+/**
+ * What is on the clipboard and where it can go. It shows only while nothing is selected, so it
+ * never competes with the selection bar, and it is the same height so the bottom edge does not
+ * jump between the two.
+ */
+@Composable
+private fun PasteBar(
+    clipboard: FileClipboard,
+    busy: Boolean,
+    onPaste: () -> Unit,
+    onClear: () -> Unit,
+) {
+    Surface(tonalElevation = 8.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                (if (clipboard.mode == ClipboardMode.CUT) "Cut: " else "Copied: ") + clipboard.label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+            )
+            ActionButton(Icons.Outlined.ContentPaste, "Paste here", onPaste, enabled = !busy)
             TextButton(onClick = onClear) { Text("Clear") }
         }
     }
