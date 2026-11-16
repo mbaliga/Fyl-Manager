@@ -63,17 +63,22 @@ const BASE_CSS = (dark: boolean) => `
  * Create a sandboxed iframe (no allow-scripts, no allow-same-origin) with sanitized srcdoc.
  * The caller passes *already sanitized* or sanitizable html; we sanitize again defensively.
  */
+export function buildSrcdoc(html: string, theme: "light" | "dark", opts: SandboxOptions = {}): string {
+  const clean = sanitizeHtml(html);
+  return (
+    `<!doctype html><html><head><meta charset="utf-8">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:">` +
+    `<style>${BASE_CSS(theme === "dark")}${opts.css ?? ""}</style></head><body>${clean}</body></html>`
+  );
+}
+
 export function sandboxedFrame(container: HTMLElement, html: string, theme: "light" | "dark", opts: SandboxOptions = {}): HTMLIFrameElement {
   const frame = document.createElement("iframe");
   frame.setAttribute("sandbox", ""); // nothing: no scripts, no same-origin, no popups
   frame.className = "fv-sandbox";
   frame.title = "Sandboxed preview";
   frame.referrerPolicy = "no-referrer";
-  const clean = sanitizeHtml(html);
-  frame.srcdoc =
-    `<!doctype html><html><head><meta charset="utf-8">` +
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:">` +
-    `<style>${BASE_CSS(theme === "dark")}${opts.css ?? ""}</style></head><body>${clean}</body></html>`;
+  frame.srcdoc = buildSrcdoc(html, theme, opts);
   container.appendChild(frame);
   return frame;
 }

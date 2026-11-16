@@ -2,7 +2,7 @@
  * Generates small test fixtures into test/fixtures/. Run: npm run fixtures
  * Everything here is generated programmatically; only fonts/media come from tools (see bottom).
  */
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -140,6 +140,31 @@ out("sample.txt.gz", gzipSync(strToU8("gzip payload text\n".repeat(20))));
   const p2 = await PDFDocument.create();
   p2.addPage([300, 200]).drawText("Other document", { x: 30, y: 100, size: 20, font: await p2.embedFont(StandardFonts.Helvetica) });
   out("other.pdf", await p2.save());
+}
+
+// ---- more archives: tar.gz / tar.bz2 / tar.xz (sample.7z is committed, made once with py7zr: libarchive's own 7z writer produced unreadable output)
+{
+  const tarPath = join(FIX, "sample.tar");
+  out("sample.tar.gz", gzipSync(new Uint8Array(readFileSync(tarPath))));
+  for (const [tool, ext] of [["bzip2", "bz2"], ["xz", "xz"]] as const) {
+    writeFileSync(join(FIX, `sample.tar.${ext}`), execFileSync(tool, ["-c", tarPath], { maxBuffer: 1 << 24 }));
+  }
+}
+
+// ---- font (generated with opentype.js)
+{
+  const opentype = (await import("opentype.js")).default;
+  const box = (w: number) => { const p = new opentype.Path(); p.moveTo(50, 0); p.lineTo(50, 700); p.lineTo(w - 50, 700); p.lineTo(w - 50, 0); p.close(); return p; };
+  const tri = () => { const p = new opentype.Path(); p.moveTo(50, 0); p.lineTo(300, 700); p.lineTo(550, 0); p.close(); return p; };
+  const glyphs = [
+    new opentype.Glyph({ name: ".notdef", unicode: 0, advanceWidth: 600, path: box(600) }),
+    new opentype.Glyph({ name: "space", unicode: 32, advanceWidth: 300, path: new opentype.Path() }),
+    new opentype.Glyph({ name: "A", unicode: 65, advanceWidth: 600, path: tri() }),
+    new opentype.Glyph({ name: "B", unicode: 66, advanceWidth: 600, path: box(600) }),
+    new opentype.Glyph({ name: "C", unicode: 67, advanceWidth: 600, path: box(500) }),
+  ];
+  const font = new opentype.Font({ familyName: "FylzTest", styleName: "Regular", unitsPerEm: 1000, ascender: 800, descender: -200, glyphs });
+  out("test.otf", new Uint8Array(font.toArrayBuffer()));
 }
 
 // ---- media via ffmpeg when available (committed; regenerate only on demand)
