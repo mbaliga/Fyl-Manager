@@ -61,8 +61,11 @@ object CadGltfInspector : FormatInspector {
             if (type == GLB_JSON && json == null) {
                 if (len <= MAX_JSON && dataOff + len <= source.size) {
                     val d = CadIo.readUpTo(source, dataOff, len.toInt())
-                    if (nestingDepth(d) > 200) { f.warn("JSON nesting is deeper than 200 levels; not parsed") } else
-                    json = try { JSONObject(CadIo.utf8(d)) } catch (t: Throwable) { f.warn("JSON chunk is not valid JSON"); null }
+                    if (nestingDepth(d) > 200) {
+                        f.warn("JSON nesting is deeper than 200 levels; not parsed")
+                    } else {
+                        json = try { JSONObject(CadIo.utf8(d)) } catch (t: Throwable) { f.warn("JSON chunk is not valid JSON"); null }
+                    }
                 } else f.warn("JSON chunk not parsed (too large or truncated)")
             }
             off = dataOff + len
