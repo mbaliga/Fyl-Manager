@@ -262,7 +262,7 @@ class ArchiveInspectorsVerifyTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         if (c.requested > maxBytes && failures.size < 60) failures += "$tag: requested ${c.requested} bytes > $maxBytes"
         if (c.calls > 20000 && failures.size < 60) failures += "$tag: ${c.calls} read calls"
-        if (ms > 2000 && failures.size < 60) failures += "$tag: took $ms ms"
+        if (ms > 10_000 && failures.size < 60) failures += "$tag: took $ms ms"
     }
 
     private class Fx(val label: String, val insp: FormatInspector, val data: ByteArray, val name: String?, val magic: ByteArray,

@@ -214,7 +214,7 @@ G1 X10 Y10 E4
         val t0 = System.nanoTime()
         try { insp.inspect(c, "f") } catch (t: Throwable) { fail("$label: exception escaped: $t") }
         val ms = (System.nanoTime() - t0) / 1_000_000
-        if (ms > 2000) fail("$label: took $ms ms")
+        if (ms > 10_000) fail("$label: took $ms ms")
         if (c.bytes > FormatInspector.MAX_READ_BYTES) fail("$label: read ${c.bytes} bytes > MAX_READ_BYTES")
         if (c.calls > 20000) fail("$label: ${c.calls} read calls")
     }

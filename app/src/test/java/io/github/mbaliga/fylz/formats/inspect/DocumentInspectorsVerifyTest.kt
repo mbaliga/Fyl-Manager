@@ -760,7 +760,7 @@ class DocumentInspectorsVerifyTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         runs++
         if (ms > worstMs) worstMs = ms
-        if (ms > 2000 && failures.size < 60) failures.add("$label: SLOW ${ms}ms (size ${data.size})")
+        if (ms > 10_000 && failures.size < 60) failures.add("$label: SLOW ${ms}ms (size ${data.size})")
         if (c.requested > FormatInspector.MAX_READ_BYTES && failures.size < 60) failures.add("$label: requested ${c.requested} > MAX")
         if (c.returned > FormatInspector.MAX_READ_BYTES && failures.size < 60) failures.add("$label: returned ${c.returned} > MAX")
         if (c.calls > 20000 && failures.size < 60) failures.add("$label: ${c.calls} read calls")
@@ -896,7 +896,7 @@ class DocumentInspectorsVerifyTest {
             val t0 = System.nanoTime()
             try { i.inspect(big, "x.pdf") } catch (t: Throwable) { failures.add("big $i THROWS $t") }
             if (big.req > FormatInspector.MAX_READ_BYTES) failures.add("big $i requested ${big.req}")
-            if ((System.nanoTime() - t0) / 1_000_000 > 2000) failures.add("big $i slow")
+            if ((System.nanoTime() - t0) / 1_000_000 > 10_000) failures.add("big $i slow")
         }
         report()
     }

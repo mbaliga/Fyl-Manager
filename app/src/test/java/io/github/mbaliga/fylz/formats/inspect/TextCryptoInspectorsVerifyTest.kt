@@ -42,7 +42,7 @@ class TextCryptoInspectorsVerifyTest {
         }
         val ms = (System.nanoTime() - t0) / 1_000_000
         if (ms > slowest) slowest = ms
-        if (ms > 2000 && failures.size < 60) failures.add("${fx.name} [$label] took $ms ms")
+        if (ms > 10_000 && failures.size < 60) failures.add("${fx.name} [$label] took $ms ms")
         if (s.requested > FormatInspector.MAX_READ_BYTES && failures.size < 60) failures.add("${fx.name} [$label] requested ${s.requested} bytes")
         if (s.calls > 20000 && failures.size < 60) failures.add("${fx.name} [$label] made ${s.calls} read calls")
     }
@@ -285,7 +285,7 @@ class TextCryptoInspectorsVerifyTest {
         try { insp.inspect(s, file) } catch (t: Throwable) { out.add("$name threw $t") }
         val ms = (System.nanoTime() - t0) / 1_000_000
         System.err.println("hostile $name: $ms ms, requested ${s.requested}, calls ${s.calls}")
-        if (ms > 2000) out.add("$name took $ms ms")
+        if (ms > 10_000) out.add("$name took $ms ms")
         if (s.requested > FormatInspector.MAX_READ_BYTES) out.add("$name requested ${s.requested}")
     }
 

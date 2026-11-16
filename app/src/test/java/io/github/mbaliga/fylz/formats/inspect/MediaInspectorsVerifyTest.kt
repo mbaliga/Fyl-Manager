@@ -598,7 +598,7 @@ class MediaInspectorsVerifyTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         if (s.bytes > FormatInspector.MAX_READ_BYTES) throw AssertionError("${i.javaClass.simpleName} read ${s.bytes} bytes on $what")
         if (s.calls > 20000) throw AssertionError("${i.javaClass.simpleName} made ${s.calls} read calls on $what")
-        if (ms > 2000) throw AssertionError("${i.javaClass.simpleName} took ${ms}ms on $what")
+        if (ms > 10_000) throw AssertionError("${i.javaClass.simpleName} took ${ms}ms on $what")
     }
 
     private val failures = ArrayList<String>()

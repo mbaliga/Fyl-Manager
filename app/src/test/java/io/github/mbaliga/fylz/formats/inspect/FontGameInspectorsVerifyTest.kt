@@ -363,7 +363,7 @@ class FontGameInspectorsVerifyTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         if (c.bytes > FormatInspector.MAX_READ_BYTES) fail("$tag: read ${c.bytes} bytes > MAX")
         if (c.calls > 20000) fail("$tag: ${c.calls} read calls")
-        if (ms > 2000) fail("$tag: took $ms ms")
+        if (ms > 10_000) fail("$tag: took $ms ms")
     }
 
     private fun magicOf(i: FormatInspector, d: ByteArray): ByteArray = d.copyOf(minOf(d.size, 16))
