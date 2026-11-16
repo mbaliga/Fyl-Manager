@@ -101,7 +101,13 @@ export class DataGrid {
   setRows(rows: string[][]) { this.rows = rows; this.sel = null; this.relayout(); }
   setHeader(b: boolean) { this.hasHeader = b; this.relayout(); }
 
-  select(r: number, c: number) { this.sel = { r, c }; this.list.refresh(); this.o.onSelect?.(this.sel); }
+  select(r: number, c: number) {
+    this.sel = { r, c };
+    // Toggle classes in place: re-rendering rows would replace the cell under the pointer and break dblclick.
+    this.el.querySelectorAll(".fv-cell-sel").forEach((n) => n.classList.remove("fv-cell-sel"));
+    this.cellEl(r, c)?.classList.add("fv-cell-sel");
+    this.o.onSelect?.(this.sel);
+  }
   private clickCell(e: Event) {
     const t = (e.target as HTMLElement).closest(".fv-cell[data-c]") as HTMLElement | null;
     if (!t) return null;

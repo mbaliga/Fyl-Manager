@@ -44,7 +44,7 @@ export class StandaloneHost implements HostApi {
   }
   async saveAs(blob: Blob, suggestedName: string): Promise<void> {
     const picker = (window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<FsHandle> }).showSaveFilePicker;
-    if (picker) {
+    if (picker && !navigator.webdriver) {
       const h = await picker({ suggestedName });
       const w = await h.createWritable();
       await w.write(blob);

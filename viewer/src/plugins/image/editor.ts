@@ -112,7 +112,7 @@ export async function mountImageEditor(ctx: ViewContext, blob: Blob): Promise<Vi
   overlay.addEventListener("pointerdown", (e) => {
     if (tool === "select") return;
     const p = pt(e);
-    if (tool === "text") { openText(e, p); return; }
+    if (tool === "text") return; // handled on click (see below) so the input keeps focus
     overlay.setPointerCapture(e.pointerId);
     start = p; path = [p];
   });
@@ -143,6 +143,7 @@ export async function mountImageEditor(ctx: ViewContext, blob: Blob): Promise<Vi
       else drawShape(c, s, p);
     });
   });
+  overlay.addEventListener("click", (e) => { if (tool === "text") openText(e as unknown as PointerEvent, pt(e as unknown as PointerEvent)); });
   applyBtn.onclick = () => {
     if (!cropRect || cropRect.w < 2 || cropRect.h < 2) return;
     const r = { x: Math.round(cropRect.x), y: Math.round(cropRect.y), w: Math.round(cropRect.w), h: Math.round(cropRect.h) };

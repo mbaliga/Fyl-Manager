@@ -30,3 +30,7 @@ Judgement calls made while building, newest last. The owner reviews these at the
     See `docs/HOST_BRIDGE.md`.
 12. **CSP** is injected only into production builds (the dev server needs inline HMR). `font-src` allows `blob:`/`data:` (needed for the font plugin) in addition to the brief's list.
 13. **Chromium for e2e** is the preinstalled `/opt/pw-browsers/chromium` (Playwright 1.63 pinned to match). H.264/AAC are not available there, so media e2e uses webm/opus/mp3 fixtures.
+14. **Phase order.** Phase 4 (PWA + host bridge + Android integration doc) is built before Phase 3 because it contains required deliverables; Phase 3 plugins are "as time allows".
+15. **Grid selection** toggles CSS classes in place instead of re-rendering rows: replacing the cell under the pointer swallowed `dblclick`.
+16. **Inputs for in-canvas text** (image/PDF annotations) open on `click`, not `pointerdown`, because the pointer's default focus change blurs a just-created input.
+17. **`showSaveFilePicker` / `showOpenFilePicker`** are skipped when `navigator.webdriver` is set so e2e runs fall back to download / file input.

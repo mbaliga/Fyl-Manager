@@ -205,8 +205,11 @@ const mod: PluginModule = {
       let ink: [number, number][] | null = null;
       ov.onpointerdown = (e) => {
         if (tool === "ink") { ov.setPointerCapture(e.pointerId); ink = [pt(e)]; }
-        else if (tool === "text") {
-          const [u, v] = pt(e);
+      };
+      // Text / signature placement happens on click (after mouseup) so the new input is not blurred by the pointer's focus change.
+      ov.onclick = (e) => {
+        if (tool === "text") {
+          const [u, v] = pt(e as unknown as PointerEvent);
           const inp = el("input", { class: "fv-cell-input", type: "text", "aria-label": "Annotation text", "data-testid": "pdf-text-input" });
           Object.assign(inp.style, { position: "fixed", left: `${e.clientX}px`, top: `${e.clientY - 14}px`, width: "220px", height: "28px" });
           document.body.append(inp); inp.focus();
@@ -215,7 +218,7 @@ const mod: PluginModule = {
           inp.onkeydown = (ev) => { if (ev.key === "Enter") fin(true); else if (ev.key === "Escape") fin(false); };
           inp.onblur = () => fin(true);
         } else if (tool === "sign" && sigImage) {
-          const [u, v] = pt(e);
+          const [u, v] = pt(e as unknown as PointerEvent);
           r.annots.push({ kind: "img", u: Math.min(u, 0.75), v, w: 0.25, aspect: sigImage.aspect, bytes: sigImage.bytes, mime: sigImage.mime } as Ann);
           touch(); drawAnn(ov, r);
         }

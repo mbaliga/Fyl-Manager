@@ -9,10 +9,13 @@ Resume from here. Work lives in `viewer/`. Check: `npm run build && npm test && 
 
 - **Phase 1** — all Tier 1 viewers: markdown, json/yaml/toml/xml (+tree), csv, image (+EXIF), media (+tags), pdf (pdf.js, thumbnails, search),
   archive (zip/tar/gz/tgz own readers; bz2/xz/7z/rar via libarchive.js WASM), docx (mammoth → sandbox), sheet (SheetJS in worker), pptx outline, font.
-  Edit-capable code for csv/image/pdf/sheet/zip/text/json/markdown is written (Phase 2 code) but only text edit is e2e-tested so far.
+
+- **Phase 2** — light editing, all with e2e save round-trips: text/markdown/json (lint, format), csv (cells/rows/cols/delimiter),
+  image (crop/rotate/flip/resize/annotate, JPEG quality), pdf (reorder/rotate/delete/extract/merge/annotate, flattened via pdf-lib),
+  sheet (values only, xlsx/ods), zip (add/rename/remove). docx/pptx stay read-only.
 
 ## Next
-- Phase 2: e2e + unit round-trip tests for every editor (csv, image, pdf, sheet, zip, markdown, json), fix what they find.
+- Phase 4 (done before Phase 3 because it is a required deliverable): PWA, mock Fylz host + e2e, FYLZ_INTEGRATION.md, Kotlin stub.
 - Phase 3 plugins (heic, sqlite, epub, 3d, raw, geo, ics/vcf, ipynb, eml/mbox, apk/jar).
 - Phase 4: PWA (manifest, service worker, launchQueue, share target), mock Fylz host page + e2e, docs, Kotlin stub.
 

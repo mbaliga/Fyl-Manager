@@ -168,9 +168,11 @@ out("sample.txt.gz", gzipSync(strToU8("gzip payload text\n".repeat(20))));
 }
 
 // ---- media via ffmpeg when available (committed; regenerate only on demand)
-if (process.env.FIX_MEDIA || !existsSync(join(FIX, "clip.webm"))) {
+if (process.env.FIX_MEDIA || !existsSync(join(FIX, "photo.webp"))) {
   try {
     const f = (args: string[]) => execFileSync("ffmpeg", ["-y", "-loglevel", "error", ...args], { stdio: "inherit" });
+    f(["-f", "lavfi", "-i", "testsrc=size=96x64:rate=1:duration=1", "-frames:v", "1", "-q:v", "5", join(FIX, "photo.jpg")]);
+    f(["-f", "lavfi", "-i", "testsrc=size=96x64:rate=1:duration=1", "-frames:v", "1", join(FIX, "photo.webp")]);
     f(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "libopus", "-b:a", "16k", join(FIX, "tone.opus")]);
     f(["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "libmp3lame", "-b:a", "16k", "-metadata", "title=Fixture Tone", "-metadata", "artist=Fylz", join(FIX, "tone.mp3")]);
     f(["-f", "lavfi", "-i", "color=c=blue:s=64x48:d=1:r=10", "-f", "lavfi", "-i", "sine=duration=1", "-c:v", "libvpx", "-b:v", "50k", "-c:a", "libvorbis", "-shortest", join(FIX, "clip.webm")]);
