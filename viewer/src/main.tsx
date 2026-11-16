@@ -38,3 +38,22 @@ if (host instanceof FylzHost) {
   const lq = (window as unknown as { launchQueue?: { setConsumer(cb: (p: { files: { getFile(): Promise<File> }[] }) => void): void } }).launchQueue;
   lq?.setConsumer(async (p) => { const h = p.files[0]; if (h) await session.open(new BlobSource(await h.getFile()), { fsHandle: h }); });
 }
+
+// ---- PWA: service worker (precaches everything) and share target
+if (host instanceof StandaloneHost && "serviceWorker" in navigator && location.protocol.startsWith("http") && !import.meta.env.DEV) {
+  navigator.serviceWorker.register("./sw.js").catch((e) => host.log("warn", "service worker registration failed", String(e)));
+}
+if (host instanceof StandaloneHost && new URLSearchParams(location.search).has("share")) {
+  void (async () => {
+    try {
+      const cache = await caches.open("fv-share");
+      const [first] = await cache.keys();
+      if (first) {
+        const res = (await cache.match(first))!;
+        const name = new URL(first.url).searchParams.get("name") ?? "shared";
+        await session.open(new BlobSource(await res.blob(), name), {});
+        history.replaceState(null, "", location.pathname);
+      }
+    } catch (e) { host.log("warn", "share target failed", String(e)); }
+  })();
+}

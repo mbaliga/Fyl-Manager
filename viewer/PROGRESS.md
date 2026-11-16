@@ -14,8 +14,12 @@ Resume from here. Work lives in `viewer/`. Check: `npm run build && npm test && 
   image (crop/rotate/flip/resize/annotate, JPEG quality), pdf (reorder/rotate/delete/extract/merge/annotate, flattened via pdf-lib),
   sheet (values only, xlsx/ods), zip (add/rename/remove). docx/pptx stay read-only.
 
+- **Phase 4** — PWA (manifest with file_handlers + share_target, generated `dist/sw.js` precaching all 370+ files incl. WASM, launchQueue,
+  share-target handler), Fylz bridge (`FylzHost`, android + parent-window transports), mock host page (`dev/fylz-host.html`, `window.mockHost`)
+  with e2e (range reads, chunked saves, failed save, close/dirty prompt, theme, read-only), offline e2e (pdf, xlsx, 7z wasm, hashing, docx with network off),
+  `docs/HOST_BRIDGE.md`, `docs/FYLZ_INTEGRATION.md`, `docs/WRITING_A_PLUGIN.md`, Kotlin stub `app/.../viewer/FylzViewerBridge.kt` (no new deps).
+
 ## Next
-- Phase 4 (done before Phase 3 because it is a required deliverable): PWA, mock Fylz host + e2e, FYLZ_INTEGRATION.md, Kotlin stub.
 - Phase 3 plugins (heic, sqlite, epub, 3d, raw, geo, ics/vcf, ipynb, eml/mbox, apk/jar).
 - Phase 4: PWA (manifest, service worker, launchQueue, share target), mock Fylz host page + e2e, docs, Kotlin stub.
 
