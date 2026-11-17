@@ -1831,7 +1831,11 @@ mod tests {
                 .unwrap();
         }
         let archive_path = dir.join("fixture.a");
-        let status = Command::new("ar")
+        // FYLZ_TEST_AR lets a macOS runner point at GNU binutils' `ar` for this fixture only,
+        // without putting it on PATH where it would also build the vendored C libs' static
+        // archives (GNU `ar` emits Mach-O members that are not 8-byte aligned, so ld rejects them).
+        let ar = std::env::var_os("FYLZ_TEST_AR").unwrap_or_else(|| "ar".into());
+        let status = Command::new(ar)
             .arg("rc")
             .arg(&archive_path)
             .args(entries.iter().map(|(name, _)| *name))

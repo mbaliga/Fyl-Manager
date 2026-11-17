@@ -79,12 +79,14 @@ jobs:
         run: cmake --version || brew install cmake
       # The fylz-archive tests build their fixtures with the system GNU `tar` (--owner, --mtime,
       # --format=gnu, --sparse) and binutils `ar`. macOS ships bsdtar and Apple ar (which adds a
-      # __.SYMDEF member), so put the GNU tools first on PATH for the later steps.
+      # __.SYMDEF member), so put GNU tar first on PATH. binutils is NOT put on PATH: its `ar`
+      # would also build libbz2.a/liblz4.a etc. and produce Mach-O members that are not 8-byte
+      # aligned (ld: "member not 8-byte aligned"). Only the test fixture uses it, via FYLZ_TEST_AR.
       - name: GNU tar and binutils for the test fixtures
         run: |
           brew install gnu-tar binutils
           echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix binutils)/bin" >> "$GITHUB_PATH"
+          echo "FYLZ_TEST_AR=$(brew --prefix binutils)/bin/ar" >> "$GITHUB_ENV"
       # Exercises the Darwin CODESET / LC_CTYPE_MASK / locale-name paths in write.rs against a
       # real macOS libc. This is what the Linux container could not run.
       - name: test the crates the iOS app uses, on macOS
