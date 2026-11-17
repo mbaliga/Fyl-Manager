@@ -18,8 +18,20 @@ trap 'rm -rf "$FYLZ_DEMO_BASE"' EXIT
 # Put the real archive fixture inside the browsed folder so the archive view is exercised.
 cp "$FYLZ_DEMO_ARCHIVE" "$FYLZ_DEMO_FOLDER/"
 
+# QT_QUICK_BACKEND=software: a CI runner has no GPU, and under the offscreen platform the default
+# (OpenGL/RHI) scene graph can wait forever for a GL context with the window visible -- the run
+# then logs nothing and only `timeout` ends it (exit 124, seen on both linux-desktop legs). The
+# software renderer needs no GL and exercises the same QML/bridge logic. Overridable by the caller.
+export QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}"
+set +e
 OUT="$(QT_QPA_PLATFORM=offscreen timeout 60 "$APP" --smoke 2>&1)"
-echo "$OUT"
+status=$?
+set -e
+echo "$OUT"   # printed BEFORE the exit-status check so a hang/crash still shows its log
+if [ "$status" -ne 0 ]; then
+    echo "SMOKE FAIL: $APP --smoke exited with status $status (124 = hung until timeout)" >&2
+    exit 1
+fi
 
 fail=0
 expect() {
