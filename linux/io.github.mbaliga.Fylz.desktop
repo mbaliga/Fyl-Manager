@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fylz
+GenericName=File Manager
+Comment=Browse folders and archives with a legible, journalled file manager
+Exec=fylz
+Icon=io.github.mbaliga.Fylz
+Terminal=false
+Categories=System;FileTools;FileManager;Qt;
+Keywords=files;folders;archive;zip;
+StartupNotify=true
