@@ -8,6 +8,10 @@ set -euo pipefail
 
 BIN="${1:?usage: build-appimage.sh <fylz-binary> [out-dir]}"
 OUT="${2:-$PWD}"
+# The script cd's into a temp dir before linuxdeploy runs, so a relative binary path must be
+# resolved now, while we are still in the caller's directory.
+[ -f "$BIN" ] || { echo "no such binary: $BIN" >&2; exit 1; }
+BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPID="io.github.mbaliga.Fylz"
 case "$(uname -m)" in
