@@ -42,6 +42,9 @@ export APPIMAGE_EXTRACT_AND_RUN=1 PATH="$TOOLS:$PATH" ARCH="$A"
 export QML_SOURCES_PATHS="$HERE/../core/crates/fylz-ffi-qt/qml"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$HERE/../core/crates/fylz-ffi-qt/Cargo.toml" | head -n1)"
 export LINUXDEPLOY_OUTPUT_VERSION="$VERSION"
+# The Qt plugin bundles only the xcb platform plugin by default; the CI smoke runs the AppImage
+# under QT_QPA_PLATFORM=offscreen, so ship that plugin too (it is tiny).
+export EXTRA_PLATFORM_PLUGINS="libqoffscreen.so"
 
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 cd "$(dirname "$APPDIR")"
