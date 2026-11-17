@@ -1,0 +1,32 @@
+[package]
+name = "fylz-ffi-apple"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "uniffi Swift bindings over the Fylz core for the iOS 'Fylz for Files' document browser (docs/design/ios-fylz-for-files.md)."
+
+[lib]
+name = "fylz_ffi_apple"
+# `staticlib` is what the XCFramework packages (apple/scripts/build-xcframework.sh); `lib` keeps
+# `cargo test` and the host-side uniffi-bindgen run working on any machine.
+crate-type = ["staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+# Same reasoning as fylz-ffi-android: uniffi's "cli" feature drags in uniffi_bindgen's large tree,
+# needed only by this bin, so it sits behind a package feature the shipped static library never
+# enables.
+required-features = ["uniffi-cli"]
+
+[features]
+uniffi-cli = ["uniffi/cli"]
+
+[dependencies]
+uniffi = "0.32.2"
+fylz-sniff = { path = "../fylz-sniff", version = "0.1.0" }
+fylz-archive = { path = "../fylz-archive", version = "0.1.0" }
+
+[dev-dependencies]
+tempfile = "3"

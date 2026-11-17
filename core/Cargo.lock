@@ -323,6 +323,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fylz-ffi-apple"
+version = "0.1.0"
+dependencies = [
+ "fylz-archive",
+ "fylz-sniff",
+ "tempfile",
+ "uniffi",
+]
+
+[[package]]
 name = "fylz-index"
 version = "0.1.0"
 

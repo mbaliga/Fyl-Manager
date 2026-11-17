@@ -1,0 +1,6 @@
+[bindings.swift]
+module_name = "FylzCore"
+# The C header + modulemap the XCFramework ships. `FylzCoreFFI` is the clang module the generated
+# Swift imports.
+ffi_module_name = "FylzCoreFFI"
+generate_immutable_records = true

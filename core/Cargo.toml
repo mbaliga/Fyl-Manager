@@ -13,6 +13,7 @@ members = [
     "crates/fylz-clean",
     "crates/fylz-ops",
     "crates/fylz-ffi-android",
+    "crates/fylz-ffi-apple",
 ]
 
 # `crates/fylz-ffi-qt` is deliberately NOT a member of this workspace. `cxx-qt` v0.7.3's own
