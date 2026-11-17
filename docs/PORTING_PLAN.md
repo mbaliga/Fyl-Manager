@@ -425,3 +425,19 @@ Full record: `docs/design/ios-fylz-for-files.md`; owner checklist: `apple/OWNER_
 | FZ-IOS4 | `apple/` XcodeGen + SwiftUI document browser (plain list, not the rooms/word-wheel pattern) | CODE-ONLY; Swift never compiled |
 | FZ-IOS5 | (b) in-process decoding recorded, (c) v0.1 never deletes; (a) File Provider NOT started | decision text only |
 | FZ-IOS6 | privacy manifest, bundle id in one xcconfig, signing as a disabled template | CI-LANE-WRITTEN / NEEDS-DEVICE-VALIDATION |
+
+## Implementation status, Ubuntu Touch (2026-11-17)
+
+Owner request 2026-11-17 puts Ubuntu Touch in scope (overrides "follows"). Native port only.
+Full record: `docs/design/ubuntu-touch-port.md`; owner checklist: `ut/OWNER_VERIFY.md`.
+
+| Step | State | Evidence |
+|---|---|---|
+| Bring `core/`, `ut/`, ADR onto the dev branch | done (explicit import from `fylz-fotoz-complete`; the branch is not merged) | git |
+| cxx-qt bridge (M13.2) | re-verified on Qt 5.15.13: builds, 14 tests, clippy and fmt clean | BUILT-HERE |
+| Real `fylz` binary + `Shell.qml` (the missing M13.3 slice) | folder browser, archive viewer, journal count; minimal | BUILT-HERE (offscreen smoke `ut/smoke.sh` passes); feel NEEDS-DEVICE-VALIDATION |
+| `clickable.yaml` fixed against Clickable 8.10.0 source (removed non-existent key, `--bin fylz`, `install_root_data`, moved to repo root) | written | CODE-ONLY; config parses, stops at Docker |
+| CI lanes `ubuntu-touch.yml` (`qt-shell`, `click` arm64+amd64, tag upload) | written | CI-LANE-WRITTEN |
+| Rooms IA, edge scrubber, Quick Look, Hyle-for-QML, thumbnails, file operations UI | not built | n/a |
+| Click build, install and run on a device | not done | NEEDS-DEVICE-VALIDATION |
+
