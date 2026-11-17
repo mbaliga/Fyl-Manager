@@ -84,13 +84,20 @@ jobs:
             build-essential cmake pkg-config qt6-base-dev qt6-declarative-dev \
             qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window \
             libgl1-mesa-dev libxkbcommon-dev file desktop-file-utils
+      - name: Locate Qt 6 qmake (its directory differs between x86_64 and arm64)
+        run: |
+          q="$(command -v qmake6 || true)"
+          [ -n "$q" ] || q="$(ls /usr/lib/qt6/bin/qmake /usr/lib/*/qt6/bin/qmake 2>/dev/null | head -n1)"
+          test -x "$q" || { echo "no Qt 6 qmake found"; exit 1; }
+          echo "$q" | tee "$RUNNER_TEMP/qmake.path"
+          "$q" -query QT_VERSION
       - name: Rust toolchain (core/rust-toolchain.toml)
         run: |
           cd core
           rustup show active-toolchain || rustup toolchain install
           rustc --version
       - name: Build the release binaries
-        run: cd core/crates/fylz-ffi-qt && cargo build --release --bins
+        run: cd core/crates/fylz-ffi-qt && QMAKE="$(cat "$RUNNER_TEMP/qmake.path")" cargo build --release --bins
       - name: Offscreen smoke of the release build
         env:
           FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
