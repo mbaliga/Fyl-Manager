@@ -33,7 +33,6 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::os::fd::AsFd;
 use std::os::fd::BorrowedFd;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -136,6 +135,27 @@ fn build_tar_fixture(
         .expect("the `tar` tool must be available to build this test's fixture");
     assert!(status.success(), "tar -cf failed building the test fixture");
     archive_path
+}
+
+/// A one-member ustar archive built byte by byte, for names a filesystem may refuse to hold.
+fn raw_ustar_file(name: &[u8], contents: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; 512];
+    header[..name.len()].copy_from_slice(name);
+    header[100..108].copy_from_slice(b"0000644\0");
+    header[108..116].copy_from_slice(b"0000000\0");
+    header[116..124].copy_from_slice(b"0000000\0");
+    header[124..136].copy_from_slice(format!("{:011o}\0", contents.len()).as_bytes());
+    header[136..148].copy_from_slice(b"13602760400\0"); // 2020-01-01 00:00:00 UTC
+    header[148..156].copy_from_slice(b"        ");
+    header[156] = b'0';
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    let sum: u32 = header.iter().map(|&b| u32::from(b)).sum();
+    header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+    let mut out = header.to_vec();
+    out.extend_from_slice(contents);
+    out.resize(512 + contents.len().div_ceil(512) * 512 + 1024, 0);
+    out
 }
 
 fn write_file(path: &Path, contents: &[u8]) {
@@ -808,13 +828,14 @@ fn inspect_stops_past_max_listing_entries_with_the_listing_rule() {
 #[test]
 fn inspect_decodes_a_non_utf8_name_lossily_where_the_lookups_refuse_it() {
     let dir = tempdir();
-    let raw_name = OsStr::from_bytes(b"caf\xe9.txt");
-    let archive_path = build_tar_fixture(
-        dir.path(),
-        |root| write_file(&root.join(raw_name), b"latin-1 name"),
-        &[raw_name],
-        &[],
-    );
+    // Hand-written ustar bytes, not a file on disk: APFS refuses a non-UTF-8 name outright
+    // (EILSEQ), so the fixture cannot be made by creating the file and running `tar`.
+    let archive_path = dir.path().join("latin1.tar");
+    fs::write(
+        &archive_path,
+        raw_ustar_file(b"caf\xe9.txt", b"latin-1 name"),
+    )
+    .unwrap();
     let file = File::open(&archive_path).unwrap();
     let inspection = inspect(file.as_raw_fd(), &Limits::default()).unwrap();
     assert_eq!(inspection.entries.len(), 1);

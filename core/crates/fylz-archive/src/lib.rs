@@ -542,7 +542,12 @@ impl Reader {
     #[cfg(test)]
     fn open_unchecked(fd: RawFd) -> Result<Self, ArchiveError> {
         let mut file = borrow_fd(fd);
-        let archive_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
+        // Only a regular file has an archive size: macOS reports the buffered byte count as a
+        // pipe's st_size, Linux reports 0.
+        let archive_bytes = file
+            .metadata()
+            .map(|m| if m.is_file() { m.len() } else { 0 })
+            .unwrap_or(0);
         let _ = file.seek(SeekFrom::Start(0));
         Self::open_positioned(fd, archive_bytes)
     }

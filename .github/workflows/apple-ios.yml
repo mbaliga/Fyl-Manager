@@ -77,6 +77,14 @@ jobs:
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: cmake
         run: cmake --version || brew install cmake
+      # The fylz-archive tests build their fixtures with the system GNU `tar` (--owner, --mtime,
+      # --format=gnu, --sparse) and binutils `ar`. macOS ships bsdtar and Apple ar (which adds a
+      # __.SYMDEF member), so put the GNU tools first on PATH for the later steps.
+      - name: GNU tar and binutils for the test fixtures
+        run: |
+          brew install gnu-tar binutils
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix binutils)/bin" >> "$GITHUB_PATH"
       # Exercises the Darwin CODESET / LC_CTYPE_MASK / locale-name paths in write.rs against a
       # real macOS libc. This is what the Linux container could not run.
       - name: test the crates the iOS app uses, on macOS

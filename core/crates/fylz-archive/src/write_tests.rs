@@ -314,7 +314,14 @@ fn unicode_names_are_written_on_a_thread_the_test_never_pins_the_locale_of() {
     // A byte-level check that needs no locale of its own: the UTF-8 encoded name is present
     // verbatim (not CP437/Latin-1 mojibake), and the ZIP local file header's general-purpose bit
     // 11 (the UTF-8-name flag `zip.c` sets when the writer's locale reported UTF-8) is set.
-    let name_bytes = name.as_bytes();
+    // libarchive on Apple platforms stores UTF-8 names in Unicode NFD, so there the decomposed
+    // spelling of the same name is the expected one.
+    let name_nfd = name.replace('\u{e9}', "e\u{301}");
+    let name_bytes = if cfg!(target_vendor = "apple") {
+        name_nfd.as_bytes()
+    } else {
+        name.as_bytes()
+    };
     assert!(
         bytes
             .windows(name_bytes.len())
@@ -343,7 +350,12 @@ fn unicode_names_are_written_on_a_thread_the_test_never_pins_the_locale_of() {
         crate::write::with_c_utf8_locale_for_test(|| inspect(file.as_raw_fd(), &Limits::default()))
             .unwrap();
     assert_eq!(inspection.entries.len(), 1);
-    assert_eq!(inspection.entries[0].path, name);
+    let expected = if cfg!(target_vendor = "apple") {
+        name_nfd.as_str()
+    } else {
+        name
+    };
+    assert_eq!(inspection.entries[0].path, expected);
     assert!(!inspection.entries[0].name_lossy);
 }
 
