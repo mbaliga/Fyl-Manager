@@ -115,6 +115,39 @@ pub fn run_qml_demo() -> i32 {
     }
 }
 
+/// Runs the real app shell (`qml/Shell.qml`) and returns the process exit code `src/bin/fylz.rs`
+/// should use. Same structure (and same reason for living in the library) as [`run_qml_demo`];
+/// the shell itself decides what to do with a `--smoke` argument.
+#[cfg(fylz_qt_available)]
+pub fn run_app() -> i32 {
+    use cxx_qt_lib::QGuiApplication;
+    use cxx_qt_lib::QQmlApplicationEngine;
+    use cxx_qt_lib::QUrl;
+
+    let mut app = QGuiApplication::new();
+    let mut engine = QQmlApplicationEngine::new();
+
+    if let Some(engine) = engine.as_mut() {
+        engine.load(&QUrl::from("qrc:/qt/qml/com/fylz/demo/qml/Shell.qml"));
+    }
+
+    match app.as_mut() {
+        Some(app) => app.exec(),
+        None => {
+            eprintln!("fylz: QGuiApplication::new() returned null");
+            1
+        }
+    }
+}
+
+/// No Qt at build time: nothing to run (see [`QT_UNAVAILABLE_AT_BUILD_TIME`]). Non-zero so a
+/// packaged build that silently lacked Qt can never look like a working app.
+#[cfg(not(fylz_qt_available))]
+pub fn run_app() -> i32 {
+    eprintln!("fylz: built without Qt (no qmake on PATH at build time); cannot start the UI.");
+    2
+}
+
 /// The `fylz_qt_available` cfg is unset (see this module's own doc comment): nothing Qt-shaped
 /// to run.
 #[cfg(not(fylz_qt_available))]

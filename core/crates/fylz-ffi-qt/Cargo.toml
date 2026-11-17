@@ -23,6 +23,12 @@ path = "src/lib.rs"
 # cfg gate only protects THIS crate's own code, though -- it cannot stop `cxx-qt`'s own build
 # script from panicking on a Qt-less machine before this crate's code even runs (see the parent
 # `core/Cargo.toml`'s comment on why this crate is excluded from that workspace entirely).
+# The real app binary (`qml/Shell.qml`): what `ut/fylz.desktop`'s `Exec=fylz` launches and what
+# Clickable's Rust builder must install (`--bin fylz` in `clickable.yaml`'s `build_args`).
+[[bin]]
+name = "fylz"
+path = "src/bin/fylz.rs"
+
 [[bin]]
 name = "fylz-qml-demo"
 path = "src/bin/qml_demo.rs"

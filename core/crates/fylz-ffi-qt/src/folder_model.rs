@@ -77,6 +77,26 @@ pub mod qobject {
         /// This sidesteps that without changing the real interface at all.
         #[qinvokable]
         fn count(self: &FolderModel) -> i32;
+
+        /// `logic::parent_dir(rootPath)`: where the shell's Up button goes.
+        #[qinvokable]
+        #[cxx_name = "parentPath"]
+        fn parent_path(self: &FolderModel) -> QString;
+
+        /// `logic::child_path(rootPath, name)`: the path of one listed entry (traversal-safe).
+        #[qinvokable]
+        #[cxx_name = "childPath"]
+        fn child_path(self: &FolderModel, name: &QString) -> QString;
+
+        /// `logic::human_size`: a "1.5 KiB" style label for a byte count.
+        #[qinvokable]
+        #[cxx_name = "humanSize"]
+        fn human_size(self: &FolderModel, bytes: i64) -> QString;
+
+        /// `logic::is_archive_name`: whether the shell offers the archive view for this name.
+        #[qinvokable]
+        #[cxx_name = "isArchiveName"]
+        fn is_archive_name(self: &FolderModel, name: &QString) -> bool;
     }
 
     unsafe extern "RustQt" {
@@ -125,7 +145,7 @@ pub struct FolderModelRust {
 
 impl Default for FolderModelRust {
     fn default() -> Self {
-        let root_path = std::env::var("FYLZ_DEMO_FOLDER").unwrap_or_default();
+        let root_path = crate::logic::start_folder();
         Self {
             root_path: QString::from(root_path.as_str()),
             total_bytes: 0,
@@ -195,6 +215,24 @@ impl qobject::FolderModel {
 
     pub fn count(&self) -> i32 {
         self.rows.len() as i32
+    }
+
+    pub fn parent_path(&self) -> QString {
+        QString::from(crate::logic::parent_dir(&String::from(self.root_path())).as_str())
+    }
+
+    pub fn child_path(&self, name: &QString) -> QString {
+        QString::from(
+            crate::logic::child_path(&String::from(self.root_path()), &String::from(name)).as_str(),
+        )
+    }
+
+    pub fn human_size(&self, bytes: i64) -> QString {
+        QString::from(crate::logic::human_size(bytes.max(0) as u64).as_str())
+    }
+
+    pub fn is_archive_name(&self, name: &QString) -> bool {
+        crate::logic::is_archive_name(&String::from(name))
     }
 
     pub fn data(&self, index: &qobject::QModelIndex, role: i32) -> QVariant {

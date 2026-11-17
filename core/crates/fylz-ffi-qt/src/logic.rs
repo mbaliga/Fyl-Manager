@@ -217,6 +217,76 @@ pub fn list_operations(path: &Path) -> Vec<OperationRow> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Shell navigation helpers (the real `fylz` app, `qml/Shell.qml`)
+// ---------------------------------------------------------------------------------------------
+
+/// The folder the real app opens on. Priority: `FYLZ_DEMO_FOLDER` (the proof harness's own
+/// override), then `FYLZ_START_FOLDER`, then `$HOME`, then `/`. `get` is injected so tests do not
+/// touch the process environment.
+pub fn start_folder_from(get: impl Fn(&str) -> Option<String>) -> String {
+    for key in ["FYLZ_DEMO_FOLDER", "FYLZ_START_FOLDER", "HOME"] {
+        if let Some(value) = get(key) {
+            if !value.is_empty() {
+                return value;
+            }
+        }
+    }
+    "/".to_string()
+}
+
+/// [`start_folder_from`] against the real process environment.
+pub fn start_folder() -> String {
+    start_folder_from(|key| std::env::var(key).ok())
+}
+
+/// The parent directory of `path` as a string; `/` is its own parent. The shell only ever
+/// navigates absolute paths.
+pub fn parent_dir(path: &str) -> String {
+    match Path::new(path).parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_string_lossy().into_owned(),
+        _ => "/".to_string(),
+    }
+}
+
+/// `dir` joined with one entry `name`. A `name` that is empty, contains a separator or NUL, or is
+/// `.`/`..` is refused (returns `dir` unchanged): the shell only ever descends into a single
+/// listed entry, never an arbitrary relative path.
+pub fn child_path(dir: &str, name: &str) -> String {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return dir.to_string();
+    }
+    Path::new(dir).join(name).to_string_lossy().into_owned()
+}
+
+/// Binary-prefix size label, one decimal place from KiB up ("0 B", "1023 B", "1.0 KiB").
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Extension heuristic for "offer to open this as an archive". It only decides whether the shell
+/// shows the archive affordance; whether the file really IS an archive is decided by
+/// `fylz-archive`'s own `inspect` (the archive view shows its error otherwise). Our heuristic,
+/// not a content check.
+pub fn is_archive_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    const EXTENSIONS: [&str; 17] = [
+        ".zip", ".tar", ".tgz", ".tar.gz", ".tbz2", ".tar.bz2", ".txz", ".tar.xz", ".tzst",
+        ".tar.zst", ".7z", ".rar", ".cpio", ".iso", ".gz", ".bz2", ".xz",
+    ];
+    EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+}
+
 fn now_millis() -> i64 {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
@@ -408,5 +478,67 @@ mod tests {
         let rows = list_operations(&path);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].state, "NeedsAttention");
+    }
+
+    #[test]
+    fn start_folder_prefers_demo_then_start_then_home_then_root() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(
+            start_folder_from(env(&[("FYLZ_DEMO_FOLDER", "/d"), ("HOME", "/h")])),
+            "/d"
+        );
+        assert_eq!(
+            start_folder_from(env(&[("FYLZ_START_FOLDER", "/s"), ("HOME", "/h")])),
+            "/s"
+        );
+        assert_eq!(start_folder_from(env(&[("HOME", "/h")])), "/h");
+        assert_eq!(start_folder_from(env(&[("HOME", "")])), "/");
+        assert_eq!(start_folder_from(env(&[])), "/");
+    }
+
+    #[test]
+    fn parent_dir_walks_up_and_stops_at_root() {
+        assert_eq!(parent_dir("/home/user/docs"), "/home/user");
+        assert_eq!(parent_dir("/home"), "/");
+        assert_eq!(parent_dir("/"), "/");
+        assert_eq!(parent_dir(""), "/");
+    }
+
+    #[test]
+    fn child_path_joins_one_entry_and_refuses_traversal() {
+        assert_eq!(child_path("/home/user", "docs"), "/home/user/docs");
+        assert_eq!(child_path("/", "etc"), "/etc");
+        assert_eq!(child_path("/home/user", ".."), "/home/user");
+        assert_eq!(child_path("/home/user", "../x"), "/home/user");
+        assert_eq!(child_path("/home/user", "a/b"), "/home/user");
+        assert_eq!(child_path("/home/user", ""), "/home/user");
+        assert_eq!(child_path("/home/user", "."), "/home/user");
+    }
+
+    #[test]
+    fn human_size_uses_binary_prefixes() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1024), "1.0 KiB");
+        assert_eq!(human_size(1536), "1.5 KiB");
+        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn is_archive_name_matches_common_extensions_case_insensitively() {
+        assert!(is_archive_name("a.zip"));
+        assert!(is_archive_name("A.TAR.GZ"));
+        assert!(is_archive_name("x.7z"));
+        assert!(!is_archive_name("notes.txt"));
+        assert!(!is_archive_name("zip"));
+        assert!(!is_archive_name("photo.jpg"));
     }
 }

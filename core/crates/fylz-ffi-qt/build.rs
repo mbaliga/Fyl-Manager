@@ -55,7 +55,7 @@ fn build_bridge() {
                 "src/rename_controller.rs",
                 "src/search_controller.rs",
             ],
-            qml_files: &["qml/main.qml"],
+            qml_files: &["qml/main.qml", "qml/Shell.qml"],
             ..Default::default()
         })
         .build();
