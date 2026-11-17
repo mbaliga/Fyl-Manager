@@ -141,7 +141,14 @@ mod sys {
     /// `LC_CTYPE` is category 0 and `LC_CTYPE_MASK` is `1 << LC_CTYPE` on both bionic
     /// (`$NDK/sysroot/usr/include/locale.h`) and glibc -- confirmed against both headers, and
     /// against a real `newlocale`/`uselocale` round trip on the host (see [super::LocalePin]).
+    #[cfg(not(target_vendor = "apple"))]
     pub const LC_CTYPE_MASK: c_int = 1;
+    /// Darwin's `<xlocale/_locale.h>` numbers the category masks differently:
+    /// `LC_COLLATE_MASK` is `1 << 0` and `LC_CTYPE_MASK` is `1 << 1` (Apple's `LC_CTYPE` is 2,
+    /// `LC_ALL` is 0). Written from the Darwin header's documented values; the macOS lane in
+    /// `.github/workflows/apple-ios.yml` is what runs it (not run in the Linux container).
+    #[cfg(target_vendor = "apple")]
+    pub const LC_CTYPE_MASK: c_int = 1 << 1;
 
     /// `nl_langinfo`'s `CODESET` item id: `1` on bionic (`$NDK/sysroot/usr/include/langinfo.h`,
     /// available since API 26, well under this app's minSdk); `14` on glibc, confirmed by
@@ -150,7 +157,10 @@ mod sys {
     /// definition of its own, so it cannot be hard-coded as a single cross-platform constant.
     #[cfg(target_os = "android")]
     pub const CODESET: c_int = 1;
-    #[cfg(not(target_os = "android"))]
+    /// Darwin (macOS, iOS): `<langinfo.h>` defines `CODESET` as `0`.
+    #[cfg(target_vendor = "apple")]
+    pub const CODESET: c_int = 0;
+    #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
     pub const CODESET: c_int = 14;
 
     unsafe extern "C" {
@@ -251,6 +261,15 @@ pub struct WriteReport {
 /// so this only ever affects the one thread that calls [LocalePin::activate], which for
 /// `:decoders:write` is a thread whose only job is this one call (design section 4's own risk
 /// note: the blast radius is contained by construction).
+/// Locale names tried in order. glibc and bionic ship `C.UTF-8`; Darwin has no such locale but
+/// has `UTF-8` (and `en_US.UTF-8` where locale data is installed). Whichever is taken must still
+/// pass the `nl_langinfo(CODESET) == "UTF-8"` check below, so a name that exists but is not
+/// UTF-8 is rejected rather than trusted.
+#[cfg(not(target_vendor = "apple"))]
+const UTF8_LOCALE_CANDIDATES: &[&str] = &["C.UTF-8"];
+#[cfg(target_vendor = "apple")]
+const UTF8_LOCALE_CANDIDATES: &[&str] = &["UTF-8", "en_US.UTF-8", "C.UTF-8"];
+
 struct LocalePin {
     previous: sys::LocaleT,
     installed: sys::LocaleT,
@@ -258,12 +277,18 @@ struct LocalePin {
 
 impl LocalePin {
     fn activate() -> Result<Self, ArchiveError> {
-        let name = CString::new("C.UTF-8").expect("a string literal never contains a NUL");
-        // SAFETY: `name` is a valid, NUL-terminated C string alive for the duration of this call;
-        // `newlocale` either returns a valid new `locale_t` or null on failure, never partially
-        // initialised state this crate must clean up.
-        let installed =
-            unsafe { sys::newlocale(sys::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
+        let mut installed: sys::LocaleT = std::ptr::null_mut();
+        for candidate in UTF8_LOCALE_CANDIDATES {
+            let name = CString::new(*candidate).expect("a string literal never contains a NUL");
+            // SAFETY: `name` is a valid, NUL-terminated C string alive for the duration of this
+            // call; `newlocale` either returns a valid new `locale_t` or null on failure, never
+            // partially initialised state this crate must clean up.
+            installed =
+                unsafe { sys::newlocale(sys::LC_CTYPE_MASK, name.as_ptr(), std::ptr::null_mut()) };
+            if !installed.is_null() {
+                break;
+            }
+        }
         if installed.is_null() {
             return Err(ArchiveError::Unsupported(
                 "the C.UTF-8 locale is not available on this platform".into(),

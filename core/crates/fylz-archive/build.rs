@@ -5,7 +5,7 @@
 //! compression backend it is built against, for whichever target this crate itself is being built
 //! for, then links the resulting static libraries.
 //!
-//! Two build shapes, told apart by Cargo's own `TARGET` env var:
+//! Three build shapes, told apart by Cargo's own `TARGET` env var:
 //! - An Android target (`aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android`)
 //!   -- MUST be invoked via `cargo ndk`, which sets `CARGO_NDK_CMAKE_TOOLCHAIN_PATH`/`ANDROID_ABI`/
 //!   `ANDROID_PLATFORM` for exactly this purpose (confirmed empirically: these are not documented
@@ -19,6 +19,12 @@
 //!   plain host `cargo build --lib -p fylz-ffi-android` for uniffi-bindgen's own introspection
 //!   step -- once `fylz-archive` becomes a dependency of `fylz-ffi-android`, that step needs a
 //!   working host build too.
+//!
+//! - An iOS target (`aarch64-apple-ios`, `aarch64-apple-ios-sim`, `x86_64-apple-ios`) -- the
+//!   third shape ([ios_cmake_settings]): an ordinary CMake build driven by `cmake` 0.1.58's own
+//!   `CMAKE_SYSTEM_NAME=iOS` handling plus an explicit SDK, architecture and deployment target.
+//!   It needs a macOS host with Xcode, so it is only ever exercised by
+//!   `.github/workflows/apple-ios.yml`, never in the Linux development container.
 //!
 //! [build_companion] carries this same host-vs-`cargo ndk` routing for every compression backend
 //! below libarchive itself, so it never has to be re-derived per library.
@@ -67,6 +73,61 @@ fn configure_android_toolchain(target: &str, library_name: &str, cfg: &mut cmake
         .define("ANDROID_PLATFORM", format!("android-{api_level}"));
 }
 
+/// The iOS build shape: settings every CMake project here (libarchive and each companion) gets
+/// for an `*-apple-ios*` target. `cmake` 0.1.58 already sets `CMAKE_SYSTEM_NAME=iOS` and passes
+/// the `cc` crate's `--target`/`-isysroot` flags for these targets; what it does not pin is the
+/// SDK name, the architecture and the deployment target, so a build is not a function of whichever
+/// SDK `xcrun` happens to default to. Returns `None` for every other target.
+///
+/// Targets: `aarch64-apple-ios` (device), `aarch64-apple-ios-sim` and `x86_64-apple-ios`
+/// (simulator).
+fn ios_cmake_settings(
+    target: &str,
+    deployment_target: &str,
+) -> Option<Vec<(&'static str, String)>> {
+    if !target.contains("apple-ios") {
+        return None;
+    }
+    let simulator = target.ends_with("-sim") || target.starts_with("x86_64");
+    let arch = if target.starts_with("x86_64") {
+        "x86_64"
+    } else {
+        "arm64"
+    };
+    Some(vec![
+        (
+            "CMAKE_OSX_SYSROOT",
+            if simulator {
+                "iphonesimulator"
+            } else {
+                "iphoneos"
+            }
+            .to_string(),
+        ),
+        ("CMAKE_OSX_ARCHITECTURES", arch.to_string()),
+        ("CMAKE_OSX_DEPLOYMENT_TARGET", deployment_target.to_string()),
+        // No subprocess on iOS (docs/PORTING_PLAN.md FZ-IOS5(b)): force libarchive's
+        // fork/spawn probes to "absent" so `filter_fork_posix.c` compiles to its stub and the
+        // external-program filters ("read_support_filter_program") are unavailable by
+        // construction, not merely unused. Cache variables CHECK_FUNCTION_EXISTS honours.
+        ("HAVE_FORK", "0".to_string()),
+        ("HAVE_VFORK", "0".to_string()),
+        ("HAVE_POSIX_SPAWN", "0".to_string()),
+        ("HAVE_POSIX_SPAWNP", "0".to_string()),
+    ])
+}
+
+/// Applies [ios_cmake_settings] to `cfg` when the target is an iOS one.
+fn configure_ios_toolchain(target: &str, cfg: &mut cmake::Config) {
+    println!("cargo:rerun-if-env-changed=IPHONEOS_DEPLOYMENT_TARGET");
+    let deployment = env::var("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or_else(|_| "16.0".to_string());
+    if let Some(settings) = ios_cmake_settings(target, &deployment) {
+        for (key, value) in settings {
+            cfg.define(key, value);
+        }
+    }
+}
+
 /// Builds one compression-backend companion (a self-contained CMake project vendored under
 /// `core/third_party/<name>`) as a static library, the same way for every one of them: its own
 /// install prefix under `$OUT_DIR/<name>` (kept separate from libarchive's own `$OUT_DIR`, and
@@ -90,6 +151,7 @@ fn build_companion(target: &str, name: &str, src: &Path, options: &[(&str, &str)
         cfg.define(*key, *value);
     }
     configure_android_toolchain(target, name, &mut cfg);
+    configure_ios_toolchain(target, &mut cfg);
     cfg.build()
 }
 
@@ -319,6 +381,7 @@ fn main() {
         .define("LIBLZMA_LIBRARY", static_lib_path(&xz_prefix, "lzma"));
 
     configure_android_toolchain(&target, "libarchive", &mut cfg);
+    configure_ios_toolchain(&target, &mut cfg);
 
     let dst = cfg.build();
     assert_cache_path(&dst, "ZLIB_INCLUDE_DIR", &zlib_include);
