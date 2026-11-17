@@ -441,3 +441,19 @@ Full record: `docs/design/ubuntu-touch-port.md`; owner checklist: `ut/OWNER_VERI
 | Rooms IA, edge scrubber, Quick Look, Hyle-for-QML, thumbnails, file operations UI | not built | n/a |
 | Click build, install and run on a device | not done | NEEDS-DEVICE-VALIDATION |
 
+
+## Implementation status, Linux desktop (2026-11-17)
+
+Owner request 2026-11-17 puts Linux in scope. Native Qt shell shared with Ubuntu Touch. Full record:
+`docs/linux/README.md`; owner checklist: `docs/linux/OWNER_VERIFY.md`.
+
+| Step | State | Evidence |
+|---|---|---|
+| Shell root changed from `Item` to a real `Window` (an `Item` root is never shown by `QQmlApplicationEngine`); smoke asserts it | done | BUILT-HERE (Qt 6.4.2) |
+| Desktop build on Qt 6.4.2 (cxx-qt 0.7.3), release, offscreen smoke | passes | BUILT-HERE |
+| Same sources on Qt 5.15.13 | **aborts at start-up** (`stack smashing detected` in `QGuiApplication::new`); cause not found; risk to the UT port, and earlier "verified on Qt 5.15" records are unconfirmed (build picked `qmake6` when present) | BUILT-HERE (failure reproduced) |
+| `.deb` (generated `Depends:`), desktop file, AppStream, icon | built, inspected, extracted binary smoked | BUILT-HERE (amd64); real install NOT done |
+| AppImage script (pinned, sha256-verified tools) | written | CODE-ONLY |
+| CI `linux-desktop.yml` (metadata, build, smoke, deb, installed-deb smoke, AppImage, arm64, Qt 5 probe) | written | CI-LANE-WRITTEN |
+| Flatpak / Snap, desktop layouts, udisks2, Secret Service, decoder subprocess, file-operation UI | not built | n/a |
+| Run on a real desktop session | not done | NEEDS-DEVICE-VALIDATION |

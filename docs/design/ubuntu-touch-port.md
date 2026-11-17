@@ -1,5 +1,13 @@
 # Fylz on Ubuntu Touch (Qt 5.15 + Rust core)
 
+> **Correction 2026-11-17 (Linux stage):** this record says the shell was proven on Qt 5.15.13. A later
+> check could not reproduce that: with Qt 5.15.13 explicitly pinned the `fylz` binary aborts at
+> start (`stack smashing detected` in cxx-qt-lib's `QGuiApplication::new`), while the same sources
+> pass the smoke on Qt 6.4.2; and `cxx-qt-build` silently prefers `qmake6` when installed, so
+> earlier runs may have been Qt 6. Treat the Qt 5 claims below as UNCONFIRMED until a Qt 5 run is
+> green. Also fixed there: the shell root is now a `Window` (it was an `Item`, which is never
+> shown). See `docs/linux/README.md`.
+
 Status date: 2026-11-17. This is a native port: a Qt Quick shell over the same Rust core the
 Android app uses (`fylz-archive`, `fylz-ops`, `fylz-sniff`). It is not Waydroid and not a wrapper
 of the Android app. Owner request 2026-11-17 puts Ubuntu Touch in scope; the plan's earlier

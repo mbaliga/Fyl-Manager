@@ -1,5 +1,10 @@
 name: Ubuntu Touch + Linux (Fylz Qt shell)
 
+# KNOWN RISK (found 2026-11-17 while porting Linux): with Qt 5.15.13 pinned, the shell binary built
+# but aborted at start ("stack smashing detected", cxx-qt-lib 0.7.3 QGuiApplication::new) in the
+# writing container, so the offscreen smoke below may be red on the runner too. Same sources on
+# Qt 6.4.2 pass (linux-desktop.yml). See docs/linux/README.md.
+#
 # Evidence class for every job below: CI-LANE-WRITTEN. The `qt-shell` job runs the same commands
 # that were run (and passed) in the Linux container that wrote this file -- but that container
 # was not this runner image, and nothing here has run on GitHub yet. The `click` job needs Docker
@@ -40,6 +45,9 @@ env:
     core/third_party/xz core/third_party/zstd core/third_party/lz4
   CARGO_TERM_COLOR: always
   CLICKABLE_VERSION: '8.10.0'
+  # Pin Qt 5 explicitly: cxx-qt-build prefers qmake6 if the runner has it (see linux-desktop.yml).
+  QT_VERSION_MAJOR: '5'
+  QMAKE: /usr/lib/qt5/bin/qmake
 
 jobs:
   qt-shell:
