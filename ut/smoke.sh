@@ -11,13 +11,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE="$ROOT/core/crates/fylz-ffi-qt"
 BIN_DIR="${FYLZ_BIN_DIR:-$CRATE/target/debug}"
+APP="${FYLZ_APP:-$BIN_DIR/fylz}"   # override to smoke an installed .deb / an AppImage
 
 eval "$("$BIN_DIR/fylz-seed-demo")"
 trap 'rm -rf "$FYLZ_DEMO_BASE"' EXIT
 # Put the real archive fixture inside the browsed folder so the archive view is exercised.
 cp "$FYLZ_DEMO_ARCHIVE" "$FYLZ_DEMO_FOLDER/"
 
-OUT="$(QT_QPA_PLATFORM=offscreen timeout 60 "$BIN_DIR/fylz" --smoke 2>&1)"
+OUT="$(QT_QPA_PLATFORM=offscreen timeout 60 "$APP" --smoke 2>&1)"
 echo "$OUT"
 
 fail=0
@@ -28,6 +29,7 @@ expect() {
     fi
 }
 expect '^qml: FYLZ_SHELL_START$'
+expect '^qml: FYLZ_SHELL_WINDOW visible=true title=Fylz$'   # root is a real, shown Window
 expect '^qml: FYLZ_SHELL_ROWS 7$'                         # 6 seeded entries + the archive
 expect 'name=report\.TXT .*hasConflict=true'              # fylz-ops preflight NameCollision
 expect 'isStaging=true'                                    # fylz-ops staging-name policy
