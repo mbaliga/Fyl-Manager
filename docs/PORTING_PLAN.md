@@ -410,3 +410,18 @@ Status: PLAN. Nothing here is built, run on a device, signed or submitted. This 
 - **Skin contract (OQ-39, 2026-10-14):** proposed conformance level for this app: Level 1, cost class B (surface and background colours are literals in the theme functions; Material You dynamic colour interacts). The owner chose Tier 1 (palette) everywhere first and every app declaring its own level; the assistant chose JSON, not XML, after the owner asked for a check; the draft spec is Personal-Tracker `porting/skin-contract/SPEC-DRAFT.md`. This is a proposal, not decided for this app.
 
 When the owner confirms or changes the line, this repo's original cells above stay as the engineering detail; only the verdicts and re-costs in program section 5A.12 change.
+
+## Implementation status, iOS (2026-11-17)
+
+Owner request 2026-11-17 overrides the "no-port" proposal for iOS; the reframe label (R12) stands.
+Full record: `docs/design/ios-fylz-for-files.md`; owner checklist: `apple/OWNER_VERIFY.md`.
+
+| Step | State | Evidence |
+|---|---|---|
+| FZ-C1 (iOS-relevant part: Trash gate, `CODESET`/locale per OS) | done; `RawFd` API kept | Apple targets type-check BUILT-HERE (`fylz-ops`, `fylz-sniff` via `cargo check --target aarch64-apple-ios`; `fylz-archive` via `rustc --emit=metadata` for ios, ios-sim, darwin); behaviour on Apple NOT run |
+| FZ-IOS1 | owner gate: reframe accepted by the 2026-11-17 request; `NAMES.md` row for `com.asoc.fylz` still owed | owner |
+| FZ-IOS2 | `build.rs` iOS shape written | CODE-ONLY / CI-LANE-WRITTEN (needs Xcode SDK) |
+| FZ-IOS3 | `core/crates/fylz-ffi-apple` | 15 host tests BUILT-HERE; Swift bindings generated BUILT-HERE; XCFramework CI-LANE-WRITTEN |
+| FZ-IOS4 | `apple/` XcodeGen + SwiftUI document browser (plain list, not the rooms/word-wheel pattern) | CODE-ONLY; Swift never compiled |
+| FZ-IOS5 | (b) in-process decoding recorded, (c) v0.1 never deletes; (a) File Provider NOT started | decision text only |
+| FZ-IOS6 | privacy manifest, bundle id in one xcconfig, signing as a disabled template | CI-LANE-WRITTEN / NEEDS-DEVICE-VALIDATION |

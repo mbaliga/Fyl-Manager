@@ -1,0 +1,162 @@
+name: Apple iOS (Fylz for Files)
+
+# Evidence class for every job below: CI-LANE-WRITTEN. None of this has run: it was written in a
+# Linux container with no Apple SDK. The `linux-core` job runs the same cargo commands the
+# container ran (they passed there); the macOS jobs are untested until a run is seen.
+#
+# Builds are UNSIGNED. Signing material never lives in the repo. The only job that signs is
+# `testflight`, which is disabled until the owner enrols in the Apple Developer Program and sets
+# up the `apple-release` GitHub environment (with required reviewers) holding the secrets named
+# there. Private repos bill hosted macOS minutes at a multiple of Linux; the macOS jobs run on
+# pull requests touching Apple/core paths and on tags only.
+
+on:
+  pull_request:
+    paths:
+      - 'apple/**'
+      - 'core/**'
+      - '.github/workflows/apple-ios.yml'
+  push:
+    branches: ['main']
+    tags: ['ios-v*']
+    paths:
+      - 'apple/**'
+      - 'core/**'
+      - '.github/workflows/apple-ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Only the public C libraries the core vendors. The private hyle-design-system and
+  # shared-libraries submodules are Android/Compose-side and are deliberately NOT fetched: a
+  # hosted runner has no access to them and iOS does not use them.
+  CORE_SUBMODULES: >-
+    core/third_party/libarchive core/third_party/zlib core/third_party/bzip2
+    core/third_party/xz core/third_party/zstd core/third_party/lz4
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-core:
+    name: Core seam on Linux (cargo test, clippy, fmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          cd core
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+      - name: fmt
+        run: cd core && cargo fmt --all -- --check
+      - name: clippy
+        run: cd core && cargo clippy --workspace --all-targets -- -D warnings
+      - name: test (workspace, includes fylz-ffi-apple host tests)
+        run: cd core && cargo test --workspace
+
+  macos-core:
+    name: Core on macOS and iOS targets
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - name: Rust toolchain and iOS targets
+        run: |
+          cd core
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: cmake
+        run: cmake --version || brew install cmake
+      # Exercises the Darwin CODESET / LC_CTYPE_MASK / locale-name paths in write.rs against a
+      # real macOS libc. This is what the Linux container could not run.
+      - name: test the crates the iOS app uses, on macOS
+        run: cd core && cargo test -p fylz-archive -p fylz-sniff -p fylz-ops -p fylz-ffi-apple
+      - name: compile for iOS simulator (arm64)
+        env: { IPHONEOS_DEPLOYMENT_TARGET: '16.0' }
+        run: cd core && cargo build -p fylz-ffi-apple --target aarch64-apple-ios-sim
+      - name: compile for iOS device (arm64)
+        env: { IPHONEOS_DEPLOYMENT_TARGET: '16.0' }
+        run: cd core && cargo build -p fylz-ffi-apple --target aarch64-apple-ios
+
+  swift-kit:
+    name: FylzKit (pure Swift) unit tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: swift --version
+      - run: cd apple/FylzKit && swift test
+
+  ios-app:
+    name: Unsigned simulator build of the app
+    needs: [macos-core, swift-kit]
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - name: Rust toolchain
+        run: cd core && (rustup show active-toolchain || rustup toolchain install)
+      - name: XcodeGen
+        run: brew install xcodegen
+      - name: Rust core -> XCFramework + uniffi Swift bindings
+        run: apple/scripts/build-xcframework.sh
+      - name: Generate the Xcode project
+        run: cd apple && xcodegen generate --spec project.yml
+      - name: xcodebuild (iOS Simulator, unsigned)
+        run: |
+          mkdir -p build
+          xcodebuild build \
+            -project apple/FylzForFiles.xcodeproj -scheme FylzForFiles \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO | tee build/xcodebuild.log | tail -40
+        shell: bash
+      - name: Unsigned device archive (compile + link check only; not installable)
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        run: |
+          xcodebuild archive \
+            -project apple/FylzForFiles.xcodeproj -scheme FylzForFiles \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Fylz.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          cd build && zip -qry Fylz-unsigned.xcarchive.zip Fylz.xcarchive
+      - name: Upload the unsigned archive (tags only)
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Fylz-unsigned-xcarchive
+          path: build/Fylz-unsigned.xcarchive.zip
+          if-no-files-found: error
+          retention-days: 14
+        # continue-on-error is deliberate, matching android.yml: an exhausted artifact-storage
+        # quota must not turn a green build red.
+        continue-on-error: true
+
+  # DISABLED TEMPLATE. Turn on only after: (1) Apple Developer Program enrolment, (2) a NAMES.md row
+  # for com.asoc.fylz (plan rule R11), (3) an App Store Connect app record, (4) a GitHub
+  # environment named `apple-release` with required reviewers and these secrets:
+  #   APPLE_TEAM_ID, ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8 (App Store Connect API key),
+  #   DIST_CERT_P12_BASE64, DIST_CERT_PASSWORD, PROVISIONING_PROFILE_BASE64.
+  # Nothing here is referenced by any other job. Crash reports: only the Apple-collected
+  # TestFlight/App Store ones are permitted (named in the app's About screen and README).
+  testflight:
+    if: false
+    needs: ios-app
+    runs-on: macos-latest
+    environment: apple-release
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: echo "Implement signing here once the prerequisites above exist (fastlane or xcodebuild -exportArchive + altool)."

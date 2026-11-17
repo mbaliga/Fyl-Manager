@@ -1,0 +1,67 @@
+# XcodeGen spec for "Fylz for Files" (iOS/iPadOS). Generate the project with:
+#   xcodegen generate --spec apple/project.yml   (run from the repo root)
+# The .xcodeproj is generated, never committed. Requires apple/Generated/FylzCore.swift and
+# apple/Frameworks/FylzCoreFFI.xcframework, both produced by apple/scripts/build-xcframework.sh.
+name: FylzForFiles
+options:
+  bundleIdPrefix: com.asoc
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Bundle.xcconfig
+  Release: Config/Bundle.xcconfig
+packages:
+  FylzKit:
+    path: FylzKit
+targets:
+  FylzForFiles:
+    type: application
+    platform: iOS
+    sources:
+      - path: FylzApp
+        excludes: ["Info.plist"]
+      - path: Generated
+        optional: true
+    dependencies:
+      - package: FylzKit
+      - framework: Frameworks/FylzCoreFFI.xcframework
+        embed: false   # a static library: linked, not embedded
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(FYLZ_BUNDLE_ID)
+        PRODUCT_NAME: "Fylz"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Fylz
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        CODE_SIGN_STYLE: Automatic
+        # Rust's std and libarchive pull in libc++/libz style system libs.
+        OTHER_LDFLAGS: "-lc++ -lz -lbz2 -liconv"
+    info:
+      path: FylzApp/Info.plist
+      properties:
+        # Files app: show this app's Documents folder ("On My iPhone > Fylz") so extracted
+        # folders are reachable, and let the system open archives in place.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Archive
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.archive
+              - public.zip-archive
+              - public.tar-archive
+              - org.gnu.gnu-zip-archive
+              - org.7-zip.7-zip-archive
+              - public.iso-image
+schemes:
+  FylzForFiles:
+    build:
+      targets:
+        FylzForFiles: all

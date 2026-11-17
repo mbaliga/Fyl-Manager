@@ -1,0 +1,12 @@
+// THE one place the Apple bundle identifier is set (owner directive 2026-11-17: Apple bundle ids
+// are com.asoc.<appname>). OWNER FOLLOW-UP: docs/PORTING_PLAN.md rule R11 wants a NAMES.md row
+// for this id before it is used anywhere durable (App Store Connect, provisioning). NAMES.md
+// lives outside this repo, so the row is not added here.
+FYLZ_BUNDLE_ID = com.asoc.fylz
+
+// Signing is never configured in the repo. CI builds with CODE_SIGNING_ALLOWED=NO; a signed
+// archive takes DEVELOPMENT_TEAM and a profile from the environment/secrets (see
+// docs/design/ios-fylz-for-files.md section 8).
+IPHONEOS_DEPLOYMENT_TARGET = 16.0
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
