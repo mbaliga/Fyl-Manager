@@ -1,0 +1,45 @@
+# Clickable project for the Ubuntu Touch build (docs/agent/MASTER_PLAN.md M13.5), scoped down
+# per this dispatch's own brief to exactly: this file, manifest.json, and an AppArmor manifest
+# using the unconfined template. Written as SOURCE ONLY -- never invoked. This sandbox's Docker
+# daemon is not running (dockerd installed, no init system to start it; confirmed independently
+# twice -- see docs/agent/ADR-LINUX-UT-STRATEGY.md), and `clickable build` needs one even though
+# the real `clickable/amd64-ut24.04-2.x-arm64` image itself is public and pullable anonymously
+# (also confirmed there). Laid out to match Clickable 8.9+'s own documented project-config
+# schema (https://clickable-ut.dev/en/latest/project-config.html) and real working examples
+# (e.g. UBports' own lomiri-filemanager-app), not invented from scratch.
+#
+# `root_dir` points at the fylz-ffi-qt Cargo crate (M13.2/M13.3's cxx-qt bridge and its QML):
+# cxx-qt-build's own `qml_module` mechanism means that crate itself is the app, the same shape
+# as cxx-qt's own `cargo_without_cmake` example `core/crates/fylz-ffi-qt/src/bin/qml_demo.rs` is
+# modelled on -- there is no separate "app" crate to point at.
+clickable_minimum_required: 8.9.0
+
+framework: ubuntu-touch-24.04-1.x
+builder: rust
+root_dir: ../core/crates/fylz-ffi-qt
+
+# NOT YET BUILDABLE, stated plainly: `fylz-qml-demo` and `fylz-seed-demo` (this crate's own
+# M13.2 bridge-verification harness -- see their own doc comments in
+# core/crates/fylz-ffi-qt/src/bin/) are dev-only proof binaries that were never meant to ship.
+# M13.3's own full app binary -- the real QML shell mirroring Android's rooms IA, the edge
+# scrubber, Quick Look, a Hyle-for-QML theme export, tablet/desktop convergence -- is real,
+# separate, out-of-scope-here future work this dispatch does not build. `specific_output_bin`
+# names that FUTURE binary (matching this file's own `fylz.desktop`'s `Exec=`); this project
+# cannot actually build until M13.3 adds it.
+specific_output_bin: fylz
+
+build_args:
+  - --release
+
+# Real Lomiri Components on Qt 5.15 (docs/agent/ADR-LINUX-UT-STRATEGY.md's own corrected
+# finding), matching what `apt-get install` actually proved installable and working in this
+# sandbox -- not a guess at Clickable's own build container's package names.
+dependencies_host:
+  - qtbase5-dev
+  - qtdeclarative5-dev
+  - qml-module-lomiri-components
+
+# The plan's own "arm64 (plus amd64 for desktop testing)": Clickable selects the target
+# architecture per invocation (`clickable build`, or `--arch amd64` / `clickable desktop` for
+# desktop testing), not by a static restriction in this file, so both stay available from the
+# one config here.
