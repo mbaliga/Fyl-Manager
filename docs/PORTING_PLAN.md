@@ -434,8 +434,8 @@ Full record: `docs/design/ubuntu-touch-port.md`; owner checklist: `ut/OWNER_VERI
 | Step | State | Evidence |
 |---|---|---|
 | Bring `core/`, `ut/`, ADR onto the dev branch | done (explicit import from `fylz-fotoz-complete`; the branch is not merged) | git |
-| cxx-qt bridge (M13.2) | re-verified on Qt 5.15.13: builds, 14 tests, clippy and fmt clean | BUILT-HERE |
-| Real `fylz` binary + `Shell.qml` (the missing M13.3 slice) | folder browser, archive viewer, journal count; minimal | BUILT-HERE (offscreen smoke `ut/smoke.sh` passes); feel NEEDS-DEVICE-VALIDATION |
+| cxx-qt bridge (M13.2) | builds, 14 tests, clippy and fmt clean on whichever Qt cxx-qt-build picked (Qt 6.4.2 when qmake6 is installed; the earlier "Qt 5.15.13" label is unconfirmed, see Linux table); the pinned-Qt-5 binary aborts at start | BUILT-HERE (Qt 6 only) |
+| Real `fylz` binary + `Shell.qml` (the missing M13.3 slice) | folder browser, archive viewer, journal count; minimal | BUILT-HERE on Qt 6 only (offscreen smoke passes); on pinned Qt 5.15 (what UT needs) the binary aborts at start, UNRESOLVED; feel NEEDS-DEVICE-VALIDATION |
 | `clickable.yaml` fixed against Clickable 8.10.0 source (removed non-existent key, `--bin fylz`, `install_root_data`, moved to repo root) | written | CODE-ONLY; config parses, stops at Docker |
 | CI lanes `ubuntu-touch.yml` (`qt-shell`, `click` arm64+amd64, tag upload) | written | CI-LANE-WRITTEN |
 | Rooms IA, edge scrubber, Quick Look, Hyle-for-QML, thumbnails, file operations UI | not built | n/a |

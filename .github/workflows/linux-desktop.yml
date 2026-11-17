@@ -1,7 +1,7 @@
 name: "Linux desktop (Fylz Qt shell, deb + AppImage)"
 
 # Evidence class for every job below: CI-LANE-WRITTEN. The build, smoke, deb and metadata steps
-# were run by hand in a Linux container (x86_64, Ubuntu 24.04-like, Qt 5.15.13) while writing this
+# were run by hand in a Linux container (x86_64, Ubuntu 24.04-like, Qt 6.4.2) while writing this
 # file; that container was not a GitHub runner image, and the AppImage step (needs network access
 # to GitHub releases + FUSE-less extract-and-run) and the arm64 leg have NOT been run anywhere.
 #

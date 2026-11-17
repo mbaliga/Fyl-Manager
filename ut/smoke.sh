@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offscreen smoke test of the real Fylz shell (core/crates/fylz-ffi-qt, qml/Shell.qml).
 # Seeds a real temp folder + journal + archive fixture, launches `fylz --smoke` under Qt's
-# offscreen platform, and asserts on the values the shell logs. Needs Qt 5.15 + a built crate:
+# offscreen platform, and asserts on the values the shell logs. Needs Qt (5.15 intended for UT; only Qt 6.4.2 verified, Qt 5.15 aborted at start) + a built crate:
 #   (cd core/crates/fylz-ffi-qt && cargo build) && ut/smoke.sh
 # Evidence class when run in CI: CI-LANE-WRITTEN until a run is seen; when run by a human on a
 # Qt box: BUILT-HERE for that box. It proves the bridge + shell logic, NOT touch/gesture feel,

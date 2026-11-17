@@ -18,17 +18,17 @@ NEEDS-DEVICE-VALIDATION.
 
 | Piece | Where | Evidence |
 |---|---|---|
-| cxx-qt 0.7.3 bridge: `FolderModel`, `ArchiveModel`, `OperationQueue` (real); `PreviewProvider` (classifies via `fylz-sniff`, no pixels); `RenameController`, `SearchController` (honest "not implemented" stubs) | `core/crates/fylz-ffi-qt/src/` | BUILT-HERE (Qt 5.15.13, g++ 13.3) |
+| cxx-qt 0.7.3 bridge: `FolderModel`, `ArchiveModel`, `OperationQueue` (real); `PreviewProvider` (classifies via `fylz-sniff`, no pixels); `RenameController`, `SearchController` (honest "not implemented" stubs) | `core/crates/fylz-ffi-qt/src/` | BUILT-HERE (compiles/tests pass; Qt major actually used is unconfirmed, Qt 6.4.2 likely; g++ 13.3) |
 | Qt-free logic (`scan_folder`, `scan_archive`, `list_operations`, plus navigation helpers `parent_dir`, `child_path`, `human_size`, `is_archive_name`, `start_folder_from`) | `src/logic.rs` | BUILT-HERE: 14 unit tests pass |
-| **The app binary `fylz`** and its QML shell (folder browser, tap-to-descend, Up, archive viewer, journal count) | `src/bin/fylz.rs`, `qml/Shell.qml` | BUILT-HERE builds and runs offscreen; looks/feel NEEDS-DEVICE-VALIDATION |
-| Offscreen smoke asserting real values (7 rows, name clash, staging flag, ZIP inspect 48 entries, descend/ascend) | `ut/smoke.sh` | BUILT-HERE: `SMOKE OK` |
+| **The app binary `fylz`** and its QML shell (folder browser, tap-to-descend, Up, archive viewer, journal count) | `src/bin/fylz.rs`, `qml/Shell.qml` | BUILT-HERE on Qt 6.4.2 only; pinned Qt 5.15 aborts at start (see top correction); looks/feel NEEDS-DEVICE-VALIDATION |
+| Offscreen smoke asserting real values (7 rows, name clash, staging flag, ZIP inspect 48 entries, descend/ascend) | `ut/smoke.sh` | BUILT-HERE: `SMOKE OK` on Qt 6.4.2 only; not reproduced on Qt 5 |
 | Click packaging: `clickable.yaml` (repo root), `ut/manifest.json`, `ut/fylz.apparmor` (unconfined), `ut/fylz.desktop` | repo | CODE-ONLY: Clickable 8.10.0 parses the config and proceeds to the Docker step (BUILT-HERE, stops there: no Docker daemon); the click itself was never built |
 | CI lanes: `qt-shell` (fmt, clippy, test, qmllint, build, smoke) and `click` (arm64 + amd64, review, tag-only upload) | `.github/workflows/ubuntu-touch.yml` | CI-LANE-WRITTEN (yaml parses; action SHAs resolved with `git ls-remote`) |
 
 ## 2. Why this approach (record)
 
 - Rust core + cxx-qt + QML was already the recorded decision (`docs/agent/ADR-LINUX-UT-STRATEGY.md`,
-  plan 6.2) and was proven end to end in a sandbox on Qt 5.15; this stage re-proved it and added the
+  plan 6.2) and was reported proven on Qt 5.15 (unconfirmed, see top correction); this stage built it and added the
   missing app binary rather than switching stacks.
 - The shell imports only `QtQuick 2.15`, not Lomiri Components. Reason: it then loads on any
   Qt 5.15 install (CI, desktop Linux) with no extra QML module, so the smoke test is meaningful.
@@ -77,7 +77,7 @@ code beyond `clickable build`):
   `FYLZ_DEMO_JOURNAL`, so the footer shows 0 operations outside the proof harness.
 - Unconfined click (needs filesystem-wide access); a confined "Fylz Lite" is later work.
 - No key storage: the owner ruled an app-private file with the weaker guarantee shown in the UI.
-- Linux desktop: the same shell runs on desktop Qt 5.15 (that is what the smoke job proves), but
+- Linux desktop: the same shell runs on desktop Qt 6 (see docs/linux/README.md; Qt 5.15 aborts), but
   there is no deb/AppImage/Flatpak packaging in this stage.
 - Manifest maintainer is a `users.noreply` address and the app id `fylz.mbaliga` is unchecked:
   owner follow-ups (`ut/OWNER_VERIFY.md`).
