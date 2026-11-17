@@ -22,7 +22,7 @@ fn main() {
         build_bridge();
     } else {
         println!(
-            "cargo:warning=fylz-ffi-qt: no `qmake` found on PATH, so Qt could not be located; \
+            "cargo:warning=fylz-ffi-qt: no usable `qmake` (the QMAKE variable, else `qmake` on PATH), so Qt could not be located; \
              compiling this crate as an inert placeholder instead (see \
              docs/agent/ADR-LINUX-UT-STRATEGY.md for what that means and why)."
         );
@@ -33,11 +33,23 @@ fn main() {
 /// all, so a Qt-less machine never runs any of its Qt-discovery code (which panics when it finds
 /// nothing) in the first place.
 fn qt_is_available() -> bool {
-    std::process::Command::new("qmake")
-        .arg("-v")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    // `QMAKE` is tried first: cxx-qt-build reads the same variable, and distributions that ship only Qt 6 name the
+    // binary `qmake6`, so a bare `qmake` on PATH is not a reliable signal there (it made the arm64 CI leg build
+    // this crate as an inert placeholder even though Qt 6 was installed). A set-but-unusable QMAKE falls through
+    // to `qmake` on PATH, so this can only find Qt in more places than before, never fewer.
+    println!("cargo:rerun-if-env-changed=QMAKE");
+    let from_env = std::env::var("QMAKE").ok().filter(|q| !q.is_empty());
+    from_env
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once("qmake"))
+        .any(|qmake| {
+            std::process::Command::new(qmake)
+                .arg("-v")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })
 }
 
 fn build_bridge() {
