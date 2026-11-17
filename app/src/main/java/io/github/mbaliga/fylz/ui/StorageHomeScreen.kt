@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -37,12 +38,14 @@ import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.SdCard
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -72,7 +75,13 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.ui.places.LandingFacts
+import io.github.mbaliga.fylz.ui.places.LandingFactsLoader
+import io.github.mbaliga.fylz.ui.places.LandingText
+import io.github.mbaliga.fylz.ui.places.LauncherCategory
 import io.github.mbaliga.fylz.ui.places.LauncherModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The landing screen, drawn as a launcher rather than a directory listing.
@@ -103,8 +112,11 @@ fun StorageHomeScreen(
     refreshKey: Int = 0,
     recents: List<RecentFolder> = emptyList(),
     onOpenRecent: (RecentFolder) -> Unit = {},
-    onOpenLargeFiles: () -> Unit = {},
+    /** Opens a recursive search over the device volume; the category tiles use it. */
+    onOpenSearch: (String) -> Unit = {},
     onOpenRecycleBin: () -> Unit = {},
+    recycleCount: Int = 0,
+    onShredAll: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var permissionRequested by remember { mutableStateOf(false) }
@@ -137,6 +149,10 @@ fun StorageHomeScreen(
 
     val loading = groups.isEmpty() && ready
     val model = remember(groups) { LauncherModel.from(groups) }
+    val facts by produceState(initialValue = LandingFacts(), key1 = refreshKey, key2 = ready) {
+        value = withContext(Dispatchers.IO) { LandingFactsLoader.load(context) }
+    }
+    var confirmShred by remember { mutableStateOf(false) }
 
     fun openRoot(root: StorageRoot) {
         if (root.opensDirectly) onOpenRoot(root) else onPickFolder(root)
@@ -169,50 +185,62 @@ fun StorageHomeScreen(
             }
         }
 
-        item(key = "header") {
-            val primary = model.storages.firstOrNull()
-            Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-                Text("Files", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.SemiBold)
-                val free = primary?.availableBytes
-                Text(
-                    if (free != null) "${formatStorageBytes(free)} free on ${primary?.title?.lowercase().orEmpty()}" else "Everything on this device",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        item(key = "summary-row") {
+            val internal = model.storages.firstOrNull()
+            val total = internal?.totalBytes
+            val used = if (total != null && internal.availableBytes != null) total - internal.availableBytes else null
+            val downloads = model.shortcuts.firstOrNull { it.title.startsWith("Download") }
+            Row(
+                Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(horizontal = LANDING_GUTTER),
+                horizontalArrangement = Arrangement.spacedBy(LANDING_GAP),
+            ) {
+                StorageSummaryCard(
+                    usedBytes = used,
+                    totalBytes = total,
+                    breakdown = facts.breakdown,
+                    onClick = { internal?.let(::openRoot) },
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                )
+                DownloadsCard(
+                    count = facts.downloadsCount,
+                    newestName = facts.downloadsNewest,
+                    loaded = facts.loaded,
+                    onClick = { downloads?.let(::openRoot) ?: onPickFolder(null) },
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
             }
         }
 
-        if (model.storages.isNotEmpty()) {
-            item(key = "storages") {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    items(model.storages, key = { it.id }) { root ->
-                        val index = model.storages.indexOf(root)
-                        StorageCard(root = root, tint = index, onClick = { openRoot(root) })
-                    }
+        items(LauncherCategory.entries.chunked(2), key = { row -> row.first().name }) { row ->
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = LANDING_GUTTER, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(LANDING_GAP),
+            ) {
+                row.forEach { category ->
+                    FolderTile(
+                        label = category.label,
+                        subtitle = LandingText.fileCount(facts.breakdown.count(category.storage), facts.loaded),
+                        peek = if (category == LauncherCategory.IMAGES) facts.latestImage else null,
+                        onClick = { onOpenSearch(category.query) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
+                repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
 
-        item(key = "quick") {
-            SectionLabel("Quick access")
-            val tiles = buildList {
-                model.shortcuts.forEach { root ->
-                    add(LauncherTile(LauncherModel.tileLabel(root), shortcutIcon(root.title), root.opensDirectly.not()) { openRoot(root) })
-                }
-                add(LauncherTile("Large files", Icons.Outlined.DataUsage, false, onOpenLargeFiles))
-                add(LauncherTile("Recycle bin", Icons.Outlined.RestoreFromTrash, false, onOpenRecycleBin))
-            }
-            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                tiles.chunked(TILES_PER_ROW).forEach { rowTiles ->
-                    Row(Modifier.fillMaxWidth()) {
-                        rowTiles.forEach { tile -> TileCell(tile, Modifier.weight(1f)) }
-                        // Keep the last row's tiles the same width as the rest.
-                        repeat(TILES_PER_ROW - rowTiles.size) { Spacer(Modifier.weight(1f)) }
-                    }
-                }
+        item(key = "deleted") {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = LANDING_GUTTER, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(LANDING_GAP),
+            ) {
+                DeletedFilesCard(
+                    count = recycleCount,
+                    onOpen = onOpenRecycleBin,
+                    onShredAll = { confirmShred = true },
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.weight(1f))
             }
         }
 
@@ -246,18 +274,23 @@ fun StorageHomeScreen(
             )
         }
     }
+    if (confirmShred) {
+        AlertDialog(
+            onDismissRequest = { confirmShred = false },
+            title = { Text("Shred all deleted files?") },
+            text = { Text("${LandingText.deletedCount(recycleCount)} files will be permanently deleted. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = { confirmShred = false; onShredAll() }) { Text("Shred all") }
+            },
+            dismissButton = { TextButton(onClick = { confirmShred = false }) { Text("Cancel") } },
+        )
+    }
 }
 
-private const val TILES_PER_ROW = 4
-private const val MAX_RECENTS_SHOWN = 5
+private val LANDING_GUTTER = 20.dp
+private val LANDING_GAP = 16.dp
 
-private data class LauncherTile(
-    val label: String,
-    val icon: ImageVector,
-    /** True when opening it still needs a folder grant, which the tile marks with a lock. */
-    val needsGrant: Boolean,
-    val onClick: () -> Unit,
-)
+private const val MAX_RECENTS_SHOWN = 5
 
 @Composable
 private fun SectionLabel(text: String) {
@@ -267,101 +300,6 @@ private fun SectionLabel(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 8.dp),
     )
-}
-
-/** One volume: a rounded soft-gradient card with the room left on it. */
-@Composable
-private fun StorageCard(root: StorageRoot, tint: Int, onClick: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
-    // Two gradients that alternate, so a phone with an SD card shows two distinct cards.
-    val brush = if (tint % 2 == 0) {
-        Brush.linearGradient(listOf(scheme.primaryContainer, scheme.tertiaryContainer))
-    } else {
-        Brush.linearGradient(listOf(scheme.secondaryContainer, scheme.primaryContainer))
-    }
-    val ink = scheme.onPrimaryContainer
-    val used = LauncherModel.usedFraction(root)
-    Box(
-        Modifier
-            .width(280.dp)
-            .height(156.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .background(brush)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = "Open ${root.title}" }
-            .padding(20.dp),
-    ) {
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(iconFor(root.kind), contentDescription = null, tint = ink, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(10.dp))
-                Text(root.title, style = MaterialTheme.typography.titleMedium, color = ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Column {
-                val free = root.availableBytes
-                val total = root.totalBytes
-                if (free != null && total != null && total > 0) {
-                    Text("${formatStorageBytes(free)} free", style = MaterialTheme.typography.headlineSmall, color = ink, fontWeight = FontWeight.SemiBold)
-                    Text("of ${formatStorageBytes(total)}", style = MaterialTheme.typography.bodySmall, color = ink.copy(alpha = 0.7f))
-                } else {
-                    Text("Open", style = MaterialTheme.typography.headlineSmall, color = ink, fontWeight = FontWeight.SemiBold)
-                }
-                if (used != null) {
-                    // A plain bar: no M3 progress indicator, so it renders identically across
-                    // the library versions this app builds against.
-                    Box(
-                        Modifier
-                            .padding(top = 10.dp)
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(ink.copy(alpha = 0.18f)),
-                    ) {
-                        Box(Modifier.fillMaxWidth(used).fillMaxHeight().background(ink.copy(alpha = 0.75f)))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TileCell(tile: LauncherTile, modifier: Modifier = Modifier) {
-    Column(
-        modifier
-            .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = tile.onClick)
-            .semantics { contentDescription = tile.label }
-            .padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(tile.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
-            if (tile.needsGrant) {
-                // Colour must not carry state alone: the lock says "this one still needs a grant".
-                Icon(
-                    Icons.Outlined.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).size(14.dp),
-                )
-            }
-        }
-        Text(
-            tile.label,
-            style = MaterialTheme.typography.labelMedium,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-    }
 }
 
 @Composable
@@ -395,16 +333,6 @@ private fun RecentRow(recent: RecentFolder, onClick: () -> Unit) {
         Spacer(Modifier.width(16.dp))
         Text(recent.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
-}
-
-private fun shortcutIcon(title: String): ImageVector = when {
-    title.startsWith("Download") -> Icons.Outlined.Download
-    title.startsWith("Document") -> Icons.Outlined.Description
-    title.startsWith("Picture") -> Icons.Outlined.Image
-    title.startsWith("Camera") -> Icons.Outlined.CameraAlt
-    title.startsWith("Music") -> Icons.Outlined.MusicNote
-    title.startsWith("Movie") -> Icons.Outlined.Movie
-    else -> Icons.Outlined.Folder
 }
 
 @Composable

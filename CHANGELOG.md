@@ -14,7 +14,7 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 - Reworked navigation around the places list. The left list now holds Home, the standard folders, Large files, **Recycle bin, Storage & recovery and Settings**; the bottom and right rooms are gone. The content opens as a large rounded card on the right half beside the list, and **moving the wheel onto a row changes the pane to match** (Pictures shows Pictures, Settings shows Settings), with the neighbouring cards peeking above and below and sliding with the wheel. Requires `shared-libraries` at or after `6095357` (the shell's open-park mode).
 - The top room now shows **what the folder is** (name, path, contents, size, newest change, largest file, types, free space on its volume) above the tree.
-- The landing screen is now a launcher: storage cards with free space, quick-access tiles for the standard folders plus Large files and the Recycle bin, a Recent row of folders opened lately, and Add folder / Network.
+- The landing screen follows the reference design: a Storage card with a coloured breakdown (Photos, Videos, Documents, Audio, APKs), a Downloads card, folder tiles for Documents, Images (with the newest photo peeking out), Videos and APKs that open a search over the whole volume, and a Deleted Files card with a confirmed Shred all. Add folder, Network, cloud roots and Recent sit below.
 
 ### Fixes
 

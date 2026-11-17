@@ -193,6 +193,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import io.github.mbaliga.fylz.library.RecentFolder
 import io.github.mbaliga.fylz.library.RecentFoldersStore
+import io.github.mbaliga.fylz.ui.places.LauncherCategory
 import io.github.mbaliga.fylz.ui.places.LauncherModel
 import io.github.mbaliga.fylz.ui.tree.FolderFacts
 import io.github.mbaliga.fylz.storage.StorageRootGroup
@@ -723,6 +724,9 @@ private fun FylzV1Workspace(
     }
     val places = remember(rootGroups) { CommonPlaces.build(rootGroups) }
     val largeFilesActive = searchRecursive && query == CommonPlaces.LARGE_FILES_QUERY
+    // Large files or one of the landing screen's category searches.
+    val launcherSearchActive = searchRecursive &&
+        (query == CommonPlaces.LARGE_FILES_QUERY || LauncherCategory.entries.any { it.query == query })
     val railSelectedId = CommonPlaces.selectedId(
         places = places,
         activeTreeUri = activeTab?.treeUri?.toString(),
@@ -742,13 +746,17 @@ private fun FylzV1Workspace(
         }
     }
 
-    fun openLargeFiles() {
+    // A recursive search over the device volume: "Large files" in the list, and the Documents /
+    // Images / Videos / APKs tiles on the landing screen, are all this with a different query.
+    fun openDeviceSearch(searchQuery: String) {
         val volume = CommonPlaces.largeFilesRoot(rootGroups) ?: return
         pane = null
         openStorageRoot(volume)
-        query = CommonPlaces.LARGE_FILES_QUERY
+        query = searchQuery
         searchRecursive = true
     }
+
+    fun openLargeFiles() = openDeviceSearch(CommonPlaces.LARGE_FILES_QUERY)
 
     // Choosing a row of the places list. Turning the wheel onto a row IS choosing it (the rail
     // reports a settle as a selection), and the pane to the right follows: that is the point
@@ -756,7 +764,7 @@ private fun FylzV1Workspace(
     fun selectPlace(place: CommonPlace) {
         // Large files is a search, so leaving it must also clear the search — otherwise Downloads
         // would open filtered to files over 100 MB.
-        if (place.kind != PlaceKind.LARGE_FILES && largeFilesActive) {
+        if (place.kind != PlaceKind.LARGE_FILES && launcherSearchActive) {
             query = ""
             searchRecursive = false
         }
@@ -1098,8 +1106,22 @@ private fun FylzV1Workspace(
                                 FolderLocation(Uri.parse(recent.folderUri), recent.name),
                             )
                         },
-                        onOpenLargeFiles = ::openLargeFiles,
+                        onOpenSearch = ::openDeviceSearch,
                         onOpenRecycleBin = { pane = PlaceKind.RECYCLE_BIN },
+                        recycleCount = remember(recycleVersion, refreshKey) { recycleBin.records().size },
+                        onShredAll = {
+                            scope.launch {
+                                // The caller has already asked the user to confirm. One failure
+                                // does not stop the rest; the failures are counted and reported.
+                                var failed = 0
+                                recycleBin.records().forEach { record ->
+                                    runCatching { recycleBin.permanentlyDelete(record.itemId, confirmed = true) }
+                                        .onFailure { failed += 1 }
+                                }
+                                if (failed > 0) toast("$failed items could not be deleted")
+                                recycleVersion += 1
+                            }
+                        },
                         onQueryChange = { query = it },
                         onNavigateUp = {
                             val tab = activeTab ?: return@FileBrowser
@@ -1424,8 +1446,10 @@ private fun FileBrowser(
     homeRefreshKey: Int,
     recents: List<RecentFolder>,
     onOpenRecent: (RecentFolder) -> Unit,
-    onOpenLargeFiles: () -> Unit,
+    onOpenSearch: (String) -> Unit,
     onOpenRecycleBin: () -> Unit,
+    recycleCount: Int,
+    onShredAll: () -> Unit,
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
     onOpen: (FileEntry) -> Unit,
@@ -1447,8 +1471,10 @@ private fun FileBrowser(
             refreshKey = homeRefreshKey,
             recents = recents,
             onOpenRecent = onOpenRecent,
-            onOpenLargeFiles = onOpenLargeFiles,
+            onOpenSearch = onOpenSearch,
             onOpenRecycleBin = onOpenRecycleBin,
+            recycleCount = recycleCount,
+            onShredAll = onShredAll,
             modifier = modifier,
         )
         return
