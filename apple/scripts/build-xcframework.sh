@@ -12,6 +12,8 @@
 # an *-apple-ios target has ever run. The host-side half (uniffi-bindgen producing FylzCore.swift
 # from a static library) was run on Linux and works.
 set -euo pipefail
+# NB: macOS ships bash 3.2, where expanding an empty array under `set -u` is an error, so the
+# debug-profile (empty) cargo_profile array is expanded with the ${arr[@]+...} guard below.
 
 profile=debug; cargo_profile=()
 if [[ "${1:-}" == "--release" ]]; then profile=release; cargo_profile=(--release); fi
@@ -29,7 +31,7 @@ rustup target add "${targets[@]}"
 
 for t in "${targets[@]}"; do
   echo "== cargo build $t ($profile)"
-  (cd "$core" && cargo build "${cargo_profile[@]}" -p fylz-ffi-apple --target "$t")
+  (cd "$core" && cargo build ${cargo_profile[@]+"${cargo_profile[@]}"} -p fylz-ffi-apple --target "$t")
 done
 
 echo "== uniffi Swift bindings (host build of the generator, library mode on the sim static lib)"
