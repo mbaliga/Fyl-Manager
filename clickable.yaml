@@ -27,6 +27,7 @@ install_root_data:
   - ut/manifest.json
   - ut/fylz.apparmor
   - ut/fylz.desktop
+  - linux/io.github.mbaliga.Fylz.svg
 
 # Qt 5.15 + Lomiri on the UT 24.04 image; cxx-qt-build needs qmake on PATH in the build
 # container (build.rs probes for it). libarchive is built from the vendored submodule by
