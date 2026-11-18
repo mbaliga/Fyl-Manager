@@ -1145,6 +1145,11 @@ private fun FylzV1Workspace(
                                             }
                                         }
                                         if (failed > 0) toast("$failed items could not be deleted")
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        // Reading the bin itself failed; nothing was shredded.
+                                        toast(e.message ?: "Could not read the recycle bin")
                                     } finally {
                                         shredding = false
                                         recycleVersion += 1
