@@ -14,7 +14,12 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 
 - Reworked navigation around the places list. The left list now holds Home, the standard folders, Large files, **Recycle bin, Storage & recovery and Settings**; the bottom and right rooms are gone. The content opens as a large rounded card on the right half beside the list, and **moving the wheel onto a row changes the pane to match** (Pictures shows Pictures, Settings shows Settings), with the neighbouring cards peeking above and below and sliding with the wheel. Requires `shared-libraries` at or after `6095357` (the shell's open-park mode).
 - The top room now shows **what the folder is** (name, path, contents, size, newest change, largest file, types, free space on its volume) above the tree.
-- The landing screen is now a launcher: storage cards with free space, quick-access tiles for the standard folders plus Large files and the Recycle bin, a Recent row of folders opened lately, and Add folder / Network.
+- The landing screen follows the reference design: a Storage card with a coloured breakdown (Photos, Videos, Documents, Audio, APKs), a Downloads card, folder tiles for Documents, Images (with the newest photo peeking out), Videos and APKs that open a search over the whole volume, and a Deleted Files card with a confirmed Shred all. Add folder, Network, cloud roots and Recent sit below.
+- Inside a folder: selection controls are hidden until you choose Select (menu) or long-press; selecting swaps the title bar for Select All / count / Done, shows a ring on each row (a tick and fill when selected) and highlights selected grid names. A tap opens the file, a long press is the quick preview with an "Add to selection" action; while selecting a tap toggles and a long press peeks. Settings has "Tap to preview" to swap those roles.
+- The always-on alphabet strip is gone. A slim scrollbar sits inside the list area only (so the menu is always tappable); dragging it unfolds the letter / month / size strip with the current one highlighted.
+- One "…" menu now holds Select, New folder, Paste, view (Icons / List), sort and the extras. View and sort are remembered per folder (Settings or the menu can switch that to one global view).
+- Documents, Images, Videos and APKs on the landing screen are collections, drawn as the handoff's card stack of the newest files (swipe to move through them) with the count, total size and "Updated 3h ago" under it. Opening one shows the collection itself, grouped by day with real thumbnails and a date scrollbar, with no search box or query.
+- The Storage card opens Storage & recovery.
 
 ### Fixes
 
