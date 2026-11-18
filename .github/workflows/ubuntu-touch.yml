@@ -1,0 +1,127 @@
+name: Ubuntu Touch + Linux (Fylz Qt shell)
+
+# KNOWN RISK (found 2026-11-17 while porting Linux): with Qt 5.15.13 pinned, the shell binary built
+# but aborted at start ("stack smashing detected", cxx-qt-lib 0.7.3 QGuiApplication::new) in the
+# writing container, so the offscreen smoke below may be red on the runner too. Same sources on
+# Qt 6.4.2 pass (linux-desktop.yml). See docs/linux/README.md.
+#
+# Evidence class for every job below: CI-LANE-WRITTEN. The `qt-shell` job runs the same commands
+# that were run (and passed) in the Linux container that wrote this file -- but that container
+# was not this runner image, and nothing here has run on GitHub yet. The `click` job needs Docker
+# + Clickable's container images and was NEVER run anywhere (the container had no Docker daemon).
+#
+# Builds are UNSIGNED: click packages are not signed here; the OpenStore signs/accepts uploads
+# under the owner's own account, outside this repo. No secrets are used by this workflow.
+# Private repo note: hosted Linux minutes only; the private hyle-design-system/shared-libraries
+# submodules are Android-side and deliberately NOT fetched.
+
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'ut/**'
+      - 'clickable.yaml'
+      - '.github/workflows/ubuntu-touch.yml'
+  push:
+    branches: ['main']
+    tags: ['ut-v*']
+    paths:
+      - 'core/**'
+      - 'ut/**'
+      - 'clickable.yaml'
+      - '.github/workflows/ubuntu-touch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ubuntu-touch-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORE_SUBMODULES: >-
+    core/third_party/libarchive core/third_party/zlib core/third_party/bzip2
+    core/third_party/xz core/third_party/zstd core/third_party/lz4
+  CARGO_TERM_COLOR: always
+  CLICKABLE_VERSION: '8.10.0'
+  # Pin Qt 5 explicitly: cxx-qt-build prefers qmake6 if the runner has it (see linux-desktop.yml).
+  QT_VERSION_MAJOR: '5'
+  QMAKE: /usr/lib/qt5/bin/qmake
+
+jobs:
+  qt-shell:
+    name: Qt 5.15 shell on Linux (fmt, clippy, test, qmllint, offscreen smoke)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - name: Qt 5.15 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config qtbase5-dev qtdeclarative5-dev \
+            qtdeclarative5-dev-tools qml-module-qtquick2 qml-module-qtquick-window2 libgl1-mesa-dev
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          cd core
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+      - name: fmt
+        run: cd core/crates/fylz-ffi-qt && cargo fmt --check
+      - name: clippy
+        run: cd core/crates/fylz-ffi-qt && cargo clippy --all-targets -- -D warnings
+      - name: test (Qt-free logic tests + bridge build)
+        run: cd core/crates/fylz-ffi-qt && cargo test
+      - name: qmllint
+        run: qmllint core/crates/fylz-ffi-qt/qml/Shell.qml core/crates/fylz-ffi-qt/qml/main.qml
+      - name: Build the app and harness binaries
+        run: cd core/crates/fylz-ffi-qt && cargo build --release --bins
+      - name: Offscreen smoke (real folder, real archive, real journal)
+        # Known to abort on Qt 5.15 (see header); advisory so the click job still runs.
+        continue-on-error: true
+        env:
+          FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
+        run: ut/smoke.sh
+
+  click:
+    name: Click package (Clickable, ${{ matrix.arch }})
+    needs: qt-shell
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64: the phone. amd64: desktop-testing click (and what `clickable desktop` runs).
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install Clickable
+        run: pip install "clickable-ut==${CLICKABLE_VERSION}"
+      - name: clickable build
+        run: clickable build --arch ${{ matrix.arch }}
+      - name: click-review (lint of the package; advisory, not a store verdict)
+        run: clickable review --arch ${{ matrix.arch }}
+        continue-on-error: true
+      - name: Locate the .click
+        id: click
+        run: |
+          f="$(find build -name '*.click' | head -n1)"
+          test -n "$f" || { echo "no .click produced" >&2; exit 1; }
+          echo "path=$f" >> "$GITHUB_OUTPUT"
+      # Tags only: PR runs keep nothing, so artifact quota is not burned on every push
+      # (artifact storage quota has bitten this account before).
+      - name: Upload the unsigned .click (tags only)
+        if: startsWith(github.ref, 'refs/tags/ut-v')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fylz-click-${{ matrix.arch }}
+          path: ${{ steps.click.outputs.path }}
+          if-no-files-found: error

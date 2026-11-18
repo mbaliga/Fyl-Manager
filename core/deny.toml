@@ -1,0 +1,49 @@
+# cargo-deny config enforcing docs/agent/MASTER_PLAN.md section 2.2's licence policy.
+#
+# Only the licences listed under `licenses.allow` may be pulled in as an ordinary
+# Cargo dependency. There is no explicit deny list: cargo-deny denies anything not
+# on `allow` by default, so LGPL and GPL/AGPL crates fail the check unless added
+# here — and per 2.2 they never should be. LGPL C libraries are built as a separate
+# `.so` outside cargo entirely (never a Cargo dependency); GPL/AGPL never ships in
+# the core app at all, only in a separate add-on package.
+
+[graph]
+targets = []
+# fylz-ffi-android's "uniffi-cli" feature (gating the uniffi-bindgen binary's own large
+# dependency tree, kept off the default feature set so it never bloats the shipped library
+# build) isn't active in a default-features check -- without this, cargo-deny would silently
+# stop covering that tree's licences the moment it moved behind a non-default feature.
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    # Not in section 2.2's own list, but permissive (OSI-approved) and unavoidable: almost
+    # every proc-macro-using crate depends on unicode-ident, which is dual-licensed
+    # MIT/Apache-2.0 *and* this — added once uniffi's dependency tree actually needed it (M2.2).
+    "Unicode-3.0",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

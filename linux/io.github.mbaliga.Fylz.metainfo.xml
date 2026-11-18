@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mbaliga.Fylz</id>
+  <name>Fylz</name>
+  <summary>A legible file manager with an archive viewer and an operation journal</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <description>
+    <p>Fylz browses folders and looks inside archives (zip, tar, 7z and more) without extracting them. Every change it makes is recorded in an on-disk journal so an interrupted operation can be reconciled instead of silently half-done.</p>
+    <p>This desktop build is an early shell shared with the Ubuntu Touch app. It is read-only for now: there is no copy, move, delete or rename UI yet.</p>
+  </description>
+  <url type="homepage">https://github.com/mbaliga/Fyl-Manager</url>
+  <developer id="io.github.mbaliga"><name>mbaliga</name></developer>
+  <launchable type="desktop-id">io.github.mbaliga.Fylz.desktop</launchable>
+  <provides><binary>fylz</binary></provides>
+  <categories><category>Utility</category><category>FileManager</category></categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-17"/>
+  </releases>
+</component>

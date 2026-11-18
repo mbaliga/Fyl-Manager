@@ -1,0 +1,56 @@
+[package]
+# Renamed from `fylz-sniff-fuzz` (M2.6) once it grew targets for more than one crate (M3.1 part 3).
+name = "fylz-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# A cargo-fuzz project is its own workspace, deliberately not a member of the parent core/
+# workspace: it needs nightly's -Z sanitizer flags (RUSTFLAGS the stable workspace must never see)
+# and its own dependency resolution. Without this, Cargo walks up to core/Cargo.toml, sees this
+# package isn't in its `members` list, and refuses to build at all ("current package believes
+# it's in a workspace when it's not").
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# `arbitrary-derive` turns on the `arbitrary` crate's derive macro (already in this workspace's
+# graph as libfuzzer-sys's own dependency), so structured targets can derive `Arbitrary` for
+# their input types instead of hand-decoding bytes.
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+
+[dependencies.fylz-sniff]
+path = "../crates/fylz-sniff"
+
+[dependencies.fylz-archive]
+path = "../crates/fylz-archive"
+
+[[bin]]
+name = "sniff"
+path = "fuzz_targets/sniff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_evaluate"
+path = "fuzz_targets/policy_evaluate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_entries"
+path = "fuzz_targets/archive_entries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "write_frames"
+path = "fuzz_targets/write_frames.rs"
+test = false
+doc = false
+bench = false

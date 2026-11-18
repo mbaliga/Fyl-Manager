@@ -112,6 +112,7 @@ GitHub Actions uploads the debug APK after the Android CI workflow and an unsign
 - [Product research and feature gaps](docs/PRODUCT_RESEARCH.md)
 - [Architecture and security boundaries](docs/ARCHITECTURE.md)
 - [Delivery roadmap](docs/ROADMAP.md)
+- [Multi-platform porting plan (plan plus unverified iOS / Ubuntu Touch / Linux scaffolding; nothing run on a device)](docs/PORTING_PLAN.md)
 - [Device and provider acceptance](docs/DEVICE_ACCEPTANCE.md)
 - [Release and signing procedure](docs/RELEASE.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

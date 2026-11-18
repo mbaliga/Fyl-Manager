@@ -1,0 +1,39 @@
+# Clickable project for the Ubuntu Touch click build (docs/design/ubuntu-touch-port.md).
+# Run from the repository ROOT: `clickable build --arch arm64` (device) / `--arch amd64`
+# (desktop test). Keys validated against clickable-ut 8.10.0's own source (project.py,
+# builders/rust.py, commands/build.py): see docs/design/ubuntu-touch-port.md section 4 for what
+# that did and did not prove. Not run end to end here: Clickable needs a Docker daemon, this
+# container has none. Evidence class: CI-LANE-WRITTEN (.github/workflows/ubuntu-touch.yml).
+clickable_minimum_required: 8.9.0
+
+framework: ubuntu-touch-24.04-1.x
+builder: rust
+
+# The Cargo package Clickable's Rust builder runs `cargo install --locked --path <src_dir>` on.
+# root_dir (default: this directory) is what gets mounted into the build container, so the
+# crate's path dependencies (core/crates/fylz-ops, fylz-archive, fylz-sniff) and the vendored
+# libarchive submodules under core/third_party are all visible to it.
+src_dir: ${ROOT}/core/crates/fylz-ffi-qt
+
+# `cargo install --path` would otherwise install EVERY [[bin]] in the package, demo harnesses
+# included. The app is `fylz` only.
+build_args:
+  - --bin
+  - fylz
+
+# The Rust builder does not copy packaging files; install them into the click root.
+# (Patterns containing "/" are resolved relative to the project root.)
+install_root_data:
+  - ut/manifest.json
+  - ut/fylz.apparmor
+  - ut/fylz.desktop
+  - linux/io.github.mbaliga.Fylz.svg
+
+# Qt 5.15 + Lomiri on the UT 24.04 image; cxx-qt-build needs qmake on PATH in the build
+# container (build.rs probes for it). libarchive is built from the vendored submodule by
+# fylz-archive's build.rs (cmake), so no libarchive dev package is needed.
+dependencies_host:
+  - qtbase5-dev
+  - qtdeclarative5-dev
+  - qml-module-lomiri-components
+  - cmake

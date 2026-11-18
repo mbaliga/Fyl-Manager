@@ -28,3 +28,11 @@ Thumbs.db
 
 # Temporary bootstrap payloads
 .bootstrap/
+
+# Apple/iOS (generated, never committed)
+/apple/Generated/
+/apple/Frameworks/
+/apple/*.xcodeproj
+/apple/FylzApp/Info.plist
+/apple/FylzKit/.build/
+/core/target/

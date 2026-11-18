@@ -1,0 +1,162 @@
+name: "Linux desktop (Fylz Qt shell, deb + AppImage)"
+
+# Evidence class for every job below: CI-LANE-WRITTEN. The build, smoke, deb and metadata steps
+# were run by hand in a Linux container (x86_64, Ubuntu 24.04-like, Qt 6.4.2) while writing this
+# file; that container was not a GitHub runner image, and the AppImage step (needs network access
+# to GitHub releases + FUSE-less extract-and-run) and the arm64 leg have NOT been run anywhere.
+#
+# Builds are UNSIGNED and carry no secrets. The deb is only installable on the Ubuntu release it
+# was built on (or newer); the AppImage likewise inherits that glibc.
+#
+# Qt 6 (6.4.2 on Ubuntu 24.04) is the packaged desktop Qt: the shell + cxx-qt 0.7.3 were built and
+# smoked on it in the writing container. Building the SAME sources against Qt 5.15.13 compiled but
+# the binary aborted ("stack smashing detected" inside cxx-qt-lib's QGuiApplication::new, a
+# QVector<QByteArray>::append) in that container; the `qt5-probe` job below re-runs that case on
+# the runner image, informational only, so the Ubuntu Touch consequence is visible. Both Qt
+# versions are pinned explicitly (QT_VERSION_MAJOR + QMAKE) because cxx-qt-build otherwise picks
+# qmake6 whenever it is installed.
+# Private repo note: hosted Linux minutes only; the private hyle-design-system/shared-libraries
+# submodules are Android-side and deliberately NOT fetched.
+
+on:
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'linux/**'
+      - 'ut/smoke.sh'
+      - '.github/workflows/linux-desktop.yml'
+  push:
+    branches: ['main']
+    tags: ['linux-v*']
+    paths:
+      - 'core/**'
+      - 'linux/**'
+      - 'ut/smoke.sh'
+      - '.github/workflows/linux-desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORE_SUBMODULES: >-
+    core/third_party/libarchive core/third_party/zlib core/third_party/bzip2
+    core/third_party/xz core/third_party/zstd core/third_party/lz4
+  CARGO_TERM_COLOR: always
+  QT_VERSION_MAJOR: '6'
+  QMAKE: /usr/lib/qt6/bin/qmake
+
+jobs:
+  metadata:
+    name: Desktop file + AppStream metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream
+      - run: linux/packaging/check-metadata.sh
+
+  build:
+    name: Build, smoke, package (${{ matrix.runner }})
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm is free only for public repos; on a private repo drop it or accept
+        # the billed minutes. x86_64 is the leg that was reproduced by hand.
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch the vendored C libraries
+        run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - name: Qt 6 development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config qt6-base-dev qt6-declarative-dev \
+            qt6-declarative-dev-tools qml6-module-qtquick qml6-module-qtquick-window \
+            qml6-module-qtqml qml6-module-qtqml-workerscript \
+            libgl1-mesa-dev libxkbcommon-dev file desktop-file-utils
+      - name: Locate Qt 6 qmake (its directory differs between x86_64 and arm64)
+        run: |
+          q="$(command -v qmake6 || true)"
+          [ -n "$q" ] || q="$(ls /usr/lib/qt6/bin/qmake /usr/lib/*/qt6/bin/qmake 2>/dev/null | head -n1)"
+          test -x "$q" || { echo "no Qt 6 qmake found"; exit 1; }
+          echo "$q" | tee "$RUNNER_TEMP/qmake.path"
+          "$q" -query QT_VERSION
+      - name: Rust toolchain (core/rust-toolchain.toml)
+        run: |
+          cd core
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+      - name: Build the release binaries
+        run: cd core/crates/fylz-ffi-qt && QMAKE="$(cat "$RUNNER_TEMP/qmake.path")" cargo build --release --bins
+      - name: Offscreen smoke of the release build
+        env:
+          FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
+        run: ut/smoke.sh
+      - name: Build the .deb
+        run: linux/packaging/build-deb.sh core/crates/fylz-ffi-qt/target/release/fylz dist
+      - name: Inspect the .deb
+        run: |
+          dpkg-deb -I dist/*.deb
+          dpkg-deb -c dist/*.deb
+      - name: Install the .deb and smoke the INSTALLED binary
+        env:
+          FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
+          FYLZ_APP: /usr/bin/fylz
+        run: |
+          sudo apt-get install -y ./dist/*.deb   # resolves the generated Depends: from the archive
+          desktop-file-validate /usr/share/applications/io.github.mbaliga.Fylz.desktop
+          ut/smoke.sh
+      - name: Build the AppImage
+        run: linux/packaging/build-appimage.sh core/crates/fylz-ffi-qt/target/release/fylz dist
+      - name: Smoke the AppImage
+        env:
+          FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: |
+          export FYLZ_APP="$(ls "$PWD"/dist/*.AppImage | head -n1)"
+          ut/smoke.sh
+      # Tags only: PR runs keep nothing (artifact storage quota has bitten this account before).
+      - name: Upload unsigned packages (tags only)
+        if: startsWith(github.ref, 'refs/tags/linux-v')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fylz-linux-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Informational: the same sources against Qt 5.15 (what Ubuntu Touch's click build uses).
+  qt5-probe:
+    name: Qt 5.15 probe (informational; known to abort in the writing container)
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      QT_VERSION_MAJOR: '5'
+      QMAKE: /usr/lib/qt5/bin/qmake
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: git submodule update --init --depth 1 $CORE_SUBMODULES
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config qtbase5-dev qtdeclarative5-dev \
+            qtdeclarative5-dev-tools qml-module-qtquick2 qml-module-qtquick-window2 libgl1-mesa-dev
+      - run: |
+          cd core && (rustup show active-toolchain || rustup toolchain install)
+      - run: cd core/crates/fylz-ffi-qt && cargo build --release --bins
+      - name: Offscreen smoke on Qt 5
+        env:
+          FYLZ_BIN_DIR: ${{ github.workspace }}/core/crates/fylz-ffi-qt/target/release
+        run: ut/smoke.sh

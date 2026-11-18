@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Windowed desktop/ChromeOS use: a touchscreen is not required (mouse and keyboard work). -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -114,6 +119,12 @@
                 <data android:mimeType="application/pdf" />
                 <data android:mimeType="image/svg+xml" />
             </intent-filter>
+
+            <!-- Launch-size hint for freeform windows. No minimum is set: a minHeight would
+                 constrain phone split-screen. -->
+            <layout
+                android:defaultWidth="900dp"
+                android:defaultHeight="640dp" />
 
             <meta-data
                 android:name="android.app.shortcuts"
