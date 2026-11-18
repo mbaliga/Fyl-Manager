@@ -326,6 +326,8 @@ private fun FylzV1Workspace(
     // moving the wheel onto one shows it here. Null means the file view (or the launcher).
     var pane by remember { mutableStateOf<PlaceKind?>(null) }
     var recycleVersion by remember { mutableIntStateOf(0) }
+    // True while Shred all runs, so a second tap cannot start a second pass over the same records.
+    var shredding by remember { mutableStateOf(false) }
     val recentStore = remember { RecentFoldersStore(context.applicationContext) }
     var recentFolders by remember { mutableStateOf(recentStore.list()) }
 
@@ -749,7 +751,12 @@ private fun FylzV1Workspace(
     // A recursive search over the device volume: "Large files" in the list, and the Documents /
     // Images / Videos / APKs tiles on the landing screen, are all this with a different query.
     fun openDeviceSearch(searchQuery: String) {
-        val volume = CommonPlaces.largeFilesRoot(rootGroups) ?: return
+        val volume = CommonPlaces.largeFilesRoot(rootGroups)
+        if (volume == null) {
+            // Searching the whole device needs All files access; say so instead of doing nothing.
+            toast("Allow All files access to search the whole device")
+            return
+        }
         pane = null
         openStorageRoot(volume)
         query = searchQuery
@@ -1074,7 +1081,17 @@ private fun FylzV1Workspace(
                                     refresh()
                                 }
                             },
-                            onOpenRoot = { activeTabId = null; homeRefreshKey += 1 },
+                            onOpenRoot = {
+                                // Same as choosing Home in the places list: a launcher search must not
+                                // follow the user into the next folder they open.
+                                if (launcherSearchActive) {
+                                    query = ""
+                                    searchRecursive = false
+                                }
+                                pane = null
+                                activeTabId = null
+                                homeRefreshKey += 1
+                            },
                             onRecycle = { pane = PlaceKind.RECYCLE_BIN },
                             modifier = Modifier.width(210.dp).fillMaxHeight(),
                         )
@@ -1109,17 +1126,30 @@ private fun FylzV1Workspace(
                         onOpenSearch = ::openDeviceSearch,
                         onOpenRecycleBin = { pane = PlaceKind.RECYCLE_BIN },
                         recycleCount = remember(recycleVersion, refreshKey) { recycleBin.records().size },
+                        shredding = shredding,
                         onShredAll = {
-                            scope.launch {
-                                // The caller has already asked the user to confirm. One failure
-                                // does not stop the rest; the failures are counted and reported.
-                                var failed = 0
-                                recycleBin.records().forEach { record ->
-                                    runCatching { recycleBin.permanentlyDelete(record.itemId, confirmed = true) }
-                                        .onFailure { failed += 1 }
+                            if (!shredding) {
+                                shredding = true
+                                scope.launch {
+                                    // The caller has already asked the user to confirm. One failure
+                                    // does not stop the rest; the failures are counted and reported.
+                                    var failed = 0
+                                    try {
+                                        recycleBin.records().forEach { record ->
+                                            try {
+                                                recycleBin.permanentlyDelete(record.itemId, confirmed = true)
+                                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                                throw e
+                                            } catch (e: Exception) {
+                                                failed += 1
+                                            }
+                                        }
+                                        if (failed > 0) toast("$failed items could not be deleted")
+                                    } finally {
+                                        shredding = false
+                                        recycleVersion += 1
+                                    }
                                 }
-                                if (failed > 0) toast("$failed items could not be deleted")
-                                recycleVersion += 1
                             }
                         },
                         onQueryChange = { query = it },
@@ -1449,6 +1479,7 @@ private fun FileBrowser(
     onOpenSearch: (String) -> Unit,
     onOpenRecycleBin: () -> Unit,
     recycleCount: Int,
+    shredding: Boolean,
     onShredAll: () -> Unit,
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
@@ -1474,6 +1505,7 @@ private fun FileBrowser(
             onOpenSearch = onOpenSearch,
             onOpenRecycleBin = onOpenRecycleBin,
             recycleCount = recycleCount,
+            shredding = shredding,
             onShredAll = onShredAll,
             modifier = modifier,
         )

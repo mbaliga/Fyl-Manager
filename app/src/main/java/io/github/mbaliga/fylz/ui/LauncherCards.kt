@@ -1,6 +1,9 @@
 package io.github.mbaliga.fylz.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,15 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.role
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,7 +72,17 @@ internal fun StorageSummaryCard(
             .clip(CardShape)
             .background(scheme.surfaceContainerHigh)
             .clickable(onClick = onClick)
-            .semantics { contentDescription = "Open device storage" }
+            .semantics {
+                contentDescription = buildString {
+                    append("Device storage")
+                    if (usedBytes != null && totalBytes != null && totalBytes > 0L) {
+                        append(", ").append(LandingText.usedOfTotal(usedBytes, totalBytes)).append(" used")
+                    }
+                    StorageCategory.entries.forEach {
+                        append(", ").append(it.label).append(' ').append(LandingText.compactBytes(breakdown.bytes(it)))
+                    }
+                }
+            }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -140,7 +147,13 @@ internal fun DownloadsCard(
         shape = CardShape,
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = modifier.semantics { contentDescription = "Open Downloads" },
+        modifier = modifier.semantics {
+            contentDescription = when {
+                !loaded || count <= 0 -> "Downloads, empty"
+                newestName != null -> "Downloads, $count files, newest $newestName"
+                else -> "Downloads, $count files"
+            }
+        },
     ) {
         Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Bottom) {
             if (loaded && count > 0) {
@@ -178,24 +191,22 @@ internal fun FolderTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var pressed by remember { mutableStateOf(false) }
+    // clickable's own press state drives the fan: it waits out the scroll-detection delay inside
+    // the list (so a scroll does not fan every folder it passes), and it is focusable and
+    // keyboard / D-pad operable, which a raw tap detector is not.
+    val interactions = remember { MutableInteractionSource() }
+    val pressed by interactions.collectIsPressedAsState()
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .pointerInput(onClick) {
-                detectTapGestures(
-                    onPress = {
-                        pressed = true
-                        try { tryAwaitRelease() } finally { pressed = false }
-                    },
-                    onTap = { onClick() },
-                )
-            }
-            .semantics(mergeDescendants = true) {
-                contentDescription = "Open $label. $subtitle"
-                role = Role.Button
-                onClick(label = "Open $label") { onClick(); true }
-            }
+            .clickable(
+                interactionSource = interactions,
+                indication = LocalIndication.current,
+                role = Role.Button,
+                onClickLabel = "Open $label",
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) { contentDescription = "$label. $subtitle" }
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -213,6 +224,7 @@ internal fun FolderTile(
 internal fun DeletedFilesCard(
     count: Int,
     onOpen: () -> Unit,
+    shredding: Boolean,
     onShredAll: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -222,11 +234,11 @@ internal fun DeletedFilesCard(
         shape = CardShape,
         color = scheme.surface,
         border = BorderStroke(1.dp, scheme.outlineVariant),
-        modifier = modifier.semantics { contentDescription = "Open recycle bin, ${LandingText.deletedCount(count)} files" },
+        modifier = modifier.semantics { contentDescription = "Recycle bin, ${LandingText.deletedCount(count)} deleted files" },
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text("Deleted Files", style = MaterialTheme.typography.titleMedium)
-            Box(Modifier.fillMaxWidth().heightIn(min = 76.dp).weight(1f, fill = false), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().heightIn(min = 76.dp), contentAlignment = Alignment.Center) {
                 Text(
                     LandingText.deletedCount(count),
                     style = MaterialTheme.typography.displaySmall,
@@ -235,16 +247,16 @@ internal fun DeletedFilesCard(
             }
             Surface(
                 onClick = onShredAll,
-                enabled = count > 0,
+                enabled = count > 0 && !shredding,
                 shape = CircleShape,
                 color = scheme.surfaceContainerHigh,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "Shred all deleted files" },
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Text(
-                        "SHRED ALL",
+                        if (shredding) "SHREDDING…" else "SHRED ALL",
                         style = MaterialTheme.typography.labelLarge,
-                        color = if (count > 0) scheme.onSurface else scheme.onSurfaceVariant.copy(alpha = 0.5f),
+                        color = if (count > 0 && !shredding) scheme.onSurface else scheme.onSurfaceVariant.copy(alpha = 0.5f),
                     )
                 }
             }

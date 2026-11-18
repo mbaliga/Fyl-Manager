@@ -117,6 +117,8 @@ fun StorageHomeScreen(
     onOpenSearch: (String) -> Unit = {},
     onOpenRecycleBin: () -> Unit = {},
     recycleCount: Int = 0,
+    /** True while a Shred all is running; the button is disabled meanwhile. */
+    shredding: Boolean = false,
     onShredAll: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -213,6 +215,7 @@ fun StorageHomeScreen(
         }
 
         items(LauncherCategory.entries.chunked(2), key = { row -> row.first().name }) { row ->
+            val searchable = model.storages.any { it.kind == StorageRootKind.INTERNAL && it.opensDirectly }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = LANDING_GUTTER, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(LANDING_GAP),
@@ -222,7 +225,11 @@ fun StorageHomeScreen(
                         label = category.label,
                         subtitle = LandingText.fileCount(facts.breakdown.count(category.storage), facts.loaded),
                         cards = folderCards(category, facts),
-                        onClick = { onOpenSearch(category.query) },
+                        // The search runs over the device volume, which needs All files access.
+                        // Without it, offer the folder picker rather than a dead tap.
+                        onClick = {
+                            if (searchable) onOpenSearch(category.query) else onPickFolder(null)
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -238,6 +245,7 @@ fun StorageHomeScreen(
                 DeletedFilesCard(
                     count = recycleCount,
                     onOpen = onOpenRecycleBin,
+                    shredding = shredding,
                     onShredAll = { confirmShred = true },
                     modifier = Modifier.weight(1f),
                 )

@@ -140,8 +140,12 @@ fun FolderIcon(
                 .clip(FrontPlateShape),
         ) {
             // Blur needs API 31; below that the plate's 85% fill already hides most of the card.
+            // The handoff gives a Gaussian standard deviation, but Modifier.blur takes a radius,
+            // which the platform turns into sigma = 0.57735 * r + 0.5px. Invert that here.
             val blurModifier = if (Build.VERSION.SDK_INT >= 31) {
-                Modifier.blur(unit * FolderIconSpec.BLUR_STD_DEV, BlurredEdgeTreatment.Unbounded)
+                val sigmaPx = FolderIconSpec.BLUR_STD_DEV * unitPx
+                val radiusPx = ((sigmaPx - 0.5f) / 0.57735f).coerceAtLeast(0f)
+                Modifier.blur(with(LocalDensity.current) { radiusPx.toDp() }, BlurredEdgeTreatment.Unbounded)
             } else {
                 Modifier
             }
