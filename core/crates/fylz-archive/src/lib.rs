@@ -27,6 +27,8 @@
 //! non-seekable input to cache first); `Reader::open_unchecked` exists for tests that want to
 //! feed one anyway.
 
+#[cfg(target_os = "ios")]
+mod ios_no_subprocess;
 pub mod listing;
 pub mod policy;
 pub mod write;

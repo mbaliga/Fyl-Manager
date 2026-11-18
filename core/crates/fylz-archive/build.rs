@@ -107,9 +107,11 @@ fn ios_cmake_settings(
         ("CMAKE_OSX_ARCHITECTURES", arch.to_string()),
         ("CMAKE_OSX_DEPLOYMENT_TARGET", deployment_target.to_string()),
         // No subprocess on iOS (docs/PORTING_PLAN.md FZ-IOS5(b)): force libarchive's
-        // fork/spawn probes to "absent" so `filter_fork_posix.c` compiles to its stub and the
+        // fork/spawn probes to "absent" so `filter_fork_posix.c` compiles to nothing and the
         // external-program filters ("read_support_filter_program") are unavailable by
         // construction, not merely unused. Cache variables CHECK_FUNCTION_EXISTS honours.
+        // libarchive has no stub of its own for that case: the two helpers the program filters
+        // still reference are defined in `src/ios_no_subprocess.rs` (they report failure).
         ("HAVE_FORK", "0".to_string()),
         ("HAVE_VFORK", "0".to_string()),
         ("HAVE_POSIX_SPAWN", "0".to_string()),
