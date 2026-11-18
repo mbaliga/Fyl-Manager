@@ -27,7 +27,10 @@ export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 command -v xcodebuild >/dev/null || { echo "xcodebuild not found: this script needs macOS with Xcode" >&2; exit 2; }
 [[ -f "$core/third_party/libarchive/CMakeLists.txt" ]] || { echo "submodules missing: git submodule update --init --recursive" >&2; exit 2; }
 
-rustup target add "${targets[@]}"
+# Run rustup inside core/: core/rust-toolchain.toml pins the toolchain cargo uses below, and from
+# any other directory `rustup target add` would install the targets for the default toolchain
+# instead (cargo then fails with "can't find crate for `std`").
+(cd "$core" && rustup target add "${targets[@]}")
 
 for t in "${targets[@]}"; do
   echo "== cargo build $t ($profile)"

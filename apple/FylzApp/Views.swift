@@ -19,11 +19,12 @@ struct RootView: View {
                 }
             }
             .navigationTitle("Fylz for Files")
+            // navigationBar* placements, not topBar*: the latter need iOS 17 and this targets 16.
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Button { showAbout = true } label: { Label("About", systemImage: "info.circle") }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button { picking = true } label: { Label("Open archive", systemImage: "folder") }
                 }
             }

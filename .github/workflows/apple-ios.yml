@@ -127,12 +127,21 @@ jobs:
       - name: xcodebuild (iOS Simulator, unsigned)
         run: |
           mkdir -p build
+          # Only the tail is echoed (the full log is huge), so on failure print every compiler and
+          # linker diagnostic from the saved log: the tail alone hides the first real error.
           xcodebuild build \
             -project apple/FylzForFiles.xcodeproj -scheme FylzForFiles \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/dd \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO | tee build/xcodebuild.log | tail -40
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO > build/xcodebuild.log 2>&1 || rc=$?
+          tail -40 build/xcodebuild.log
+          if [ "${rc:-0}" -ne 0 ]; then
+            echo "== diagnostics from the full xcodebuild log"
+            grep -n -E 'error:|ld: |Undefined symbols|duplicate symbol|No such module|fatal error' \
+              build/xcodebuild.log | head -200 || true
+            exit "${rc}"
+          fi
         shell: bash
       - name: Unsigned device archive (compile + link check only; not installable)
         if: startsWith(github.ref, 'refs/tags/ios-v')
