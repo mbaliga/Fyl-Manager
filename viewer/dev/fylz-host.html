@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mock Fylz host</title>
+    <link rel="icon" href="../icon.svg" type="image/svg+xml" />
+    <style>
+      body { margin: 0; font: 14px system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+      header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: #eee; flex-wrap: wrap; }
+      iframe { flex: 1; border: 0; }
+      pre { margin: 0; max-height: 80px; overflow: auto; background: #222; color: #9f9; padding: 4px 8px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Mock Fylz host</strong>
+      <input id="pick" type="file" aria-label="File to serve" />
+      <label>read latency (ms) <input id="latency" type="number" value="0" min="0" style="width:70px" /></label>
+      <label><input id="canwrite" type="checkbox" checked /> canWrite</label>
+      <button id="close" type="button">Back (close)</button>
+      <button id="theme" type="button">Toggle theme</button>
+    </header>
+    <iframe id="viewer" title="Fylz Viewer" src="../index.html?host=fylz"></iframe>
+    <pre id="log" aria-label="Host log"></pre>
+    <script type="module" src="./mock-host.ts"></script>
+  </body>
+</html>

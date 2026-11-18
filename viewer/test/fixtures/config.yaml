@@ -1,0 +1,6 @@
+name: fylz
+items:
+  - a
+  - b
+nested:
+  key: value

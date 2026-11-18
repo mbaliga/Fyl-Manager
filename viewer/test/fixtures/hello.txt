@@ -1,0 +1,2 @@
+Hello, Fylz Viewer.
+Second line with unicode: héllo — 你好.

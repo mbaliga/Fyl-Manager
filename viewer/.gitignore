@@ -1,0 +1,9 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+.tmp/
+public/libarchive/
+public/pdfjs/
+public/sqljs/
+public/libheif/

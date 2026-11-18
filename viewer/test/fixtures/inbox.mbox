@@ -1,0 +1,11 @@
+From a@example.com Mon Jan 15 09:30:00 2024
+From: a@example.com
+Subject: First
+
+body one
+
+From b@example.com Tue Jan 16 09:30:00 2024
+From: b@example.com
+Subject: Second
+
+body two
