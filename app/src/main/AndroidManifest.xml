@@ -115,6 +115,33 @@
                 <data android:mimeType="image/svg+xml" />
             </intent-filter>
 
+            <!--
+              Open ANY file. A file manager is where "open with" ends up when nothing else knows the
+              format, so these accept every type: View/Edit for a file given a MIME type, and a
+              scheme-only filter for the ones a sender did not type at all (the case for most CAD,
+              firmware and other obscure formats). Send/Send-multiple make Fylz a share target.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />

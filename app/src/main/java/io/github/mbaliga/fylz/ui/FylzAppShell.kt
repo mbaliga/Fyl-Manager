@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,7 +51,9 @@ import io.github.mbaliga.fylz.operations.OperationRetryPlan
 import io.github.mbaliga.fylz.operations.OperationRetryPolicy
 import io.github.mbaliga.fylz.operations.OperationState
 import io.github.mbaliga.fylz.ui.components.OperationHistoryDialog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -69,7 +72,10 @@ import kotlinx.coroutines.launch
  * colours instead of the bare `MaterialTheme` default it used to sit in.
  */
 @Composable
-fun FylzAppShell() {
+fun FylzAppShell(
+    incomingFiles: List<android.net.Uri> = emptyList(),
+    onIncomingHandled: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val journal = remember { OperationJournal(context.applicationContext) }
@@ -84,6 +90,14 @@ fun FylzAppShell() {
         }
     }
 
+    // Files handed over by another app (Open with / Share). Resolved once per batch.
+    // Off the main thread: a cloud provider can take a while to say a file's name and size.
+    val incoming by produceState(initialValue = emptyList<io.github.mbaliga.fylz.openwith.IncomingFile>(), incomingFiles) {
+        value = withContext(Dispatchers.IO) {
+            incomingFiles.map { io.github.mbaliga.fylz.openwith.IncomingFiles.resolve(context, it) }
+        }
+    }
+
     FylzV1App(
         recoveryRoom = {
             RecoveryHome(
@@ -95,6 +109,9 @@ fun FylzAppShell() {
             )
         },
     ) {
+        if (incoming.isNotEmpty()) {
+            ExternalFileScreen(files = incoming, onClose = onIncomingHandled)
+        }
         if (showHistory) {
             OperationHistoryDialog(
                 operations = operations,
