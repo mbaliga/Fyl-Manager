@@ -164,6 +164,14 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import androidx.activity.compose.BackHandler
+import io.github.mbaliga.fylz.browse.BrowserPrefs
+import io.github.mbaliga.fylz.browse.FolderView
+import io.github.mbaliga.fylz.browse.ItemAction
+import io.github.mbaliga.fylz.browse.ItemGesture
+import io.github.mbaliga.fylz.browse.TapPolicy
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -292,6 +300,14 @@ private fun FylzV1Workspace(
     var loading by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var viewMode by remember { mutableStateOf(ViewMode.LIST) }
+    val browserPrefs = remember { BrowserPrefs(context.applicationContext) }
+    // Tap opens the quick preview instead of the file (Settings); off by default.
+    var tapToPreview by remember { mutableStateOf(browserPrefs.tapToPreview) }
+    // Remember list/grid and sort per folder (Settings); on by default.
+    var perFolderView by remember { mutableStateOf(browserPrefs.perFolderView) }
+    // Selecting is a mode, not a side effect of looking: nothing shows selection controls until
+    // the user starts it (the menu's Select, or a long press), and Done ends it.
+    var selecting by remember { mutableStateOf(false) }
     var previewMode by remember { mutableStateOf(PreviewMode.DOCKED) }
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
@@ -344,6 +360,28 @@ private fun FylzV1Workspace(
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
     val selectedEntries = entries.filter { it.uri in selectedUris }
+    val folderKey = activeTab?.current?.uri?.toString()
+
+    fun clearSelection() {
+        selectedUris = emptySet()
+        selecting = false
+    }
+
+    // A change of view or sort is remembered for this folder (or for every folder, when the
+    // per-folder setting is off), so a folder opens the way it was left.
+    fun changeView(mode: ViewMode = viewMode, sort: SortSpec = sortSpec) {
+        viewMode = mode
+        sortSpec = sort
+        browserPrefs.save(folderKey, FolderView(mode, sort))
+    }
+
+    LaunchedEffect(folderKey, perFolderView) {
+        if (folderKey != null) {
+            val saved = browserPrefs.viewFor(folderKey)
+            viewMode = saved.viewMode
+            sortSpec = saved.sort
+        }
+    }
 
     // Sorting is applied after filtering so the two controls compose: the user's chosen order
     // holds for the current folder, a folder filter, and recursive search results alike.
@@ -440,7 +478,7 @@ private fun FylzV1Workspace(
                         PendingDestinationAction.EXTRACT -> "Extracted"
                     },
                 )
-                selectedUris = emptySet()
+                clearSelection()
                 pendingArchiveUri = null
                 refresh()
             }.onFailure { toast(it.message ?: "Operation failed") }
@@ -578,7 +616,7 @@ private fun FylzV1Workspace(
     }
 
     LaunchedEffect(activeTab?.current?.uri, refreshKey) {
-        selectedUris = emptySet()
+        clearSelection()
         focusedEntry = null
         previewText = null
         if (activeTab == null) {
@@ -609,19 +647,6 @@ private fun FylzV1Workspace(
         previewLoading = false
     }
 
-    fun openEntry(entry: FileEntry) {
-        if (entry.isDirectory) {
-            val tab = activeTab ?: return
-            val index = tabs.indexOfFirst { it.id == tab.id }
-            if (index >= 0) {
-                tabs[index] = tab.copy(locations = tab.locations + FolderLocation(entry.uri, entry.name))
-            }
-        } else {
-            focusedEntry = entry
-            selectedUris = setOf(entry.uri)
-        }
-    }
-
     fun openExternal(entry: FileEntry) {
         runCatching {
             context.startActivity(
@@ -630,6 +655,46 @@ private fun FylzV1Workspace(
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
             )
         }.onFailure { toast("No app can open this file") }
+    }
+
+    // Opening a folder goes into it; opening a file hands it to the app that handles it. It no
+    // longer previews and selects as a side effect: that is what made a plain tap feel wrong.
+    fun openEntry(entry: FileEntry) {
+        if (entry.isDirectory) {
+            val tab = activeTab ?: return
+            val index = tabs.indexOfFirst { it.id == tab.id }
+            if (index >= 0) {
+                tabs[index] = tab.copy(locations = tab.locations + FolderLocation(entry.uri, entry.name))
+            }
+        } else {
+            openExternal(entry)
+        }
+    }
+
+    fun toggleSelected(entry: FileEntry) {
+        selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
+    }
+
+    // The quick-preview card. [select] also adds the file to the selection and starts selecting.
+    fun peek(entry: FileEntry, select: Boolean) {
+        focusedEntry = entry
+        if (select) {
+            selecting = true
+            selectedUris = selectedUris + entry.uri
+        }
+    }
+
+    fun onItemGesture(entry: FileEntry, gesture: ItemGesture) {
+        when (TapPolicy.actionFor(gesture, selecting, tapToPreview, entry.isDirectory)) {
+            ItemAction.OPEN -> openEntry(entry)
+            ItemAction.QUICK_PREVIEW -> peek(entry, select = false)
+            ItemAction.PREVIEW_AND_SELECT -> peek(entry, select = true)
+            ItemAction.TOGGLE_SELECT -> toggleSelected(entry)
+            ItemAction.BEGIN_SELECTION -> {
+                selecting = true
+                selectedUris = selectedUris + entry.uri
+            }
+        }
     }
 
     fun copyToClipboard(mode: ClipboardMode) {
@@ -649,7 +714,7 @@ private fun FylzV1Workspace(
             return
         }
         clipboard = FileClipboard(mode, items)
-        selectedUris = emptySet()
+        clearSelection()
         toast(if (mode == ClipboardMode.CUT) "Cut ${clipboard?.label}" else "Copied ${clipboard?.label}")
     }
 
@@ -803,6 +868,8 @@ private fun FylzV1Workspace(
     BackHandler(enabled = !shell.atHome) { shell.closeAll() }
     // With the room closed, Back leaves a pane for the file view before it leaves the app.
     BackHandler(enabled = pane != null && shell.atHome) { pane = null }
+    // Back ends selecting before anything else, the way Done does.
+    BackHandler(enabled = selecting && pane == null) { clearSelection() }
 
     Box(Modifier.fillMaxSize()) {
     SpatialShell(
@@ -907,6 +974,10 @@ private fun FylzV1Workspace(
                     PlaceKind.SETTINGS -> SettingsPane(
                         themeMode = themeMode,
                         onThemeModeChange = onThemeModeChange,
+                        tapToPreview = tapToPreview,
+                        onTapToPreviewChange = { tapToPreview = it; browserPrefs.tapToPreview = it },
+                        perFolderView = perFolderView,
+                        onPerFolderViewChange = { perFolderView = it; browserPrefs.perFolderView = it },
                         onAction = { action ->
                             when (action) {
                                 ToolsAction.REMOTES -> remoteDialog = true
@@ -928,61 +999,133 @@ private fun FylzV1Workspace(
                 // The launcher has no title bar: just the glyph that opens the places list.
                 if (activeTab == null) {
                     AppHeader(onMenu = { shell.open(RoomEdge.LEFT) })
-                } else
-                TopAppBar(
-                    title = { Text(activeTab?.current?.name ?: "Fylz") },
-                    // The reference's header glyph. It opens the places rail — the same room an
-                    // edge swipe opens — and is the only chrome the rail has.
-                    navigationIcon = {
-                        IconButton(onClick = { shell.open(RoomEdge.LEFT) }) {
-                            Icon(Icons.Outlined.Menu, contentDescription = "Places")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { viewMode = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID }) {
-                            Icon(
-                                if (viewMode == ViewMode.GRID) Icons.Outlined.List else Icons.Outlined.GridView,
-                                contentDescription = "Change view",
-                            )
-                        }
-                        IconButton(onClick = { refresh() }) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = "Refresh")
-                        }
-                        Box {
-                            IconButton(onClick = { moreExpanded = true }) {
-                                Icon(Icons.Outlined.MoreVert, contentDescription = "More actions")
+                } else if (selecting) {
+                    // Selecting replaces the title bar: Select All, how many, and Done.
+                    SelectionTopBar(
+                        count = selectedEntries.size,
+                        allSelected = visibleEntries.isNotEmpty() && selectedEntries.size == visibleEntries.size,
+                        onSelectAll = {
+                            selectedUris = if (selectedEntries.size == visibleEntries.size) {
+                                emptySet()
+                            } else {
+                                visibleEntries.map { it.uri }.toSet()
                             }
-                            DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
-                                DropdownMenuItem(
-                                    text = { Text(clipboard?.let { "Paste ${it.label}" } ?: "Paste") },
-                                    leadingIcon = { Icon(Icons.Outlined.ContentPaste, null) },
-                                    enabled = clipboard != null && activeTab != null && !loading,
-                                    onClick = { moreExpanded = false; paste() },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("New folder") },
-                                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; createDialog = "folder" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("New text file") },
-                                    leadingIcon = { Icon(Icons.Outlined.TextSnippet, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; createDialog = "file" },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Scan to PDF") },
-                                    leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, null) },
-                                    enabled = activeTab != null,
-                                    onClick = { moreExpanded = false; startScan() },
-                                )
-                                // Recycle Bin, Remotes, WebDAV, Tools, the index manager and
-                                // the theme toggle all moved to the right room. They are not
-                                // actions on *this folder* — they are the app's own tools, and
-                                // burying them in a per-folder overflow was why the menu had
-                                // eleven items and no shape. What is left here is what genuinely
-                                // acts on the folder you are looking at.
+                        },
+                        onDone = { clearSelection() },
+                    )
+                } else {
+                    TopAppBar(
+                        title = { Text(activeTab?.current?.name ?: "Fylz") },
+                        // The reference's header glyph. It opens the places rail, the same room an
+                        // edge swipe opens, and is the only chrome the rail has.
+                        navigationIcon = {
+                            IconButton(onClick = { shell.open(RoomEdge.LEFT) }) {
+                                Icon(Icons.Outlined.Menu, contentDescription = "Places")
+                            }
+                        },
+                        // One menu holds everything that acts on this folder or changes how it is
+                        // shown, grouped: what to do, how to view, how to order, then extras. The
+                        // bar used to carry a view toggle, a refresh and a sort button as well,
+                        // which left three loose icons and a menu that did not say where
+                        // anything lived.
+                        actions = {
+                            Box {
+                                IconButton(onClick = { moreExpanded = true }) {
+                                    Icon(Icons.Outlined.MoreVert, contentDescription = "Menu")
+                                }
+                                DropdownMenu(expanded = moreExpanded, onDismissRequest = { moreExpanded = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Select") },
+                                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, null) },
+                                        enabled = entries.isNotEmpty(),
+                                        onClick = { moreExpanded = false; selecting = true },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("New folder") },
+                                        leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, null) },
+                                        onClick = { moreExpanded = false; createDialog = "folder" },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("New text file") },
+                                        leadingIcon = { Icon(Icons.Outlined.TextSnippet, null) },
+                                        onClick = { moreExpanded = false; createDialog = "file" },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(clipboard?.let { "Paste ${it.label}" } ?: "Paste") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentPaste, null) },
+                                        enabled = clipboard != null && !loading,
+                                        onClick = { moreExpanded = false; paste() },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Scan to PDF") },
+                                        leadingIcon = { Icon(Icons.Outlined.PictureAsPdf, null) },
+                                        onClick = { moreExpanded = false; startScan() },
+                                    )
+                                    HorizontalDivider()
+                                    listOf(ViewMode.GRID to "Icons", ViewMode.LIST to "List").forEach { (mode, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label) },
+                                            leadingIcon = {
+                                                if (viewMode == mode) Icon(Icons.Outlined.Check, null)
+                                                else Spacer(Modifier.size(24.dp))
+                                            },
+                                            onClick = { moreExpanded = false; changeView(mode = mode) },
+                                        )
+                                    }
+                                    HorizontalDivider()
+                                    SortField.entries.forEach { field ->
+                                        val active = sortSpec.field == field
+                                        DropdownMenuItem(
+                                            text = {
+                                                Column {
+                                                    Text(field.label)
+                                                    // Direction is spelled out: colour or a lone tick
+                                                    // must not be the only carrier of state.
+                                                    if (active) {
+                                                        Text(
+                                                            sortSpec.direction.label,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        )
+                                                    }
+                                                }
+                                            },
+                                            leadingIcon = {
+                                                if (active) Icon(Icons.Outlined.Check, null)
+                                                else Spacer(Modifier.size(24.dp))
+                                            },
+                                            onClick = { moreExpanded = false; changeView(sort = sortSpec.withField(field)) },
+                                        )
+                                    }
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.browser_sort_folders_first)) },
+                                        leadingIcon = {
+                                            if (sortSpec.foldersFirst) Icon(Icons.Outlined.Check, null)
+                                            else Spacer(Modifier.size(24.dp))
+                                        },
+                                        onClick = { moreExpanded = false; changeView(sort = sortSpec.copy(foldersFirst = !sortSpec.foldersFirst)) },
+                                    )
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Remember view for each folder") },
+                                        leadingIcon = {
+                                            if (perFolderView) Icon(Icons.Outlined.Check, null)
+                                            else Spacer(Modifier.size(24.dp))
+                                        },
+                                        onClick = {
+                                            moreExpanded = false
+                                            perFolderView = !perFolderView
+                                            browserPrefs.perFolderView = perFolderView
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Refresh") },
+                                        leadingIcon = { Icon(Icons.Outlined.Refresh, null) },
+                                        onClick = { moreExpanded = false; refresh() },
+                                    )
+                                    // Recycle Bin, Remotes, WebDAV, Tools, the index manager and the
+                                    // theme toggle live in the right room: they are the app's own
+                                    // tools, not actions on this folder.
                                 DropdownMenuItem(
                                     text = { Text("Find duplicates") },
                                     enabled = entries.count { !it.isDirectory } > 1,
@@ -1010,10 +1153,11 @@ private fun FylzV1Workspace(
                                     enabled = focusedEntry != null,
                                     onClick = { moreExpanded = false; aiDialog = true },
                                 )
+                                }
                             }
-                        }
-                    },
-                )
+                        },
+                    )
+                }
             },
             bottomBar = {
                 val held = clipboard
@@ -1060,7 +1204,7 @@ private fun FylzV1Workspace(
                             }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             runCatching { context.startActivity(Intent.createChooser(intent, "Share files")) }
                         },
-                        onClear = { selectedUris = emptySet() },
+                        onClear = { clearSelection() },
                     )
                 }
             },
@@ -1105,7 +1249,7 @@ private fun FylzV1Workspace(
                         searchRecursive = searchRecursive,
                         onSearchRecursiveChange = { searchRecursive = it },
                         sortSpec = sortSpec,
-                        onSortSpecChange = { sortSpec = it },
+                        selecting = selecting,
                         selectedUris = selectedUris,
                         focusedEntry = focusedEntry,
                         query = query,
@@ -1166,13 +1310,7 @@ private fun FylzV1Workspace(
                                 tabs[index] = tab.copy(locations = tab.locations.dropLast(1))
                             }
                         },
-                        onOpen = ::openEntry,
-                        onOpenExternal = ::openExternal,
-                        onToggleSelection = { entry ->
-                            selectedUris = if (entry.uri in selectedUris) selectedUris - entry.uri else selectedUris + entry.uri
-                            focusedEntry = entry.takeUnless(FileEntry::isDirectory)
-                        },
-                        onSelectAll = { selectedUris = visibleEntries.map { it.uri }.toSet() },
+                        onItemGesture = ::onItemGesture,
                         cutUris = clipboard?.takeIf { it.mode == ClipboardMode.CUT }
                             ?.items?.map { it.uri }?.toSet().orEmpty(),
                         listState = listState,
@@ -1181,6 +1319,16 @@ private fun FylzV1Workspace(
                     )
                     if (wide && previewMode == PreviewMode.DOCKED) {
                         HorizontalDivider(Modifier.width(1.dp).fillMaxHeight())
+                        Column(Modifier.width(380.dp).fillMaxHeight()) {
+                        focusedEntry?.let { entry ->
+                            QuickPreviewBar(
+                                entry = entry,
+                                selected = entry.uri in selectedUris,
+                                onOpen = { openExternal(entry) },
+                                onToggleSelect = { selecting = true; toggleSelected(entry) },
+                                onClose = { focusedEntry = null },
+                            )
+                        }
                         PreviewPane(
                             entry = focusedEntry,
                             textContent = previewText,
@@ -1197,59 +1345,45 @@ private fun FylzV1Workspace(
                                     }
                                 }
                             },
-                            modifier = Modifier.width(380.dp).fillMaxHeight(),
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
                         )
+                        }
                     }
                 }
             }
         }
         }
 
-        // The Niagara-style edge scrubber. Its stops follow whatever the list is sorted by —
-        // letters, months, size bands or extensions — because Fylz re-keys the same folder as
-        // the sort changes, and a strip showing months down an A-Z list would be a map of
-        // somewhere else. It only appears when there is a listing to map: not on the storage
-        // home surface, and not while a selection has taken over the bottom bar.
-        if (pane == null && activeTab != null && visibleEntries.size > 1 && selectedEntries.isEmpty()) {
-            val stops = remember(visibleEntries, sortSpec) { entryStops(visibleEntries, sortSpec) }
-            val grid = viewMode == ViewMode.GRID
-            EdgeTimelineScrubber(
-                stops = stops,
-                itemCount = visibleEntries.size,
-                currentIndex = if (grid) gridState.firstVisibleItemIndex else listState.firstVisibleItemIndex,
-                onScrubTo = { index ->
-                    // scrollToItem, not the animated variant: the finger is already moving and
-                    // the list must track it rather than chase it.
-                    scope.launch {
-                        if (grid) gridState.scrollToItem(index) else listState.scrollToItem(index)
-                    }
-                },
-                inkColor = MaterialTheme.colorScheme.onSurface,
-                accentColor = MaterialTheme.colorScheme.primary,
-                bubbleTextColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.align(Alignment.CenterEnd),
-            )
-        }
-
         if (!wide && focusedEntry != null && previewMode != PreviewMode.HIDDEN) {
             FloatingPreviewPane(
-                onDock = { previewMode = PreviewMode.HIDDEN },
-                onClose = { previewMode = PreviewMode.HIDDEN },
+                onDock = { focusedEntry = null },
+                onClose = { focusedEntry = null },
             ) {
-                PreviewPane(
-                    entry = focusedEntry,
-                    textContent = previewText,
-                    textTruncated = previewTruncated,
-                    loading = previewLoading,
-                    editorValue = editorValue,
-                    onEditorValueChange = { editorValue = it },
-                    onSave = {
-                        focusedEntry?.let { entry ->
-                            scope.launch { repository.writeText(entry.uri, editorValue) }
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                )
+                Column(Modifier.fillMaxSize()) {
+                    focusedEntry?.let { entry ->
+                        QuickPreviewBar(
+                            entry = entry,
+                            selected = entry.uri in selectedUris,
+                            onOpen = { openExternal(entry) },
+                            onToggleSelect = { selecting = true; toggleSelected(entry) },
+                            onClose = { focusedEntry = null },
+                        )
+                    }
+                    PreviewPane(
+                        entry = focusedEntry,
+                        textContent = previewText,
+                        textTruncated = previewTruncated,
+                        loading = previewLoading,
+                        editorValue = editorValue,
+                        onEditorValueChange = { editorValue = it },
+                        onSave = {
+                            focusedEntry?.let { entry ->
+                                scope.launch { repository.writeText(entry.uri, editorValue) }
+                            }
+                        },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -1293,7 +1427,7 @@ private fun FylzV1Workspace(
                 selectedEntries.singleOrNull()?.let { entry ->
                     scope.launch {
                         runCatching { repository.rename(entry.uri, name) }
-                            .onSuccess { selectedUris = emptySet(); refresh() }
+                            .onSuccess { clearSelection(); refresh() }
                             .onFailure { toast(it.message ?: "Unable to rename") }
                     }
                 }
@@ -1322,7 +1456,7 @@ private fun FylzV1Workspace(
                 scope.launch {
                     val plans = fileTools.planBatchRename(selectedEntries.map { it.uri to it.name }, prefix)
                     runCatching { fileTools.executeBatchRename(plans) }
-                        .onSuccess { selectedUris = emptySet(); refresh() }
+                        .onSuccess { clearSelection(); refresh() }
                         .onFailure { toast(it.message ?: "Batch rename failed") }
                 }
             },
@@ -1469,7 +1603,7 @@ private fun FileBrowser(
     searchRecursive: Boolean,
     onSearchRecursiveChange: (Boolean) -> Unit,
     sortSpec: SortSpec,
-    onSortSpecChange: (SortSpec) -> Unit,
+    selecting: Boolean,
     selectedUris: Set<Uri>,
     focusedEntry: FileEntry?,
     query: String,
@@ -1490,10 +1624,7 @@ private fun FileBrowser(
     onShredAll: () -> Unit,
     onQueryChange: (String) -> Unit,
     onNavigateUp: () -> Unit,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
-    onSelectAll: () -> Unit,
+    onItemGesture: (FileEntry, ItemGesture) -> Unit,
     cutUris: Set<Uri>,
     listState: LazyListState,
     gridState: LazyGridState,
@@ -1537,14 +1668,6 @@ private fun FileBrowser(
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
-            SortMenu(sortSpec, onSortSpecChange)
-            IconButton(
-                onClick = onSelectAll,
-                enabled = entries.isNotEmpty(),
-                modifier = Modifier.size(48.dp),
-            ) {
-                Icon(Icons.Outlined.SelectAll, stringResource(R.string.browser_select_all))
-            }
         }
 
         if (query.isNotBlank()) {
@@ -1591,11 +1714,9 @@ private fun FileBrowser(
             SearchResults(
                 progress = searchProgress,
                 hits = searchHits,
+                selecting = selecting,
                 selectedUris = selectedUris,
-                focusedEntry = focusedEntry,
-                onOpen = onOpen,
-                onOpenExternal = onOpenExternal,
-                onToggleSelection = onToggleSelection,
+                onItemGesture = onItemGesture,
             )
             return@Column
         }
@@ -1614,73 +1735,57 @@ private fun FileBrowser(
                     },
                 )
             }
-        } else if (viewMode == ViewMode.GRID) {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(130.dp),
-                state = gridState,
-                contentPadding = PaddingValues(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(entries, key = { it.uri.toString() }) { entry ->
-                    FileCard(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, dimmed = entry.uri in cutUris)
-                }
-            }
         } else {
-            LazyColumn(state = listState) {
-                items(entries, key = { it.uri.toString() }) { entry ->
-                    FileRowV1(entry, entry.uri in selectedUris, entry.uri == focusedEntry?.uri, onOpen, onOpenExternal, onToggleSelection, dimmed = entry.uri in cutUris)
-                }
-            }
-        }
-    }
-}
-
-/** Sort controls. Previously the order was hardcoded in DocumentRepository with no UI at all. */
-@Composable
-private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
-            Icon(Icons.Outlined.Sort, stringResource(R.string.browser_sort))
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SortField.entries.forEach { field ->
-                val active = spec.field == field
-                DropdownMenuItem(
-                    text = {
-                        // Direction is spelled out, not only implied by an arrow: DESIGN.md
-                        // forbids colour or a lone glyph carrying state.
-                        Text(
-                            if (active) "${field.label} · ${spec.direction.label}" else field.label,
-                        )
-                    },
-                    trailingIcon = {
-                        if (active) {
-                            Icon(
-                                if (spec.direction == SortDirection.ASCENDING) {
-                                    Icons.Outlined.ArrowUpward
-                                } else {
-                                    Icons.Outlined.ArrowDownward
-                                },
-                                contentDescription = null,
+            // The listing and its scrollbar share one box, so the scrollbar covers only the
+            // list: not the title bar above it, whose menu it used to sit on top of.
+            val grid = viewMode == ViewMode.GRID
+            val stops = remember(entries, sortSpec) { entryStops(entries, sortSpec) }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (grid) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(104.dp),
+                        state = gridState,
+                        contentPadding = PaddingValues(start = 8.dp, end = 20.dp, top = 8.dp, bottom = 8.dp),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        items(entries, key = { it.uri.toString() }) { entry ->
+                            FileGridCell(
+                                entry = entry,
+                                selecting = selecting,
+                                selected = entry.uri in selectedUris,
+                                onGesture = { onItemGesture(entry, it) },
+                                dimmed = entry.uri in cutUris,
                             )
                         }
+                    }
+                } else {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                        items(entries, key = { it.uri.toString() }) { entry ->
+                            FileListRow(
+                                entry = entry,
+                                selecting = selecting,
+                                selected = entry.uri in selectedUris,
+                                onGesture = { onItemGesture(entry, it) },
+                                dimmed = entry.uri in cutUris,
+                            )
+                        }
+                    }
+                }
+                val scope = rememberCoroutineScope()
+                BrowserScrollbar(
+                    stops = stops,
+                    itemCount = entries.size,
+                    firstVisibleIndex = if (grid) gridState.firstVisibleItemIndex else listState.firstVisibleItemIndex,
+                    scrolling = if (grid) gridState.isScrollInProgress else listState.isScrollInProgress,
+                    // scrollToItem, not the animated variant: the finger is already moving and the
+                    // list must track it rather than chase it.
+                    onScrubTo = { index ->
+                        scope.launch {
+                            if (grid) gridState.scrollToItem(index) else listState.scrollToItem(index)
+                        }
                     },
-                    onClick = { onChange(spec.withField(field)) },
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.browser_sort_folders_first)) },
-                trailingIcon = {
-                    Checkbox(
-                        checked = spec.foldersFirst,
-                        onCheckedChange = { onChange(spec.copy(foldersFirst = it)) },
-                    )
-                },
-                onClick = { onChange(spec.copy(foldersFirst = !spec.foldersFirst)) },
-            )
         }
     }
 }
@@ -1689,11 +1794,9 @@ private fun SortMenu(spec: SortSpec, onChange: (SortSpec) -> Unit) {
 private fun SearchResults(
     progress: SearchProgress?,
     hits: List<SearchHit>,
+    selecting: Boolean,
     selectedUris: Set<Uri>,
-    focusedEntry: FileEntry?,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
+    onItemGesture: (FileEntry, ItemGesture) -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         Text(
@@ -1722,13 +1825,11 @@ private fun SearchResults(
         }
         LazyColumn {
             items(hits, key = { it.entry.uri.toString() }) { hit ->
-                FileRowV1(
+                FileListRow(
                     entry = hit.entry,
+                    selecting = selecting,
                     selected = hit.entry.uri in selectedUris,
-                    focused = hit.entry.uri == focusedEntry?.uri,
-                    onOpen = onOpen,
-                    onOpenExternal = onOpenExternal,
-                    onToggleSelection = onToggleSelection,
+                    onGesture = { onItemGesture(hit.entry, it) },
                     // Where the file lives, plus the matched line for a content hit -- a result
                     // list without a path is unusable once the search leaves one folder.
                     overline = hit.relativePath,
@@ -1740,97 +1841,6 @@ private fun SearchResults(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FileRowV1(
-    entry: FileEntry,
-    selected: Boolean,
-    focused: Boolean,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
-    overline: String? = null,
-    detail: String? = null,
-    dimmed: Boolean = false,
-) {
-    val label = if (entry.isDirectory) "Folder ${entry.name}" else entry.name
-    Row(
-        modifier = Modifier
-            // A cut item stays where it is until it is pasted, drawn faint so it reads as
-            // "leaving" rather than gone.
-            .alpha(if (dimmed) CUT_ITEM_ALPHA else 1f)
-            .fillMaxWidth()
-            .heightIn(min = 62.dp)
-            .combinedClickable(
-                onClick = { onOpen(entry) },
-                onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-                onLongClick = { onToggleSelection(entry) },
-            )
-            .background(if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .semantics { contentDescription = label },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(checked = selected, onCheckedChange = { onToggleSelection(entry) })
-        // Real image/video thumbnails; falls back to a per-type icon. Previously every file in
-        // the list rendered the same handful of static vectors.
-        EntryThumbnail(entry, size = 40.dp)
-        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-            if (overline != null) {
-                Text(
-                    overline,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                detail ?: listOfNotNull(
-                    entry.sizeBytes?.let(::formatBytes),
-                    libraryKind(entry.kind),
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FileCard(
-    entry: FileEntry,
-    selected: Boolean,
-    focused: Boolean,
-    onOpen: (FileEntry) -> Unit,
-    onOpenExternal: (FileEntry) -> Unit,
-    onToggleSelection: (FileEntry) -> Unit,
-    dimmed: Boolean = false,
-) {
-    Surface(
-        color = if (selected || focused) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier.alpha(if (dimmed) CUT_ITEM_ALPHA else 1f).height(140.dp).combinedClickable(
-            onClick = { onOpen(entry) },
-            onDoubleClick = { if (entry.isDirectory) onOpen(entry) else onOpenExternal(entry) },
-            onLongClick = { onToggleSelection(entry) },
-        ).semantics { contentDescription = entry.name },
-    ) {
-        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.Top) {
-                // Grid cells get a larger thumbnail: it is the whole point of grid view.
-                EntryThumbnail(entry, size = 56.dp)
-                Spacer(Modifier.weight(1f))
-                Checkbox(selected, onCheckedChange = { onToggleSelection(entry) })
-            }
-            Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
 
 @Composable
 private fun SelectionActionBar(
@@ -2160,6 +2170,10 @@ private enum class ToolsAction { REMOTES, WEBDAV, TOOLS, INDEX }
 private fun SettingsPane(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    tapToPreview: Boolean,
+    onTapToPreviewChange: (Boolean) -> Unit,
+    perFolderView: Boolean,
+    onPerFolderViewChange: (Boolean) -> Unit,
     onAction: (ToolsAction) -> Unit,
 ) {
     Column(
@@ -2178,6 +2192,21 @@ private fun SettingsPane(
         RoomHeading("Tools")
         ToolsRow(stringResource(R.string.tools_title)) { onAction(ToolsAction.TOOLS) }
         ToolsRow(stringResource(R.string.tools_index)) { onAction(ToolsAction.INDEX) }
+
+        Spacer(Modifier.size(16.dp))
+        RoomHeading("Files")
+        SettingSwitch(
+            title = "Tap to preview",
+            detail = "Tapping a file opens its quick preview instead of the file. A long press then previews and selects it.",
+            checked = tapToPreview,
+            onCheckedChange = onTapToPreviewChange,
+        )
+        SettingSwitch(
+            title = "Remember view for each folder",
+            detail = "Each folder keeps its own list or grid and sort order. Off uses one view everywhere.",
+            checked = perFolderView,
+            onCheckedChange = onPerFolderViewChange,
+        )
 
         Spacer(Modifier.size(16.dp))
         RoomHeading("Appearance")
@@ -2258,6 +2287,23 @@ private fun PaneScaffold(onMenu: () -> Unit, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AppHeader(onMenu)
         Box(Modifier.weight(1f)) { content() }
+    }
+}
+
+@Composable
+private fun SettingSwitch(title: String, detail: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(role = androidx.compose.ui.semantics.Role.Switch) { onCheckedChange(!checked) }
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
