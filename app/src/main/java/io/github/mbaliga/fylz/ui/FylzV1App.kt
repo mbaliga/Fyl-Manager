@@ -1124,6 +1124,7 @@ private fun FylzV1Workspace(
                             )
                         },
                         onOpenSearch = ::openDeviceSearch,
+                        onOpenStorageManagement = { pane = PlaceKind.RECOVERY },
                         onOpenRecycleBin = { pane = PlaceKind.RECYCLE_BIN },
                         recycleCount = remember(recycleVersion, refreshKey) { recycleBin.records().size },
                         shredding = shredding,
@@ -1482,6 +1483,7 @@ private fun FileBrowser(
     recents: List<RecentFolder>,
     onOpenRecent: (RecentFolder) -> Unit,
     onOpenSearch: (String) -> Unit,
+    onOpenStorageManagement: () -> Unit,
     onOpenRecycleBin: () -> Unit,
     recycleCount: Int,
     shredding: Boolean,
@@ -1508,6 +1510,7 @@ private fun FileBrowser(
             recents = recents,
             onOpenRecent = onOpenRecent,
             onOpenSearch = onOpenSearch,
+            onOpenStorageManagement = onOpenStorageManagement,
             onOpenRecycleBin = onOpenRecycleBin,
             recycleCount = recycleCount,
             shredding = shredding,

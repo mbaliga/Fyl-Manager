@@ -2,13 +2,14 @@ package io.github.mbaliga.fylz.ui.places
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
 
 /**
  * Reads the landing screen's numbers: one pass over the MediaStore file index for the category
- * sizes and the newest photo, and a shallow look at Downloads.
+ * sizes and the newest files in each, and a shallow look at Downloads.
  *
  * MediaStore is the right source for the breakdown. Walking the whole volume to add up sizes
  * would take minutes on a full phone, while the index already holds every file's size and type.
@@ -18,50 +19,50 @@ import java.io.File
  */
 object LandingFactsLoader {
 
-    private const val RECENT_IMAGES = 3
-
     fun load(context: Context): LandingFacts {
         var usage = emptyMap<StorageCategory, CategoryUsage>()
-        var recentImages = emptyList<android.net.Uri>()
+        var recent = emptyMap<StorageCategory, List<RecentFile>>()
         runCatching {
             val bytes = LongArray(StorageCategory.entries.size)
             val counts = IntArray(StorageCategory.entries.size)
-            // The three newest photos as (dateAdded, id), kept sorted newest first.
-            val newest = ArrayList<Pair<Long, Long>>(4)
-            val collection = MediaStore.Files.getContentUri("external")
+            val newest = StorageCategory.entries.map { NewestFirst<RecentFile>(RECENT_PER_CATEGORY) }
+            val files = MediaStore.Files.getContentUri("external")
+            @Suppress("DEPRECATION")
+            val dataColumn = MediaStore.Files.FileColumns.DATA
             val projection = arrayOf(
                 MediaStore.Files.FileColumns._ID,
                 MediaStore.Files.FileColumns.SIZE,
                 MediaStore.Files.FileColumns.MIME_TYPE,
                 MediaStore.Files.FileColumns.DISPLAY_NAME,
                 MediaStore.Files.FileColumns.DATE_ADDED,
+                dataColumn,
             )
             // Folders have no MIME type and a size of zero; the classifier drops them.
-            context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
+            context.contentResolver.query(files, projection, null, null, null)?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
                 val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
                 val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
                 val addedCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+                val dataCol = cursor.getColumnIndexOrThrow(dataColumn)
                 while (cursor.moveToNext()) {
-                    val category = StorageClassifier.classify(cursor.getString(mimeCol), cursor.getString(nameCol)) ?: continue
+                    val mime = cursor.getString(mimeCol)
+                    val name = cursor.getString(nameCol)
+                    val category = StorageClassifier.classify(mime, name) ?: continue
                     val i = category.ordinal
                     bytes[i] += cursor.getLong(sizeCol).coerceAtLeast(0L)
                     counts[i] += 1
-                    if (category == StorageCategory.PHOTOS) {
-                        val added = cursor.getLong(addedCol)
-                        if (newest.size < RECENT_IMAGES || added > newest.last().first) {
-                            newest.add(added to cursor.getLong(idCol))
-                            newest.sortByDescending { it.first }
-                            if (newest.size > RECENT_IMAGES) newest.removeAt(newest.lastIndex)
-                        }
-                    }
+                    // Trashed and hidden files are not "recent" in any sense the user would mean.
+                    if (name.isNullOrEmpty() || name.startsWith(".")) continue
+                    val id = cursor.getLong(idCol)
+                    newest[i].offer(
+                        cursor.getLong(addedCol),
+                        RecentFile(contentUri(category, id), name, mime, cursor.getString(dataCol)),
+                    )
                 }
             }
-            recentImages = newest.map { (_, id) ->
-                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-            }
             usage = StorageCategory.entries.associateWith { CategoryUsage(bytes[it.ordinal], counts[it.ordinal]) }
+            recent = StorageCategory.entries.associateWith { newest[it.ordinal].toList() }
         }
 
         var downloadsCount = 0
@@ -76,10 +77,21 @@ object LandingFactsLoader {
 
         return LandingFacts(
             breakdown = StorageBreakdown(usage),
-            recentImages = recentImages,
+            recent = recent,
             downloadsCount = downloadsCount,
             downloadsNewest = downloadsNewest,
             loaded = true,
         )
+    }
+
+    /** The provider-specific collection URI, so `loadThumbnail` finds the right thumbnail source. */
+    private fun contentUri(category: StorageCategory, id: Long): Uri {
+        val base = when (category) {
+            StorageCategory.PHOTOS -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            StorageCategory.VIDEOS -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            StorageCategory.AUDIO -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            StorageCategory.DOCUMENTS, StorageCategory.APKS -> MediaStore.Files.getContentUri("external")
+        }
+        return ContentUris.withAppendedId(base, id)
     }
 }

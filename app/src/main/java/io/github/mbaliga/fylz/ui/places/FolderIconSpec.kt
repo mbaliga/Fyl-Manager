@@ -77,8 +77,11 @@ object FolderIconSpec {
     /** Slots in draw order, bottom to top, for [count] cards: C, B, A trimmed from the bottom. */
     fun slots(count: Int): List<Slot> = listOf(Slot.C, Slot.B, Slot.A).takeLast(count.coerceIn(0, 3))
 
-    private fun restPose(slot: Slot, dark: Boolean): Pose {
-        val (ox, oy) = theme(dark).cardOrigin
+    private fun restPose(slot: Slot, cardCount: Int, dark: Boolean): Pose {
+        // The handoff only draws a dark folder with one card. Offsetting a second and third card
+        // from that lower origin pushes them past the bottom of the plate, so a fan in the dark
+        // theme uses the light origin, which the handoff does draw with three.
+        val (ox, oy) = (if (dark && cardCount <= 1) DARK else LIGHT).cardOrigin
         return when (slot) {
             Slot.A -> Pose(ox, oy, -15f)
             Slot.B -> Pose(ox + 9f, oy + 2f, -3f)
@@ -97,7 +100,7 @@ object FolderIconSpec {
 
     /** The pose of [slot] at animation progress [t] (0 at rest, 1 fully fanned). */
     fun pose(slot: Slot, cardCount: Int, dark: Boolean, t: Float): Pose {
-        val rest = restPose(slot, dark)
+        val rest = restPose(slot, cardCount, dark)
         val d = delta(slot, cardCount)
         val k = t.coerceIn(0f, 1.2f) // a spring may overshoot a little
         return Pose(rest.x + d.dx * k, rest.y + d.dy * k, rest.rotationDeg + d.dRot * k)

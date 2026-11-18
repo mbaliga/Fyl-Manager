@@ -113,6 +113,8 @@ fun StorageHomeScreen(
     refreshKey: Int = 0,
     recents: List<RecentFolder> = emptyList(),
     onOpenRecent: (RecentFolder) -> Unit = {},
+    /** Opens the storage and management screen; the Storage card uses it. */
+    onOpenStorageManagement: () -> Unit = {},
     /** Opens a recursive search over the device volume; the category tiles use it. */
     onOpenSearch: (String) -> Unit = {},
     onOpenRecycleBin: () -> Unit = {},
@@ -201,7 +203,7 @@ fun StorageHomeScreen(
                     usedBytes = used,
                     totalBytes = total,
                     breakdown = facts.breakdown,
-                    onClick = { internal?.let(::openRoot) },
+                    onClick = onOpenStorageManagement,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
                 DownloadsCard(
@@ -297,14 +299,11 @@ fun StorageHomeScreen(
 }
 
 /**
- * The cards inside a category's folder: the newest photos for Images; for the rest, one page per
- * file up to three, so an empty folder is visibly empty and a full one shows a fan.
+ * The cards inside a category's folder: the newest files in it, shown as they really look, up to
+ * three. An empty folder has no cards, so it reads as empty.
  */
-private fun folderCards(category: LauncherCategory, facts: LandingFacts): List<FolderCardContent> {
-    if (category == LauncherCategory.IMAGES) return facts.recentImages.take(3).map { FolderCardContent.Photo(it) }
-    val count = FolderIconSpec.cardCount(facts.breakdown.count(category.storage))
-    return listOf(FolderIconSpec.Slot.A, FolderIconSpec.Slot.B, FolderIconSpec.Slot.C).take(count).map(::sheetFor)
-}
+private fun folderCards(category: LauncherCategory, facts: LandingFacts): List<FolderCardContent> =
+    facts.recent[category.storage].orEmpty().take(3).map { FolderCardContent.Recent(it, category.storage) }
 
 private val LANDING_GUTTER = 20.dp
 private val LANDING_GAP = 16.dp

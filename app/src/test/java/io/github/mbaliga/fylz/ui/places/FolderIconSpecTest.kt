@@ -2,6 +2,7 @@ package io.github.mbaliga.fylz.ui.places
 
 import io.github.mbaliga.fylz.ui.places.FolderIconSpec.Slot
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FolderIconSpecTest {
@@ -53,6 +54,22 @@ class FolderIconSpecTest {
         assertEquals(20.3379f, half.y, 0.0001f)
         val wild = FolderIconSpec.pose(Slot.C, 3, false, 50f)
         assertEquals(74f + 8f * 1.2f, wild.x, 0.0001f)
+    }
+
+    @Test fun aDarkFanSitsWhereTheLightFanDoesSoNothingLeavesTheBottom() {
+        for (slot in FolderIconSpec.slots(3)) {
+            assertPose(FolderIconSpec.pose(slot, 3, dark = false, t = 0f), FolderIconSpec.pose(slot, 3, dark = true, t = 0f))
+        }
+        // And in no pose does a card's lowest corner pass the bottom of the 124-unit canvas.
+        for (dark in listOf(false, true)) for (count in 1..3) for (t in listOf(0f, 1f)) {
+            for (slot in FolderIconSpec.slots(count)) {
+                val p = FolderIconSpec.pose(slot, count, dark, t)
+                val r = Math.toRadians(p.rotationDeg.toDouble())
+                val corners = listOf(0.0 to 0.0, FolderIconSpec.CARD_W.toDouble() to 0.0, 0.0 to FolderIconSpec.CARD_H.toDouble(), FolderIconSpec.CARD_W.toDouble() to FolderIconSpec.CARD_H.toDouble())
+                val lowest = corners.maxOf { (x, y) -> p.y + x * Math.sin(r) + y * Math.cos(r) }
+                assertTrue("$slot count=$count dark=$dark t=$t lowest=$lowest", lowest <= FolderIconSpec.CANVAS_H)
+            }
+        }
     }
 
     @Test fun darkAndLightPlaceTheCardsDifferently() {

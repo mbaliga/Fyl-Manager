@@ -48,12 +48,19 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.layout.padding
 import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.ui.places.FolderIconSpec
 import io.github.mbaliga.fylz.ui.places.FolderIconSpec.Slot
+import io.github.mbaliga.fylz.ui.places.RecentFile
+import io.github.mbaliga.fylz.ui.places.StorageCategory
 
 /** What one card in the folder shows. */
 sealed interface FolderCardContent {
+    /** A recent file: its real thumbnail when there is one, else a page labelled with its name. */
+    data class Recent(val file: RecentFile, val category: StorageCategory) : FolderCardContent
+
     /** A picture, cropped to the card. */
     data class Photo(val uri: Uri) : FolderCardContent
 
@@ -129,8 +136,11 @@ fun FolderIcon(
                 .background(Color(theme.back)),
         )
 
-        // The cards, sharp.
-        CardLayer(bottomToTop, slots, shown.size, dark, unit, unitPx, yShiftUnits = 0f) { progress }
+        // The cards, sharp. Clipped to the icon's own canvas: in the dark theme a fan of three
+        // reaches past the bottom edge otherwise, and the files would spill out of the folder.
+        Box(Modifier.fillMaxSize().clipToBounds()) {
+            CardLayer(bottomToTop, slots, shown.size, dark, unit, unitPx, yShiftUnits = 0f) { progress }
+        }
 
         // Frosted front plate. First the blurred copy of the cards, clipped to the plate.
         Box(
@@ -211,6 +221,7 @@ private fun CardLayer(
                     // at exactly PHOTO_X (-4.151): the handoff's crop, with no extra offset.
                     modifier = Modifier.requiredSize(unit * FolderIconSpec.PHOTO_SIZE),
                 )
+                is FolderCardContent.Recent -> RecentFace(content, unit)
                 is FolderCardContent.Sheet -> {
                     Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(content.from, content.to))))
                     for ((y, w) in listOf(30f to 46f, 40f to 46f, 50f to 28f)) {
@@ -226,4 +237,66 @@ private fun CardLayer(
             }
         }
     }
+}
+
+/**
+ * The face of a card showing a real file: its thumbnail when the device can produce one, otherwise
+ * a coloured page carrying the file's own extension and name, so even an unthumbnailable file
+ * says what it is.
+ */
+@Composable
+private fun RecentFace(content: FolderCardContent.Recent, unit: Dp) {
+    val context = LocalContext.current
+    val bitmap by androidx.compose.runtime.produceState(
+        initialValue = FileThumbnails.cached(content.file),
+        key1 = content.file.uri,
+    ) {
+        if (value == null) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                FileThumbnails.load(context, content.file, content.category)
+            }
+        }
+    }
+    val thumb = bitmap
+    if (thumb != null) {
+        androidx.compose.foundation.Image(
+            bitmap = thumb.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        return
+    }
+    val sheet = pageColours(content.category)
+    Box(Modifier.fillMaxSize().background(Brush.linearGradient(listOf(sheet.first, sheet.second)))) {
+        val extension = content.file.name.substringAfterLast('.', "").uppercase().take(5)
+        androidx.compose.foundation.layout.Column(
+            Modifier.fillMaxSize().padding(horizontal = unit * 8f, vertical = unit * 10f),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+        ) {
+            androidx.compose.material3.Text(
+                extension.ifEmpty { "FILE" },
+                color = Color.White,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                fontSize = with(LocalDensity.current) { (unit * 15f).toSp() },
+                maxLines = 1,
+            )
+            androidx.compose.material3.Text(
+                content.file.name,
+                color = Color.White.copy(alpha = 0.92f),
+                fontSize = with(LocalDensity.current) { (unit * 8f).toSp() },
+                lineHeight = with(LocalDensity.current) { (unit * 10f).toSp() },
+                maxLines = 4,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private fun pageColours(category: StorageCategory): Pair<Color, Color> = when (category) {
+    StorageCategory.PHOTOS -> Color(0xFFF0657A) to Color(0xFFB03A5B)
+    StorageCategory.VIDEOS -> Color(0xFF3B4BA8) to Color(0xFF1F2A5C)
+    StorageCategory.DOCUMENTS -> Color(0xFF5B8DEF) to Color(0xFF3659B8)
+    StorageCategory.AUDIO -> Color(0xFF3FBF7F) to Color(0xFF1F7F55)
+    StorageCategory.APKS -> Color(0xFFE8A93C) to Color(0xFFB8741F)
 }

@@ -116,4 +116,16 @@ class LandingFactsTest {
         assertEquals(StorageCategory.PHOTOS, LauncherCategory.IMAGES.storage)
         assertEquals(listOf("Documents", "Images", "Videos", "APKs"), LauncherCategory.entries.map { it.label })
     }
+
+    @Test fun newestFirstKeepsOnlyTheLeadersInOrder() {
+        val top = NewestFirst<String>(3)
+        listOf(5L to "e", 9L to "i", 1L to "a", 7L to "g", 3L to "c", 8L to "h").forEach { (k, v) -> top.offer(k, v) }
+        assertEquals(listOf("i", "h", "g"), top.toList())
+    }
+
+    @Test fun newestFirstWithFewerThanLimit() {
+        val top = NewestFirst<Int>(3)
+        top.offer(2, 20); top.offer(4, 40)
+        assertEquals(listOf(40, 20), top.toList())
+    }
 }

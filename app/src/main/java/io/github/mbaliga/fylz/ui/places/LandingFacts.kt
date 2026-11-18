@@ -98,11 +98,39 @@ enum class LauncherCategory(
     APKS("APKs", StorageCategory.APKS, "ext:apk,xapk,apks,apkm"),
 }
 
+/** One of the newest files in a category: what the folder's cards are drawn from. */
+data class RecentFile(
+    val uri: Uri,
+    val name: String,
+    val mimeType: String?,
+    /** Filesystem path when MediaStore reports one (needed to read an APK's icon), else null. */
+    val path: String? = null,
+)
+
+const val RECENT_PER_CATEGORY = 3
+
+/**
+ * Keeps the [limit] items with the highest key, newest first, without sorting a whole library:
+ * the loader sees every file in the media index once and this holds only the leaders.
+ */
+class NewestFirst<T>(private val limit: Int) {
+    private val items = ArrayList<Pair<Long, T>>(limit + 1)
+
+    fun offer(key: Long, item: T) {
+        if (items.size >= limit && key <= items.last().first) return
+        items.add(key to item)
+        items.sortByDescending { it.first }
+        if (items.size > limit) items.removeAt(items.lastIndex)
+    }
+
+    fun toList(): List<T> = items.map { it.second }
+}
+
 /** Everything the landing screen reads from the device, gathered in one background pass. */
 data class LandingFacts(
     val breakdown: StorageBreakdown = StorageBreakdown(),
-    /** Up to three newest photos, newest first: the cards in the Images folder. */
-    val recentImages: List<Uri> = emptyList(),
+    /** The newest files in each category, newest first, at most [RECENT_PER_CATEGORY] each. */
+    val recent: Map<StorageCategory, List<RecentFile>> = emptyMap(),
     val downloadsCount: Int = 0,
     val downloadsNewest: String? = null,
     /** False until the first pass finishes, so "Empty" is not shown for a folder still being counted. */
