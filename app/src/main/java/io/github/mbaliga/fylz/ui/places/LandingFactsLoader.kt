@@ -18,13 +18,16 @@ import java.io.File
  */
 object LandingFactsLoader {
 
+    private const val RECENT_IMAGES = 3
+
     fun load(context: Context): LandingFacts {
         var usage = emptyMap<StorageCategory, CategoryUsage>()
-        var latestImage: android.net.Uri? = null
+        var recentImages = emptyList<android.net.Uri>()
         runCatching {
             val bytes = LongArray(StorageCategory.entries.size)
             val counts = IntArray(StorageCategory.entries.size)
-            var newestImageAdded = Long.MIN_VALUE
+            // The three newest photos as (dateAdded, id), kept sorted newest first.
+            val newest = ArrayList<Pair<Long, Long>>(4)
             val collection = MediaStore.Files.getContentUri("external")
             val projection = arrayOf(
                 MediaStore.Files.FileColumns._ID,
@@ -47,15 +50,16 @@ object LandingFactsLoader {
                     counts[i] += 1
                     if (category == StorageCategory.PHOTOS) {
                         val added = cursor.getLong(addedCol)
-                        if (added > newestImageAdded) {
-                            newestImageAdded = added
-                            latestImage = ContentUris.withAppendedId(
-                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                                cursor.getLong(idCol),
-                            )
+                        if (newest.size < RECENT_IMAGES || added > newest.last().first) {
+                            newest.add(added to cursor.getLong(idCol))
+                            newest.sortByDescending { it.first }
+                            if (newest.size > RECENT_IMAGES) newest.removeAt(newest.lastIndex)
                         }
                     }
                 }
+            }
+            recentImages = newest.map { (_, id) ->
+                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
             }
             usage = StorageCategory.entries.associateWith { CategoryUsage(bytes[it.ordinal], counts[it.ordinal]) }
         }
@@ -72,7 +76,7 @@ object LandingFactsLoader {
 
         return LandingFacts(
             breakdown = StorageBreakdown(usage),
-            latestImage = latestImage,
+            recentImages = recentImages,
             downloadsCount = downloadsCount,
             downloadsNewest = downloadsNewest,
             loaded = true,

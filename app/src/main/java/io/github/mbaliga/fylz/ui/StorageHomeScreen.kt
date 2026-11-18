@@ -75,6 +75,7 @@ import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.storage.StorageRootGroup
 import io.github.mbaliga.fylz.storage.StorageRootKind
+import io.github.mbaliga.fylz.ui.places.FolderIconSpec
 import io.github.mbaliga.fylz.ui.places.LandingFacts
 import io.github.mbaliga.fylz.ui.places.LandingFactsLoader
 import io.github.mbaliga.fylz.ui.places.LandingText
@@ -220,7 +221,7 @@ fun StorageHomeScreen(
                     FolderTile(
                         label = category.label,
                         subtitle = LandingText.fileCount(facts.breakdown.count(category.storage), facts.loaded),
-                        peek = if (category == LauncherCategory.IMAGES) facts.latestImage else null,
+                        cards = folderCards(category, facts),
                         onClick = { onOpenSearch(category.query) },
                         modifier = Modifier.weight(1f),
                     )
@@ -285,6 +286,16 @@ fun StorageHomeScreen(
             dismissButton = { TextButton(onClick = { confirmShred = false }) { Text("Cancel") } },
         )
     }
+}
+
+/**
+ * The cards inside a category's folder: the newest photos for Images; for the rest, one page per
+ * file up to three, so an empty folder is visibly empty and a full one shows a fan.
+ */
+private fun folderCards(category: LauncherCategory, facts: LandingFacts): List<FolderCardContent> {
+    if (category == LauncherCategory.IMAGES) return facts.recentImages.take(3).map { FolderCardContent.Photo(it) }
+    val count = FolderIconSpec.cardCount(facts.breakdown.count(category.storage))
+    return listOf(FolderIconSpec.Slot.A, FolderIconSpec.Slot.B, FolderIconSpec.Slot.C).take(count).map(::sheetFor)
 }
 
 private val LANDING_GUTTER = 20.dp

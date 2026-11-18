@@ -101,8 +101,8 @@ enum class LauncherCategory(
 /** Everything the landing screen reads from the device, gathered in one background pass. */
 data class LandingFacts(
     val breakdown: StorageBreakdown = StorageBreakdown(),
-    /** Newest photo, shown peeking out of the Images tile; null when there is none. */
-    val latestImage: Uri? = null,
+    /** Up to three newest photos, newest first: the cards in the Images folder. */
+    val recentImages: List<Uri> = emptyList(),
     val downloadsCount: Int = 0,
     val downloadsNewest: String? = null,
     /** False until the first pass finishes, so "Empty" is not shown for a folder still being counted. */

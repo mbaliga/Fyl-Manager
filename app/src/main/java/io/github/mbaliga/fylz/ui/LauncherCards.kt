@@ -1,23 +1,18 @@
 package io.github.mbaliga.fylz.ui
 
-import android.net.Uri
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,24 +22,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.ui.places.LandingText
 import io.github.mbaliga.fylz.ui.places.StorageBreakdown
 import io.github.mbaliga.fylz.ui.places.StorageCategory
@@ -170,78 +166,44 @@ internal fun DownloadsCard(
 }
 
 /**
- * A folder with a name and a count under it. [peek] is the photo that pokes out of the top, used
- * by the Images tile for the newest picture; the front panel is slightly see-through so it ghosts
- * through, as in the reference.
+ * A folder with a name and a count under it, drawn as the handoff's layered [FolderIcon]. Pressing
+ * fans its cards out of the front plate (the handoff's hover, which Android does not have); lifting
+ * the finger settles them back. A tap still opens the folder.
  */
 @Composable
 internal fun FolderTile(
     label: String,
     subtitle: String,
-    peek: Uri?,
+    cards: List<FolderCardContent>,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var pressed by remember { mutableStateOf(false) }
     Column(
         modifier
             .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = "Open $label. $subtitle" }
+            .pointerInput(onClick) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        try { tryAwaitRelease() } finally { pressed = false }
+                    },
+                    onTap = { onClick() },
+                )
+            }
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Open $label. $subtitle"
+                role = Role.Button
+                onClick(label = "Open $label") { onClick(); true }
+            }
             .padding(vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        FolderGlyph(peek = peek, modifier = Modifier.fillMaxWidth(0.78f))
+        FolderIcon(cards = cards, fanned = pressed, modifier = Modifier.fillMaxWidth(0.78f))
         Spacer(Modifier.height(8.dp))
         Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (subtitle.isNotEmpty()) {
             Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-/** The folder drawing: a back panel with a tab, an optional photo, and a translucent front panel. */
-@Composable
-private fun FolderGlyph(peek: Uri?, modifier: Modifier = Modifier) {
-    val scheme = MaterialTheme.colorScheme
-    val back = scheme.surfaceContainerHighest
-    val front = scheme.surfaceContainerLowest
-    val edge = scheme.outlineVariant
-    BoxWithConstraints(modifier.aspectRatio(1.3f)) {
-        val w = maxWidth
-        val h = maxHeight
-        Canvas(Modifier.fillMaxSize()) {
-            val r = size.width * 0.07f
-            // Back body, then the tab rising from its top-left.
-            drawRoundRect(back, Offset(size.width * 0.06f, size.height * 0.10f), Size(size.width * 0.88f, size.height * 0.80f), CornerRadius(r))
-            drawRoundRect(back, Offset(size.width * 0.06f, 0f), Size(size.width * 0.42f, size.height * 0.30f), CornerRadius(r))
-        }
-        if (peek != null) {
-            AsyncImage(
-                model = peek,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .offset(x = w * 0.42f, y = h * -0.02f)
-                    .size(width = w * 0.46f, height = h * 0.50f)
-                    .rotate(6f)
-                    .clip(RoundedCornerShape(6.dp)),
-            )
-        }
-        Canvas(Modifier.fillMaxSize()) {
-            val r = size.width * 0.07f
-            val topLeft = Offset(size.width * 0.02f, size.height * 0.26f)
-            val panel = Size(size.width * 0.96f, size.height * 0.72f)
-            drawRoundRect(
-                Brush.verticalGradient(listOf(front.copy(alpha = 0.90f), front.copy(alpha = 0.97f))),
-                topLeft,
-                panel,
-                CornerRadius(r),
-            )
-            drawRoundRect(edge, topLeft, panel, CornerRadius(r), style = Stroke(width = 1.dp.toPx()))
-            // The two hairlines along the bottom edge that make it read as a stack of papers.
-            for (y in floatArrayOf(0.86f, 0.90f)) {
-                drawLine(edge, Offset(size.width * 0.10f, size.height * y), Offset(size.width * 0.90f, size.height * y), strokeWidth = 1.dp.toPx())
-            }
         }
     }
 }
