@@ -235,6 +235,9 @@ private const val PANE_SLIDE_MS = 320
 /** How faint a cut item is drawn while it waits to be pasted. */
 private const val CUT_ITEM_ALPHA = 0.45f
 
+/** How many files a collection gathers: all of one kind on the device, far past a typed search. */
+private const val COLLECTION_MAX_RESULTS = 20_000
+
 /** How many previously granted SAF subtrees are restored as tabs on launch. */
 private const val MAX_RESTORED_TABS = 8
 
@@ -308,6 +311,9 @@ private fun FylzV1Workspace(
     // Selecting is a mode, not a side effect of looking: nothing shows selection controls until
     // the user starts it (the menu's Select, or a long press), and Done ends it.
     var selecting by remember { mutableStateOf(false) }
+    // The collection (Documents, Images...) being shown as itself, or null. It is gathered by a
+    // search that runs underneath; nothing of that search is shown.
+    var collection by remember { mutableStateOf<LauncherCategory?>(null) }
     var previewMode by remember { mutableStateOf(PreviewMode.DOCKED) }
     var previewText by remember { mutableStateOf<String?>(null) }
     var previewTruncated by remember { mutableStateOf(false) }
@@ -359,7 +365,6 @@ private fun FylzV1Workspace(
     val gridState = rememberLazyGridState()
 
     val activeTab = tabs.firstOrNull { it.id == activeTabId }
-    val selectedEntries = entries.filter { it.uri in selectedUris }
     val folderKey = activeTab?.current?.uri?.toString()
 
     fun clearSelection() {
@@ -400,6 +405,20 @@ private fun FylzV1Workspace(
         val ordered = sortEntries(hits.map(SearchHit::entry), sortSpec)
         val byUri = hits.associateBy { it.entry.uri }
         ordered.mapNotNull { byUri[it.uri] }
+    }
+
+    // What can be selected: the folder's files, or the matches when the screen is showing search
+    // results or a collection. Selecting a match used to resolve against the folder alone, so a
+    // selection made in results silently selected nothing.
+    val selectableEntries = remember(entries, visibleEntries, searchHits, searchRecursive, query, collection) {
+        if (collection != null || (searchRecursive && query.isNotBlank())) {
+            searchHits.map(SearchHit::entry)
+        } else {
+            visibleEntries
+        }
+    }
+    val selectedEntries = remember(entries, searchHits, selectedUris) {
+        (entries + searchHits.map(SearchHit::entry)).distinctBy { it.uri }.filter { it.uri in selectedUris }
     }
 
     fun toast(message: String) {
@@ -611,7 +630,12 @@ private fun FylzV1Workspace(
         }
         searchProgress = SearchProgress(emptyList(), 0, 0, complete = false)
         searchEngine
-            .search(tab.treeUri, tab.current.uri, tab.current.name, parsed)
+            .search(
+                tab.treeUri, tab.current.uri, tab.current.name, parsed,
+                // A collection is the whole of one kind on the device, so it gets a far deeper
+                // cap than a typed search, which is a list of matches to skim.
+                maxResults = if (collection != null) COLLECTION_MAX_RESULTS else RecursiveSearchEngine.DEFAULT_MAX_RESULTS,
+            )
             .collectLatest { searchProgress = it }
     }
 
@@ -815,7 +839,7 @@ private fun FylzV1Workspace(
 
     // A recursive search over the device volume: "Large files" in the list, and the Documents /
     // Images / Videos / APKs tiles on the landing screen, are all this with a different query.
-    fun openDeviceSearch(searchQuery: String) {
+    fun openDeviceSearch(searchQuery: String, forCollection: LauncherCategory? = null) {
         val volume = CommonPlaces.largeFilesRoot(rootGroups)
         if (volume == null) {
             // Searching the whole device needs All files access; say so instead of doing nothing.
@@ -826,9 +850,21 @@ private fun FylzV1Workspace(
         openStorageRoot(volume)
         query = searchQuery
         searchRecursive = true
+        collection = forCollection
     }
 
     fun openLargeFiles() = openDeviceSearch(CommonPlaces.LARGE_FILES_QUERY)
+
+    fun openCollection(category: LauncherCategory) = openDeviceSearch(category.query, category)
+
+    // Leaving a collection returns to the landing screen it was opened from.
+    fun closeCollection() {
+        collection = null
+        query = ""
+        searchRecursive = false
+        activeTabId = null
+        homeRefreshKey += 1
+    }
 
     // Choosing a row of the places list. Turning the wheel onto a row IS choosing it (the rail
     // reports a settle as a selection), and the pane to the right follows: that is the point
@@ -837,6 +873,7 @@ private fun FylzV1Workspace(
         // Large files is a search, so leaving it must also clear the search — otherwise Downloads
         // would open filtered to files over 100 MB.
         if (place.kind != PlaceKind.LARGE_FILES && launcherSearchActive) {
+            collection = null
             query = ""
             searchRecursive = false
         }
@@ -870,6 +907,7 @@ private fun FylzV1Workspace(
     BackHandler(enabled = pane != null && shell.atHome) { pane = null }
     // Back ends selecting before anything else, the way Done does.
     BackHandler(enabled = selecting && pane == null) { clearSelection() }
+    BackHandler(enabled = collection != null && !selecting && pane == null) { closeCollection() }
 
     Box(Modifier.fillMaxSize()) {
     SpatialShell(
@@ -1003,19 +1041,19 @@ private fun FylzV1Workspace(
                     // Selecting replaces the title bar: Select All, how many, and Done.
                     SelectionTopBar(
                         count = selectedEntries.size,
-                        allSelected = visibleEntries.isNotEmpty() && selectedEntries.size == visibleEntries.size,
+                        allSelected = selectableEntries.isNotEmpty() && selectedEntries.size == selectableEntries.size,
                         onSelectAll = {
-                            selectedUris = if (selectedEntries.size == visibleEntries.size) {
+                            selectedUris = if (selectedEntries.size == selectableEntries.size) {
                                 emptySet()
                             } else {
-                                visibleEntries.map { it.uri }.toSet()
+                                selectableEntries.map { it.uri }.toSet()
                             }
                         },
                         onDone = { clearSelection() },
                     )
                 } else {
                     TopAppBar(
-                        title = { Text(activeTab?.current?.name ?: "Fylz") },
+                        title = { Text(collection?.label ?: activeTab?.current?.name ?: "Fylz") },
                         // The reference's header glyph. It opens the places rail, the same room an
                         // edge swipe opens, and is the only chrome the rail has.
                         navigationIcon = {
@@ -1037,7 +1075,7 @@ private fun FylzV1Workspace(
                                     DropdownMenuItem(
                                         text = { Text("Select") },
                                         leadingIcon = { Icon(Icons.Outlined.CheckCircle, null) },
-                                        enabled = entries.isNotEmpty(),
+                                        enabled = entries.isNotEmpty() || collection != null,
                                         onClick = { moreExpanded = false; selecting = true },
                                     )
                                     DropdownMenuItem(
@@ -1229,6 +1267,7 @@ private fun FylzV1Workspace(
                                 // Same as choosing Home in the places list: a launcher search must not
                                 // follow the user into the next folder they open.
                                 if (launcherSearchActive) {
+                                    collection = null
                                     query = ""
                                     searchRecursive = false
                                 }
@@ -1267,7 +1306,8 @@ private fun FylzV1Workspace(
                                 FolderLocation(Uri.parse(recent.folderUri), recent.name),
                             )
                         },
-                        onOpenSearch = ::openDeviceSearch,
+                        onOpenCollection = ::openCollection,
+                        collection = collection,
                         onOpenStorageManagement = { pane = PlaceKind.RECOVERY },
                         onOpenRecycleBin = { pane = PlaceKind.RECYCLE_BIN },
                         recycleCount = remember(recycleVersion, refreshKey) { recycleBin.records().size },
@@ -1616,7 +1656,8 @@ private fun FileBrowser(
     homeRefreshKey: Int,
     recents: List<RecentFolder>,
     onOpenRecent: (RecentFolder) -> Unit,
-    onOpenSearch: (String) -> Unit,
+    onOpenCollection: (LauncherCategory) -> Unit,
+    collection: LauncherCategory?,
     onOpenStorageManagement: () -> Unit,
     onOpenRecycleBin: () -> Unit,
     recycleCount: Int,
@@ -1640,12 +1681,26 @@ private fun FileBrowser(
             refreshKey = homeRefreshKey,
             recents = recents,
             onOpenRecent = onOpenRecent,
-            onOpenSearch = onOpenSearch,
+            onOpenCollection = onOpenCollection,
             onOpenStorageManagement = onOpenStorageManagement,
             onOpenRecycleBin = onOpenRecycleBin,
             recycleCount = recycleCount,
             shredding = shredding,
             onShredAll = onShredAll,
+            modifier = modifier,
+        )
+        return
+    }
+
+    if (collection != null) {
+        CollectionScreen(
+            category = collection,
+            hits = searchHits,
+            progress = searchProgress,
+            selecting = selecting,
+            selectedUris = selectedUris,
+            cutUris = cutUris,
+            onItemGesture = onItemGesture,
             modifier = modifier,
         )
         return

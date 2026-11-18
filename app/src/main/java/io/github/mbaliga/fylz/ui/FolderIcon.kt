@@ -245,7 +245,7 @@ private fun CardLayer(
  * says what it is.
  */
 @Composable
-private fun RecentFace(content: FolderCardContent.Recent, unit: Dp) {
+internal fun RecentFace(content: FolderCardContent.Recent, unit: Dp) {
     val context = LocalContext.current
     val bitmap by androidx.compose.runtime.produceState(
         initialValue = FileThumbnails.cached(content.file),

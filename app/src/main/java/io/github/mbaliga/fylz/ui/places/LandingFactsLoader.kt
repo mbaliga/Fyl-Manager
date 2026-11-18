@@ -55,9 +55,10 @@ object LandingFactsLoader {
                     // Trashed and hidden files are not "recent" in any sense the user would mean.
                     if (name.isNullOrEmpty() || name.startsWith(".")) continue
                     val id = cursor.getLong(idCol)
+                    val added = cursor.getLong(addedCol)
                     newest[i].offer(
-                        cursor.getLong(addedCol),
-                        RecentFile(contentUri(category, id), name, mime, cursor.getString(dataCol)),
+                        added,
+                        RecentFile(contentUri(category, id), name, mime, cursor.getString(dataCol), added * 1000L),
                     )
                 }
             }

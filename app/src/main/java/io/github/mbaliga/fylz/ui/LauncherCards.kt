@@ -39,6 +39,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mbaliga.fylz.ui.places.LandingText
+import io.github.mbaliga.fylz.ui.places.RecentFile
+import io.github.mbaliga.fylz.ui.places.RelativeTime
 import io.github.mbaliga.fylz.ui.places.StorageBreakdown
 import io.github.mbaliga.fylz.ui.places.StorageCategory
 
@@ -260,6 +262,57 @@ internal fun DeletedFilesCard(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * One collection on the landing screen: a card stack of its newest files, then its name, how many
+ * it holds in a pill, and when it last changed. A collection is a virtual grouping rather than a
+ * folder, so it is not drawn as one.
+ */
+@Composable
+internal fun CollectionTile(
+    label: String,
+    files: List<RecentFile>,
+    category: StorageCategory,
+    count: Int,
+    bytes: Long,
+    loaded: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val updated = remember(files) { RelativeTime.updated(System.currentTimeMillis(), files.firstOrNull()?.addedMillis) }
+    Column(
+        modifier.semantics(mergeDescendants = true) {
+            contentDescription = "$label collection, ${LandingText.fileCount(count, loaded)}"
+        },
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (files.isEmpty()) {
+            EmptyStack(if (loaded) "Empty" else "", onClick, Modifier.fillMaxWidth())
+        } else {
+            CollectionStack(files, category, onClick, Modifier.fillMaxWidth(), "Open $label")
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(label, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+            if (loaded && count > 0) {
+                Text(
+                    if (count >= 1000) "1000+" else count.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = scheme.onSecondaryContainer,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(scheme.secondaryContainer)
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
+        }
+        val detail = listOfNotNull(if (bytes > 0L) LandingText.compactBytes(bytes) else null, updated).joinToString(" · ")
+        if (detail.isNotEmpty()) {
+            Text(detail, style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant, maxLines = 1)
         }
     }
 }

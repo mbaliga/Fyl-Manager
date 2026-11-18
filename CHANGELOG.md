@@ -18,6 +18,8 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - Inside a folder: selection controls are hidden until you choose Select (menu) or long-press; selecting swaps the title bar for Select All / count / Done, shows a ring on each row (a tick and fill when selected) and highlights selected grid names. A tap opens the file, a long press is the quick preview with an "Add to selection" action; while selecting a tap toggles and a long press peeks. Settings has "Tap to preview" to swap those roles.
 - The always-on alphabet strip is gone. A slim scrollbar sits inside the list area only (so the menu is always tappable); dragging it unfolds the letter / month / size strip with the current one highlighted.
 - One "…" menu now holds Select, New folder, Paste, view (Icons / List), sort and the extras. View and sort are remembered per folder (Settings or the menu can switch that to one global view).
+- Documents, Images, Videos and APKs on the landing screen are collections, drawn as the handoff's card stack of the newest files (swipe to move through them) with the count, total size and "Updated 3h ago" under it. Opening one shows the collection itself, grouped by day with real thumbnails and a date scrollbar, with no search box or query.
+- The Storage card opens Storage & recovery.
 
 ### Fixes
 

@@ -105,9 +105,12 @@ data class RecentFile(
     val mimeType: String?,
     /** Filesystem path when MediaStore reports one (needed to read an APK's icon), else null. */
     val path: String? = null,
+    /** When it was added to the device, in epoch milliseconds, or null when unknown. */
+    val addedMillis: Long? = null,
 )
 
-const val RECENT_PER_CATEGORY = 3
+/** How many of the newest files each collection keeps for its card stack. */
+const val RECENT_PER_CATEGORY = 6
 
 /**
  * Keeps the [limit] items with the highest key, newest first, without sorting a whole library:

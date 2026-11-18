@@ -115,8 +115,8 @@ fun StorageHomeScreen(
     onOpenRecent: (RecentFolder) -> Unit = {},
     /** Opens the storage and management screen; the Storage card uses it. */
     onOpenStorageManagement: () -> Unit = {},
-    /** Opens a recursive search over the device volume; the category tiles use it. */
-    onOpenSearch: (String) -> Unit = {},
+    /** Opens a collection (Documents, Images, Videos, APKs) as itself, not as a search. */
+    onOpenCollection: (LauncherCategory) -> Unit = {},
     onOpenRecycleBin: () -> Unit = {},
     recycleCount: Int = 0,
     /** True while a Shred all is running; the button is disabled meanwhile. */
@@ -223,15 +223,16 @@ fun StorageHomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(LANDING_GAP),
             ) {
                 row.forEach { category ->
-                    FolderTile(
+                    CollectionTile(
                         label = category.label,
-                        subtitle = LandingText.fileCount(facts.breakdown.count(category.storage), facts.loaded),
-                        cards = folderCards(category, facts),
-                        // The search runs over the device volume, which needs All files access.
-                        // Without it, offer the folder picker rather than a dead tap.
-                        onClick = {
-                            if (searchable) onOpenSearch(category.query) else onPickFolder(null)
-                        },
+                        files = facts.recent[category.storage].orEmpty(),
+                        category = category.storage,
+                        count = facts.breakdown.count(category.storage),
+                        bytes = facts.breakdown.bytes(category.storage),
+                        loaded = facts.loaded,
+                        // Gathering a collection scans the device volume, which needs All files
+                        // access. Without it, offer the folder picker rather than a dead tap.
+                        onClick = { if (searchable) onOpenCollection(category) else onPickFolder(null) },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -297,13 +298,6 @@ fun StorageHomeScreen(
         )
     }
 }
-
-/**
- * The cards inside a category's folder: the newest files in it, shown as they really look, up to
- * three. An empty folder has no cards, so it reads as empty.
- */
-private fun folderCards(category: LauncherCategory, facts: LandingFacts): List<FolderCardContent> =
-    facts.recent[category.storage].orEmpty().take(3).map { FolderCardContent.Recent(it, category.storage) }
 
 private val LANDING_GUTTER = 20.dp
 private val LANDING_GAP = 16.dp
