@@ -153,7 +153,7 @@ import io.github.mbaliga.fylz.search.SearchQuery
 import io.github.mbaliga.fylz.storage.StorageAccess
 import io.github.mbaliga.fylz.storage.StorageRoot
 import io.github.mbaliga.fylz.ui.components.EntryThumbnail
-import io.github.mbaliga.fylz.ui.components.FloatingPreviewPane
+import io.github.mbaliga.fylz.ui.components.QuickPreviewPopup
 import io.github.mbaliga.fylz.ui.components.PreviewPane
 import io.github.mbaliga.fylz.ui.theme.FylzTheme
 import io.github.mbaliga.fylz.util.FileType
@@ -164,6 +164,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
 import io.github.mbaliga.fylz.browse.BrowserPrefs
 import io.github.mbaliga.fylz.browse.FolderView
 import io.github.mbaliga.fylz.browse.ItemAction
@@ -1394,35 +1396,53 @@ private fun FylzV1Workspace(
         }
         }
 
+        // The quick-preview popup (narrow screens; a wide screen docks the preview instead).
         if (!wide && focusedEntry != null && previewMode != PreviewMode.HIDDEN) {
-            FloatingPreviewPane(
-                onDock = { focusedEntry = null },
-                onClose = { focusedEntry = null },
-            ) {
-                Column(Modifier.fillMaxSize()) {
-                    focusedEntry?.let { entry ->
-                        QuickPreviewBar(
+            // Composed only while the popup is open, so it is registered last and Back closes the
+            // popup before anything else.
+            BackHandler { focusedEntry = null }
+            focusedEntry?.let { entry ->
+                QuickPreviewPopup(
+                    selected = entry.uri in selectedUris,
+                    onOpen = { openExternal(entry) },
+                    onToggleSelect = { selecting = true; toggleSelected(entry) },
+                    onShare = {
+                        runCatching {
+                            context.startActivity(
+                                Intent.createChooser(
+                                    Intent(Intent.ACTION_SEND)
+                                        .setType(entry.mimeType)
+                                        .putExtra(Intent.EXTRA_STREAM, entry.uri)
+                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                                    "Share file",
+                                ),
+                            )
+                        }
+                    },
+                    onClose = { focusedEntry = null },
+                ) {
+                    if (entry.kind == EntryKind.IMAGE) {
+                        // The picture fills the card, as in the reference.
+                        AsyncImage(
+                            model = entry.uri,
+                            contentDescription = entry.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        PreviewPane(
                             entry = entry,
-                            selected = entry.uri in selectedUris,
-                            onOpen = { openExternal(entry) },
-                            onToggleSelect = { selecting = true; toggleSelected(entry) },
-                            onClose = { focusedEntry = null },
+                            textContent = previewText,
+                            textTruncated = previewTruncated,
+                            loading = previewLoading,
+                            editorValue = editorValue,
+                            onEditorValueChange = { editorValue = it },
+                            onSave = {
+                                scope.launch { repository.writeText(entry.uri, editorValue) }
+                            },
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
-                    PreviewPane(
-                        entry = focusedEntry,
-                        textContent = previewText,
-                        textTruncated = previewTruncated,
-                        loading = previewLoading,
-                        editorValue = editorValue,
-                        onEditorValueChange = { editorValue = it },
-                        onSave = {
-                            focusedEntry?.let { entry ->
-                                scope.launch { repository.writeText(entry.uri, editorValue) }
-                            }
-                        },
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
                 }
             }
         }

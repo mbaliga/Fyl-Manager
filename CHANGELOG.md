@@ -20,6 +20,7 @@ All notable user-visible and security-relevant changes to Fylz are recorded here
 - One "…" menu now holds Select, New folder, Paste, view (Icons / List), sort and the extras. View and sort are remembered per folder (Settings or the menu can switch that to one global view).
 - Documents, Images, Videos and APKs on the landing screen are collections, drawn as the handoff's card stack of the newest files (swipe to move through them) with the count, total size and "Updated 3h ago" under it. Opening one shows the collection itself, grouped by day with real thumbnails and a date scrollbar, with no search box or query.
 - The Storage card opens Storage & recovery.
+- The quick preview is now a popup built to the supplied reference: a square card with the picture edge to edge in a thin black frame, a black tab notched into the top-left corner with three actions (open, add to / remove from selection, share) and one in the bottom-right with the close mark. Tap outside, the close mark or Back dismiss it.
 
 ### Fixes
 
